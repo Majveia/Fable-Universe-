@@ -1,0 +1,82 @@
+// Deterministic hashing + RNG. The entire universe unfolds from one integer.
+
+/** Robust integer hash (xxhash-style avalanche) over any number of ints. */
+export function hash(...ns) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < ns.length; i++) {
+    let x = ns[i] | 0;
+    x = Math.imul(x ^ (x >>> 15), 0x85ebca6b);
+    x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35);
+    h = Math.imul(h ^ (x ^ (x >>> 16)), 0x27d4eb2f);
+    h = (h << 13) | (h >>> 19);
+  }
+  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+
+/** mulberry32 PRNG stream. */
+export class RNG {
+  constructor(seed) { this.s = seed >>> 0; }
+  next() {
+    this.s = (this.s + 0x6d2b79f5) >>> 0;
+    let t = this.s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  float(a = 0, b = 1) { return a + (b - a) * this.next(); }
+  int(a, b) { return a + Math.floor(this.next() * (b - a + 1)); }
+  sign() { return this.next() < 0.5 ? -1 : 1; }
+  chance(p) { return this.next() < p; }
+  pick(arr) { return arr[Math.floor(this.next() * arr.length)]; }
+  gauss() { // Box–Muller
+    const u = Math.max(this.next(), 1e-9), v = this.next();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+  /** power-law sample x^-alpha on [a,b] */
+  power(a, b, alpha) {
+    const u = this.next(), g = 1 - alpha;
+    return Math.pow(Math.pow(a, g) + u * (Math.pow(b, g) - Math.pow(a, g)), 1 / g);
+  }
+}
+
+// ---------------------------------------------------------------- names ----
+
+const G_PRE = ['Aeth', 'Vor', 'Tha', 'Ny', 'Ka', 'Ser', 'Om', 'Ily', 'Zau', 'Mor', 'Eri', 'Qel', 'Hal', 'Ves', 'Ur', 'Sza', 'Tal', 'Ao'];
+const G_MID = ['ari', 'end', 'ilo', 'uma', 'ess', 'ath', 'ori', 'yne', 'ara', 'ith', 'osk', 'ell', 'und', 'eia'];
+const G_END = ['a', 'is', 'ea', 'os', 'ion', 'ara', 'um', 'ir', 'ax', 'ys'];
+
+const S_PRE = ['Kel', 'Tau', 'Rig', 'Ald', 'Ver', 'Sol', 'Mira', 'Zet', 'Alk', 'Deneb', 'Cor', 'Vind', 'Aza', 'Pol', 'Nash', 'Sadr', 'Ker', 'Yed', 'Ankaa', 'Thu'];
+const S_END = ['ar', 'eth', 'ari', 'an', 'is', 'or', 'ah', 'une', 'ex', 'il', 'a', 'os', 'ia', 'ur'];
+
+const P_PRE = ['Vel', 'Or', 'Teg', 'Nim', 'Cal', 'Bre', 'Dus', 'Yav', 'Kor', 'Mal', 'Ser', 'Osh', 'Ith', 'Lan', 'Ryn', 'Ei'];
+const P_END = ['ora', 'une', 'eth', 'ia', 'os', 'ath', 'im', 'ir', 'ova', 'ael', 'ys', 'on'];
+
+const GREEK = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta', 'Eta', 'Theta', 'Iota', 'Kappa', 'Lambda', 'Mu', 'Nu', 'Xi', 'Omicron', 'Sigma', 'Tau', 'Upsilon', 'Omega'];
+const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
+
+export function galaxyName(seed) {
+  const r = new RNG(hash(seed, 0x6a1, 77));
+  if (r.chance(0.42)) return 'NGC ' + r.int(1000, 7999);
+  let n = r.pick(G_PRE) + r.pick(G_MID);
+  if (r.chance(0.5)) n += r.pick(G_END);
+  return n;
+}
+
+export function starName(seed) {
+  const r = new RNG(hash(seed, 0x57a2, 19));
+  const base = r.pick(S_PRE) + r.pick(S_END);
+  const roll = r.next();
+  if (roll < 0.25) return r.pick(GREEK) + ' ' + base;
+  if (roll < 0.45) return base + ' ' + String.fromCharCode(65 + r.int(0, 25)) + '-' + r.int(2, 98);
+  return base;
+}
+
+export function planetName(systemName, index, seed) {
+  const r = new RNG(hash(seed, index * 31 + 5, 0x91a));
+  if (r.chance(0.55)) return systemName + ' ' + ROMAN[index];
+  return r.pick(P_PRE) + r.pick(P_END);
+}
+
+export function romanNumeral(i) { return ROMAN[Math.min(i, ROMAN.length - 1)]; }

@@ -1,0 +1,351 @@
+// AEON — a living universe.
+//
+// Four nested scales, one stack:
+//   cosmic web  →  galaxy  →  star system  →  (galactic nucleus: black hole)
+// Everything is procedural and deterministic: one integer seeds it all.
+
+import * as THREE from 'three';
+import { Post } from './post.js';
+import { HUD } from './hud.js';
+import { CosmicScale, COSMIC_NOTE } from './cosmic.js';
+import { GalaxyScale, GALAXY_NOTE, galaxyParams } from './galaxy.js';
+import { SystemScale, SYSTEM_NOTE } from './system.js';
+import { BlackHoleScale, BLACKHOLE_NOTE } from './blackhole.js';
+import { starName } from './rng.js';
+
+const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE };
+const HINTS = {
+  cosmic: 'drag to look · scroll to zoom · space plays cosmic time · click a bright node to enter a galaxy · e toggles expansion',
+  galaxy: 'drag to look · scroll to zoom · click a star to visit its system · click the core to meet the nucleus · esc to ascend',
+  system: 'click a world to read it · double-click to enter orbit · space pauses · + − bends time · esc to ascend',
+  blackhole: 'drag to orbit the horizon · scroll to lean closer · esc to ascend',
+};
+
+class App {
+  constructor() {
+    const url = new URL(window.location.href);
+    this.seed = parseInt(url.searchParams.get('seed')) || 1138;
+
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: 'high-performance' });
+    this.renderer.setClearColor(0x000000, 1);
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.15;
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.renderer.setPixelRatio(this.dpr);
+    document.getElementById('app').appendChild(this.renderer.domElement);
+
+    this.post = new Post(this.renderer);
+    this.hud = new HUD(this);
+    this.raycaster = new THREE.Raycaster();
+    this.raycaster.params.Points.threshold = 2;
+    this.pointer = new THREE.Vector2();
+
+    this.stack = [new CosmicScale(this)];
+    this._restore(url);
+    this._syncScale();
+
+    this._bindInput();
+    this._resize();
+    window.addEventListener('resize', () => this._resize());
+
+    this.clock = new THREE.Clock();
+    this._statT = 0;
+    this._perf = { acc: 0, n: 0 };
+    this._warping = false;
+
+    // splash dissolves into the young universe
+    setTimeout(() => {
+      const s = document.getElementById('splash');
+      s.classList.add('gone');
+      setTimeout(() => s.remove(), 1600);
+    }, 1400);
+
+    this.renderer.setAnimationLoop(() => this._frame());
+
+    // deterministic hooks for tests / tinkering
+    window.AEON = this;
+  }
+
+  active() { return this.stack[this.stack.length - 1]; }
+
+  /** re-enter a deep-linked location: ?g=<galaxy>&s=<star>&bh=1 */
+  _restore(url) {
+    const g = parseInt(url.searchParams.get('g'));
+    if (!g) return;
+    this.stack[0].exit();
+    this.stack.push(new GalaxyScale(this, { galaxySeed: g }));
+    const s = parseInt(url.searchParams.get('s'));
+    if (s) {
+      this.active().exit();
+      this.stack.push(new SystemScale(this, { starSeed: s }));
+    } else if (url.searchParams.get('bh')) {
+      const gal = this.active();
+      gal.exit();
+      this.stack.push(new BlackHoleScale(this, { bhMassMsun: gal.params.bhMassMsun }));
+    }
+  }
+
+  /** keep the URL pointing at where you are, so places can be shared */
+  _reflectUrl() {
+    const u = new URL(window.location.href);
+    u.searchParams.delete('g'); u.searchParams.delete('s'); u.searchParams.delete('bh');
+    for (const sc of this.stack) {
+      if (sc.kind === 'galaxy') u.searchParams.set('g', sc.ctx.galaxySeed);
+      if (sc.kind === 'system') u.searchParams.set('s', sc.ctx.starSeed);
+      if (sc.kind === 'blackhole') u.searchParams.set('bh', '1');
+    }
+    history.replaceState(null, '', u);
+  }
+
+  // ------------------------------------------------------------ scales ----
+  push(scale) {
+    if (this._warping) return;
+    this._warping = true;
+    this.hud.hideCard();
+    this.hud.warp(() => {
+      this.active().exit();
+      this.stack.push(scale);
+      this._syncScale();
+      this._warping = false;
+    });
+  }
+
+  popTo(depth) {
+    if (this._warping || depth < 0 || depth >= this.stack.length) return;
+    this._warping = true;
+    this.hud.hideCard();
+    this.hud.warp(() => {
+      while (this.stack.length > depth + 1) {
+        const s = this.stack.pop();
+        s.exit();
+        s.dispose();
+      }
+      this.active().resume();
+      this._syncScale();
+      this._warping = false;
+    });
+  }
+
+  _syncScale() {
+    this._reflectUrl();
+    const s = this.active();
+    s.camera.aspect = this.width / this.height || 1;
+    s.camera.updateProjectionMatrix();
+    this.post.setScene(s.scene, s.camera);
+    this.post.tune(s.bloomSettings);
+    this.hud.setNote(NOTES[s.kind]);
+    this.hud.setHint(HINTS[s.kind]);
+    this._crumbs();
+  }
+
+  _crumbs() {
+    const items = [{ label: 'universe ' + this.seed, onclick: () => this.popTo(0) }];
+    for (let i = 1; i < this.stack.length; i++) {
+      const s = this.stack[i];
+      const label = s.kind === 'galaxy' ? s.params.name
+        : s.kind === 'system' ? s.params.name
+        : 'nucleus';
+      items.push({ label, onclick: () => this.popTo(i) });
+    }
+    this.hud.setCrumbs(items);
+  }
+
+  // ------------------------------------------------------------- input ----
+  _bindInput() {
+    const cv = this.renderer.domElement;
+    let down = null;
+
+    cv.addEventListener('pointerdown', (e) => {
+      down = { x: e.clientX, y: e.clientY };
+      this.active().onPointerDown?.(e);
+    });
+    cv.addEventListener('pointermove', (e) => this.active().onPointerMove?.(e));
+    cv.addEventListener('pointerup', (e) => {
+      this.active().onPointerUp?.(e);
+      if (!down) return;
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      down = null;
+      if (moved < 6) this._click(e);
+    });
+    cv.addEventListener('dblclick', (e) => this._dblclick(e));
+    cv.addEventListener('wheel', (e) => this.active().onWheel?.(e), { passive: true });
+
+    window.addEventListener('keydown', (e) => {
+      const s = this.active();
+      switch (e.code) {
+        case 'Escape':
+        case 'Backspace':
+          if (s.kind === 'system' && s.focusIndex >= 0) { s.focusPlanet(-1); this.hud.hideCard(); }
+          else this.popTo(this.stack.length - 2);
+          break;
+        case 'Space': s.togglePlay?.(); e.preventDefault(); break;
+        case 'Comma': case 'Minus': s.slowDown?.(); break;
+        case 'Period': case 'Equal': s.speedUp?.(); break;
+        case 'BracketLeft': s.scrub?.(-1); break;
+        case 'BracketRight': s.scrub?.(1); break;
+        case 'KeyH': document.querySelectorAll('.hud').forEach(el => el.style.visibility = el.style.visibility === 'hidden' ? '' : 'hidden'); break;
+        default: s.onKey?.(e.code);
+      }
+    });
+  }
+
+  _ndc(e) {
+    this.pointer.set(
+      (e.clientX / this.width) * 2 - 1,
+      -(e.clientY / this.height) * 2 + 1);
+    return this.pointer;
+  }
+
+  _click(e) {
+    const s = this.active();
+    const ndc = this._ndc(e);
+    this.raycaster.setFromCamera(ndc, s.camera);
+    const hit = s.pick?.(this.raycaster, ndc);
+    if (!hit) { this.hud.hideCard(); return; }
+
+    if (s.kind === 'cosmic') this._cardGalaxy(hit);
+    else if (s.kind === 'galaxy') hit.type === 'core' ? this._cardCore(hit) : this._cardStar(hit);
+    else if (s.kind === 'system') hit.type === 'sun' ? this._cardSun(s) : this._cardPlanet(s, hit);
+  }
+
+  _dblclick(e) {
+    const s = this.active();
+    const ndc = this._ndc(e);
+    this.raycaster.setFromCamera(ndc, s.camera);
+    const hit = s.pick?.(this.raycaster, ndc);
+    if (!hit) return;
+    if (s.kind === 'cosmic') this.push(new GalaxyScale(this, { galaxySeed: hit.galaxySeed }));
+    else if (s.kind === 'galaxy') {
+      if (hit.type === 'core') this.push(new BlackHoleScale(this, { bhMassMsun: s.params.bhMassMsun }));
+      else this.push(new SystemScale(this, { starSeed: hit.starSeed }));
+    } else if (s.kind === 'system' && hit.type === 'planet') {
+      s.focusPlanet(hit.index);
+    }
+  }
+
+  // programmatic dives — used by tests and deep links
+  diveGalaxy(seed) { this.push(new GalaxyScale(this, { galaxySeed: seed })); }
+  diveSystem(seed) { this.push(new SystemScale(this, { starSeed: seed })); }
+  diveBlackHole(mass = 4.2e6) { this.push(new BlackHoleScale(this, { bhMassMsun: mass })); }
+
+  // -------------------------------------------------------------- cards ----
+  _cardGalaxy(hit) {
+    const p = galaxyParams(hit.galaxySeed);
+    this.hud.showCard({
+      title: p.name,
+      kind: p.type + ' galaxy',
+      rows: [
+        ['stellar mass', (p.massMsun / 1e11).toFixed(2) + ' × 10¹¹ M☉'],
+        ['spiral arms', p.type.includes('spiral') ? p.arms : '—'],
+        ['nucleus', (p.bhMassMsun / 1e6).toFixed(1) + ' × 10⁶ M☉ BH'],
+      ],
+      flavor: 'A knot in the cosmic web, wound from the collapse you just watched.',
+      action: { label: 'enter galaxy', cb: () => this.push(new GalaxyScale(this, { galaxySeed: hit.galaxySeed })) },
+    });
+  }
+
+  _cardStar(hit) {
+    this.hud.showCard({
+      title: hit.name,
+      kind: 'star system',
+      rows: [['catalog id', 'A-' + (hit.starSeed >>> 8).toString(16)]],
+      flavor: 'One of two hundred billion. This one has your attention.',
+      action: { label: 'enter system', cb: () => this.push(new SystemScale(this, { starSeed: hit.starSeed })) },
+    });
+  }
+
+  _cardCore(hit) {
+    this.hud.showCard({
+      title: 'the nucleus',
+      kind: 'supermassive black hole',
+      rows: [['mass', (hit.bhMassMsun / 1e6).toFixed(1) + ' × 10⁶ M☉']],
+      flavor: 'Every large galaxy keeps one. Light itself orbits here.',
+      action: { label: 'descend', cb: () => this.push(new BlackHoleScale(this, { bhMassMsun: hit.bhMassMsun })) },
+    });
+  }
+
+  _cardSun(s) {
+    const P = s.params;
+    this.hud.showCard({
+      title: P.name,
+      kind: `${P.spectral}-class ${P.stage}`,
+      rows: [
+        ['mass', P.mass.toFixed(2) + ' M☉'],
+        ['surface', Math.round(P.temp).toLocaleString() + ' K'],
+        ['luminosity', (P.lum >= 100 ? P.lum.toFixed(0) : P.lum.toFixed(2)) + ' L☉'],
+        ['radius', P.radiusSun.toFixed(2) + ' R☉'],
+        ['habitable zone', '≈ ' + P.hz.toFixed(2) + ' AU'],
+      ],
+      flavor: 'Its color is its temperature — a blackbody wearing its physics.',
+    });
+    s.focusPlanet(-1);
+  }
+
+  _cardPlanet(s, hit) {
+    const p = hit.planet;
+    this.hud.showCard({
+      title: p.name,
+      kind: p.type + (p.inhabited ? ' · inhabited' : ''),
+      rows: [
+        ['orbit', p.a.toFixed(2) + ' AU'],
+        ['year', p.periodYears >= 1 ? p.periodYears.toFixed(2) + ' yr' : (p.periodYears * 365.25).toFixed(0) + ' d'],
+        ['eccentricity', p.e.toFixed(3)],
+        ['mass', p.massE >= 10 ? p.massE.toFixed(0) + ' M⊕' : p.massE.toFixed(2) + ' M⊕'],
+        ['radius', p.radiusE.toFixed(2) + ' R⊕'],
+        ['equilibrium temp', p.Teq + ' K'],
+        ['moons', p.moons || '—'],
+        ['rings', p.hasRings ? 'yes' : '—'],
+      ],
+      flavor: p.note,
+      action: { label: 'enter orbit', cb: () => s.focusPlanet(p.index) },
+    });
+  }
+
+  // ------------------------------------------------------------- frame ----
+  _frame() {
+    const dt = Math.min(this.clock.getDelta(), 0.1);
+    const s = this.active();
+    s.update(dt);
+    s.glide?.(dt);
+    this.post.render(dt);
+    this.hud.tick(dt);
+
+    this._statT -= dt;
+    if (this._statT <= 0) {
+      this._statT = 0.25;
+      this.hud.setStats(s.hudStats());
+      this.hud.setTime(s.timeReadout?.() ?? '', s.playing ?? true);
+    }
+
+    // adaptive resolution: hold 60ish, never look potato unless we must
+    const p = this._perf;
+    p.acc += dt; p.n++;
+    if (p.n >= 70) {
+      const avg = p.acc / p.n;
+      if (avg > 0.03 && this.dpr > 1) this._setDpr(Math.max(this.dpr - 0.25, 1));
+      else if (avg < 0.015 && this.dpr < Math.min(window.devicePixelRatio || 1, 2)) this._setDpr(this.dpr + 0.25);
+      p.acc = 0; p.n = 0;
+    }
+  }
+
+  _setDpr(v) {
+    this.dpr = v;
+    this.renderer.setPixelRatio(v);
+    this.post.composer.setPixelRatio(v);
+    this._resize();
+  }
+
+  _resize() {
+    this.width = window.innerWidth;
+    this.height = window.innerHeight;
+    this.renderer.setSize(this.width, this.height);
+    this.post.setSize(this.width, this.height);
+    for (const s of this.stack) {
+      s.camera.aspect = this.width / this.height;
+      s.camera.updateProjectionMatrix();
+    }
+  }
+}
+
+new App();
