@@ -19,6 +19,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { COSMO } from './cosmology.js';
 import { hash, RNG } from './rng.js';
+import { NBodySim, NBODY_LAYOUT } from './nbody.js';
 
 const BOX = 900;           // comoving box, display units (≙ ~500 Mpc)
 const N_MODES = 64;        // plane waves in the displacement field
@@ -90,6 +91,59 @@ const frag = /* glsl */`
   }
 `;
 
+// GLSL3 point renderer fed directly by the N-body sim's GPU textures
+const NB_VERT = /* glsl */`
+  precision highp float;
+  uniform sampler2D uPos;
+  uniform sampler2D uDen;
+  uniform float uAScale;
+  uniform float uPx;
+  out float vDelta;
+  out float vEdge;
+  ${NBODY_LAYOUT.LAYOUT}
+
+  void main() {
+    ivec2 t = ivec2(gl_VertexID % ${NBODY_LAYOUT.PN}, gl_VertexID / ${NBODY_LAYOUT.PN});
+    vec3 x = texelFetch(uPos, t, 0).xyz;                  // box units [0,1)
+    ivec3 cell = ivec3(fract(x) * float(G)) % G;
+    float delta = texelFetch(uDen, cellToTexel(cell), 0).x - 1.0;
+    // compress the nonlinear range so halos glow without nuking the frame
+    vDelta = clamp(log(1.0 + max(delta, -0.95)) * 1.05 - 0.25, -1.0, 2.5);
+
+    vec3 disp = (x - 0.5) * ${BOX.toFixed(1)} * uAScale;
+    vec3 ax = abs(x - 0.5) * 2.0;
+    vEdge = 1.0 - smoothstep(0.86, 1.0, max(ax.x, max(ax.y, ax.z)));
+
+    vec4 mv = modelViewMatrix * vec4(disp, 1.0);
+    float size = uPx * (0.95 + 0.42 * clamp(vDelta, 0.0, 2.0));
+    gl_PointSize = clamp(size * (620.0 / -mv.z), 0.75, 5.0);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const NB_FRAG = /* glsl */`
+  precision highp float;
+  in float vDelta;
+  in float vEdge;
+  out vec4 fragColor;
+
+  void main() {
+    vec2 c = gl_PointCoord - 0.5;
+    float r2 = dot(c, c);
+    if (r2 > 0.25) discard;
+    float fall = exp(-r2 * 11.0);
+    float t = vDelta;
+    vec3 voidC = vec3(0.055, 0.06, 0.16);
+    vec3 filC  = vec3(0.30, 0.38, 1.00);
+    vec3 nodeC = vec3(1.35, 1.12, 0.78);
+    vec3 col = t < 0.35
+      ? mix(voidC, filC, smoothstep(-1.0, 0.35, t))
+      : mix(filC, nodeC, smoothstep(0.35, 2.2, t));
+    float lum = 0.035 + 0.1 * smoothstep(-0.9, 0.1, t) + 0.3 * smoothstep(0.35, 2.4, t);
+    fragColor = vec4(col * lum * fall * vEdge, 1.0);
+  }
+`;
+
 export class CosmicScale {
   constructor(app) {
     this.app = app;
@@ -105,6 +159,7 @@ export class CosmicScale {
 
     this._buildField(app.seed);
     this._buildParticles();
+    this._buildNBody();
 
     this.controls = new OrbitControls(this.camera, app.renderer.domElement);
     this.controls.enableDamping = true;
@@ -215,9 +270,66 @@ export class CosmicScale {
     this.scene.add(this.points);
   }
 
+  /** the PM N-body integrator; falls back to pure Zel'dovich if unsupported */
+  _buildNBody() {
+    this.sim = null;
+    this.mode = 'linear';
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('nb') === '0') return;
+    try {
+      this.sim = new NBodySim(this.app.renderer, this.modes, BOX, this.a);
+    } catch (e) {
+      console.warn('AEON: PM N-body unavailable, staying with linear theory —', e.message);
+      return;
+    }
+    const N = this.sim.particleCount;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), BOX);
+    this.nbUniforms = {
+      uPos: { value: this.sim.posTexture },
+      uDen: { value: this.sim.densityTexture },
+      uAScale: { value: 1 },
+      uPx: { value: Math.min(window.devicePixelRatio, 2) },
+    };
+    this.nbPoints = new THREE.Points(geo, new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: this.nbUniforms,
+      vertexShader: NB_VERT,
+      fragmentShader: NB_FRAG,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false, depthTest: false, transparent: true,
+    }));
+    this.scene.add(this.nbPoints);
+    this.mode = 'nbody';
+    this.points.visible = false;
+  }
+
+  toggleMode() {
+    if (!this.sim) return;
+    this.mode = this.mode === 'nbody' ? 'linear' : 'nbody';
+    this.nbPoints.visible = this.mode === 'nbody';
+    this.points.visible = this.mode === 'linear';
+    if (this.mode === 'nbody' && Math.abs(this.sim.a - this.a) > 0.02) {
+      // linear scrubbing moved the clock: re-run gravity up to it
+      this.sim.reset(A_START);
+      this.sim.step(Math.max(this.a - A_START, 0));
+    }
+  }
+
   // ------------------------------------------------------------- loop ----
   update(dt) {
-    if (this.playing && this.a < 1) {
+    if (this.mode === 'nbody') {
+      if (this.playing && this.a < 1) {
+        const da = this.a * (Math.exp(this.rate * dt) - 1);
+        this.sim.step(Math.min(da, 1 - this.a + 1e-6));
+        this.a = Math.min(this.sim.a, 1);
+        if (this.a >= 1) this.playing = false;
+      }
+      this.nbUniforms.uPos.value = this.sim.posTexture;
+      this.nbUniforms.uDen.value = this.sim.densityTexture;
+      this.nbUniforms.uAScale.value = this.physicalView ? this.a : 1;
+    } else if (this.playing && this.a < 1) {
       this.a = Math.min(this.a * Math.exp(this.rate * dt), 1);
       if (this.a >= 1) this.playing = false; // the present day
     }
@@ -228,13 +340,23 @@ export class CosmicScale {
 
   // ------------------------------------------------------------- time ----
   togglePlay() {
-    if (this.a >= 1 && !this.playing) { this.a = A_START; this.playing = true; return; }
+    if (this.a >= 1 && !this.playing) {
+      this.a = A_START;
+      if (this.mode === 'nbody') this.sim.reset(A_START);
+      this.playing = true;
+      return;
+    }
     this.playing = !this.playing;
   }
   speedUp() { this.rate = Math.min(this.rate * 1.6, 2.2); }
   slowDown() { this.rate = Math.max(this.rate / 1.6, 0.02); }
-  scrub(dir) { // step in ln a
+  scrub(dir) { // step in ln a (linear theory is reversible; gravity is not)
     this.playing = false;
+    if (this.mode === 'nbody') {
+      if (dir < 0) { this.sim.reset(A_START); this.a = A_START; }
+      else { this.sim.step(this.a * (Math.exp(0.06) - 1)); this.a = Math.min(this.sim.a, 1); }
+      return;
+    }
     this.a = Math.min(Math.max(this.a * Math.exp(dir * 0.06), A_START), 1);
   }
 
@@ -244,11 +366,13 @@ export class CosmicScale {
   }
 
   hudStats() {
+    const n = this.mode === 'nbody' ? this.sim.particleCount : this.particleCount;
     return [
       ['epoch', this.a >= 1 ? 'present day' : (this.playing ? 'evolving' : 'paused')],
       ['redshift', 'z = ' + (COSMO.z(this.a) >= 10 ? COSMO.z(this.a).toFixed(1) : COSMO.z(this.a).toFixed(2))],
       ['age of universe', COSMO.age(this.a).toFixed(2) + ' Gyr'],
-      ['tracer particles', this.particleCount.toLocaleString()],
+      ['gravity', this.mode === 'nbody' ? 'particle-mesh N-body' : 'Zel’dovich linear theory'],
+      ['tracer particles', n.toLocaleString()],
       ['coordinates', this.physicalView ? 'physical (expanding)' : 'comoving'],
     ];
   }
@@ -285,6 +409,7 @@ export class CosmicScale {
 
   onKey(code) {
     if (code === 'KeyE') { this.physicalView = !this.physicalView; return true; }
+    if (code === 'KeyN') { this.toggleMode(); return true; }
     return false;
   }
 
@@ -296,7 +421,12 @@ export class CosmicScale {
     this.controls.dispose();
     this.points.geometry.dispose();
     this.points.material.dispose();
+    if (this.sim) {
+      this.sim.dispose();
+      this.nbPoints.geometry.dispose();
+      this.nbPoints.material.dispose();
+    }
   }
 }
 
-export const COSMIC_NOTE = `The <em>cosmic web</em>. Each point is a tracer of dark matter, moved by the Zel'dovich approximation — real perturbation theory: <em>x = q + D(a)·ψ(q)</em>, with the growth factor D(a) integrated from the Friedmann equation for a flat ΛCDM universe (Ω<sub>m</sub> = 0.315, Ω<sub>Λ</sub> = 0.685, H₀ = 67.4). Press play and 13.8 billion years unfold: gravity drains the voids and matter gathers into walls, filaments, and the glowing nodes where galaxy clusters live. Click a bright node to fall into one of its galaxies.`;
+export const COSMIC_NOTE = `The <em>cosmic web</em>, forming under real gravity. 262,144 dark-matter particles run through a <em>particle-mesh N-body code on your GPU</em>: each frame their mass is deposited on a 64³ mesh, Poisson's equation is solved by FFT (<em>φ_k = −3Ω<sub>m</sub>δ_k/2ak²</em>), and the particles are kicked and drifted with ΛCDM factors integrated from the Friedmann equation (Ω<sub>m</sub> = 0.315, Ω<sub>Λ</sub> = 0.685, H₀ = 67.4). Initial conditions come from the Zel'dovich approximation at z ≈ 20 — press <em>N</em> to compare against pure linear theory and watch self-gravity sharpen the filaments and virialize the halos. Click a bright node to fall into one of its galaxies.`;

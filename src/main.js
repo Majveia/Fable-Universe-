@@ -7,18 +7,21 @@
 import * as THREE from 'three';
 import { Post } from './post.js';
 import { HUD } from './hud.js';
+import { Hyperzoom } from './transition.js';
 import { CosmicScale, COSMIC_NOTE } from './cosmic.js';
 import { GalaxyScale, GALAXY_NOTE, galaxyParams } from './galaxy.js';
 import { SystemScale, SYSTEM_NOTE } from './system.js';
 import { BlackHoleScale, BLACKHOLE_NOTE } from './blackhole.js';
+import { SurfaceScale, SURFACE_NOTE } from './surface.js';
 import { starName } from './rng.js';
 
-const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE };
+const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE };
 const HINTS = {
-  cosmic: 'drag to look · scroll to zoom · space plays cosmic time · click a bright node to enter a galaxy · e toggles expansion',
+  cosmic: 'drag to look · scroll to zoom · space plays cosmic time · click a bright node to enter a galaxy · n compares gravity vs linear theory',
   galaxy: 'drag to look · scroll to zoom · click a star to visit its system · click the core to meet the nucleus · esc to ascend',
-  system: 'click a world to read it · double-click to enter orbit · space pauses · + − bends time · esc to ascend',
+  system: 'click a world to read it · double-click to enter orbit · land from the card · space pauses · + − bends time · esc to ascend',
   blackhole: 'drag to orbit the horizon · scroll to lean closer · esc to ascend',
+  surface: 'drag to look · wasd to walk · shift runs · f flies · space pauses the day · esc to return to orbit',
 };
 
 class App {
@@ -37,6 +40,7 @@ class App {
 
     this.post = new Post(this.renderer);
     this.hud = new HUD(this);
+    this.zoom = new Hyperzoom(this);
     this.raycaster = new THREE.Raycaster();
     this.raycaster.params.Points.threshold = 2;
     this.pointer = new THREE.Vector2();
@@ -99,32 +103,53 @@ class App {
   }
 
   // ------------------------------------------------------------ scales ----
-  push(scale) {
+  push(scale, focusFn) {
     if (this._warping) return;
     this._warping = true;
     this.hud.hideCard();
-    this.hud.warp(() => {
-      this.active().exit();
-      this.stack.push(scale);
-      this._syncScale();
-      this._warping = false;
-    });
+    if (focusFn) {
+      // seamless hyperzoom: fall toward the target, swap mid-motion
+      this.zoom.dive(this.active(), scale, focusFn, () => {
+        this.active().exit();
+        this.stack.push(scale);
+        this._syncScale();
+      });
+    } else {
+      this.hud.warp(() => {
+        this.active().exit();
+        this.stack.push(scale);
+        this._syncScale();
+        this._warping = false;
+      });
+    }
   }
 
   popTo(depth) {
     if (this._warping || depth < 0 || depth >= this.stack.length) return;
     this._warping = true;
     this.hud.hideCard();
-    this.hud.warp(() => {
-      while (this.stack.length > depth + 1) {
-        const s = this.stack.pop();
-        s.exit();
-        s.dispose();
-      }
-      this.active().resume();
-      this._syncScale();
-      this._warping = false;
-    });
+    if (depth === this.stack.length - 2) {
+      // single-level ascend: seamless
+      const from = this.active();
+      this.zoom.ascend(from, this.stack[depth], () => {
+        this.stack.pop();
+        from.exit();
+        from.dispose();
+        this.active().resume();
+        this._syncScale();
+      });
+    } else {
+      this.hud.warp(() => {
+        while (this.stack.length > depth + 1) {
+          const s = this.stack.pop();
+          s.exit();
+          s.dispose();
+        }
+        this.active().resume();
+        this._syncScale();
+        this._warping = false;
+      });
+    }
   }
 
   _syncScale() {
@@ -145,6 +170,7 @@ class App {
       const s = this.stack[i];
       const label = s.kind === 'galaxy' ? s.params.name
         : s.kind === 'system' ? s.params.name
+        : s.kind === 'surface' ? s.pp.name + ' · surface'
         : 'nucleus';
       items.push({ label, onclick: () => this.popTo(i) });
     }
@@ -215,10 +241,14 @@ class App {
     this.raycaster.setFromCamera(ndc, s.camera);
     const hit = s.pick?.(this.raycaster, ndc);
     if (!hit) return;
-    if (s.kind === 'cosmic') this.push(new GalaxyScale(this, { galaxySeed: hit.galaxySeed }));
-    else if (s.kind === 'galaxy') {
-      if (hit.type === 'core') this.push(new BlackHoleScale(this, { bhMassMsun: s.params.bhMassMsun }));
-      else this.push(new SystemScale(this, { starSeed: hit.starSeed }));
+    if (s.kind === 'cosmic') {
+      this.push(new GalaxyScale(this, { galaxySeed: hit.galaxySeed }), () => hit.position);
+    } else if (s.kind === 'galaxy') {
+      if (hit.type === 'core') {
+        this.push(new BlackHoleScale(this, { bhMassMsun: s.params.bhMassMsun }), () => new THREE.Vector3());
+      } else {
+        this.push(new SystemScale(this, { starSeed: hit.starSeed }), () => s.starPosAt(hit.index));
+      }
     } else if (s.kind === 'system' && hit.type === 'planet') {
       s.focusPlanet(hit.index);
     }
@@ -241,7 +271,10 @@ class App {
         ['nucleus', (p.bhMassMsun / 1e6).toFixed(1) + ' × 10⁶ M☉ BH'],
       ],
       flavor: 'A knot in the cosmic web, wound from the collapse you just watched.',
-      action: { label: 'enter galaxy', cb: () => this.push(new GalaxyScale(this, { galaxySeed: hit.galaxySeed })) },
+      action: {
+        label: 'enter galaxy',
+        cb: () => this.push(new GalaxyScale(this, { galaxySeed: hit.galaxySeed }), () => hit.position),
+      },
     });
   }
 
@@ -251,7 +284,11 @@ class App {
       kind: 'star system',
       rows: [['catalog id', 'A-' + (hit.starSeed >>> 8).toString(16)]],
       flavor: 'One of two hundred billion. This one has your attention.',
-      action: { label: 'enter system', cb: () => this.push(new SystemScale(this, { starSeed: hit.starSeed })) },
+      action: {
+        label: 'enter system',
+        cb: () => this.push(new SystemScale(this, { starSeed: hit.starSeed }),
+          () => this.active().starPosAt?.(hit.index) ?? hit.position),
+      },
     });
   }
 
@@ -261,29 +298,57 @@ class App {
       kind: 'supermassive black hole',
       rows: [['mass', (hit.bhMassMsun / 1e6).toFixed(1) + ' × 10⁶ M☉']],
       flavor: 'Every large galaxy keeps one. Light itself orbits here.',
-      action: { label: 'descend', cb: () => this.push(new BlackHoleScale(this, { bhMassMsun: hit.bhMassMsun })) },
+      action: {
+        label: 'descend',
+        cb: () => this.push(new BlackHoleScale(this, { bhMassMsun: hit.bhMassMsun }), () => new THREE.Vector3()),
+      },
     });
   }
 
   _cardSun(s) {
     const P = s.params;
-    this.hud.showCard({
-      title: P.name,
-      kind: `${P.spectral}-class ${P.stage}`,
-      rows: [
-        ['mass', P.mass.toFixed(2) + ' M☉'],
-        ['surface', Math.round(P.temp).toLocaleString() + ' K'],
-        ['luminosity', (P.lum >= 100 ? P.lum.toFixed(0) : P.lum.toFixed(2)) + ' L☉'],
-        ['radius', P.radiusSun.toFixed(2) + ' R☉'],
-        ['habitable zone', '≈ ' + P.hz.toFixed(2) + ' AU'],
-      ],
-      flavor: 'Its color is its temperature — a blackbody wearing its physics.',
-    });
+    if (P.binary) {
+      const pDays = Math.sqrt(P.binary.aBin ** 3 / P.massTotal) * 365.25;
+      this.hud.showCard({
+        title: P.name,
+        kind: `${P.spectral}+${P.binary.spectralB} close binary`,
+        rows: [
+          ['masses', `${P.mass.toFixed(2)} + ${P.binary.massB.toFixed(2)} M☉`],
+          ['surfaces', `${Math.round(P.temp).toLocaleString()} / ${Math.round(P.binary.tempB).toLocaleString()} K`],
+          ['separation', P.binary.aBin.toFixed(3) + ' AU'],
+          ['mutual period', pDays >= 30 ? (pDays / 365.25).toFixed(2) + ' yr' : pDays.toFixed(1) + ' d'],
+          ['habitable zone', '≈ ' + P.hz.toFixed(2) + ' AU'],
+        ],
+        flavor: 'Two suns sharing a barycenter. Every world here is circumbinary — Kepler-16 country.',
+      });
+    } else {
+      this.hud.showCard({
+        title: P.name,
+        kind: `${P.spectral}-class ${P.stage}`,
+        rows: [
+          ['mass', P.mass.toFixed(2) + ' M☉'],
+          ['surface', Math.round(P.temp).toLocaleString() + ' K'],
+          ['luminosity', (P.lum >= 100 ? P.lum.toFixed(0) : P.lum.toFixed(2)) + ' L☉'],
+          ['radius', P.radiusSun.toFixed(2) + ' R☉'],
+          ['habitable zone', '≈ ' + P.hz.toFixed(2) + ' AU'],
+        ],
+        flavor: 'Its color is its temperature — a blackbody wearing its physics.',
+      });
+    }
     s.focusPlanet(-1);
   }
 
   _cardPlanet(s, hit) {
     const p = hit.planet;
+    const actions = [{ label: 'enter orbit', cb: () => s.focusPlanet(p.index) }];
+    if (p.typeId <= 4) {
+      actions.push({
+        label: 'descend to surface',
+        cb: () => this.push(
+          new SurfaceScale(this, { planet: p, system: s.params, sunColor: s.starColor }),
+          () => s.planetNodes[p.index].group.position),
+      });
+    }
     this.hud.showCard({
       title: p.name,
       kind: p.type + (p.inhabited ? ' · inhabited' : ''),
@@ -298,17 +363,22 @@ class App {
         ['rings', p.hasRings ? 'yes' : '—'],
       ],
       flavor: p.note,
-      action: { label: 'enter orbit', cb: () => s.focusPlanet(p.index) },
+      actions,
     });
   }
 
   // ------------------------------------------------------------- frame ----
   _frame() {
     const dt = Math.min(this.clock.getDelta(), 0.1);
+    this.zoom.update(dt);
+    if (this._warping && !this.zoom.busy && !this.hud.warpEl.classList.contains('on')) {
+      this._warping = false;
+    }
     const s = this.active();
     s.update(dt);
     s.glide?.(dt);
     this.post.render(dt);
+    this.zoom.render();
     this.hud.tick(dt);
 
     this._statT -= dt;

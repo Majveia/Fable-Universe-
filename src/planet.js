@@ -9,7 +9,7 @@ import * as THREE from 'three';
 
 // --------------------------------------------------------------- noise ----
 // Ashima Arts / Ian McEwan simplex noise (MIT), the workhorse of this file.
-const NOISE_GLSL = /* glsl */`
+export const NOISE_GLSL = /* glsl */`
 vec3 mod289(vec3 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
 vec4 mod289(vec4 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
 vec4 permute(vec4 x){ return mod289(((x*34.0)+10.0)*x); }

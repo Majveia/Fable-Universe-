@@ -26,24 +26,31 @@ Your location is reflected into the URL as you travel (`?g=…&s=…`, `&bh=1`
 at the nucleus), so any galaxy, star system or black hole in any universe
 is a bookmarkable, shareable address.
 
-## The four scales
+## The five scales
 
-You descend through nested scales. **Click** selects, **double-click** dives,
-**Esc** ascends, **Space** pauses time, **+ / −** bend it, **H** hides the
+You descend through nested scales — and the transitions are **seamless
+hyperzooms**: the camera falls toward what you clicked, the scales swap
+mid-motion under a passing snapshot, and you arrive still moving. No cuts,
+no fades to black. **Click** selects, **double-click** dives, **Esc**
+ascends, **Space** pauses time, **+ / −** bend it, **H** hides the
 interface, **drag / scroll** to fly.
 
-### 1 · The cosmic web — live structure formation
-314,000 dark-matter tracers evolve under the **Zel'dovich approximation**,
-`x = q + D(a)·ψ(q)`: real cosmological perturbation theory. The growth factor
-`D(a)` is integrated at startup from the Friedmann equation for a flat
-**ΛCDM** universe (Ωm = 0.315, ΩΛ = 0.685, H₀ = 67.4) — the same cosmology as
-Planck 2018. Press play and watch 13.8 Gyr of gravity drain the voids and
-gather matter into walls, filaments and cluster nodes. The HUD reads out true
-redshift and cosmic age; `E` switches comoving ↔ physical (expanding)
-coordinates. The displacement field is evaluated analytically per particle,
-per frame, in the vertex shader — and mirrored on the CPU so a click can
-gradient-ascend the density field to the nearest peak and dive into the
-galaxy that lives there.
+### 1 · The cosmic web — a real N-body simulation
+262,144 dark-matter particles run through a **particle-mesh N-body code on
+your GPU**: every frame their mass is deposited on a 64³ mesh, Poisson's
+equation is solved in Fourier space by a Stockham FFT
+(`φ_k = −3Ωm δ_k / 2ak²`, 36 shader passes), forces come from differencing
+the potential, and the particles are kicked and drifted with the ΛCDM
+factors `dp/da = −∇φ/(aE)`, `dx/da = p/(a³E)` — the same leapfrog scheme as
+research codes, integrated from the Friedmann equation for a flat ΛCDM
+universe (Ωm = 0.315, ΩΛ = 0.685, H₀ = 67.4; Planck 2018). Initial
+conditions are **Zel'dovich** displacements at z ≈ 20, so structure grows
+from linear theory into genuine self-gravity: filaments stay thin, halos
+collapse and virialize. Press `N` to flip between the N-body run and pure
+linear theory and see exactly what gravity adds after shell-crossing. `E`
+switches comoving ↔ physical coordinates; the HUD reads out true redshift
+and cosmic age. (No float-render support? It falls back to the analytic
+Zel'dovich field automatically.)
 
 ### 2 · Galaxy
 A quarter-million stars seeded from the node you clicked: exponential disk,
@@ -56,8 +63,11 @@ irregulars all occur. Click any star; or click the core.
 
 ### 3 · Star system
 The star's mass draws its temperature, luminosity and blackbody color from
-main-sequence scaling relations (occasionally a red giant or white dwarf).
-Planets obey **Kepler**: periods from `P² = a³/M★`, positions from solving
+main-sequence scaling relations (occasionally a red giant or white dwarf —
+and about one system in five is a **close binary**: two suns waltzing about
+their barycenter on true Kepler orbits, with every planet circumbinary
+beyond the ~3.5-separation stability limit, Kepler-16 style). Planets obey
+**Kepler**: periods from `P² = a³/M★`, positions from solving
 `M = E − e·sin E` by Newton iteration every frame. Seven species of world —
 barren, terrestrial, ocean, ice, lava, gas giant, ice giant — with procedural
 simplex-noise surfaces, drifting cloud decks, sun-lit atmospheric rims,
@@ -67,7 +77,18 @@ perihelion. Some temperate worlds are inhabited; look at their night side.
 Orbital radii are gently compressed (r^0.62) so worlds stay visible — the
 info cards report the true numbers.
 
-### 4 · The nucleus — a black hole, computed honestly
+### 4 · The surface — set foot on it
+Every solid world can be **landed on** from its info card. The hyperzoom
+carries you from orbit down onto a heightfield carved from the planet's own
+noise and palette, under a sky whose sun is the system's actual star —
+correct blackbody color, correct angular size for this orbit. Walk with
+WASD (drag to look, Shift to run, `F` to fly), watch the day turn, and on
+inhabited worlds wait for dusk: city glow rises over the ridgeline. Ocean
+worlds put you on an island shore; lava worlds seep light through fissures
+at night. The HUD reports true surface gravity, GM/R², from the world's
+rolled mass and radius.
+
+### 5 · The nucleus — a black hole, computed honestly
 Every pixel's ray is integrated through Schwarzschild spacetime
 (`d²x/dλ² = −(3/2)h²x/r⁵`, the exact null-geodesic equation, 170 steps per
 pixel). The photon ring, the accretion disk arching over and under the
@@ -93,13 +114,16 @@ as the Event Horizon Telescope observed at M87*.
 
 ```
 index.html          shell, import map, HUD styling
-src/main.js         scale stack, warp transitions, input, adaptive quality
+src/main.js         scale stack, input, adaptive quality
+src/transition.js   seamless hyperzoom dives between scales
 src/cosmology.js    ΛCDM: growth factor D(a), cosmic age t(a)
-src/cosmic.js       Zel'dovich structure formation (scale 0)
+src/cosmic.js       the cosmic web (scale 0): N-body + Zel'dovich fallback
+src/nbody.js        GPU particle-mesh N-body: FFT Poisson solver, leapfrog
 src/galaxy.js       procedural galaxies (scale 1)
-src/system.js       Keplerian star systems (scale 2)
+src/system.js       Keplerian star systems, binaries (scale 2)
 src/planet.js       GLSL worlds: surfaces, clouds, atmospheres, rings, star
-src/blackhole.js    Schwarzschild geodesic raymarcher (scale 3)
+src/surface.js      landable planet surfaces (scale 3)
+src/blackhole.js    Schwarzschild geodesic raymarcher (scale 4)
 src/nebula.js       procedural nebula textures & sprites
 src/starfield.js    in-galaxy sky dome
 src/post.js         HDR bloom pipeline
@@ -111,7 +135,13 @@ src/rng.js          deterministic hashing, RNG, name synthesis
 
 | | |
 |---|---|
-| ![young universe](docs/screenshots/1-cosmic-early.png) | ![galaxy](docs/screenshots/3-galaxy.png) |
-| ![star system](docs/screenshots/4-system.png) | ![ocean world](docs/screenshots/5-planet.png) |
+| ![young universe](docs/screenshots/1-cosmic-early.png) | ![N-body halos](docs/screenshots/7-cosmic-nbody.png) |
+| ![galaxy](docs/screenshots/3-galaxy.png) | ![star system](docs/screenshots/4-system.png) |
+| ![ocean world from orbit](docs/screenshots/5-planet.png) | ![binary suns](docs/screenshots/8-binary-suns.png) |
+| ![ice world sunset](docs/screenshots/9-surface-ice-sunset.png) | ![ocean world shore](docs/screenshots/10-surface-ocean.png) |
+
+City glow after dark on an inhabited ocean world:
+
+![city night](docs/screenshots/11-surface-city-night.png)
 
 ![black hole](docs/screenshots/6-blackhole.png)

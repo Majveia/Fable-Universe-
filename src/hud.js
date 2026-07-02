@@ -74,15 +74,20 @@ export class HUD {
     this.playBtn.textContent = playing ? '⏸' : '▶';
   }
 
-  showCard({ title, kind, rows, flavor, action }) {
+  showCard({ title, kind, rows, flavor, action, actions }) {
+    const acts = actions || (action ? [action] : []);
     let html = `<h2>${title}</h2><div class="kind">${kind}</div><dl>`;
     for (const [k, v] of rows) html += `<dt>${k}</dt><dd>${v}</dd>`;
     html += '</dl>';
     if (flavor) html += `<div class="flavor">${flavor}</div>`;
-    if (action) html += `<div class="act"><button id="card-act">${action.label}</button></div>`;
+    if (acts.length) {
+      html += '<div class="act">' +
+        acts.map((a, i) => `<button id="card-act-${i}" style="margin-right:8px">${a.label}</button>`).join('') +
+        '</div>';
+    }
     this.card.innerHTML = html;
     this.card.classList.add('open');
-    if (action) this.card.querySelector('#card-act').onclick = action.cb;
+    acts.forEach((a, i) => { this.card.querySelector(`#card-act-${i}`).onclick = a.cb; });
   }
   hideCard() { this.card.classList.remove('open'); }
 

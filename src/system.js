@@ -59,12 +59,37 @@ export function systemParams(starSeed) {
   if (roll < 0.07) { stage = 'red giant'; temp = r.float(3300, 4300); radiusSun = r.float(12, 45); lum = radiusSun * radiusSun * Math.pow(temp / 5772, 4); }
   else if (roll < 0.10) { stage = 'white dwarf'; temp = r.float(9000, 26000); radiusSun = 0.013; lum = 0.001 * (temp / 10000) ** 4; }
 
+  // ~1 in 5 systems is a close binary; its planets are circumbinary (P-type)
+  let binary = null;
+  if (stage === 'main sequence' && r.chance(0.22)) {
+    const q = r.float(0.3, 0.92);
+    const massB = mass * q;
+    binary = {
+      massB,
+      tempB: 5772 * Math.pow(massB, 0.54),
+      lumB: Math.pow(massB, 3.6),
+      radiusSunB: Math.pow(massB, 0.85),
+      aBin: r.float(0.12, 0.4),
+      eBin: Math.abs(r.gauss()) * 0.12,
+      inc: Math.abs(r.gauss()) * 0.02,
+      Omega: r.float(0, Math.PI * 2),
+      omega: r.float(0, Math.PI * 2),
+      M0: r.float(0, Math.PI * 2),
+      q,
+    };
+    binary.spectralB = spectralClass(binary.tempB);
+    lum += binary.lumB;
+  }
+  const massTotal = mass + (binary ? binary.massB : 0);
+
   const hz = Math.sqrt(lum);            // habitable-zone center, AU
   const frost = 2.7 * Math.sqrt(lum);   // frost line, AU
 
   const nPlanets = stage === 'white dwarf' ? r.int(0, 2) : r.int(2, 8);
   const planets = [];
   let a = r.float(0.28, 0.5) * Math.max(Math.sqrt(lum), 0.35);
+  // circumbinary stability: nothing survives inside ~3.5 binary separations
+  if (binary) a = Math.max(a, binary.aBin * r.float(3.5, 5));
   for (let i = 0; i < nPlanets; i++) {
     const pr = new RNG(hash(starSeed, 0x914, i));
     let type, massE, radiusE;
@@ -149,7 +174,7 @@ export function systemParams(starSeed) {
       Omega: pr.float(0, Math.PI * 2),
       omega: pr.float(0, Math.PI * 2),
       M0: pr.float(0, Math.PI * 2),
-      periodYears: Math.sqrt(a * a * a / mass),
+      periodYears: Math.sqrt(a * a * a / massTotal),
       massE, radiusE,
       drawRadius: Math.min(1.35 * Math.pow(radiusE, 0.45), 6),
       spin: pr.float(0.02, 0.12) * pr.sign(),
@@ -178,7 +203,7 @@ export function systemParams(starSeed) {
   }
 
   return {
-    seed: starSeed, name, mass, temp, lum, radiusSun, stage,
+    seed: starSeed, name, mass, massTotal, temp, lum, radiusSun, stage, binary,
     spectral: spectralClass(temp), hz, frost, planets, belt,
     comet: r.chance(0.55) ? { a: Math.max(frost * 1.6, 3), e: r.float(0.86, 0.96), inc: r.float(0.2, 0.9), Omega: r.float(0, 6.28), omega: r.float(0, 6.28), M0: r.float(0, 6.28) } : null,
   };
@@ -250,19 +275,35 @@ export class SystemScale {
     // -- sky
     this.scene.add(makeSkyDome(P.seed, 18000));
 
-    // -- star
-    this.starColor = blackbodyRGB(P.temp);
-    this.starDrawR = Math.min(Math.max(5.5 * Math.pow(P.radiusSun, 0.5), 2.2), 30);
-    const starGeo = new THREE.SphereGeometry(this.starDrawR, 64, 48);
-    this.starMesh = new THREE.Mesh(starGeo, makeStarSurfaceMaterial(this.starColor, r.float(0, 90), this.uCamPos, this.uTime));
-    this.scene.add(this.starMesh);
+    // -- star (or binary pair)
     const glowTex = softDotTexture();
-    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: glowTex, color: this.starColor.clone().multiplyScalar(0.8),
-      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-    }));
-    glow.scale.setScalar(this.starDrawR * 10);
-    this.scene.add(glow);
+    const mkStar = (temp, radiusSun) => {
+      const color = blackbodyRGB(temp);
+      const dR = Math.min(Math.max(5.5 * Math.pow(radiusSun, 0.5), 2.2), 30);
+      const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(dR, 64, 48),
+        makeStarSurfaceMaterial(color, r.float(0, 90), this.uCamPos, this.uTime));
+      const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: glowTex, color: color.clone().multiplyScalar(0.8),
+        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+      }));
+      glow.scale.setScalar(dR * (P.binary ? 6.5 : 10));
+      mesh.add(glow);
+      this.scene.add(mesh);
+      return { mesh, dR, color };
+    };
+    this.primary = mkStar(P.temp, P.radiusSun);
+    this.starMesh = this.primary.mesh;
+    this.starColor = this.primary.color;
+    this.starDrawR = this.primary.dR;
+    this.secondary = null;
+    if (P.binary) {
+      this.secondary = mkStar(P.binary.tempB, P.binary.radiusSunB);
+      this.binEl = {
+        a: P.binary.aBin, e: P.binary.eBin, inc: P.binary.inc,
+        Omega: P.binary.Omega, omega: P.binary.omega, M0: P.binary.M0,
+      };
+    }
 
     // -- planets
     this.planetNodes = [];
@@ -357,7 +398,7 @@ export class SystemScale {
       this.beltData.push({
         a: Math.max(a, 0.1),
         phase: r.float(0, Math.PI * 2),
-        n: (2 * Math.PI) / (Math.sqrt(a * a * a / this.params.mass) * 365.25), // rad/day
+        n: (2 * Math.PI) / (Math.sqrt(a * a * a / this.params.massTotal) * 365.25), // rad/day
         y: r.gauss() * drawR(a) * 0.02,
         s: r.float(0.4, 1.7),
         rot: r.float(0, Math.PI * 2),
@@ -388,8 +429,15 @@ export class SystemScale {
     const N = 260;
     this.cometTail = new THREE.BufferGeometry();
     this.cometTailPos = new Float32Array(N * 3);
-    this.cometTailT = new Float32Array(N).fill(Math.random());
-    for (let i = 0; i < N; i++) this.cometTailT[i] = i / N;
+    this.cometTailT = new Float32Array(N);
+    this.cometJit = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) {
+      this.cometTailT[i] = i / N;
+      // gaussian-ish scatter so the tail is a plume, not rays
+      this.cometJit[i * 3] = (r.next() + r.next() - 1);
+      this.cometJit[i * 3 + 1] = (r.next() + r.next() - 1);
+      this.cometJit[i * 3 + 2] = (r.next() + r.next() - 1);
+    }
     this.cometTail.setAttribute('position', new THREE.BufferAttribute(this.cometTailPos, 3));
     const pts = new THREE.Points(this.cometTail, new THREE.PointsMaterial({
       color: new THREE.Color(0.4, 0.6, 0.9), size: 1.6, map: tex, transparent: true,
@@ -405,8 +453,17 @@ export class SystemScale {
     this.uTime.value += dt;
 
     const v = new THREE.Vector3();
+
+    // binary waltz: split the relative orbit by mass about the barycenter
+    if (this.secondary) {
+      const P = this.params;
+      keplerPos(this.binEl, tY, P.massTotal, v);
+      this.primary.mesh.position.copy(v).multiplyScalar(-P.binary.massB / P.massTotal);
+      this.secondary.mesh.position.copy(v).multiplyScalar(P.mass / P.massTotal);
+      this.uSunPos.value.copy(this.primary.mesh.position);
+    }
     for (const node of this.planetNodes) {
-      keplerPos(node.pp, tY, this.params.mass, v);
+      keplerPos(node.pp, tY, this.params.massTotal, v);
       node.group.position.copy(v);
       node.mesh.rotation.y += node.pp.spin * dt * this.speedDays * 0.35;
       if (node.cloudMesh) node.cloudMesh.rotation.y += node.pp.spin * dt * this.speedDays * 0.42;
@@ -432,7 +489,7 @@ export class SystemScale {
     }
 
     if (this.cometEl) {
-      keplerPos(this.cometEl, tY, this.params.mass, v);
+      keplerPos(this.cometEl, tY, this.params.massTotal, v);
       this.cometHead.position.copy(v);
       const rAU = v.rAU;
       const activity = Math.min(6 / (rAU * rAU), 1);
@@ -440,12 +497,13 @@ export class SystemScale {
       const away = v.clone().normalize();
       const N = this.cometTailT.length;
       const len = 10 + 60 * activity;
+      const drift = (this.days * 0.05) % 1;
       for (let i = 0; i < N; i++) {
-        const f = this.cometTailT[i];
-        const spread = f * len * 0.16;
-        this.cometTailPos[i * 3] = v.x + away.x * f * len + Math.sin(i * 12.9898) * spread;
-        this.cometTailPos[i * 3 + 1] = v.y + away.y * f * len + Math.cos(i * 78.233) * spread;
-        this.cometTailPos[i * 3 + 2] = v.z + away.z * f * len + Math.sin(i * 39.4) * spread;
+        const f = (this.cometTailT[i] + drift) % 1;
+        const spread = f * len * 0.13;
+        this.cometTailPos[i * 3] = v.x + away.x * f * len + this.cometJit[i * 3] * spread;
+        this.cometTailPos[i * 3 + 1] = v.y + away.y * f * len + this.cometJit[i * 3 + 1] * spread;
+        this.cometTailPos[i * 3 + 2] = v.z + away.z * f * len + this.cometJit[i * 3 + 2] * spread;
       }
       this.cometTail.attributes.position.needsUpdate = true;
     }
@@ -475,8 +533,12 @@ export class SystemScale {
     const P = this.params;
     return [
       ['system', P.name],
-      ['star', `${P.spectral}-class ${P.stage}`],
-      ['mass', P.mass.toFixed(2) + ' M☉'],
+      ['star', P.binary
+        ? `${P.spectral}+${P.binary.spectralB} close binary`
+        : `${P.spectral}-class ${P.stage}`],
+      ['mass', P.binary
+        ? `${P.mass.toFixed(2)} + ${P.binary.massB.toFixed(2)} M☉`
+        : P.mass.toFixed(2) + ' M☉'],
       ['temperature', Math.round(P.temp).toLocaleString() + ' K'],
       ['luminosity', P.lum >= 100 ? P.lum.toFixed(0) + ' L☉' : P.lum.toFixed(2) + ' L☉'],
       ['worlds', String(P.planets.length) + (P.belt ? ' + belt' : '')],
@@ -491,7 +553,9 @@ export class SystemScale {
       const pp = hits[0].object.userData.planet;
       return { type: 'planet', planet: pp, index: pp.index };
     }
-    const sHit = raycaster.intersectObject(this.starMesh, false);
+    const starMeshes = this.secondary
+      ? [this.starMesh, this.secondary.mesh] : [this.starMesh];
+    const sHit = raycaster.intersectObjects(starMeshes, false);
     if (sHit.length) return { type: 'sun' };
     return null;
   }

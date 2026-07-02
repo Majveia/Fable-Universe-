@@ -404,6 +404,13 @@ export class GalaxyScale {
     ];
   }
 
+  /** live (rotated) position of star i right now */
+  starPosAt(i, out = new THREE.Vector3()) {
+    const { aR, aTheta, aY } = this.starData;
+    const th = aTheta[i] + (this.uniforms.uVrot.value / Math.max(aR[i], 14)) * this.time;
+    return out.set(aR[i] * Math.cos(th), aY[i], aR[i] * Math.sin(th));
+  }
+
   // ------------------------------------------------------------ input ----
   /**
    * Screen-space star picking: project the live (rotated) star positions and
