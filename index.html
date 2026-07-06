@@ -101,6 +101,22 @@
   }
   #science .note.open{ opacity:1; transform:none; }
   #science .note em{ color:var(--ink); font-style:normal; }
+  #science .logpanel.open{ pointer-events:auto; }
+  .lb-mark{
+    background:none; border:1px solid var(--hairline); border-radius:2px; cursor:pointer;
+    color:var(--ink-dim); font:inherit; font-size:10px; letter-spacing:.22em; text-indent:.22em;
+    text-transform:uppercase; padding:7px 12px; margin-bottom:10px; transition:border-color .25s, color .25s;
+  }
+  .lb-mark:hover{ border-color:var(--accent); color:var(--ink); }
+  .lb-row{ display:flex; align-items:baseline; gap:8px; }
+  .lb-go{
+    background:none; border:none; cursor:pointer; flex:1; text-align:left;
+    color:var(--ink-dim); font:inherit; font-size:11.5px; padding:3px 0; transition:color .2s;
+  }
+  .lb-go:hover{ color:var(--accent); }
+  .lb-x{ background:none; border:none; cursor:pointer; color:var(--ink-faint); font-size:13px; }
+  .lb-x:hover{ color:#ff8585; }
+  .lb-empty{ font-size:11px; color:var(--ink-faint); font-style:italic; }
 
   #card{
     left:26px; top:50%; transform:translateY(-50%);

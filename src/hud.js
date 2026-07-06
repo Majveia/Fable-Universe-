@@ -40,6 +40,15 @@ export class HUD {
     this.science.appendChild(this.note);
     sciBtn.onclick = () => this.note.classList.toggle('open');
 
+    const logBtn = document.createElement('button');
+    logBtn.textContent = '◈';
+    logBtn.title = 'logbook (b)';
+    this.logPanel = document.createElement('div');
+    this.logPanel.className = 'note logpanel';
+    this.science.appendChild(logBtn);
+    this.science.appendChild(this.logPanel);
+    logBtn.onclick = () => this.toggleLog();
+
     this.warpEl = document.getElementById('warp');
 
     this._idleT = 0;
@@ -76,6 +85,26 @@ export class HUD {
   setTime(str, playing) {
     this.readout.textContent = str;
     this.playBtn.textContent = playing ? '⏸' : '▶';
+  }
+
+  toggleLog() {
+    this.logPanel.classList.toggle('open');
+    this.refreshLog();
+  }
+
+  refreshLog() {
+    if (!this.logPanel.classList.contains('open')) return;
+    const log = this.app.log;
+    let html = '<button class="lb-mark" id="lb-mark">⊕ mark this place</button>';
+    if (!log.length) html += '<div class="lb-empty">nowhere yet — go somewhere first.</div>';
+    log.forEach((e, i) => {
+      html += `<div class="lb-row"><button class="lb-go" data-i="${i}">${e.label}</button>` +
+        `<button class="lb-x" data-i="${i}" title="forget">×</button></div>`;
+    });
+    this.logPanel.innerHTML = html;
+    this.logPanel.querySelector('#lb-mark').onclick = () => this.app.markPlace();
+    this.logPanel.querySelectorAll('.lb-go').forEach(b => { b.onclick = () => this.app.travelTo(+b.dataset.i); });
+    this.logPanel.querySelectorAll('.lb-x').forEach(b => { b.onclick = () => this.app.removePlace(+b.dataset.i); });
   }
 
   setMuted(m) {

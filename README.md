@@ -53,7 +53,16 @@ and cosmic age. (No float-render support? It falls back to the analytic
 Zel'dovich field automatically.)
 
 ### 2 · Galaxy
-A quarter-million stars seeded from the node you clicked: exponential disk,
+About one disk galaxy in six is caught **mid-collision**: the two cores
+move as an exact two-body problem while 262,144 disk stars ride along as
+test particles in the moving potentials — the restricted three-body scheme
+with which Toomre & Toomre first explained the Antennae in 1972, integrated
+live on the GPU. Watch the first passage pour a bridge of stars toward the
+companion while counter-tails sling outward; nothing is keyframed.
+
+![interacting pair](docs/screenshots/13-collision.png)
+
+Otherwise: a quarter-million stars seeded from the node you clicked: exponential disk,
 Hernquist bulge, globular halo, and logarithmic **density-wave arms** traced
 by hot young blue stars and Hα/OIII star-forming nebulae, with dust lanes
 that genuinely absorb the starlight behind them (reverse-subtract blending).
@@ -93,6 +102,20 @@ elongations. The HUD reports true surface gravity, GM/R².
 
 ![giant in the sky](docs/screenshots/12-moon-giant.png)
 
+Worlds in the liquid-water band grow a **biosphere**: alien flora in a
+palette seeded by the world itself, flocks of skimmers riding boid rules,
+and — after dark on inhabited worlds — drifting bioluminescent spores.
+Your own moons cross the sky with true phases.
+
+![biosphere](docs/screenshots/15-biosphere.png)
+
+Gas and ice giants have no surface to land on — so **dive the cloud deck**
+instead: cruise between infinite procedural stratus layers in the planet's
+own palette, steer into cumulus towers, and watch lightning go off below
+the deck, as it does on Jupiter.
+
+![cloud deck](docs/screenshots/14-cloud-dive.png)
+
 ### 5 · The nucleus — a black hole, computed honestly
 Every pixel's ray is integrated through Schwarzschild spacetime
 (`d²x/dλ² = −(3/2)h²x/r⁵`, the exact null-geodesic equation, 170 steps per
@@ -119,6 +142,9 @@ as the Event Horizon Telescope observed at M87*.
 - **Deterministic**: every galaxy, star, planet, name and civilization is a
   pure function of `hash(seed, …)`. Universe 1138's Delta Cora is the same
   Delta Cora on every machine, forever.
+- **A logbook** (`B`, or the ◈ button): mark any place — a cloud deck, a
+  moon, a colliding pair — and warp back to it later. Entries are just the
+  same shareable coordinates the URL always carries.
 - **Enormous**: ~314k web tracers × any node → a galaxy of 240k clickable
   stars → ~10²⁸ addressable star systems per universe × 2³² universes.
 - **Zero dependencies** beyond a vendored Three.js r170; runs from any

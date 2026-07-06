@@ -14,15 +14,17 @@ import { GalaxyScale, GALAXY_NOTE, galaxyParams } from './galaxy.js';
 import { SystemScale, SYSTEM_NOTE } from './system.js';
 import { BlackHoleScale, BLACKHOLE_NOTE } from './blackhole.js';
 import { SurfaceScale, SURFACE_NOTE } from './surface.js';
+import { CloudsScale, CLOUDS_NOTE } from './clouds.js';
 import { starName } from './rng.js';
 
-const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE };
+const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE };
 const HINTS = {
   cosmic: 'drag to look · scroll to zoom · space plays cosmic time · click a bright node to enter a galaxy · n compares gravity vs linear theory',
   galaxy: 'drag to look · scroll to zoom · click a star to visit its system · click the core to meet the nucleus · esc to ascend',
   system: 'click a world to read it · double-click to enter orbit · land from the card · space pauses · + − bends time · esc to ascend',
   blackhole: 'drag to orbit the horizon · scroll to lean closer · esc to ascend',
   surface: 'drag to look · wasd to walk · shift runs · f flies · space pauses the day · esc to return to orbit',
+  clouds: 'drag to steer · you fly where you look · w dives faster, s eases off · + − trims the cruise · esc to climb out',
 };
 
 class App {
@@ -53,6 +55,8 @@ class App {
     this.raycaster = new THREE.Raycaster();
     this.raycaster.params.Points.threshold = 2;
     this.pointer = new THREE.Vector2();
+
+    this.log = JSON.parse(localStorage.getItem('aeon-log-v1') || '[]');
 
     this.stack = [new CosmicScale(this)];
     this._restore(url);
@@ -92,6 +96,30 @@ class App {
     if (s) {
       this.active().exit();
       this.stack.push(new SystemScale(this, { starSeed: s }));
+      // deeper still? a world, a moon, a cloud deck
+      const pIdx = parseInt(url.searchParams.get('p'));
+      const sys = this.active();
+      const node = Number.isInteger(pIdx) ? sys.planetNodes[pIdx] : null;
+      if (node) {
+        const base = { system: sys.params, sunColor: sys.starColor, hostIndex: pIdx };
+        if (url.searchParams.get('cl') && node.pp.typeId >= 5) {
+          sys.exit();
+          this.stack.push(new CloudsScale(this, { ...base, planet: node.pp }));
+          this.active().enter();
+        } else if (url.searchParams.get('moon') !== null && node.moons.length) {
+          const mIdx = Math.min(parseInt(url.searchParams.get('moon')) || 0, node.moons.length - 1);
+          const w = sys.moonAsWorld(node.moons[mIdx]);
+          sys.exit();
+          this.stack.push(new SurfaceScale(this, {
+            ...base, planet: w, moonIndex: mIdx, parentGiant: { pp: node.pp },
+          }));
+          this.active().enter();
+        } else if (node.pp.typeId <= 4) {
+          sys.exit();
+          this.stack.push(new SurfaceScale(this, { ...base, planet: node.pp }));
+          this.active().enter();
+        }
+      }
     } else if (url.searchParams.get('bh')) {
       const gal = this.active();
       gal.exit();
@@ -102,11 +130,19 @@ class App {
   /** keep the URL pointing at where you are, so places can be shared */
   _reflectUrl() {
     const u = new URL(window.location.href);
-    u.searchParams.delete('g'); u.searchParams.delete('s'); u.searchParams.delete('bh');
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl']) u.searchParams.delete(k);
     for (const sc of this.stack) {
       if (sc.kind === 'galaxy') u.searchParams.set('g', sc.ctx.galaxySeed);
       if (sc.kind === 'system') u.searchParams.set('s', sc.ctx.starSeed);
       if (sc.kind === 'blackhole') u.searchParams.set('bh', '1');
+      if (sc.kind === 'surface') {
+        u.searchParams.set('p', sc.ctx.hostIndex);
+        if (sc.ctx.moonIndex !== undefined) u.searchParams.set('moon', sc.ctx.moonIndex);
+      }
+      if (sc.kind === 'clouds') {
+        u.searchParams.set('p', sc.ctx.hostIndex);
+        u.searchParams.set('cl', '1');
+      }
     }
     history.replaceState(null, '', u);
   }
@@ -164,7 +200,9 @@ class App {
   }
 
   _worldInfo(s) {
-    return s.kind === 'surface' ? { type: s.pp.type, atmo: s.atmo } : null;
+    if (s.kind === 'surface') return { type: s.pp.type, atmo: s.atmo };
+    if (s.kind === 'clouds') return { type: s.pp.type, atmo: 1.5 };
+    return null;
   }
 
   _syncScale() {
@@ -174,7 +212,7 @@ class App {
     s.camera.updateProjectionMatrix();
     this.post.setScene(s.scene, s.camera);
     this.post.tune(s.bloomSettings);
-    this.hud.setNote(NOTES[s.kind]);
+    this.hud.setNote(s.noteOverride ?? NOTES[s.kind]);
     this.hud.setHint(HINTS[s.kind]);
     this.audio.setScale(s.kind, this._worldInfo(s));
     this._crumbs();
@@ -187,6 +225,7 @@ class App {
       const label = s.kind === 'galaxy' ? s.params.name
         : s.kind === 'system' ? s.params.name
         : s.kind === 'surface' ? s.pp.name + ' · surface'
+        : s.kind === 'clouds' ? s.pp.name + ' · cloud deck'
         : 'nucleus';
       items.push({ label, onclick: () => this.popTo(i) });
     }
@@ -228,6 +267,7 @@ class App {
         case 'BracketRight': s.scrub?.(1); break;
         case 'KeyH': document.querySelectorAll('.hud').forEach(el => el.style.visibility = el.style.visibility === 'hidden' ? '' : 'hidden'); break;
         case 'KeyM': this.hud.setMuted(this.audio.toggleMute()); break;
+        case 'KeyB': this.hud.toggleLog(); break;
         default: s.onKey?.(e.code);
       }
     });
@@ -275,6 +315,58 @@ class App {
     } else if (s.kind === 'system' && hit.type === 'planet') {
       s.focusPlanet(hit.index);
     }
+  }
+
+  // ---------------------------------------------------------- logbook ----
+  _saveLog() { localStorage.setItem('aeon-log-v1', JSON.stringify(this.log)); }
+
+  markPlace() {
+    const u = new URL(window.location.href);
+    const params = {};
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl']) {
+      const v = u.searchParams.get(k);
+      if (v !== null) params[k] = v;
+    }
+    const label = this.stack.map(sc =>
+      sc.kind === 'cosmic' ? 'universe ' + this.seed
+        : sc.kind === 'galaxy' ? sc.params.name
+        : sc.kind === 'system' ? sc.params.name
+        : sc.kind === 'surface' ? sc.pp.name
+        : sc.kind === 'clouds' ? sc.pp.name + ' clouds'
+        : 'nucleus').join(' ▸ ');
+    this.log.push({ label, seed: this.seed, params, t: Date.now() });
+    this._saveLog();
+    this.hud.refreshLog();
+  }
+
+  removePlace(i) {
+    this.log.splice(i, 1);
+    this._saveLog();
+    this.hud.refreshLog();
+  }
+
+  /** warp to a logged place: tear the stack down, rebuild it there */
+  travelTo(i) {
+    const e = this.log[i];
+    if (!e || this._warping || this.zoom.busy) return;
+    const u = new URL(window.location.href);
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl']) u.searchParams.delete(k);
+    u.searchParams.set('seed', e.seed);
+    for (const [k, v] of Object.entries(e.params)) u.searchParams.set(k, v);
+    if (e.seed !== this.seed) { window.location.href = u; return; } // other universe: cold jump
+    this._warping = true;
+    this.audio.warp('dive');
+    this.hud.warp(() => {
+      while (this.stack.length > 1) {
+        const s = this.stack.pop();
+        s.exit();
+        s.dispose();
+      }
+      this.stack[0].resume();
+      this._restore(u);
+      this._syncScale();
+      this._warping = false;
+    });
   }
 
   // programmatic dives — used by tests and deep links
@@ -384,6 +476,7 @@ class App {
           new SurfaceScale(this, {
             planet: w, system: s.params, sunColor: s.starColor,
             hostIndex: w.parent.index,
+            moonIndex: hit.moon.userData.moonIndex,
             parentGiant: { pp: w.parent },
           }),
           () => hit.moon.getWorldPosition(new THREE.Vector3())),
@@ -399,6 +492,13 @@ class App {
         label: 'descend to surface',
         cb: () => this.push(
           new SurfaceScale(this, { planet: p, system: s.params, sunColor: s.starColor, hostIndex: p.index }),
+          () => s.planetNodes[p.index].group.position),
+      });
+    } else {
+      actions.push({
+        label: 'dive the cloud deck',
+        cb: () => this.push(
+          new CloudsScale(this, { planet: p, system: s.params, sunColor: s.starColor, hostIndex: p.index }),
           () => s.planetNodes[p.index].group.position),
       });
     }

@@ -127,7 +127,7 @@ export class Ambience {
       n.connect(lp); lp.connect(ng); ng.connect(out);
       keep(...this._lfo(0.06, 160, lp.frequency, 260));
       keep(...this._lfo(0.11, 0.06, ng.gain, 0.1));
-    } else if (kind === 'surface') {
+    } else if (kind === 'surface' || kind === 'clouds') {
       const atmo = world?.atmo ?? 1;
       const type = world?.type ?? '';
       // wind, thickness set by the actual atmosphere
@@ -144,6 +144,13 @@ export class Ambience {
         const wg = keep(this._gain(0));
         w.connect(wlp); wlp.connect(wg); wg.connect(out);
         keep(...this._lfo(0.08, 0.085, wg.gain, 0.09));
+      }
+      if (type === 'gas giant' || type === 'ice giant') {
+        // deep atmosphere: heavier wind + a sub-band groan
+        const s = keep(this._osc('sine', 44));
+        const sg = keep(this._gain(0.22));
+        s.connect(sg); sg.connect(out);
+        keep(...this._lfo(0.05, 0.12, sg.gain, 0.22));
       }
       if (type === 'lava') {
         const r = keep(this._noise());

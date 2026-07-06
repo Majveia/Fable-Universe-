@@ -13,6 +13,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { hash, RNG, galaxyName, starName } from './rng.js';
 import { makeNebulaSprites, softDotTexture, galaxyAtlasTexture } from './nebula.js';
 import { COSMO } from './cosmology.js';
+import { CollisionSim, COLLISION_NOTE } from './collision.js';
 
 const STAR_VERT = /* glsl */`
   attribute float aR;      // cylindrical radius
@@ -80,18 +81,32 @@ export function galaxyParams(seed) {
   const r = new RNG(hash(seed, 0x6a7a));
   const roll = r.next();
   const type = roll < 0.68 ? 'spiral' : roll < 0.86 ? 'barred spiral' : roll < 0.95 ? 'elliptical' : 'irregular';
+  const radius = r.float(170, 260);
+  // some nodes hold interacting pairs mid-collision
+  const interacting = (type === 'spiral' || type === 'barred spiral') && r.chance(0.16);
+  const companionSeed = hash(seed, 0xc0111);
   return {
     seed,
     name: galaxyName(seed),
     type,
     arms: type === 'barred spiral' ? 2 : r.pick([2, 2, 2, 3, 4, 5]),
     pitch: r.float(0.18, 0.34),              // pitch angle (rad)
-    radius: r.float(170, 260),               // display units
+    radius,                                  // display units
     stars: 240000,
     hueShift: r.float(-0.06, 0.08),
     barLen: type === 'barred spiral' ? r.float(0.22, 0.34) : 0,
     massMsun: r.float(0.3, 3.5) * 1e11,
     bhMassMsun: r.float(0.8, 40) * 1e6,
+    interacting,
+    companion: interacting ? {
+      seed: companionSeed,
+      name: galaxyName(companionSeed),
+      massRatio: r.float(0.35, 0.95),
+      radius: radius * r.float(0.55, 0.9),
+      arms: r.pick([2, 2, 3]),
+      pitch: r.float(0.2, 0.32),
+      hueShift: r.float(-0.05, 0.1),
+    } : null,
   };
 }
 
@@ -227,6 +242,34 @@ export class GalaxyScale {
 
   _build() {
     const P = this.params;
+
+    // interacting pair? hand the whole disk over to gravity
+    if (P.interacting) {
+      try {
+        this.sim = new CollisionSim(this.app.renderer, P);
+        this.starData = this.sim.starData;
+        this.scene.add(this.sim.points);
+        this.uniforms = { uTime: { value: 0 }, uVrot: { value: 0 } }; // sky compat
+        const coreTex = softDotTexture();
+        this.coreSprites = [this.sim.c1, this.sim.c2].map((c, i) => {
+          const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: coreTex, color: i === 0 ? new THREE.Color(0.65, 0.55, 0.4) : new THREE.Color(0.42, 0.5, 0.65),
+            blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+          }));
+          sp.scale.setScalar(P.radius * (i === 0 ? 0.28 : 0.2));
+          this.scene.add(sp);
+          return { sp, c };
+        });
+        this._buildBackdrop();
+        this._buildWebBackdrop();
+        this.noteOverride = COLLISION_NOTE;
+        return;
+      } catch (e) {
+        console.warn('AEON: collision sim unavailable, showing single galaxy —', e.message);
+        this.params.interacting = false;
+      }
+    }
+
     const r = new RNG(hash(P.seed, 0xd057));
     const N = P.stars;
     const R = P.radius;
@@ -448,6 +491,8 @@ export class GalaxyScale {
   // ------------------------------------------------------------- loop ----
   update(dt) {
     if (this.playing) this.time += dt * this.speed;
+    if (this.sim && this.playing) this.sim.step(dt * this.speed * 5);
+    if (this.coreSprites) for (const { sp, c } of this.coreSprites) sp.position.copy(c);
     this.uniforms.uTime.value = this.time;
     if (this.nebulaMesh) {
       // world-size → pixel-size conversion for the nebula sprites
@@ -460,10 +505,22 @@ export class GalaxyScale {
   togglePlay() { this.playing = !this.playing; }
   speedUp() { this.speed = Math.min(this.speed * 1.7, 24); }
   slowDown() { this.speed = Math.max(this.speed / 1.7, 0.1); }
-  timeReadout() { return `rotation ×${this.speed.toFixed(1)}`; }
+  timeReadout() {
+    return this.sim ? `${this.sim.phase()} · ×${this.speed.toFixed(1)}` : `rotation ×${this.speed.toFixed(1)}`;
+  }
 
   hudStats() {
     const P = this.params;
+    if (this.sim) {
+      return [
+        ['pair', P.name + ' & ' + P.companion.name],
+        ['class', 'interacting spirals'],
+        ['mass ratio', P.companion.massRatio.toFixed(2)],
+        ['separation', (this.sim.separation() / P.radius * 15).toFixed(1) + ' kpc'],
+        ['encounter', this.sim.phase()],
+        ['test particles', this.sim.starData.aR.length >= 0 ? '262,144' : ''],
+      ];
+    }
     return [
       ['galaxy', P.name],
       ['class', P.type],
@@ -473,8 +530,12 @@ export class GalaxyScale {
     ];
   }
 
-  /** live (rotated) position of star i right now */
+  /** live position of star i right now */
   starPosAt(i, out = new THREE.Vector3()) {
+    if (this.sim) {
+      const buf = this.sim.positions();
+      return out.set(buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2]);
+    }
     const { aR, aTheta, aY } = this.starData;
     const th = aTheta[i] + (this.uniforms.uVrot.value / Math.max(aR[i], 14)) * this.time;
     return out.set(aR[i] * Math.cos(th), aY[i], aR[i] * Math.sin(th));
@@ -490,6 +551,28 @@ export class GalaxyScale {
     const cam = this.camera;
     const w = this.app.width, h = this.app.height;
     const px = (ndc.x * 0.5 + 0.5) * w, py = (-ndc.y * 0.5 + 0.5) * h;
+
+    // interacting pair: pick against the live GPU positions
+    if (this.sim) {
+      const buf = this.sim.positions();
+      const v = new THREE.Vector3();
+      const view = new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+      let bestI = -1, bestD = 18 * 18;
+      const N = buf.length / 4;
+      for (let i = 0; i < N; i += 2) {
+        v.set(buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2]).applyMatrix4(view);
+        if (v.z < -1 || v.z > 1) continue;
+        const sx = (v.x * 0.5 + 0.5) * w, sy = (-v.y * 0.5 + 0.5) * h;
+        const d = (sx - px) * (sx - px) + (sy - py) * (sy - py);
+        if (d < bestD) { bestD = d; bestI = i; }
+      }
+      if (bestI < 0) return null;
+      const starSeed = hash(this.params.seed, bestI, 0x57a9);
+      return {
+        type: 'star', starSeed, name: starName(starSeed), index: bestI,
+        position: new THREE.Vector3(buf[bestI * 4], buf[bestI * 4 + 1], buf[bestI * 4 + 2]),
+      };
+    }
 
     // nucleus?
     const cpos = new THREE.Vector3(0, 0, 0).project(cam);
@@ -535,6 +618,7 @@ export class GalaxyScale {
 
   dispose() {
     this.controls.dispose();
+    if (this.sim) this.sim.dispose();
     this.scene.traverse(o => {
       if (o.geometry) o.geometry.dispose();
       if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }

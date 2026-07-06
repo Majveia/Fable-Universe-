@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
 import { NOISE_GLSL, makeSurfaceMaterial, makeRingMaterial, makeAtmosphereMaterial } from './planet.js';
 import { softDotTexture } from './nebula.js';
+import { addLife, isBiosphere } from './life.js';
 
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
@@ -235,6 +236,7 @@ export class SurfaceScale {
     if (pp.inhabited) this._buildCityGlow();
     if (ctx.parentGiant) this._buildParentGiant(ctx.parentGiant);
     this._buildSiblings();
+    this.life = addLife(this);
 
     // spawn on land, eyes toward the sunrise
     const spawn = this._findSpawn();
@@ -511,6 +513,31 @@ export class SurfaceScale {
       this.scene.add(sp);
       this.siblings.push({ sp, off, tilt: node.pp.inc * 4 + 0.02 });
     }
+
+    // our own moons: real discs with real phases, riding the same arc
+    this.skyMoons = [];
+    if (!this.ctx.parentGiant) {
+      this.uSunPosFar = this.uSunPosFar || { value: new THREE.Vector3(0, 1e7, 0) };
+      for (const moon of host.moons || []) {
+        const ud = moon.userData;
+        const thM = ud.phase + ud.rate * sys.days;
+        let off = thM - aSun;
+        off = ((off + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+        const dist = 13000;
+        const ang = Math.min(Math.max(ud.drawR / ud.dist, 0.012), 0.09) * 1.5;
+        const mesh = new THREE.Mesh(
+          new THREE.SphereGeometry(dist * ang, 40, 26),
+          makeSurfaceMaterial({
+            typeId: ud.icy ? 3 : 0, noiseSeed: ud.noiseSeed, oceanLevel: -1, inhabited: false,
+            colA: ud.icy ? new THREE.Color(0.68, 0.74, 0.82) : new THREE.Color(0.42, 0.41, 0.39),
+            colB: ud.icy ? new THREE.Color(0.88, 0.92, 0.98) : new THREE.Color(0.6, 0.58, 0.55),
+            colC: ud.icy ? new THREE.Color(0.3, 0.45, 0.6) : new THREE.Color(0.27, 0.26, 0.25),
+            iceCap: ud.icy ? 0.0 : 2.0,
+          }, this.uSunPosFar, this.uCam, this.uTime));
+        this.scene.add(mesh);
+        this.skyMoons.push({ mesh, off, tilt: 0.06 + 0.05 * ud.moonIndex, dist });
+      }
+    }
   }
 
   _sunDirAt(ph, out) {
@@ -554,9 +581,15 @@ export class SurfaceScale {
     // sun path: tilted circle, so it rises and sets off-axis
     const ph = this.sunPhase;
     this._sunDirAt(ph, this.uSunDir.value);
-    if (this.giant) {
-      this.uSunPosFar.value.copy(this.uSunDir.value).multiplyScalar(1e7);
-      this.giant.rotation.y += dt * 0.004; // the giant's own slow day
+    if (this.uSunPosFar) this.uSunPosFar.value.copy(this.uSunDir.value).multiplyScalar(1e7);
+    if (this.giant) this.giant.rotation.y += dt * 0.004; // the giant's own slow day
+    if (this.skyMoons) {
+      const dir = new THREE.Vector3();
+      for (const m of this.skyMoons) {
+        this._sunDirAt(ph + m.off, dir);
+        dir.y += m.tilt;
+        m.mesh.position.copy(dir.normalize()).multiplyScalar(m.dist);
+      }
     }
     if (this.siblings) {
       const night = 1 - Math.min(Math.max((this.uSunDir.value.y + 0.1) * 3, 0), 1) * 0.75;
@@ -578,6 +611,7 @@ export class SurfaceScale {
       const night = 1 - Math.min(Math.max((this.uSunDir.value.y + 0.15) * 4, 0), 1);
       for (const g of this.cityGlows) g.material.opacity = night * 0.5;
     }
+    if (this.life) this.life.update(dt, this.uSunDir.value.y);
 
     // movement (skip while the hyperzoom still owns the camera)
     if (this.controls.enabled) {
@@ -619,6 +653,7 @@ export class SurfaceScale {
     return [
       ['world', pp.name],
       ['class', pp.type + (pp.inhabited ? ' · inhabited' : '')],
+      ['biosphere', this.life ? 'flora + fauna' : '—'],
       ['surface gravity', g.toFixed(2) + ' g'],
       ['equilibrium temp', pp.Teq + ' K'],
       ['mode', this.fly ? 'flight (f to walk)' : 'on foot (f to fly)'],
