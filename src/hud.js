@@ -50,6 +50,9 @@ export class HUD {
     logBtn.onclick = () => this.toggleLog();
 
     this.warpEl = document.getElementById('warp');
+    this.veilEl = document.createElement('div');
+    this.veilEl.id = 'veil';
+    document.body.appendChild(this.veilEl);
 
     this._idleT = 0;
     window.addEventListener('pointermove', () => {
@@ -129,6 +132,20 @@ export class HUD {
     acts.forEach((a, i) => { this.card.querySelector(`#card-act-${i}`).onclick = a.cb; });
   }
   hideCard() { this.card.classList.remove('open'); }
+
+  /** flash of atmospheric haze that clears as you break through the deck */
+  veil(color) {
+    const el = this.veilEl;
+    const c = color.isColor
+      ? `rgb(${(color.r * 620) | 0},${(color.g * 620) | 0},${(color.b * 620) | 0})`
+      : color;
+    el.style.transition = 'none';
+    el.style.background = c;
+    el.style.opacity = '0.96';
+    void el.offsetWidth; // commit, then fade
+    el.style.transition = 'opacity 1.5s ease-out';
+    el.style.opacity = '0';
+  }
 
   /** fade to black, do the thing, fade back */
   warp(swap) {

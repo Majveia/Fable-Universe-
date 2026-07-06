@@ -65,6 +65,11 @@ export class Hyperzoom {
   }
 
   _beginSettle(s) {
+    // atmosphere entry: mask the swap inside the world's own haze
+    if (s.kind === 'dive' && (s.to.kind === 'surface' || s.to.kind === 'clouds')) {
+      const c = s.to.horizonColor || s.to.haze;
+      if (c) this.app.hud.veil(c);
+    }
     s.rt = this._snapshot(s.from);
     this.quad.material.map = s.rt.texture;
     this.quad.material.opacity = 1;
@@ -110,14 +115,15 @@ export class Hyperzoom {
     if (!s) return;
 
     if (s.phase === 'approach') {
-      const dur = s.kind === 'dive' ? 0.55 : 0.4;
+      const deep = s.kind === 'dive' && (s.to.kind === 'surface' || s.to.kind === 'clouds');
+      const dur = s.kind === 'dive' ? (deep ? 0.9 : 0.55) : 0.4;
       s.t = Math.min(s.t + dt / dur, 1);
       const k = easeIn(s.t);
       const cam = s.from.camera;
       if (s.kind === 'dive' && s.focusFn) {
         const focus = s.focusFn();
-        // fall 62% of the way in, steering the view onto the target
-        cam.position.lerpVectors(s.camStart, focus, 0.62 * k);
+        // fall toward the target — nearly all the way for atmosphere entries
+        cam.position.lerpVectors(s.camStart, focus, (deep ? 0.94 : 0.62) * k);
         s.look.lerpVectors(s.lookStart, focus, k);
         cam.lookAt(s.look);
         cam.fov = s.baseFov * (1 - 0.18 * k); // slight tunnel rush

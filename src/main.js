@@ -9,6 +9,7 @@ import { Post } from './post.js';
 import { HUD } from './hud.js';
 import { Hyperzoom } from './transition.js';
 import { Ambience } from './audio.js';
+import { Tour } from './tour.js';
 import { CosmicScale, COSMIC_NOTE } from './cosmic.js';
 import { GalaxyScale, GALAXY_NOTE, galaxyParams } from './galaxy.js';
 import { SystemScale, SYSTEM_NOTE } from './system.js';
@@ -45,6 +46,7 @@ class App {
     this.hud = new HUD(this);
     this.zoom = new Hyperzoom(this);
     this.audio = new Ambience();
+    this.tour = new Tour(this);
     const unlock = () => {
       this.audio.unlock();
       const s = this.active();
@@ -238,6 +240,7 @@ class App {
     let down = null;
 
     cv.addEventListener('pointerdown', (e) => {
+      this.tour.stop();
       down = { x: e.clientX, y: e.clientY };
       this.active().onPointerDown?.(e);
     });
@@ -254,6 +257,11 @@ class App {
 
     window.addEventListener('keydown', (e) => {
       const s = this.active();
+      if (e.code === 'KeyT') {
+        this.tour.active ? this.tour.stop() : this.tour.start();
+        return;
+      }
+      this.tour.stop();
       switch (e.code) {
         case 'Escape':
         case 'Backspace':
@@ -302,6 +310,11 @@ class App {
     this.raycaster.setFromCamera(ndc, s.camera);
     const hit = s.pick?.(this.raycaster, ndc);
     if (!hit) return;
+    this.diveFromHit(s, hit);
+  }
+
+  /** descend into whatever was hit — shared by input and the tour autopilot */
+  diveFromHit(s, hit) {
     if (s.kind === 'cosmic') {
       this.push(new GalaxyScale(this, { galaxySeed: hit.galaxySeed, webPos: hit.position.clone() }), () => hit.position);
     } else if (s.kind === 'galaxy') {
@@ -315,6 +328,18 @@ class App {
     } else if (s.kind === 'system' && hit.type === 'planet') {
       s.focusPlanet(hit.index);
     }
+  }
+
+  landOn(s, p) {
+    this.push(
+      new SurfaceScale(this, { planet: p, system: s.params, sunColor: s.starColor, hostIndex: p.index }),
+      () => s.planetNodes[p.index].group.position);
+  }
+
+  cruise(s, p) {
+    this.push(
+      new CloudsScale(this, { planet: p, system: s.params, sunColor: s.starColor, hostIndex: p.index }),
+      () => s.planetNodes[p.index].group.position);
   }
 
   // ---------------------------------------------------------- logbook ----
@@ -527,6 +552,7 @@ class App {
     if (this._warping && !this.zoom.busy && !this.hud.warpEl.classList.contains('on')) {
       this._warping = false;
     }
+    this.tour.update(dt);
     const s = this.active();
     s.update(dt);
     s.glide?.(dt);

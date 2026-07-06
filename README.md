@@ -72,7 +72,13 @@ irregulars all occur. Click any star; or click the core.
 
 ### 3 · Star system
 The star's mass draws its temperature, luminosity and blackbody color from
-main-sequence scaling relations (occasionally a red giant or white dwarf —
+main-sequence scaling relations. A few percent of systems orbit a **pulsar**
+— a neutron-star corpse sweeping lighthouse beams off its misaligned
+magnetic poles inside the filament shell of its own supernova, with
+second-generation rocky worlds like PSR B1257+12's (the first exoplanets
+ever found). Back in the galaxy view, supernovae pop off stochastically —
+watch long enough and you'll catch one. (Otherwise: occasionally a red
+giant or white dwarf —
 and about one system in five is a **close binary**: two suns waltzing about
 their barycenter on true Kepler orbits, with every planet circumbinary
 beyond the ~3.5-separation stability limit, Kepler-16 style). Planets obey
@@ -88,10 +94,19 @@ info cards report the true numbers.
 
 ### 4 · The surface — set foot on it
 Every solid world — **and every moon** — can be landed on from its info
-card. The hyperzoom carries you from orbit down onto a heightfield carved
-from the planet's own noise and palette, under a sky whose sun is the
-system's actual star — correct blackbody color, correct angular size for
-this orbit. Walk with WASD (drag to look, Shift to run, `F` to fly), watch
+card, and the descent is **continuous**: the same Ashima simplex noise the
+orbital shader draws is ported exactly to JavaScript (`src/terrain.js`), so
+the ground is a sample of the planet's true height field — the landing
+site is chosen metres above the real waterline, and the coast you walk is
+the coast you saw from space. Three LOD rings carry the terrain ~14 km to
+a horizon that curves with the world's actual radius, and the scale swap
+hides inside an atmospheric veil on the way down. Comets near perihelion
+hang in the twilight with their tails combed anti-sunward.
+
+![the shore of Korora](docs/screenshots/17-korora-shore.png)
+
+The sky's sun is the system's actual star — correct blackbody color,
+correct angular size for this orbit. Walk with WASD (drag to look, Shift to run, `F` to fly), watch
 the day turn, and on inhabited worlds wait for dusk: city glow rises over
 the ridgeline. Ocean worlds put you on an island shore; lava worlds seep
 light through fissures at night. Stand on the moon of a ringed giant and
@@ -145,6 +160,12 @@ as the Event Horizon Telescope observed at M87*.
 - **A logbook** (`B`, or the ◈ button): mark any place — a cloud deck, a
   moon, a colliding pair — and warp back to it later. Entries are just the
   same shareable coordinates the URL always carries.
+- **A tour mode** (`T`): AEON flies itself — creation plays out, a node is
+  chosen, the camera falls through a galaxy to a star, lands somewhere or
+  sinks into a cloud deck, visits the black hole, and begins again
+  somewhere new. Touch anything to take the controls.
+
+![pulsar](docs/screenshots/16-pulsar.png)
 - **Enormous**: ~314k web tracers × any node → a galaxy of 240k clickable
   stars → ~10²⁸ addressable star systems per universe × 2³² universes.
 - **Zero dependencies** beyond a vendored Three.js r170; runs from any

@@ -11,6 +11,7 @@ import { hash, RNG } from './rng.js';
 import { NOISE_GLSL, makeSurfaceMaterial, makeRingMaterial, makeAtmosphereMaterial } from './planet.js';
 import { softDotTexture } from './nebula.js';
 import { addLife, isBiosphere } from './life.js';
+import { planetHeight, findLandingSite } from './terrain.js';
 
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
@@ -239,7 +240,7 @@ export class SurfaceScale {
     this.life = addLife(this);
 
     // spawn on land, eyes toward the sunrise
-    const spawn = this._findSpawn();
+    const spawn = this.spawn;
     this.camera.position.set(spawn.x, spawn.y + EYE, spawn.z);
     this.controls = { // duck-typed for the hyperzoom
       enabled: false,
@@ -254,38 +255,59 @@ export class SurfaceScale {
   }
 
   // --------------------------------------------------------- building ----
+  /**
+   * The ground is the planet: a macro band sampled from the *same* height
+   * function the orbital shader draws (exact JS port), which decides where
+   * land, sea and mountains lie — plus medium and fine relief bands for
+   * human-scale terrain. Three LOD rings carry it ~14 km to a horizon that
+   * genuinely curves with the world's true radius.
+   */
   _buildTerrain() {
     const pp = this.pp;
     const noise = makeNoise(pp.seed);
-    const fbm = (x, y, oct, lac = 2.03) => {
+    const fbm2 = (x, y, oct, lac = 2.03) => {
       let v = 0, a = 0.5, f = 1;
       for (let o = 0; o < oct; o++) { v += a * noise(x * f, y * f); a *= 0.5; f *= lac; }
       return v;
     };
 
     const type = pp.typeId;
-    this.amp = type === 0 ? 90 : type === 3 ? 45 : type === 4 ? 55 : type === 2 ? 60 : 75;
-    const base = type === 2 ? -28 : -6;   // ocean worlds: mostly drowned
+    this.amp = 280;
     this.seaLevel = (type === 1 && pp.oceanLevel > -0.5) || type === 2 ? 0 : null;
-    if (type === 3 && Math.random() < 0) this.seaLevel = null; // ice: frozen, no sea
+    const ocean = pp.oceanLevel > -0.5 ? pp.oceanLevel : 0.0;
 
-    const geo = new THREE.PlaneGeometry(EXT, EXT, RES - 1, RES - 1);
-    geo.rotateX(-Math.PI / 2);
-    const pos = geo.attributes.position;
-    this.heights = new Float32Array(RES * RES);
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i), z = pos.getZ(i);
-      let h = fbm(x * 0.0016 + 7.3, z * 0.0016 - 2.1, 6) * this.amp * 1.6
-        + fbm(x * 0.008 + 31.7, z * 0.008 + 11.3, 4) * this.amp * 0.22
-        + base;
-      if (type === 0) h += Math.abs(fbm(x * 0.004 - 9., z * 0.004 + 4., 3)) * this.amp * 0.5; // harsher relief
-      pos.setY(i, h);
-      this.heights[i] = h;
-    }
-    geo.computeVertexNormals();
+    // landing frame on the sphere
+    const ld = this.ctx.landingDir || findLandingSite(pp, hash(pp.seed, 0x1a4d));
+    const dir = new THREE.Vector3(...ld).normalize();
+    const east = new THREE.Vector3(0, 1, 0).cross(dir);
+    if (east.lengthSq() < 1e-6) east.set(1, 0, 0); else east.normalize();
+    const north = new THREE.Vector3().crossVectors(dir, east);
+    this.landingDir = dir;
 
-    const snow = this.pp.iceCap < 1.5 || type === 3 ? (type === 3 ? 1 : 0.5) : 0;
-    this.terrain = new THREE.Mesh(geo, new THREE.ShaderMaterial({
+    const Rworld = Math.max(pp.radiusE, 0.05) * 6.371e6;   // meters
+    const S_MACRO = 320;                                    // m per height unit
+    const reliefAmp = type === 0 ? 55 : type === 3 ? 30 : type === 4 ? 40 : 42;
+    this.liftY = 0;
+    const p = new THREE.Vector3();
+
+    this._heightFn = (x, z) => {
+      p.copy(dir).multiplyScalar(Rworld).addScaledVector(east, x).addScaledVector(north, z).normalize();
+      const macro = planetHeight(p.x, p.y, p.z, pp.noiseSeed) - ocean;
+      // more relief inland and on high ground, gentler on the shelf
+      const relief = reliefAmp * (0.35 + Math.min(Math.max(macro * 2.2, 0), 1.4));
+      let h = macro * S_MACRO
+        + fbm2(x * 0.0011 + 7.3, z * 0.0011 - 2.1, 5) * relief * 1.7
+        + fbm2(x * 0.009 + 31.7, z * 0.009 + 11.3, 3) * 6;
+      // the horizon truly curves with this world's radius
+      h -= (x * x + z * z) / (2 * Rworld * 0.34);
+      return h + this.liftY;
+    };
+
+    // spawn scan BEFORE meshing, so a waterlocked lift bakes into the rings
+    this.spawn = this._findSpawn();
+
+    const snow = pp.iceCap < 1.5 || type === 3 ? (type === 3 ? 1 : 0.5) : 0;
+    this.terrainMat = new THREE.ShaderMaterial({
       uniforms: {
         uSunDir: this.uSunDir, uSunColor: this.uSunColor,
         uColA: { value: pp.colA }, uColB: { value: pp.colB }, uColC: { value: pp.colC },
@@ -299,48 +321,82 @@ export class SurfaceScale {
       },
       vertexShader: TERRAIN_VERT,
       fragmentShader: TERRAIN_FRAG,
-    }));
+    });
+
+    // three nested rings: fine underfoot, vast to the horizon
+    const rings = [
+      { size: EXT, res: 168, hole: 0 },
+      { size: EXT * 3.3, res: 104, hole: EXT * 0.48 },
+      { size: EXT * 10, res: 72, hole: EXT * 1.58 },
+    ];
+    this.terrain = new THREE.Group();
+    for (let ri = 0; ri < rings.length; ri++) {
+      const { size, res, hole } = rings[ri];
+      const geo = this._gridWithHole(size, res, hole);
+      const pos = geo.attributes.position;
+      const drop = ri * 0.5; // hide ring seams under the finer ring
+      for (let i = 0; i < pos.count; i++) {
+        pos.setY(i, this._heightFn(pos.getX(i), pos.getZ(i)) - drop);
+      }
+      geo.computeVertexNormals();
+      const mesh = new THREE.Mesh(geo, this.terrainMat);
+      this.terrain.add(mesh);
+    }
     this.scene.add(this.terrain);
   }
 
-  heightAt(x, z) {
-    const gx = (x / EXT + 0.5) * (RES - 1);
-    const gz = (z / EXT + 0.5) * (RES - 1);
-    const i = Math.min(Math.max(Math.floor(gx), 0), RES - 2);
-    const j = Math.min(Math.max(Math.floor(gz), 0), RES - 2);
-    const fx = gx - i, fz = gz - j;
-    const at = (a, b) => this.heights[b * RES + a];
-    return at(i, j) * (1 - fx) * (1 - fz) + at(i + 1, j) * fx * (1 - fz) +
-           at(i, j + 1) * (1 - fx) * fz + at(i + 1, j + 1) * fx * fz;
+  _gridWithHole(size, res, hole) {
+    const half = size / 2, cell = size / res;
+    const verts = [], uvs = [];
+    for (let j = 0; j <= res; j++) {
+      for (let i = 0; i <= res; i++) {
+        verts.push(-half + i * cell, 0, -half + j * cell);
+        uvs.push(i / res, j / res);
+      }
+    }
+    const idx = [];
+    for (let j = 0; j < res; j++) {
+      for (let i = 0; i < res; i++) {
+        const cx = -half + (i + 0.5) * cell, cz = -half + (j + 0.5) * cell;
+        if (hole > 0 && Math.abs(cx) < hole && Math.abs(cz) < hole) continue;
+        const a = j * (res + 1) + i, b = a + 1, c = a + res + 1, d = c + 1;
+        idx.push(a, c, b, b, c, d);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2));
+    geo.setIndex(idx);
+    return geo;
   }
+
+  heightAt(x, z) { return this._heightFn(x, z); }
 
   _findSpawn() {
     // walk outward until we stand on dry, gentle ground
     for (let rad = 0; rad < EXT * 0.4; rad += 17) {
       for (let th = 0; th < 6.28; th += 0.9) {
         const x = Math.cos(th) * rad, z = Math.sin(th) * rad;
-        const h = this.heightAt(x, z);
-        if ((this.seaLevel === null || h > this.seaLevel + 3) && h < this.amp * 0.7) {
+        const h = this._heightFn(x, z);
+        if ((this.seaLevel === null || h > this.seaLevel + 3) && h < 190) {
           return new THREE.Vector3(x, h, z);
         }
       }
     }
-    // waterlocked tile: raise the seabed until the highest point is a shore
-    let bi = 0;
-    for (let i = 1; i < this.heights.length; i++) if (this.heights[i] > this.heights[bi]) bi = i;
-    if (this.seaLevel !== null && this.heights[bi] < this.seaLevel + 3) {
-      const lift = this.seaLevel + 5 - this.heights[bi];
-      const pos = this.terrain.geometry.attributes.position;
-      for (let i = 0; i < pos.count; i++) {
-        this.heights[i] += lift;
-        pos.setY(i, this.heights[i]);
+    // waterlocked: raise the crust until the highest nearby point is a shore
+    let bx = 0, bz = 0, bh = -1e9;
+    for (let rad = 0; rad < EXT * 0.45; rad += 23) {
+      for (let th = 0; th < 6.28; th += 0.7) {
+        const x = Math.cos(th) * rad, z = Math.sin(th) * rad;
+        const h = this._heightFn(x, z);
+        if (h > bh) { bh = h; bx = x; bz = z; }
       }
-      pos.needsUpdate = true;
-      this.terrain.geometry.computeVertexNormals();
     }
-    const ix = bi % RES, iy = (bi / RES) | 0;
-    const cell = EXT / (RES - 1);
-    return new THREE.Vector3(-EXT / 2 + ix * cell, this.heights[bi], -EXT / 2 + iy * cell);
+    if (this.seaLevel !== null && bh < this.seaLevel + 3) {
+      this.liftY = this.seaLevel + 5 - bh;
+      bh += this.liftY;
+    }
+    return new THREE.Vector3(bx, bh, bz);
   }
 
   _buildSky() {
@@ -368,7 +424,7 @@ export class SurfaceScale {
   }
 
   _buildOcean() {
-    const geo = new THREE.PlaneGeometry(EXT * 4, EXT * 4, 1, 1);
+    const geo = new THREE.PlaneGeometry(EXT * 24, EXT * 24, 1, 1);
     geo.rotateX(-Math.PI / 2);
     this.ocean = new THREE.Mesh(geo, new THREE.ShaderMaterial({
       uniforms: {
@@ -514,6 +570,48 @@ export class SurfaceScale {
       this.siblings.push({ sp, off, tilt: node.pp.inc * 4 + 0.02 });
     }
 
+    // a comet near perihelion hangs in the sky, tail swept from the sun
+    if (sys.cometHead && sys.cometR !== undefined && sys.cometR < 3.2) {
+      const d = sys.cometHead.position.clone().sub(p0);
+      let off = Math.atan2(d.z, d.x) - aSun;
+      off = ((off + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      const activity = Math.min(5 / (sys.cometR * sys.cometR), 1);
+      if (activity > 0.12) {
+        const coma = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: tex, color: new THREE.Color(0.65, 0.8, 1.0).multiplyScalar(0.5 + 0.5 * activity),
+          blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+        }));
+        coma.scale.setScalar(200 + 260 * activity);
+        this.scene.add(coma);
+        // tail: a world-oriented plane, bright at the head, fading anti-sunward
+        const tailTex = (() => {
+          const cv = document.createElement('canvas');
+          cv.width = 256; cv.height = 64;
+          const g = cv.getContext('2d');
+          const img = g.createImageData(256, 64);
+          for (let y = 0; y < 64; y++) {
+            for (let x = 0; x < 256; x++) {
+              const u = x / 256, vv = (y - 32) / 32;
+              const a = Math.pow(1 - u, 1.7) * Math.exp(-vv * vv * (2.2 + u * 7));
+              const k = (y * 256 + x) * 4;
+              img.data[k] = 190; img.data[k + 1] = 215; img.data[k + 2] = 255;
+              img.data[k + 3] = a * 210;
+            }
+          }
+          g.putImageData(img, 0, 0);
+          return new THREE.CanvasTexture(cv);
+        })();
+        const geo = new THREE.PlaneGeometry(1, 1);
+        geo.translate(0.5, 0, 0); // head at the origin edge
+        const tail = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+          map: tailTex, transparent: true, depthWrite: false,
+          blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+        }));
+        this.scene.add(tail);
+        this.skyComet = { coma, tail, off, tilt: 0.14, activity };
+      }
+    }
+
     // our own moons: real discs with real phases, riding the same arc
     this.skyMoons = [];
     if (!this.ctx.parentGiant) {
@@ -591,6 +689,27 @@ export class SurfaceScale {
         m.mesh.position.copy(dir.normalize()).multiplyScalar(m.dist);
       }
     }
+    if (this.skyComet) {
+      const c = this.skyComet;
+      const head = this._sunDirAt(ph + c.off, new THREE.Vector3());
+      head.y += c.tilt;
+      head.normalize();
+      // tangent on the sky sphere pointing away from the sun
+      const t = head.clone().sub(this.uSunDir.value);
+      t.addScaledVector(head, -t.dot(head));
+      if (t.lengthSq() > 1e-6) {
+        t.normalize();
+        const bi = new THREE.Vector3().crossVectors(head, t);
+        const m = new THREE.Matrix4().makeBasis(t, bi, head);
+        c.tail.quaternion.setFromRotationMatrix(m);
+      }
+      const night = 1 - Math.min(Math.max((this.uSunDir.value.y + 0.1) * 3, 0), 1) * 0.7;
+      c.coma.position.copy(head).multiplyScalar(14600);
+      c.coma.material.opacity = night;
+      c.tail.position.copy(c.coma.position);
+      c.tail.scale.set(3200 + 4200 * c.activity, 800 + 900 * c.activity, 1);
+      c.tail.material.opacity = night * (0.35 + 0.65 * c.activity);
+    }
     if (this.siblings) {
       const night = 1 - Math.min(Math.max((this.uSunDir.value.y + 0.1) * 3, 0), 1) * 0.75;
       const dir = new THREE.Vector3();
@@ -660,9 +779,9 @@ export class SurfaceScale {
     ];
   }
 
-  /** the hyperzoom lands us from the sky, not from underground */
+  /** the hyperzoom lands us from high in the sky — a real descent */
   arriveFrom(rest) {
-    return rest.clone().add(new THREE.Vector3(-40, 300, 160));
+    return rest.clone().add(new THREE.Vector3(-140, 950, 430));
   }
 
   pick() { return null; }

@@ -12,7 +12,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { hash, RNG, starName, planetName } from './rng.js';
 import { makeSkyDome, makeGalaxySkyFromWithin } from './starfield.js';
-import { softDotTexture } from './nebula.js';
+import { softDotTexture, nebulaTexture } from './nebula.js';
 import {
   makeSurfaceMaterial, makeCloudMaterial, makeAtmosphereMaterial,
   makeStarSurfaceMaterial, makeRingMaterial, blackbodyRGB,
@@ -55,9 +55,23 @@ export function systemParams(starSeed) {
   let lum = Math.pow(mass, 3.6);
   let radiusSun = Math.pow(mass, 0.85);
   let stage = 'main sequence';
+  let pulsar = null;
   const roll = r.next();
   if (roll < 0.07) { stage = 'red giant'; temp = r.float(3300, 4300); radiusSun = r.float(12, 45); lum = radiusSun * radiusSun * Math.pow(temp / 5772, 4); }
   else if (roll < 0.10) { stage = 'white dwarf'; temp = r.float(9000, 26000); radiusSun = 0.013; lum = 0.001 * (temp / 10000) ** 4; }
+  else if (roll < 0.135) {
+    // the corpse of a supernova: a city-sized star spinning like a lighthouse
+    stage = 'neutron star';
+    temp = r.float(28000, 35000);
+    radiusSun = 1.7e-5; // ~12 km
+    lum = r.float(0.08, 0.4); // beamed, not thermal
+    mass = r.float(1.3, 2.1);
+    pulsar = {
+      periodMs: r.chance(0.35) ? r.float(1.4, 30) : r.float(80, 900),
+      bGauss: r.power(1e8, 5e12, 1.4),
+      remnantAge: r.int(3, 90), // kyr
+    };
+  }
 
   // ~1 in 5 systems is a close binary; its planets are circumbinary (P-type)
   let binary = null;
@@ -85,7 +99,9 @@ export function systemParams(starSeed) {
   const hz = Math.sqrt(lum);            // habitable-zone center, AU
   const frost = 2.7 * Math.sqrt(lum);   // frost line, AU
 
-  const nPlanets = stage === 'white dwarf' ? r.int(0, 2) : r.int(2, 8);
+  const nPlanets = stage === 'white dwarf' ? r.int(0, 2)
+    : stage === 'neutron star' ? r.int(1, 3)   // PSR B1257+12 country
+    : r.int(2, 8);
   const planets = [];
   let a = r.float(0.28, 0.5) * Math.max(Math.sqrt(lum), 0.35);
   // circumbinary stability: nothing survives inside ~3.5 binary separations
@@ -93,7 +109,9 @@ export function systemParams(starSeed) {
   for (let i = 0; i < nPlanets; i++) {
     const pr = new RNG(hash(starSeed, 0x914, i));
     let type, massE, radiusE;
-    if (a > frost) {
+    if (stage === 'neutron star') {
+      type = pr.next() < 0.7 ? 'barren' : 'ice'; // second-generation rock
+    } else if (a > frost) {
       const t = pr.next();
       type = t < 0.5 ? 'gas giant' : t < 0.78 ? 'ice giant' : 'ice';
     } else if (a > hz * 0.78 && a < hz * 1.6) {
@@ -203,7 +221,7 @@ export function systemParams(starSeed) {
   }
 
   return {
-    seed: starSeed, name, mass, massTotal, temp, lum, radiusSun, stage, binary,
+    seed: starSeed, name, mass, massTotal, temp, lum, radiusSun, stage, binary, pulsar,
     spectral: spectralClass(temp), hz, frost, planets, belt,
     comet: r.chance(0.55) ? { a: Math.max(frost * 1.6, 3), e: r.float(0.86, 0.96), inc: r.float(0.2, 0.9), Omega: r.float(0, 6.28), omega: r.float(0, 6.28), M0: r.float(0, 6.28) } : null,
   };
@@ -266,6 +284,7 @@ export class SystemScale {
     this._prevTarget = new THREE.Vector3();
 
     this.bloomSettings = { strength: 0.75, radius: 0.65, threshold: 0.0 };
+    if (this.params.pulsar) this.noteOverride = PULSAR_NOTE;
   }
 
   /** where this system sits inside its parent galaxy (for the true sky) */
@@ -324,6 +343,8 @@ export class SystemScale {
         Omega: P.binary.Omega, omega: P.binary.omega, M0: P.binary.M0,
       };
     }
+
+    if (P.stage === 'neutron star') this._buildPulsar(r, glowTex);
 
     // -- planets
     this.planetNodes = [];
@@ -416,6 +437,64 @@ export class SystemScale {
     if (P.comet) this._buildComet(P.comet, r);
   }
 
+  /** lighthouse beams, wind glow, and the wreckage shell of the supernova */
+  _buildPulsar(r, glowTex) {
+    const P = this.params;
+    // two opposed beams, misaligned from the spin axis — that's why it pulses
+    const L = 150, baseR = 13;
+    const beamMat = new THREE.ShaderMaterial({
+      uniforms: { uColor: { value: new THREE.Color(0.55, 0.7, 1.0) } },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `
+        precision highp float; uniform vec3 uColor; varying vec2 vUv;
+        void main(){ gl_FragColor = vec4(uColor * pow(vUv.y, 2.2) * 1.6, 1.0); }`,
+      blending: THREE.AdditiveBlending, transparent: true,
+      depthWrite: false, side: THREE.DoubleSide,
+    });
+    const cone = new THREE.ConeGeometry(baseR, L, 20, 1, true);
+    cone.translate(0, -L / 2, 0); // apex at the star, base far away, uv.y=1 at apex
+    this.pulsarBeams = new THREE.Group();
+    const b1 = new THREE.Mesh(cone, beamMat);
+    const b2 = new THREE.Mesh(cone, beamMat);
+    b2.rotation.z = Math.PI;
+    const tiltG = new THREE.Group();
+    tiltG.rotation.z = r.float(0.35, 0.8); // magnetic misalignment
+    tiltG.add(b1); tiltG.add(b2);
+    this.pulsarBeams.add(tiltG);
+    this.starMesh.add(this.pulsarBeams);
+    this.pulsarOmega = 2 * Math.PI * r.float(0.7, 1.9); // visual sweep rate
+    this.pulsarPhase = 0;
+
+    this.pulsarFlash = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glowTex, color: new THREE.Color(0.7, 0.85, 1.3),
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+    }));
+    this.pulsarFlash.scale.setScalar(26);
+    this.starMesh.add(this.pulsarFlash);
+
+    // supernova remnant: a filamentary shell still sailing outward
+    const shellR = this.params.planets.length
+      ? drawR(this.params.planets[this.params.planets.length - 1].a) * 1.35
+      : 160;
+    const tex = nebulaTexture(hash(P.seed, 0x5497), 256);
+    this.remnant = new THREE.Group();
+    for (let i = 0; i < 30; i++) {
+      const z = r.float(-1, 1), th = r.float(0, Math.PI * 2);
+      const s = Math.sqrt(1 - z * z);
+      const warm = r.chance(0.55);
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: tex,
+        color: warm ? new THREE.Color(0.16, 0.045, 0.05) : new THREE.Color(0.04, 0.1, 0.11),
+        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+        rotation: r.float(0, Math.PI * 2),
+      }));
+      sp.position.set(s * Math.cos(th), z * 0.8, s * Math.sin(th)).multiplyScalar(shellR * r.float(0.9, 1.1));
+      sp.scale.setScalar(shellR * r.float(0.35, 0.7));
+      this.remnant.add(sp);
+    }
+    this.scene.add(this.remnant);
+  }
+
   _buildBelt(belt, r) {
     const N = 3200;
     const geo = new THREE.IcosahedronGeometry(0.16, 0);
@@ -483,6 +562,15 @@ export class SystemScale {
     const tY = this.days / 365.25;
     this.uTime.value += dt;
 
+    if (this.pulsarBeams) {
+      this.pulsarPhase += dt * this.pulsarOmega;
+      this.pulsarBeams.rotation.y = this.pulsarPhase;
+      // the lighthouse flick as each beam sweeps past
+      const f = Math.pow(Math.abs(Math.sin(this.pulsarPhase)), 14);
+      this.pulsarFlash.material.opacity = 0.3 + 0.7 * f;
+      this.remnant.rotation.y += dt * 0.004;
+    }
+
     const v = new THREE.Vector3();
 
     // binary waltz: split the relative orbit by mass about the barycenter
@@ -523,6 +611,7 @@ export class SystemScale {
       keplerPos(this.cometEl, tY, this.params.massTotal, v);
       this.cometHead.position.copy(v);
       const rAU = v.rAU;
+      this.cometR = rAU;
       const activity = Math.min(6 / (rAU * rAU), 1);
       this.cometHead.material.opacity = 0.25 + 0.75 * activity;
       const away = v.clone().normalize();
@@ -564,9 +653,11 @@ export class SystemScale {
     const P = this.params;
     return [
       ['system', P.name],
-      ['star', P.binary
-        ? `${P.spectral}+${P.binary.spectralB} close binary`
-        : `${P.spectral}-class ${P.stage}`],
+      ['star', P.pulsar
+        ? `pulsar · P = ${P.pulsar.periodMs < 40 ? P.pulsar.periodMs.toFixed(1) : Math.round(P.pulsar.periodMs)} ms`
+        : P.binary
+          ? `${P.spectral}+${P.binary.spectralB} close binary`
+          : `${P.spectral}-class ${P.stage}`],
       ['mass', P.binary
         ? `${P.mass.toFixed(2)} + ${P.binary.massB.toFixed(2)} M☉`
         : P.mass.toFixed(2) + ' M☉'],
@@ -672,5 +763,7 @@ export class SystemScale {
     });
   }
 }
+
+export const PULSAR_NOTE = `This star died in a supernova; you are inside the wreckage. What remains is a <em>neutron star</em> — a couple of solar masses squeezed into a city, spinning with lighthouse beams thrown off its magnetic poles, which is why it pulses. The filament shell around you is the explosion, still coasting outward millennia later. Planets here are second-generation worlds: the very first exoplanets ever discovered (PSR B1257+12, 1992) orbit exactly such a corpse. The period in the readout is honest millisecond-pulsar territory; the beams are slowed a millionfold so your eyes can follow them.`;
 
 export const SYSTEM_NOTE = `Every orbit here is honest mechanics: periods follow Kepler's third law (<em>P² = a³/M★</em>) and positions come from solving Kepler's equation <em>M = E − e·sin E</em> by Newton's method each frame. The star's color is its blackbody spectrum; its temperature and luminosity follow main-sequence scaling from the mass this seed drew. Radial distances are gently compressed for visibility — the numbers in the cards are the true ones. Click a world to read it; click again to enter orbit. Speed up time and watch the inner worlds whirl while the outer giants creep.`;

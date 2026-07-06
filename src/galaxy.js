@@ -238,6 +238,47 @@ export class GalaxyScale {
     this.controls.maxDistance = R * 9;
 
     this.bloomSettings = { strength: 0.75, radius: 0.75, threshold: 0.0 };
+
+    // stochastic supernovae — one per galaxy per century, dramatized
+    this._svPool = [];
+    const svTex = softDotTexture();
+    for (let i = 0; i < 3; i++) {
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: svTex, color: new THREE.Color(1, 1, 1),
+        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0,
+      }));
+      sp.visible = false;
+      this.scene.add(sp);
+      this._svPool.push({ sp, age: -1 });
+    }
+    this._svTimer = 4 + Math.random() * 8;
+  }
+
+  _updateSupernovae(dt) {
+    const R = this.params.radius;
+    this._svTimer -= dt * this.speed;
+    if (this._svTimer <= 0) {
+      this._svTimer = 6 + Math.random() * 12;
+      const slot = this._svPool.find(s => s.age < 0);
+      if (slot) {
+        const i = (Math.random() * this.starData.aR.length) | 0;
+        this.starPosAt(i, slot.sp.position);
+        slot.age = 0;
+      }
+    }
+    for (const s of this._svPool) {
+      if (s.age < 0) continue;
+      s.age += dt * this.speed;
+      const rise = Math.min(s.age / 0.35, 1);
+      const decay = Math.exp(-Math.max(s.age - 0.35, 0) / 2.2);
+      const b = rise * decay;
+      s.sp.visible = b > 0.01;
+      s.sp.material.opacity = Math.min(b * 1.4, 1);
+      // white-hot flash cooling into the ember of a remnant
+      s.sp.material.color.setRGB(1.6 * b + 0.4, (1.4 * b + 0.25) * (0.55 + 0.45 * rise * decay), 1.1 * b * b + 0.15);
+      s.sp.scale.setScalar(R * (0.015 + 0.05 * Math.min(s.age / 3, 1)));
+      if (s.age > 8) { s.age = -1; s.sp.visible = false; }
+    }
   }
 
   _build() {
@@ -493,6 +534,7 @@ export class GalaxyScale {
     if (this.playing) this.time += dt * this.speed;
     if (this.sim && this.playing) this.sim.step(dt * this.speed * 5);
     if (this.coreSprites) for (const { sp, c } of this.coreSprites) sp.position.copy(c);
+    if (this.playing) this._updateSupernovae(dt);
     this.uniforms.uTime.value = this.time;
     if (this.nebulaMesh) {
       // world-size → pixel-size conversion for the nebula sprites
