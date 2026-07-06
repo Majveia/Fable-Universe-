@@ -105,6 +105,21 @@ the real one.
 
 ![relativistic cruise at 0.93c](docs/screenshots/18-relativistic.png)
 
+And hold **]**: **deep time**. The star's whole life rides a lever — real
+scaling tracks (`t_MS = 10·M^−2.5 Gyr`), the slow main-sequence brightening,
+the red-giant ascent with its radius honest from the Stefan–Boltzmann law
+until it swallows the inner worlds, then a planetary nebula and the long
+white-dwarf cooling — or, past 8 M☉, a live supernova that leaves the
+pulsar spinning in its own remnant. Every planet answers to the changing
+luminosity: the green habitable-zone band migrates outward across the
+system, oceans boil off the old garden worlds and their city lights go
+out, while frozen moons thaw into late seas. `[` rewinds; the lever
+forgives, though the universe would not.
+
+![red giant](docs/screenshots/20-red-giant.png)
+
+![supernova aftermath](docs/screenshots/21-supernova-remnant.png)
+
 ### 4 · The surface — set foot on it
 Every solid world — **and every moon** — can be landed on from its info
 card, and the descent is **continuous**: the same Ashima simplex noise the

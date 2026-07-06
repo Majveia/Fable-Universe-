@@ -19,6 +19,11 @@ import {
 } from './planet.js';
 
 const AU_DRAW = 46;      // display units at 1 AU
+
+// deep-time climate tints
+const SCORCH_TINT = new THREE.Color(0.3, 0.16, 0.09);
+const FREEZE_TINT = new THREE.Color(0.82, 0.86, 0.94);
+const MELT_SEA = new THREE.Color(0.06, 0.22, 0.42);
 const R_EXP = 0.62;      // orbital compression exponent
 
 const TYPE_IDS = { barren: 0, terrestrial: 1, ocean: 2, ice: 3, lava: 4, 'gas giant': 5, 'ice giant': 6 };
@@ -49,8 +54,8 @@ export function systemParams(starSeed) {
   const r = new RNG(hash(starSeed, 0x5f5));
   const name = starName(starSeed);
 
-  // star from the main sequence (with occasional evolved outliers)
-  let mass = r.power(0.25, 5.0, 2.2);
+  // star from the main sequence (IMF reaches the supernova progenitors)
+  let mass = r.power(0.25, 18, 2.2);
   let temp = 5772 * Math.pow(mass, 0.54);
   let lum = Math.pow(mass, 3.6);
   let radiusSun = Math.pow(mass, 0.85);
@@ -315,6 +320,17 @@ export class SystemScale {
     } else {
       this.scene.add(makeSkyDome(P.seed, 18000));
     }
+    // deep time: the star's whole life on a lever ([ and ])
+    this.deep = {
+      on: false,
+      eligible: P.stage === 'main sequence' && !P.binary,
+      x: 0.3,                                   // where "now" sits on the track
+      tMS: 10 * Math.pow(P.mass, -2.5),         // main-sequence lifetime, Gyr
+      massive: P.mass >= 8,
+      snFired: false,
+      flashT: -1,
+    };
+
     // relativistic cruise state (J to engage)
     this.rel = { on: false, beta: 0, target: 0.5, gamma: 1, dir: new THREE.Vector3(0, 0, -1) };
     this._relKeys = new Set();
@@ -374,12 +390,10 @@ export class SystemScale {
         group.add(cloudMesh);
       }
       const posUniform = { value: group.position };
-      {
-        const atmo = new THREE.Mesh(
-          new THREE.SphereGeometry(pp.drawRadius * 1.07, 48, 32),
-          makeAtmosphereMaterial(pp, this.uSunPos, this.uCamPos, posUniform));
-        group.add(atmo);
-      }
+      const atmoMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(pp.drawRadius * 1.07, 48, 32),
+        makeAtmosphereMaterial(pp, this.uSunPos, this.uCamPos, posUniform));
+      group.add(atmoMesh);
       if (pp.hasRings) {
         const ring = new THREE.Mesh(
           new THREE.RingGeometry(pp.drawRadius * 1.45, pp.drawRadius * 2.6, 128, 1),
@@ -417,7 +431,22 @@ export class SystemScale {
         this.allMoons.push(moon);
       }
       this.scene.add(group);
-      this.planetNodes.push({ pp, group, mesh, cloudMesh, moons });
+      // deep time needs to remember each world as it is today
+      const su = mesh.material.uniforms;
+      this.planetNodes.push({
+        pp, group, mesh, cloudMesh, moons,
+        surfU: su,
+        cloudU: cloudMesh ? cloudMesh.material.uniforms : null,
+        atmoU: atmoMesh.material.uniforms,
+        orig: {
+          colA: pp.colA.clone(), colB: pp.colB.clone(), colC: pp.colC.clone(),
+          ocean: su.uOcean.value, city: su.uCity.value, iceCap: su.uIceCap.value,
+          clouds: cloudMesh ? cloudMesh.material.uniforms.uAmt.value : 0,
+          atmo: pp.atmoColor.clone(),
+          Teq0: pp.Teq,
+          albedo: pp.type === 'ice' ? 0.55 : pp.type === 'ocean' ? 0.3 : 0.25,
+        },
+      });
 
       // orbit line in draw space
       const seg = 220, lp = new Float32Array(seg * 3);
@@ -589,6 +618,8 @@ export class SystemScale {
       this.controls.target.copy(this.camera.position).addScaledVector(this.rel.dir, 50);
     }
 
+    this._updateDeepTime(dt);
+
     if (this.playing) this.days += dt * this.speedDays * this.rel.gamma;
     const tY = this.days / 365.25;
     this.uTime.value += dt;
@@ -675,6 +706,10 @@ export class SystemScale {
   speedUp() { this.speedDays = Math.min(this.speedDays * 1.8, 4000); }
   slowDown() { this.speedDays = Math.max(this.speedDays / 1.8, 0.2); }
   timeReadout() {
+    if (this.deep.on) {
+      const tau = this.deep.x * this.deep.tMS;
+      return `τ ${tau >= 10 ? tau.toFixed(1) : tau.toFixed(2)} Gyr · ${this.deep.phase}`;
+    }
     if (this.rel.beta > 0.01) {
       return `β ${this.rel.beta.toFixed(2)} · γ ${this.rel.gamma.toFixed(2)}`;
     }
@@ -685,6 +720,17 @@ export class SystemScale {
 
   hudStats() {
     const P = this.params;
+    if (this.deep.on) {
+      const st = this._stellarState(this.deep.x);
+      return [
+        ['system', P.name],
+        ['stellar age', (this.deep.x * this.deep.tMS).toPrecision(3) + ' Gyr'],
+        ['phase', st.phase],
+        ['luminosity', st.L >= 100 ? st.L.toFixed(0) + ' L☉' : st.L.toFixed(3) + ' L☉'],
+        ['radius', st.R >= 1 ? st.R.toFixed(1) + ' R☉' : st.R.toFixed(3) + ' R☉'],
+        ['surface', Math.round(st.T).toLocaleString() + ' K'],
+      ];
+    }
     if (this.rel.on) {
       return [
         ['system', P.name],
@@ -793,6 +839,196 @@ export class SystemScale {
     if (this._glideT > 2.4) this._glideTo = null;
   }
 
+  // ------------------------------------------------------- deep time ----
+  /** MS luminosity slowly climbs as hydrogen thins in the core */
+  _msBrighten(x) { return 1 + 0.4 * x + 1.1 * Math.pow(x, 6); }
+
+  /**
+   * The star's state as a pure function of track position x = τ/t_MS.
+   * Scaling-relation stellar evolution: honest shapes, compressed drama.
+   */
+  _stellarState(x) {
+    const P = this.params;
+    const L0 = P.lum, T0 = P.temp, x0 = 0.3;
+    const norm = this._msBrighten(x0);
+    const sb = (L, T) => Math.sqrt(Math.max(L, 1e-6)) * Math.pow(5772 / T, 2); // R☉ from Stefan–Boltzmann
+
+    if (x < 1) {
+      const L = L0 * this._msBrighten(x) / norm;
+      const T = T0 * (1 + 0.08 * (x - x0));
+      return { phase: 'main sequence', L, T, R: sb(L, T) };
+    }
+    if (this.deep.massive) {
+      // core collapse: what remains is the pulsar
+      return { phase: 'neutron star', L: 0.25, T: 33000, R: 0.02 };
+    }
+    const Lend = L0 * this._msBrighten(1) / norm;
+    const Tend = T0 * (1 + 0.08 * (1 - x0));
+    if (x < 1.12) {
+      // the red-giant ascent
+      const y = (x - 1) / 0.12;
+      const Lgoal = 2500 * P.mass;
+      const L = Lend * Math.pow(Lgoal / Lend, y);
+      const T = Tend + (3350 - Tend) * Math.min(y * 1.6, 1);
+      return { phase: 'red giant', L, T, R: sb(L, T) };
+    }
+    if (x < 1.16) {
+      // envelope ejection: the core lays itself bare
+      const y = (x - 1.12) / 0.04;
+      const L = 2500 * P.mass * (1 - 0.9 * y);
+      const T = 3350 + (70000 - 3350) * y;
+      return { phase: 'planetary nebula', L, T, R: sb(L, T), pn: y };
+    }
+    // white dwarf, cooling forever
+    const tau = (x - 1.16) * this.deep.tMS;
+    const T = 70000 * Math.pow(1 + tau * 40, -0.35);
+    const R = 0.0125;
+    const L = R * R * Math.pow(T / 5772, 4);
+    return { phase: 'white dwarf', L, T, R };
+  }
+
+  _starDrawROf(Rsun) {
+    return Math.min(Math.max(5.5 * Math.pow(Math.max(Rsun, 1e-4), 0.5), 1.5), 170);
+  }
+
+  _engageDeep() {
+    if (this.deep.on) return;
+    this.deep.on = true;
+    // the habitable zone, made visible so you can watch it migrate
+    this.hzRing = new THREE.Mesh(
+      new THREE.RingGeometry(1, Math.pow(1.4 / 0.75, 0.62), 96, 1),
+      new THREE.MeshBasicMaterial({
+        color: 0x1d5c36, transparent: true, opacity: 0.055,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide, depthWrite: false,
+      }));
+    this.hzRing.rotation.x = Math.PI / 2;
+    this.scene.add(this.hzRing);
+    this.app.hud.setHint('deep time · hold ] to age the star, [ to rewind');
+    this.app.hud.setNote(DEEPTIME_NOTE);
+  }
+
+  _updateDeepTime(dt) {
+    const D = this.deep;
+    if (!D.eligible) return;
+    const fwd = this._relKeys.has('BracketRight');
+    const back = this._relKeys.has('BracketLeft');
+    if (fwd || back) {
+      this._engageDeep();
+      D.x = Math.min(Math.max(D.x + (fwd ? 1 : -1) * dt * 0.11, 0), 3.5);
+    }
+    if (!D.on) return;
+
+    const st = this._stellarState(D.x);
+    D.phase = st.phase;
+    D.L = st.L;
+
+    // -- the star itself
+    const dR = this._starDrawROf(st.R);
+    this.starMesh.scale.setScalar(dR / this.starDrawR);
+    const col = blackbodyRGB(st.T);
+    this.starMesh.material.uniforms.uColor.value.copy(col);
+    const glow = this.starMesh.children.find(c => c.isSprite);
+    if (glow) glow.material.color.copy(col).multiplyScalar(0.8);
+
+    // -- supernova: one violent frame at the crossing
+    if (D.massive && D.x >= 1 && !D.snFired) {
+      D.snFired = true;
+      D.flashT = 0;
+      if (!this.pulsarBeams) this._buildPulsar(new RNG(hash(this.params.seed, 0xdee9)), softDotTexture());
+    }
+    if (D.massive && D.x < 1 && D.snFired) {
+      D.snFired = false; // the lever forgives
+    }
+    const showCorpse = D.massive && D.x >= 1;
+    if (this.pulsarBeams && D.eligible) {
+      this.pulsarBeams.visible = showCorpse;
+      this.pulsarFlash.visible = showCorpse;
+      this.remnant.visible = showCorpse;
+      // beams live under the (rescaled) star mesh — keep their world size
+      const inv = this.starDrawR / dR;
+      this.pulsarBeams.scale.setScalar(inv);
+      this.pulsarFlash.scale.setScalar(26 * inv);
+    }
+    if (D.flashT >= 0) {
+      D.flashT += dt;
+      if (!this.snFlash) {
+        this.snFlash = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: softDotTexture(), color: new THREE.Color(2.5, 2.4, 2.2),
+          blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+        }));
+        this.scene.add(this.snFlash);
+      }
+      const f = D.flashT / 2.6;
+      this.snFlash.visible = f < 1 && showCorpse;
+      this.snFlash.scale.setScalar(30 + 900 * f);
+      this.snFlash.material.opacity = Math.max(1 - f, 0) ** 1.4;
+      if (f >= 1) D.flashT = -1;
+    }
+
+    // -- the shed envelope of a dying sunlike star
+    if (!D.massive) {
+      const pnVis = D.x >= 1.12;
+      if (pnVis && !this.pnShell) {
+        const r = new RNG(hash(this.params.seed, 0x9e11));
+        const tex = nebulaTexture(hash(this.params.seed, 7), 256);
+        this.pnShell = new THREE.Group();
+        for (let i = 0; i < 22; i++) {
+          const z = r.float(-1, 1), th = r.float(0, Math.PI * 2);
+          const s = Math.sqrt(1 - z * z);
+          const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: tex,
+            color: r.chance(0.5) ? new THREE.Color(0.05, 0.14, 0.12) : new THREE.Color(0.13, 0.05, 0.1),
+            blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+            rotation: r.float(0, 6.28),
+          }));
+          sp.position.set(s * Math.cos(th), z * 0.75, s * Math.sin(th));
+          sp.scale.setScalar(r.float(0.35, 0.6));
+          this.pnShell.add(sp);
+        }
+        this.scene.add(this.pnShell);
+      }
+      if (this.pnShell) {
+        this.pnShell.visible = pnVis;
+        if (pnVis) {
+          const grow = Math.min((D.x - 1.12) / 0.1, 1.6);
+          this.pnShell.scale.setScalar(30 + 190 * grow);
+          this.pnShell.rotation.y += dt * 0.01;
+        }
+      }
+    }
+
+    // -- the habitable zone migrates with the luminosity
+    this.hzRing.visible = st.L > 1e-3;
+    this.hzRing.scale.setScalar(drawR(0.75 * Math.sqrt(st.L)));
+
+    // -- and every world answers to it
+    const sm = (a, b, v) => Math.min(Math.max((v - a) / (b - a), 0), 1);
+    for (const node of this.planetNodes) {
+      const o = node.orig, pp = node.pp;
+      const Teq = 278 * Math.pow(Math.max(st.L, 1e-6), 0.25) / Math.sqrt(pp.a) * Math.pow(1 - o.albedo, 0.25);
+      pp.Teq = Math.round(Teq);
+      const scorch = Math.max(sm(330, 560, Teq) - sm(330, 560, o.Teq0), 0);
+      const freeze = Math.max(sm(200, 110, Teq) - sm(200, 110, o.Teq0), 0);
+      const melt = pp.typeId === 3 ? Math.max(sm(235, 290, Teq) - sm(235, 290, o.Teq0), 0) : 0;
+
+      pp.colA.copy(o.colA).lerp(SCORCH_TINT, scorch).lerp(FREEZE_TINT, freeze);
+      pp.colB.copy(o.colB).lerp(SCORCH_TINT, scorch * 0.7).lerp(FREEZE_TINT, freeze);
+      pp.colC.copy(o.colC).lerp(SCORCH_TINT, scorch)
+        .lerp(MELT_SEA, melt * 0.8).lerp(FREEZE_TINT, freeze);
+      if (node.surfU.uOcean) node.surfU.uOcean.value = o.ocean - scorch * 0.9;
+      node.surfU.uIceCap.value = o.iceCap * (1 - melt) + melt * 0.78
+        - freeze * (o.iceCap * (1 - melt) + melt * 0.78);
+      node.surfU.uCity.value = o.city * (1 - sm(0.12, 0.5, scorch)) * (1 - sm(0.25, 0.65, freeze));
+      if (node.cloudU) node.cloudU.uAmt.value = o.clouds * (1 - scorch) * (1 - freeze * 0.85);
+      pp.atmoColor.copy(o.atmo).multiplyScalar((1 - scorch * 0.8) * (1 - freeze * 0.6));
+
+      // the giant star swallows its innermost children
+      const engulfed = dR * 0.98 > drawR(pp.a * (1 - pp.e));
+      node.group.visible = !engulfed;
+    }
+  }
+
   toggleRel() {
     if (!this.skyRel) return;
     this.rel.on = !this.rel.on;
@@ -827,6 +1063,8 @@ export class SystemScale {
     });
   }
 }
+
+export const DEEPTIME_NOTE = `You are holding the star's whole life. The track is real scaling physics: main-sequence lifetime <em>t = 10·M<sup>−2.5</sup> Gyr</em>, the slow brightening that will end Earth's oceans long before our own sun dies, the red-giant ascent with radius from the Stefan–Boltzmann law — watch it swallow the inner worlds, as ours will swallow Mercury. The green band is the habitable zone migrating outward: frozen moons thaw into late oceans even as the old garden worlds scorch and their city lights go out. Sunlike stars shed a planetary nebula and cool forever as white dwarfs; stars past 8 M☉ go by supernova, and what's left is the pulsar. Slide it back — the lever forgives, though the universe would not.`;
 
 export const PULSAR_NOTE = `This star died in a supernova; you are inside the wreckage. What remains is a <em>neutron star</em> — a couple of solar masses squeezed into a city, spinning with lighthouse beams thrown off its magnetic poles, which is why it pulses. The filament shell around you is the explosion, still coasting outward millennia later. Planets here are second-generation worlds: the very first exoplanets ever discovered (PSR B1257+12, 1992) orbit exactly such a corpse. The period in the readout is honest millisecond-pulsar territory; the beams are slowed a millionfold so your eyes can follow them.`;
 
