@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { hash, RNG, starName, planetName } from './rng.js';
-import { makeSkyDome } from './starfield.js';
+import { makeSkyDome, makeGalaxySkyFromWithin } from './starfield.js';
 import { softDotTexture } from './nebula.js';
 import {
   makeSurfaceMaterial, makeCloudMaterial, makeAtmosphereMaterial,
@@ -268,12 +268,32 @@ export class SystemScale {
     this.bloomSettings = { strength: 0.75, radius: 0.65, threshold: 0.0 };
   }
 
+  /** where this system sits inside its parent galaxy (for the true sky) */
+  _galaxyView() {
+    const g = this.app.stack.find(s => s.kind === 'galaxy');
+    if (!g) return null;
+    let pos = this.ctx.galaxyPos;
+    if (!pos) {
+      // deep link — seat the system somewhere plausible in the disk
+      const gr = new RNG(hash(this.ctx.starSeed, 0x6a1a));
+      const rad = g.params.radius * (0.2 + 0.65 * gr.next());
+      const th = gr.float(0, Math.PI * 2);
+      pos = new THREE.Vector3(rad * Math.cos(th), gr.gauss() * g.params.radius * 0.02, rad * Math.sin(th));
+    }
+    return { starData: g.starData, time: g.time, vrot: g.uniforms.uVrot.value, pos };
+  }
+
   _build() {
     const P = this.params;
     const r = new RNG(hash(P.seed, 0xb01d));
 
-    // -- sky
-    this.scene.add(makeSkyDome(P.seed, 18000));
+    // -- sky: the actual galaxy, seen from this star's seat inside it
+    const gview = this._galaxyView();
+    if (gview) {
+      this.scene.add(makeGalaxySkyFromWithin(gview.starData, gview.time, gview.vrot, gview.pos, 17000));
+    } else {
+      this.scene.add(makeSkyDome(P.seed, 18000));
+    }
 
     // -- star (or binary pair)
     const glowTex = softDotTexture();
@@ -307,6 +327,7 @@ export class SystemScale {
 
     // -- planets
     this.planetNodes = [];
+    this.allMoons = [];
     for (const pp of P.planets) {
       const group = new THREE.Group();
       const geo = new THREE.SphereGeometry(pp.drawRadius, 72, 48);
@@ -332,28 +353,38 @@ export class SystemScale {
       if (pp.hasRings) {
         const ring = new THREE.Mesh(
           new THREE.RingGeometry(pp.drawRadius * 1.45, pp.drawRadius * 2.6, 128, 1),
-          makeRingMaterial(pp, this.uSunPos, posUniform));
+          makeRingMaterial(pp, this.uSunPos, posUniform, pp.drawRadius * 1.45, pp.drawRadius * 2.6));
         ring.rotation.x = Math.PI / 2 + pp.tilt * 0.6;
         group.add(ring);
       }
-      // moons
+      // moons — small worlds in their own right; every one is landable
       const moons = [];
       const mr = new RNG(hash(pp.seed, 0x30e));
+      const icy = pp.a > P.frost;
       for (let m = 0; m < pp.moons; m++) {
         const md = pp.drawRadius * mr.float(2.2, 4.6) + m * pp.drawRadius * 0.9;
         const ms = Math.max(pp.drawRadius * mr.float(0.08, 0.2), 0.12);
+        const noiseSeed = mr.float(0, 100);
         const moon = new THREE.Mesh(
           new THREE.SphereGeometry(ms, 20, 14),
           makeSurfaceMaterial({
-            typeId: 0, noiseSeed: mr.float(0, 100), oceanLevel: -1, inhabited: false,
-            colA: new THREE.Color(0.38, 0.37, 0.36), colB: new THREE.Color(0.55, 0.54, 0.52),
-            colC: new THREE.Color(0.25, 0.24, 0.23), iceCap: 2.0,
+            typeId: icy ? 3 : 0, noiseSeed, oceanLevel: -1, inhabited: false,
+            colA: icy ? new THREE.Color(0.68, 0.74, 0.82) : new THREE.Color(0.38, 0.37, 0.36),
+            colB: icy ? new THREE.Color(0.88, 0.92, 0.98) : new THREE.Color(0.55, 0.54, 0.52),
+            colC: icy ? new THREE.Color(0.3, 0.45, 0.6) : new THREE.Color(0.25, 0.24, 0.23),
+            iceCap: icy ? 0.0 : 2.0,
           }, this.uSunPos, this.uCamPos, this.uTime));
         moon.userData.dist = md;
         moon.userData.rate = 2 * Math.PI / (mr.float(4, 40));        // rad per sim-day
         moon.userData.phase = mr.float(0, Math.PI * 2);
+        moon.userData.moonIndex = m;
+        moon.userData.planet = pp;
+        moon.userData.drawR = ms;
+        moon.userData.noiseSeed = noiseSeed;
+        moon.userData.icy = icy;
         group.add(moon);
         moons.push(moon);
+        this.allMoons.push(moon);
       }
       this.scene.add(group);
       this.planetNodes.push({ pp, group, mesh, cloudMesh, moons });
@@ -547,10 +578,14 @@ export class SystemScale {
 
   // ------------------------------------------------------------ input ----
   pick(raycaster) {
-    const meshes = this.planetNodes.map(n => n.mesh);
+    const meshes = this.planetNodes.map(n => n.mesh).concat(this.allMoons);
     const hits = raycaster.intersectObjects(meshes, false);
     if (hits.length) {
-      const pp = hits[0].object.userData.planet;
+      const obj = hits[0].object;
+      if (obj.userData.moonIndex !== undefined) {
+        return { type: 'moon', moon: obj, planet: obj.userData.planet };
+      }
+      const pp = obj.userData.planet;
       return { type: 'planet', planet: pp, index: pp.index };
     }
     const starMeshes = this.secondary
@@ -558,6 +593,39 @@ export class SystemScale {
     const sHit = raycaster.intersectObjects(starMeshes, false);
     if (sHit.length) return { type: 'sun' };
     return null;
+  }
+
+  /** promote a moon mesh to a full landable-world description */
+  moonAsWorld(moon) {
+    const pp = moon.userData.planet;
+    const m = moon.userData.moonIndex;
+    const icy = moon.userData.icy;
+    const ratio = moon.userData.drawR / Math.max(pp.drawRadius, 0.001);
+    const radiusE = Math.max(pp.radiusE * ratio, 0.06);
+    const massE = Math.pow(radiusE, 3) * (icy ? 0.55 : 0.72); // ice vs rock density
+    return {
+      name: pp.name + ' ' + String.fromCharCode(97 + m),
+      type: icy ? 'ice moon' : 'moon',
+      typeId: icy ? 3 : 0,
+      inhabited: false,
+      a: pp.a,
+      massE, radiusE,
+      drawRadius: moon.userData.drawR,
+      Teq: pp.Teq,
+      noiseSeed: moon.userData.noiseSeed,
+      seed: hash(pp.seed, 0x300e, m),
+      periodDays: (2 * Math.PI) / moon.userData.rate,
+      colA: icy ? new THREE.Color(0.68, 0.74, 0.82) : new THREE.Color(0.4, 0.39, 0.37),
+      colB: icy ? new THREE.Color(0.88, 0.92, 0.98) : new THREE.Color(0.58, 0.56, 0.53),
+      colC: icy ? new THREE.Color(0.3, 0.45, 0.6) : new THREE.Color(0.27, 0.25, 0.24),
+      atmoColor: new THREE.Color(0.05, 0.05, 0.07),
+      iceCap: icy ? 0.0 : 2.0,
+      oceanLevel: -1,
+      clouds: 0,
+      moons: 0,
+      hasRings: false,
+      parent: pp,
+    };
   }
 
   focusPlanet(index) {

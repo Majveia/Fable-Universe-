@@ -12,6 +12,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { hash, RNG, galaxyName, starName } from './rng.js';
 import { makeNebulaSprites, softDotTexture, galaxyAtlasTexture } from './nebula.js';
+import { COSMO } from './cosmology.js';
 
 const STAR_VERT = /* glsl */`
   attribute float aR;      // cylindrical radius
@@ -94,6 +95,109 @@ export function galaxyParams(seed) {
   };
 }
 
+/**
+ * Pure, deterministic star-cloud synthesis for a galaxy — used both to render
+ * the galaxy scale and to build the true night sky seen from inside it.
+ */
+export function generateGalaxyStars(P) {
+  const r = new RNG(hash(P.seed, 0x57a55));
+  const N = P.stars;
+  const R = P.radius;
+  const elliptical = P.type === 'elliptical';
+  const irregular = P.type === 'irregular';
+
+  const aR = new Float32Array(N);
+  const aTheta = new Float32Array(N);
+  const aY = new Float32Array(N);
+  const aSize = new Float32Array(N);
+  const aColor = new Float32Array(N * 3);
+  const aPhase = new Float32Array(N);
+  const col = [0, 0, 0];
+
+  const nBulge = Math.floor(N * (elliptical ? 0.86 : 0.22));
+  const nHalo = Math.floor(N * 0.05);
+  const Rd = R * 0.30;                      // exponential disk scale length
+  const armWidth = 0.42;                    // radians of azimuthal scatter
+  const tanP = Math.tan(P.pitch);
+
+  for (let i = 0; i < N; i++) {
+    let rad, th, y, t, size;
+    if (i < nBulge) {
+      // bulge / spheroid — Hernquist-like cusp
+      const u = r.next();
+      const s = (elliptical ? R * 0.55 : R * 0.085) * u / Math.max(1 - u * 0.92, 0.08);
+      const zc = r.float(-1, 1), ph = r.float(0, Math.PI * 2);
+      const sq = Math.sqrt(1 - zc * zc);
+      const flat = elliptical ? r.float(0.55, 0.9) : 0.62;
+      rad = Math.abs(s * sq) + 0.5;
+      th = ph;
+      y = s * zc * flat;
+      t = 0.18 + 0.2 * r.next();                    // old, red-yellow
+      size = 0.7 + 1.3 * Math.pow(r.next(), 3.0);
+    } else if (i < nBulge + nHalo) {
+      // stellar halo + globulars
+      const s = R * (0.35 + 1.05 * Math.pow(r.next(), 1.6));
+      const zc = r.float(-1, 1), ph = r.float(0, Math.PI * 2);
+      const sq = Math.sqrt(1 - zc * zc);
+      rad = s * sq; th = ph; y = s * zc;
+      t = 0.15 + 0.18 * r.next();
+      size = 0.65 + r.next();
+    } else {
+      // disk — exponential in r, sech²-ish in z
+      rad = -Rd * Math.log(1 - r.next() * 0.985) * (irregular ? r.float(0.5, 1.4) : 1);
+      rad = Math.min(rad, R * 1.35);
+      th = r.float(0, Math.PI * 2);
+      const hz = 0.045 * R * (0.4 + rad / R);
+      y = Math.atanh(r.float(-0.96, 0.96)) * hz * 0.5;
+
+      let armBoost = 0;
+      if (!elliptical && !irregular) {
+        // pull azimuth toward the nearest logarithmic spiral arm
+        const armPhase = Math.log(Math.max(rad, 6) / (R * 0.045)) / tanP;
+        const k = Math.round((th - armPhase) / (2 * Math.PI / P.arms));
+        const thArm = armPhase + k * (2 * Math.PI / P.arms);
+        const pull = Math.exp(-Math.pow(rad / R - 0.12, 2) * 0.4); // arms live in the disk
+        const w = armWidth * (0.55 + 0.8 * r.next());
+        const g = r.gauss() * w;
+        if (r.chance(0.62 * pull)) { th = thArm + g; armBoost = Math.exp(-g * g / (armWidth * armWidth)); }
+        // bar: pull inner stars toward an elongated spheroid
+        if (P.barLen > 0 && rad > R * 0.04 && rad < R * P.barLen) {
+          th = Math.round(th / Math.PI) * Math.PI + r.gauss() * (0.22 + 0.5 * rad / (R * P.barLen));
+          armBoost = 0.3;
+        }
+      }
+      if (irregular) {
+        // clumpy star-forming knots
+        const knot = Math.floor(r.next() * 9);
+        const kr = new RNG(hash(P.seed, 0x4e07, knot));
+        rad = Math.min(Math.abs(kr.float(0.1, 0.9) * R + r.gauss() * R * 0.09), R * 1.2);
+        th = kr.float(0, Math.PI * 2) + r.gauss() * 0.24;
+        y = r.gauss() * R * 0.05;
+        armBoost = 0.75;
+      }
+      // stellar population: arms are young & blue, interarm old & warm
+      t = armBoost > 0.35 && r.chance(0.6)
+        ? 0.55 + 0.45 * r.next()
+        : 0.16 + 0.3 * r.next();
+      size = 0.55 + 1.5 * Math.pow(r.next(), 2.6) + (t > 0.75 ? 0.9 : 0);
+    }
+
+    aR[i] = rad;
+    aTheta[i] = th;
+    aY[i] = y;
+    aSize[i] = size;
+    aPhase[i] = r.next() * Math.PI * 2;
+    starColor(Math.min(t + P.hueShift, 1), col);
+    // surface-brightness taming: the dense inner disk would otherwise
+    // stack additively into a white hole
+    const s3 = Math.min(Math.hypot(rad, y * 2.5) / (R * 0.4), 1);
+    const dim = (0.5 + 0.5 * r.next()) * (0.22 + 0.78 * s3 * s3);
+    aColor[i * 3] = col[0] * dim; aColor[i * 3 + 1] = col[1] * dim; aColor[i * 3 + 2] = col[2] * dim;
+  }
+
+  return { aR, aTheta, aY, aSize, aColor, aPhase };
+}
+
 export class GalaxyScale {
   constructor(app, ctx) {
     this.app = app;
@@ -123,101 +227,12 @@ export class GalaxyScale {
 
   _build() {
     const P = this.params;
-    const r = new RNG(hash(P.seed, 0x57a55));
+    const r = new RNG(hash(P.seed, 0xd057));
     const N = P.stars;
     const R = P.radius;
     const elliptical = P.type === 'elliptical';
-    const irregular = P.type === 'irregular';
 
-    const aR = new Float32Array(N);
-    const aTheta = new Float32Array(N);
-    const aY = new Float32Array(N);
-    const aSize = new Float32Array(N);
-    const aColor = new Float32Array(N * 3);
-    const aPhase = new Float32Array(N);
-    const col = [0, 0, 0];
-
-    const nBulge = Math.floor(N * (elliptical ? 0.86 : 0.22));
-    const nHalo = Math.floor(N * 0.05);
-    const Rd = R * 0.30;                      // exponential disk scale length
-    const armWidth = 0.42;                    // radians of azimuthal scatter
-    const tanP = Math.tan(P.pitch);
-
-    for (let i = 0; i < N; i++) {
-      let rad, th, y, t, size;
-      if (i < nBulge) {
-        // bulge / spheroid — Hernquist-like cusp
-        const u = r.next();
-        const s = (elliptical ? R * 0.55 : R * 0.085) * u / Math.max(1 - u * 0.92, 0.08);
-        const zc = r.float(-1, 1), ph = r.float(0, Math.PI * 2);
-        const sq = Math.sqrt(1 - zc * zc);
-        const flat = elliptical ? r.float(0.55, 0.9) : 0.62;
-        rad = Math.abs(s * sq) + 0.5;
-        th = ph;
-        y = s * zc * flat;
-        t = 0.18 + 0.2 * r.next();                    // old, red-yellow
-        size = 0.7 + 1.3 * Math.pow(r.next(), 3.0);
-      } else if (i < nBulge + nHalo) {
-        // stellar halo + globulars
-        const s = R * (0.35 + 1.05 * Math.pow(r.next(), 1.6));
-        const zc = r.float(-1, 1), ph = r.float(0, Math.PI * 2);
-        const sq = Math.sqrt(1 - zc * zc);
-        rad = s * sq; th = ph; y = s * zc;
-        t = 0.15 + 0.18 * r.next();
-        size = 0.65 + r.next();
-      } else {
-        // disk — exponential in r, sech²-ish in z
-        rad = -Rd * Math.log(1 - r.next() * 0.985) * (irregular ? r.float(0.5, 1.4) : 1);
-        rad = Math.min(rad, R * 1.35);
-        th = r.float(0, Math.PI * 2);
-        const hz = 0.045 * R * (0.4 + rad / R);
-        y = Math.atanh(r.float(-0.96, 0.96)) * hz * 0.5;
-
-        let armBoost = 0;
-        if (!elliptical && !irregular) {
-          // pull azimuth toward the nearest logarithmic spiral arm
-          const armPhase = Math.log(Math.max(rad, 6) / (R * 0.045)) / tanP;
-          const k = Math.round((th - armPhase) / (2 * Math.PI / P.arms));
-          const thArm = armPhase + k * (2 * Math.PI / P.arms);
-          const pull = Math.exp(-Math.pow(rad / R - 0.12, 2) * 0.4); // arms live in the disk
-          const w = armWidth * (0.55 + 0.8 * r.next());
-          const g = r.gauss() * w;
-          if (r.chance(0.62 * pull)) { th = thArm + g; armBoost = Math.exp(-g * g / (armWidth * armWidth)); }
-          // bar: pull inner stars toward an elongated spheroid
-          if (P.barLen > 0 && rad > R * 0.04 && rad < R * P.barLen) {
-            th = Math.round(th / Math.PI) * Math.PI + r.gauss() * (0.22 + 0.5 * rad / (R * P.barLen));
-            armBoost = 0.3;
-          }
-        }
-        if (irregular) {
-          // clumpy star-forming knots
-          const knot = Math.floor(r.next() * 9);
-          const kr = new RNG(hash(P.seed, 0x4e07, knot));
-          rad = Math.min(Math.abs(kr.float(0.1, 0.9) * R + r.gauss() * R * 0.09), R * 1.2);
-          th = kr.float(0, Math.PI * 2) + r.gauss() * 0.24;
-          y = r.gauss() * R * 0.05;
-          armBoost = 0.75;
-        }
-        // stellar population: arms are young & blue, interarm old & warm
-        t = armBoost > 0.35 && r.chance(0.6)
-          ? 0.55 + 0.45 * r.next()
-          : 0.16 + 0.3 * r.next();
-        size = 0.55 + 1.5 * Math.pow(r.next(), 2.6) + (t > 0.75 ? 0.9 : 0);
-      }
-
-      aR[i] = rad;
-      aTheta[i] = th;
-      aY[i] = y;
-      aSize[i] = size;
-      aPhase[i] = r.next() * Math.PI * 2;
-      starColor(Math.min(t + P.hueShift, 1), col);
-      // surface-brightness taming: the dense inner disk would otherwise
-      // stack additively into a white hole
-      const s3 = Math.min(Math.hypot(rad, y * 2.5) / (R * 0.4), 1);
-      const dim = (0.5 + 0.5 * r.next()) * (0.22 + 0.78 * s3 * s3);
-      aColor[i * 3] = col[0] * dim; aColor[i * 3 + 1] = col[1] * dim; aColor[i * 3 + 2] = col[2] * dim;
-    }
-
+    const { aR, aTheta, aY, aSize, aColor, aPhase } = generateGalaxyStars(P);
     this.starData = { aR, aTheta, aY, aSize, aColor };
 
     const geo = new THREE.BufferGeometry();
@@ -249,6 +264,60 @@ export class GalaxyScale {
     if (!elliptical) this._buildNebulas();
     this._buildCore();
     this._buildBackdrop();
+    this._buildWebBackdrop();
+  }
+
+  /**
+   * The deepest background: the cosmic web this galaxy actually lives in,
+   * evaluated from the same Zel'dovich displacement field as scale 0 and
+   * projected onto the far sky from this galaxy's node.
+   */
+  _buildWebBackdrop() {
+    const cosmic = this.app.stack[0];
+    if (!cosmic || cosmic.kind !== 'cosmic' || !cosmic.modes) return;
+    let wp = this.ctx.webPos;
+    if (!wp) { // deep link: any consistent seat in the box will do
+      const wr = new RNG(hash(this.params.seed, 0x3eb));
+      wp = new THREE.Vector3(wr.float(-430, 430), wr.float(-430, 430), wr.float(-430, 430));
+    }
+    const D = COSMO.growth(Math.max(cosmic.a, 0.35));
+    const n = 22, BOXC = 900, cell = BOXC / n;
+    const R = this.params.radius * 35;
+    const jr = new RNG(hash(this.params.seed, 0x77eb));
+    const pos = [], col = [];
+    for (let ix = 0; ix < n; ix++)
+      for (let iy = 0; iy < n; iy++)
+        for (let iz = 0; iz < n; iz++) {
+          const qx = (ix + 0.5 + (jr.next() - 0.5) * 0.9) * cell - BOXC / 2;
+          const qy = (iy + 0.5 + (jr.next() - 0.5) * 0.9) * cell - BOXC / 2;
+          const qz = (iz + 0.5 + (jr.next() - 0.5) * 0.9) * cell - BOXC / 2;
+          let dx = 0, dy = 0, dz = 0;
+          for (const m of cosmic.modes) {
+            const kl = Math.hypot(m.k[0], m.k[1], m.k[2]);
+            const s = (m.amp / kl) * Math.sin(m.k[0] * qx + m.k[1] * qy + m.k[2] * qz + m.phase);
+            dx += m.k[0] * s / kl; dy += m.k[1] * s / kl; dz += m.k[2] * s / kl;
+          }
+          const x = qx + D * dx - wp.x;
+          const y = qy + D * dy - wp.y;
+          const z = qz + D * dz - wp.z;
+          const d2 = x * x + y * y + z * z;
+          if (d2 < 3600) continue; // inside our own node
+          const inv = 1 / Math.sqrt(d2);
+          pos.push(x * inv * R, y * inv * R, z * inv * R);
+          const b = Math.min(2600 / d2, 0.28);
+          col.push(0.5 * b, 0.56 * b, b);
+        }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3));
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), R * 1.05);
+    const pts = new THREE.Points(geo, new THREE.PointsMaterial({
+      size: R * 0.008, vertexColors: true, sizeAttenuation: true,
+      map: softDotTexture(64), transparent: true, depthWrite: false, depthTest: false,
+      blending: THREE.AdditiveBlending,
+    }));
+    pts.renderOrder = -1;
+    this.scene.add(pts);
   }
 
   _buildDust(r) {

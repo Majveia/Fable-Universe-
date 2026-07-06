@@ -72,15 +72,26 @@ const IC_FRAG = (K) => /* glsl */`
   }
 `;
 
-// ---- NGP mass deposition ---------------------------------------------------
+// ---- CIC mass deposition ---------------------------------------------------
+// cloud-in-cell: each particle spreads trilinear weights over the 8 cells
+// bracketing it — one pass per corner, blended additively. Far smoother
+// density (and forces) than nearest-grid-point.
 const DEPOSIT_VERT = /* glsl */`
   precision highp float;
   uniform sampler2D uPos;
+  uniform int uCorner;   // 0..7 → (dx, dy, dz) bits
+  out float vWeight;
   ${LAYOUT}
   void main() {
     ivec2 t = ivec2(gl_VertexID % ${PN}, gl_VertexID / ${PN});
     vec3 x = fract(texelFetch(uPos, t, 0).xyz);
-    ivec3 cell = ivec3(x * float(G)) % G;
+    vec3 g = x * float(G) - 0.5;
+    vec3 base = floor(g);
+    vec3 f = g - base;
+    ivec3 corner = ivec3(uCorner & 1, (uCorner >> 1) & 1, (uCorner >> 2) & 1);
+    vec3 cw = mix(1.0 - f, f, vec3(corner));
+    vWeight = cw.x * cw.y * cw.z;
+    ivec3 cell = ivec3(base) + corner;      // cellToTexel wraps periodically
     vec2 uv = (vec2(cellToTexel(cell)) + 0.5) / float(${TEX});
     gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
     gl_PointSize = 1.0;
@@ -88,8 +99,9 @@ const DEPOSIT_VERT = /* glsl */`
 `;
 const DEPOSIT_FRAG = /* glsl */`
   precision highp float;
+  in float vWeight;
   out vec4 frag;
-  void main() { frag = vec4(1.0, 0.0, 0.0, 0.0); }
+  void main() { frag = vec4(vWeight, 0.0, 0.0, 0.0); }
 `;
 
 // ---- Stockham FFT, one axis, one stage ------------------------------------
@@ -141,7 +153,7 @@ const GREEN_FRAG = /* glsl */`
     vec2 d = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0).xy;
     if (k2 < 1.0) { frag = vec4(0.0); return; }   // zero the mean (k = 0)
     float cellW = 1.0 / float(G);
-    float smooth_ = exp(-k2 * cellW * cellW * 1.44);  // NGP noise suppression
+    float smooth_ = exp(-k2 * cellW * cellW * 0.6);   // CIC needs less smoothing
     // Green fn × FFT round-trip normalization (1/G³)
     float g = -1.5 * uOm / (uA * k2) * smooth_ / float(G*G*G);
     frag = vec4(d * g, 0.0, 0.0);
@@ -281,7 +293,7 @@ export class NBodySim {
     depGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e9);
     this.depositPoints = new THREE.Points(depGeo, new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3, vertexShader: DEPOSIT_VERT, fragmentShader: DEPOSIT_FRAG,
-      uniforms: { uPos: { value: null } },
+      uniforms: { uPos: { value: null }, uCorner: { value: 0 } },
       depthTest: false, depthWrite: false, transparent: true,
       blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
       blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
@@ -314,12 +326,20 @@ export class NBodySim {
 
   _depositAndSolve() {
     const r = this.renderer;
-    // deposit
-    this.depositPoints.material.uniforms.uPos.value = this.posA.texture;
+    // deposit (8 CIC corner passes, blended additively — autoClear would
+    // wipe the accumulation between passes, so suspend it)
+    const dep = this.depositPoints.material.uniforms;
+    dep.uPos.value = this.posA.texture;
     r.setRenderTarget(this.density);
     r.setClearColor(0x000000, 0);
     r.clear(true, false, false);
-    r.render(this.depositScene, this.quadCam);
+    const prevAuto = r.autoClear;
+    r.autoClear = false;
+    for (let corner = 0; corner < 8; corner++) {
+      dep.uCorner.value = corner;
+      r.render(this.depositScene, this.quadCam);
+    }
+    r.autoClear = prevAuto;
 
     // forward FFT of counts (real input; imag arrives as 0 via R channel copy)
     let src = this.density, dst = this.fftA, other = this.fftB;

@@ -267,10 +267,10 @@ const STAR_FRAG = /* glsl */`
 `;
 
 const RING_VERT = /* glsl */`
-  varying vec2 vUv;
+  varying vec3 vLocal;
   varying vec3 vW;
   void main() {
-    vUv = uv;
+    vLocal = position;
     vec4 w = modelMatrix * vec4(position, 1.0);
     vW = w.xyz;
     gl_Position = projectionMatrix * viewMatrix * w;
@@ -283,12 +283,16 @@ const RING_FRAG = /* glsl */`
   uniform vec3 uSunPos;
   uniform vec3 uPlanetPos;
   uniform float uPlanetR;
+  uniform float uInner;
+  uniform float uOuter;
   uniform vec3 uColor;
-  varying vec2 vUv;
+  varying vec3 vLocal;
   varying vec3 vW;
   ${NOISE_GLSL}
   void main() {
-    float r = vUv.x; // 0 inner → 1 outer (RingGeometry maps radius to u)
+    // radial coordinate from object space — RingGeometry UVs are planar,
+    // not radial, which once smeared these ringlets into sky-wide streaks
+    float r = clamp((length(vLocal.xy) - uInner) / max(uOuter - uInner, 0.001), 0.0, 1.0);
     // fine ringlets + broad gaps
     float ringlets = fbm3(vec3(r * 40.0, uSeed, uSeed * 2.0)) * 0.5 + 0.5;
     float gaps = smoothstep(0.2, 0.5, abs(fbm3(vec3(r * 7.0, uSeed * 3.1, 1.7))));
@@ -373,13 +377,15 @@ export function makeStarSurfaceMaterial(color, seed, camPosUniform, timeUniform)
   });
 }
 
-export function makeRingMaterial(pp, sunPosUniform, planetPosUniform) {
+export function makeRingMaterial(pp, sunPosUniform, planetPosUniform, inner, outer, planetR) {
   return new THREE.ShaderMaterial({
     uniforms: {
       uSeed: { value: pp.noiseSeed * 1.3 },
       uSunPos: sunPosUniform,
       uPlanetPos: planetPosUniform,
-      uPlanetR: { value: pp.drawRadius },
+      uPlanetR: { value: planetR ?? pp.drawRadius },
+      uInner: { value: inner },
+      uOuter: { value: outer },
       uColor: { value: pp.ringColor },
     },
     vertexShader: RING_VERT,

@@ -5,6 +5,68 @@ import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
 import { softDotTexture, nebulaTexture } from './nebula.js';
 
+/**
+ * The night sky as it truly is from a point inside a galaxy: every one of the
+ * galaxy's rendered stars projected onto the sky sphere with 1/d² brightness.
+ * Stand near the rim and the band thins; near the core and the sky burns.
+ *
+ * `starData` are the arrays from generateGalaxyStars; `time`/`vrot` freeze the
+ * differential rotation at the moment of arrival; the system's own sun (any
+ * star within ~2 units of the viewer) is skipped — it's rendered in person.
+ */
+export function makeGalaxySkyFromWithin(starData, time, vrot, viewerPos, radius) {
+  const group = new THREE.Group();
+  const { aR, aTheta, aY, aColor, aSize } = starData;
+  const N = aR.length;
+  const pos = new Float32Array(N * 3);
+  const col = new Float32Array(N * 3);
+  const K_LUM = 60; // display-unit luminance scale, tuned for the band to glow
+  let j = 0;
+  let bulgeDir = null;
+  for (let i = 0; i < N; i++) {
+    const th = aTheta[i] + (vrot / Math.max(aR[i], 14)) * time;
+    const wx = aR[i] * Math.cos(th) - viewerPos.x;
+    const wy = aY[i] - viewerPos.y;
+    const wz = aR[i] * Math.sin(th) - viewerPos.z;
+    const d2 = wx * wx + wy * wy + wz * wz;
+    if (d2 < 4) continue; // that one is *our* sun
+    const inv = 1 / Math.sqrt(d2);
+    pos[j * 3] = wx * inv * radius;
+    pos[j * 3 + 1] = wy * inv * radius;
+    pos[j * 3 + 2] = wz * inv * radius;
+    const b = Math.min((K_LUM * (0.5 + aSize[i])) / d2, 1.5);
+    col[j * 3] = aColor[i * 3] * b;
+    col[j * 3 + 1] = aColor[i * 3 + 1] * b;
+    col[j * 3 + 2] = aColor[i * 3 + 2] * b;
+    j++;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, j * 3), 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col.subarray(0, j * 3), 3));
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), radius * 1.01);
+  const stars = new THREE.Points(geo, new THREE.PointsMaterial({
+    size: radius * 0.0019, vertexColors: true, sizeAttenuation: true,
+    map: softDotTexture(64), transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  }));
+  group.add(stars);
+
+  // the bulge glows toward galactic center
+  bulgeDir = new THREE.Vector3(-viewerPos.x, -viewerPos.y * 0.4, -viewerPos.z);
+  const dCore = Math.max(bulgeDir.length(), 8);
+  bulgeDir.normalize();
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: softDotTexture(),
+    color: new THREE.Color(1.0, 0.82, 0.6).multiplyScalar(Math.min(30 / dCore, 0.34)),
+    blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+  }));
+  glow.position.copy(bulgeDir).multiplyScalar(radius * 0.97);
+  glow.scale.setScalar(radius * (0.35 + 24 / dCore));
+  group.add(glow);
+
+  return group;
+}
+
 export function makeSkyDome(seed, radius) {
   const group = new THREE.Group();
   const r = new RNG(hash(seed, 0x5c7));

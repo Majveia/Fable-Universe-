@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { Post } from './post.js';
 import { HUD } from './hud.js';
 import { Hyperzoom } from './transition.js';
+import { Ambience } from './audio.js';
 import { CosmicScale, COSMIC_NOTE } from './cosmic.js';
 import { GalaxyScale, GALAXY_NOTE, galaxyParams } from './galaxy.js';
 import { SystemScale, SYSTEM_NOTE } from './system.js';
@@ -41,6 +42,14 @@ class App {
     this.post = new Post(this.renderer);
     this.hud = new HUD(this);
     this.zoom = new Hyperzoom(this);
+    this.audio = new Ambience();
+    const unlock = () => {
+      this.audio.unlock();
+      const s = this.active();
+      this.audio.setScale(s.kind, this._worldInfo(s));
+    };
+    window.addEventListener('pointerdown', unlock, { once: true });
+    window.addEventListener('keydown', unlock, { once: true });
     this.raycaster = new THREE.Raycaster();
     this.raycaster.params.Points.threshold = 2;
     this.pointer = new THREE.Vector2();
@@ -109,6 +118,7 @@ class App {
     this.hud.hideCard();
     if (focusFn) {
       // seamless hyperzoom: fall toward the target, swap mid-motion
+      this.audio.warp('dive');
       this.zoom.dive(this.active(), scale, focusFn, () => {
         this.active().exit();
         this.stack.push(scale);
@@ -130,6 +140,7 @@ class App {
     this.hud.hideCard();
     if (depth === this.stack.length - 2) {
       // single-level ascend: seamless
+      this.audio.warp('ascend');
       const from = this.active();
       this.zoom.ascend(from, this.stack[depth], () => {
         this.stack.pop();
@@ -152,6 +163,10 @@ class App {
     }
   }
 
+  _worldInfo(s) {
+    return s.kind === 'surface' ? { type: s.pp.type, atmo: s.atmo } : null;
+  }
+
   _syncScale() {
     this._reflectUrl();
     const s = this.active();
@@ -161,6 +176,7 @@ class App {
     this.post.tune(s.bloomSettings);
     this.hud.setNote(NOTES[s.kind]);
     this.hud.setHint(HINTS[s.kind]);
+    this.audio.setScale(s.kind, this._worldInfo(s));
     this._crumbs();
   }
 
@@ -211,6 +227,7 @@ class App {
         case 'BracketLeft': s.scrub?.(-1); break;
         case 'BracketRight': s.scrub?.(1); break;
         case 'KeyH': document.querySelectorAll('.hud').forEach(el => el.style.visibility = el.style.visibility === 'hidden' ? '' : 'hidden'); break;
+        case 'KeyM': this.hud.setMuted(this.audio.toggleMute()); break;
         default: s.onKey?.(e.code);
       }
     });
@@ -232,7 +249,11 @@ class App {
 
     if (s.kind === 'cosmic') this._cardGalaxy(hit);
     else if (s.kind === 'galaxy') hit.type === 'core' ? this._cardCore(hit) : this._cardStar(hit);
-    else if (s.kind === 'system') hit.type === 'sun' ? this._cardSun(s) : this._cardPlanet(s, hit);
+    else if (s.kind === 'system') {
+      if (hit.type === 'sun') this._cardSun(s);
+      else if (hit.type === 'moon') this._cardMoon(s, hit);
+      else this._cardPlanet(s, hit);
+    }
   }
 
   _dblclick(e) {
@@ -242,12 +263,14 @@ class App {
     const hit = s.pick?.(this.raycaster, ndc);
     if (!hit) return;
     if (s.kind === 'cosmic') {
-      this.push(new GalaxyScale(this, { galaxySeed: hit.galaxySeed }), () => hit.position);
+      this.push(new GalaxyScale(this, { galaxySeed: hit.galaxySeed, webPos: hit.position.clone() }), () => hit.position);
     } else if (s.kind === 'galaxy') {
       if (hit.type === 'core') {
         this.push(new BlackHoleScale(this, { bhMassMsun: s.params.bhMassMsun }), () => new THREE.Vector3());
       } else {
-        this.push(new SystemScale(this, { starSeed: hit.starSeed }), () => s.starPosAt(hit.index));
+        this.push(
+          new SystemScale(this, { starSeed: hit.starSeed, galaxyPos: hit.position.clone() }),
+          () => s.starPosAt(hit.index));
       }
     } else if (s.kind === 'system' && hit.type === 'planet') {
       s.focusPlanet(hit.index);
@@ -273,7 +296,7 @@ class App {
       flavor: 'A knot in the cosmic web, wound from the collapse you just watched.',
       action: {
         label: 'enter galaxy',
-        cb: () => this.push(new GalaxyScale(this, { galaxySeed: hit.galaxySeed }), () => hit.position),
+        cb: () => this.push(new GalaxyScale(this, { galaxySeed: hit.galaxySeed, webPos: hit.position.clone() }), () => hit.position),
       },
     });
   }
@@ -286,7 +309,8 @@ class App {
       flavor: 'One of two hundred billion. This one has your attention.',
       action: {
         label: 'enter system',
-        cb: () => this.push(new SystemScale(this, { starSeed: hit.starSeed }),
+        cb: () => this.push(
+          new SystemScale(this, { starSeed: hit.starSeed, galaxyPos: hit.position.clone() }),
           () => this.active().starPosAt?.(hit.index) ?? hit.position),
       },
     });
@@ -338,6 +362,35 @@ class App {
     s.focusPlanet(-1);
   }
 
+  _cardMoon(s, hit) {
+    const w = s.moonAsWorld(hit.moon);
+    const g = w.massE / (w.radiusE * w.radiusE);
+    this.hud.showCard({
+      title: w.name,
+      kind: w.type + ' of ' + w.parent.name,
+      rows: [
+        ['radius', w.radiusE.toFixed(2) + ' R⊕'],
+        ['mass', w.massE.toFixed(3) + ' M⊕'],
+        ['surface gravity', g.toFixed(2) + ' g'],
+        ['orbital period', w.periodDays.toFixed(1) + ' d'],
+        ['temperature', w.Teq + ' K'],
+      ],
+      flavor: w.parent.typeId >= 5
+        ? 'From its surface, the giant never moves. It only watches.'
+        : 'A stone attending a stone, both attending the star.',
+      actions: [{
+        label: 'land',
+        cb: () => this.push(
+          new SurfaceScale(this, {
+            planet: w, system: s.params, sunColor: s.starColor,
+            hostIndex: w.parent.index,
+            parentGiant: { pp: w.parent },
+          }),
+          () => hit.moon.getWorldPosition(new THREE.Vector3())),
+      }],
+    });
+  }
+
   _cardPlanet(s, hit) {
     const p = hit.planet;
     const actions = [{ label: 'enter orbit', cb: () => s.focusPlanet(p.index) }];
@@ -345,7 +398,7 @@ class App {
       actions.push({
         label: 'descend to surface',
         cb: () => this.push(
-          new SurfaceScale(this, { planet: p, system: s.params, sunColor: s.starColor }),
+          new SurfaceScale(this, { planet: p, system: s.params, sunColor: s.starColor, hostIndex: p.index }),
           () => s.planetNodes[p.index].group.position),
       });
     }

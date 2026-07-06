@@ -17,14 +17,18 @@ export class HUD {
     this.timectl = el('div', 'timectl');
     this.timectl.innerHTML = `
       <span class="readout" id="time-readout"></span>
+      <button id="t-mute" title="sound (m)">♪</button>
       <button id="t-slow" title="slower">−</button>
       <button id="t-play" title="pause / play">⏸</button>
       <button id="t-fast" title="faster">+</button>`;
     this.readout = this.timectl.querySelector('#time-readout');
     this.playBtn = this.timectl.querySelector('#t-play');
+    this.muteBtn = this.timectl.querySelector('#t-mute');
     this.timectl.querySelector('#t-slow').onclick = () => app.active()?.slowDown?.();
     this.timectl.querySelector('#t-fast').onclick = () => app.active()?.speedUp?.();
     this.playBtn.onclick = () => { app.active()?.togglePlay?.(); };
+    this.muteBtn.onclick = () => this.setMuted(app.audio.toggleMute());
+    if (localStorage.getItem('aeon-mute') === '1') this.setMuted(true);
 
     this.science = el('div', 'science');
     const sciBtn = document.createElement('button');
@@ -74,7 +78,13 @@ export class HUD {
     this.playBtn.textContent = playing ? '⏸' : '▶';
   }
 
+  setMuted(m) {
+    this.muteBtn.textContent = m ? '∅' : '♪';
+    this.muteBtn.style.opacity = m ? 0.45 : 1;
+  }
+
   showCard({ title, kind, rows, flavor, action, actions }) {
+    this.app.audio?.blip();
     const acts = actions || (action ? [action] : []);
     let html = `<h2>${title}</h2><div class="kind">${kind}</div><dl>`;
     for (const [k, v] of rows) html += `<dt>${k}</dt><dd>${v}</dd>`;

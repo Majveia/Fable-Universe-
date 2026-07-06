@@ -78,15 +78,20 @@ Orbital radii are gently compressed (r^0.62) so worlds stay visible — the
 info cards report the true numbers.
 
 ### 4 · The surface — set foot on it
-Every solid world can be **landed on** from its info card. The hyperzoom
-carries you from orbit down onto a heightfield carved from the planet's own
-noise and palette, under a sky whose sun is the system's actual star —
-correct blackbody color, correct angular size for this orbit. Walk with
-WASD (drag to look, Shift to run, `F` to fly), watch the day turn, and on
-inhabited worlds wait for dusk: city glow rises over the ridgeline. Ocean
-worlds put you on an island shore; lava worlds seep light through fissures
-at night. The HUD reports true surface gravity, GM/R², from the world's
-rolled mass and radius.
+Every solid world — **and every moon** — can be landed on from its info
+card. The hyperzoom carries you from orbit down onto a heightfield carved
+from the planet's own noise and palette, under a sky whose sun is the
+system's actual star — correct blackbody color, correct angular size for
+this orbit. Walk with WASD (drag to look, Shift to run, `F` to fly), watch
+the day turn, and on inhabited worlds wait for dusk: city glow rises over
+the ridgeline. Ocean worlds put you on an island shore; lava worlds seep
+light through fissures at night. Stand on the moon of a ringed giant and
+the parent world hangs vast and tidally fixed overhead, rendered by its
+real orbital shader and lit by the local sun — it runs through true phases
+as the day passes. The sibling planets wander the sun's arc at their true
+elongations. The HUD reports true surface gravity, GM/R².
+
+![giant in the sky](docs/screenshots/12-moon-giant.png)
 
 ### 5 · The nucleus — a black hole, computed honestly
 Every pixel's ray is integrated through Schwarzschild spacetime
@@ -99,6 +104,16 @@ as the Event Horizon Telescope observed at M87*.
 
 ## Design
 
+- **One continuous universe**: the system's night sky is not a texture — it
+  is *your* galaxy, all 240k stars projected with 1/d² brightness from your
+  star's true seat in the disk (dive near the core and the sky burns);
+  behind every galaxy, the actual cosmic-web neighborhood it condensed
+  from glimmers at infinity.
+- **It sounds like it looks**: a generative WebAudio score with zero
+  samples — a beating two-tone void in the web, starlight shimmer in
+  galaxies, breathing subs at the horizon of the black hole, and wind
+  shaped by each world's actual atmosphere. Risers accompany every
+  hyperzoom. `M` mutes.
 - **OLED-first**: everything luminous over true black; HDR half-float
   pipeline with selective bloom; hairline typographic HUD that fades away.
 - **Deterministic**: every galaxy, star, planet, name and civilization is a

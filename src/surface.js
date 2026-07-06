@@ -8,7 +8,8 @@
 
 import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
-import { NOISE_GLSL } from './planet.js';
+import { NOISE_GLSL, makeSurfaceMaterial, makeRingMaterial, makeAtmosphereMaterial } from './planet.js';
+import { softDotTexture } from './nebula.js';
 
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
@@ -232,6 +233,8 @@ export class SurfaceScale {
     if (this.seaLevel !== null) this._buildOcean();
     this._buildRocks();
     if (pp.inhabited) this._buildCityGlow();
+    if (ctx.parentGiant) this._buildParentGiant(ctx.parentGiant);
+    this._buildSiblings();
 
     // spawn on land, eyes toward the sunrise
     const spawn = this._findSpawn();
@@ -436,6 +439,84 @@ export class SurfaceScale {
     }
   }
 
+  /**
+   * Standing on a moon: the parent world hangs vast and tidally fixed in the
+   * sky, rendered with its real surface shader and lit by the local sun — so
+   * it runs through true phases as the day turns. Rings included.
+   */
+  _buildParentGiant(pg) {
+    const pp = pg.pp;
+    this.uSunPosFar = { value: new THREE.Vector3(0, 1e7, 0) };
+    const dist = 10000;
+    const R = dist * Math.tan(0.21); // ~24° of sky
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(R, 72, 48),
+      makeSurfaceMaterial(pp, this.uSunPosFar, this.uCam, this.uTime));
+    const az = 0.85, el = 0.4;
+    mesh.position.set(
+      Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)
+    ).multiplyScalar(dist);
+    mesh.rotation.z = 0.35;
+    this.scene.add(mesh);
+    this.giant = mesh;
+
+    const posUniform = { value: mesh.position };
+    const atmo = new THREE.Mesh(
+      new THREE.SphereGeometry(R * 1.05, 48, 32),
+      makeAtmosphereMaterial(pp, this.uSunPosFar, this.uCam, posUniform));
+    atmo.position.copy(mesh.position);
+    this.scene.add(atmo);
+
+    if (pp.hasRings) {
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(R * 1.45, R * 2.6, 160, 1),
+        makeRingMaterial(pp, this.uSunPosFar, posUniform, R * 1.45, R * 2.6, R));
+      ring.position.copy(mesh.position);
+      // oblique seat: keep our line of sight well out of the ring plane
+      const n = mesh.position.clone().normalize().add(new THREE.Vector3(0, 1.35, 0)).normalize();
+      ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+      this.scene.add(ring);
+    }
+  }
+
+  /**
+   * The rest of the system, visible from the ground: sibling worlds placed
+   * along the sun's arc at their true elongations (inner worlds hug the sun;
+   * outer ones can stand at opposition), brightness ∝ r²/d².
+   */
+  _buildSiblings() {
+    const sys = this.app.stack.find(s => s.kind === 'system');
+    const hostIdx = this.ctx.hostIndex;
+    if (!sys || hostIdx === undefined) return;
+    const host = sys.planetNodes[hostIdx];
+    if (!host) return;
+    const p0 = host.group.position;
+    const aSun = Math.atan2(-p0.z, -p0.x);
+    const tex = softDotTexture(64);
+    this.siblings = [];
+    for (const node of sys.planetNodes) {
+      if (node.pp.index === hostIdx) continue;
+      const d = node.group.position.clone().sub(p0);
+      const dist = Math.max(d.length(), 1);
+      let off = Math.atan2(d.z, d.x) - aSun;
+      off = ((off + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      const b = Math.min(900 * node.pp.drawRadius ** 2 / (dist * dist), 0.85);
+      if (b < 0.004) continue;
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: tex,
+        color: node.pp.colA.clone().lerp(new THREE.Color(1, 1, 1), 0.55).multiplyScalar(b),
+        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+      }));
+      sp.scale.setScalar(120 + 380 * Math.min(b, 1));
+      this.scene.add(sp);
+      this.siblings.push({ sp, off, tilt: node.pp.inc * 4 + 0.02 });
+    }
+  }
+
+  _sunDirAt(ph, out) {
+    return out.set(Math.cos(ph) * 0.9, Math.sin(ph), Math.sin(ph * 0.7) * 0.45 + 0.2).normalize();
+  }
+
   // ------------------------------------------------------------ input ----
   _bindInput() {
     this._onKeyDown = (e) => this.keys.add(e.code);
@@ -472,7 +553,21 @@ export class SurfaceScale {
 
     // sun path: tilted circle, so it rises and sets off-axis
     const ph = this.sunPhase;
-    this.uSunDir.value.set(Math.cos(ph) * 0.9, Math.sin(ph), Math.sin(ph * 0.7) * 0.45 + 0.2).normalize();
+    this._sunDirAt(ph, this.uSunDir.value);
+    if (this.giant) {
+      this.uSunPosFar.value.copy(this.uSunDir.value).multiplyScalar(1e7);
+      this.giant.rotation.y += dt * 0.004; // the giant's own slow day
+    }
+    if (this.siblings) {
+      const night = 1 - Math.min(Math.max((this.uSunDir.value.y + 0.1) * 3, 0), 1) * 0.75;
+      const dir = new THREE.Vector3();
+      for (const s of this.siblings) {
+        this._sunDirAt(ph + s.off, dir);
+        dir.y += s.tilt;
+        s.sp.position.copy(dir.normalize()).multiplyScalar(15500);
+        s.sp.material.opacity = night;
+      }
+    }
     if (this.dirLight) {
       this.dirLight.position.copy(this.uSunDir.value).multiplyScalar(100);
       const day = Math.max(this.uSunDir.value.y, 0);
