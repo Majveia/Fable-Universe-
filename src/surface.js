@@ -11,6 +11,7 @@ import { hash, RNG } from './rng.js';
 import { NOISE_GLSL, makeSurfaceMaterial, makeRingMaterial, makeAtmosphereMaterial } from './planet.js';
 import { softDotTexture } from './nebula.js';
 import { addLife, isBiosphere } from './life.js';
+import { addSettlement } from './settlement.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 
 const EXT = 1400;            // terrain extent, ~metres
@@ -238,6 +239,7 @@ export class SurfaceScale {
     if (ctx.parentGiant) this._buildParentGiant(ctx.parentGiant);
     this._buildSiblings();
     this.life = addLife(this);
+    this.settlement = addSettlement(this);
 
     // spawn on land, eyes toward the sunrise
     const spawn = this.spawn;
@@ -731,6 +733,7 @@ export class SurfaceScale {
       for (const g of this.cityGlows) g.material.opacity = night * 0.5;
     }
     if (this.life) this.life.update(dt, this.uSunDir.value.y);
+    if (this.settlement) this.settlement.update(dt, this.uSunDir.value.y);
 
     // movement (skip while the hyperzoom still owns the camera)
     if (this.controls.enabled) {

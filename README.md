@@ -64,7 +64,9 @@ companion while counter-tails sling outward; nothing is keyframed.
 
 Otherwise: a quarter-million stars seeded from the node you clicked: exponential disk,
 Hernquist bulge, globular halo, and logarithmic **density-wave arms** traced
-by hot young blue stars and Hα/OIII star-forming nebulae, with dust lanes
+by hot young blue stars and Hα/OIII star-forming nebulae — a handful of
+them **volumetric**: bounding spheres whose fragments raymarch emission
+through 3D noise density, clouds with real depth and parallax — with dust lanes
 that genuinely absorb the starlight behind them (reverse-subtract blending).
 Rotation is differential — a flat rotation curve, the dark-matter signature —
 computed live in the shader. Spirals, barred spirals, ellipticals and
@@ -92,6 +94,17 @@ perihelion. Some temperate worlds are inhabited; look at their night side.
 Orbital radii are gently compressed (r^0.62) so worlds stay visible — the
 info cards report the true numbers.
 
+And press **J**: the ship runs **relativistic**. The galactic sky obeys
+special relativity star by star, computed in the vertex shader — exact
+aberration `cosθ' = (cosθ+β)/(1+βcosθ)` crowds the stars ahead, the Doppler
+factor `δ = 1/(γ(1−βcosθ'))` walks each star's blackbody color along a
+temperature ramp (blue-white ahead, embers behind), intensity beams as δ³
+(the headlight effect), and the system's clocks visibly outrun yours by γ —
+throttle to 0.985c and watch a year pass in your minute. Every formula is
+the real one.
+
+![relativistic cruise at 0.93c](docs/screenshots/18-relativistic.png)
+
 ### 4 · The surface — set foot on it
 Every solid world — **and every moon** — can be landed on from its info
 card, and the descent is **continuous**: the same Ashima simplex noise the
@@ -118,9 +131,15 @@ elongations. The HUD reports true surface gravity, GM/R².
 ![giant in the sky](docs/screenshots/12-moon-giant.png)
 
 Worlds in the liquid-water band grow a **biosphere**: alien flora in a
-palette seeded by the world itself, flocks of skimmers riding boid rules,
-and — after dark on inhabited worlds — drifting bioluminescent spores.
-Your own moons cross the sky with true phases.
+palette seeded by the world itself, winged skimmers that beat and bank
+through boid flocks (flap computed in the vertex shader), tall two-legged
+striders grazing the hills with a true antiphase gait, and — after dark on
+inhabited worlds — drifting bioluminescent spores. Inhabited worlds keep a
+**settlement** near the landing site: towers whose procedurally-drawn
+windows light one by one with the dusk, beacon masts blinking at the edge
+of town. Your own moons cross the sky with true phases.
+
+![settlement at dusk](docs/screenshots/19-settlement-night.png)
 
 ![biosphere](docs/screenshots/15-biosphere.png)
 

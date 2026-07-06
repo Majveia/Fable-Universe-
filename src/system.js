@@ -309,10 +309,19 @@ export class SystemScale {
     // -- sky: the actual galaxy, seen from this star's seat inside it
     const gview = this._galaxyView();
     if (gview) {
-      this.scene.add(makeGalaxySkyFromWithin(gview.starData, gview.time, gview.vrot, gview.pos, 17000));
+      const sky = makeGalaxySkyFromWithin(gview.starData, gview.time, gview.vrot, gview.pos, 17000);
+      this.scene.add(sky);
+      this.skyRel = sky.userData.rel;
     } else {
       this.scene.add(makeSkyDome(P.seed, 18000));
     }
+    // relativistic cruise state (J to engage)
+    this.rel = { on: false, beta: 0, target: 0.5, gamma: 1, dir: new THREE.Vector3(0, 0, -1) };
+    this._relKeys = new Set();
+    this._relKd = (e) => this._relKeys.add(e.code);
+    this._relKu = (e) => this._relKeys.delete(e.code);
+    window.addEventListener('keydown', this._relKd);
+    window.addEventListener('keyup', this._relKu);
 
     // -- star (or binary pair)
     const glowTex = softDotTexture();
@@ -558,7 +567,29 @@ export class SystemScale {
 
   // ------------------------------------------------------------- loop ----
   update(dt) {
-    if (this.playing) this.days += dt * this.speedDays;
+    // relativistic cruise: your second is γ of everyone else's
+    if (this.rel.on) {
+      if (this._relKeys.has('KeyW')) this.rel.target = Math.min(this.rel.target + dt * 0.35, 0.985);
+      if (this._relKeys.has('KeyS')) this.rel.target = Math.max(this.rel.target - dt * 0.5, 0.02);
+      this.rel.beta += (this.rel.target - this.rel.beta) * (1 - Math.exp(-1.6 * dt));
+    } else if (this.rel.beta > 0.001) {
+      this.rel.beta *= Math.exp(-2.5 * dt);
+    } else {
+      this.rel.beta = 0;
+    }
+    this.rel.gamma = 1 / Math.sqrt(Math.max(1 - this.rel.beta * this.rel.beta, 1e-6));
+    if (this.skyRel) {
+      this.skyRel.uBeta.value = this.rel.beta;
+      this.skyRel.uDir.value.copy(this.rel.dir);
+    }
+    if (this.rel.beta > 0.001) {
+      const v = 60 + 2600 * this.rel.beta ** 3;
+      this.camera.position.addScaledVector(this.rel.dir, v * dt);
+      if (this.camera.position.length() > 13000) this.camera.position.setLength(13000);
+      this.controls.target.copy(this.camera.position).addScaledVector(this.rel.dir, 50);
+    }
+
+    if (this.playing) this.days += dt * this.speedDays * this.rel.gamma;
     const tY = this.days / 365.25;
     this.uTime.value += dt;
 
@@ -644,6 +675,9 @@ export class SystemScale {
   speedUp() { this.speedDays = Math.min(this.speedDays * 1.8, 4000); }
   slowDown() { this.speedDays = Math.max(this.speedDays / 1.8, 0.2); }
   timeReadout() {
+    if (this.rel.beta > 0.01) {
+      return `β ${this.rel.beta.toFixed(2)} · γ ${this.rel.gamma.toFixed(2)}`;
+    }
     const y = this.days / 365.25;
     const t = y >= 1 ? y.toFixed(2) + ' yr' : this.days.toFixed(0) + ' d';
     return `T+${t} · ${this.speedDays.toFixed(0)} d/s`;
@@ -651,6 +685,15 @@ export class SystemScale {
 
   hudStats() {
     const P = this.params;
+    if (this.rel.on) {
+      return [
+        ['system', P.name],
+        ['velocity', 'β = ' + this.rel.beta.toFixed(3) + ' c'],
+        ['lorentz factor', 'γ = ' + this.rel.gamma.toFixed(2)],
+        ['time dilation', '1 s aboard = ' + this.rel.gamma.toFixed(2) + ' s here'],
+        ['sky', 'aberration + Doppler + δ³ beaming'],
+      ];
+    }
     return [
       ['system', P.name],
       ['star', P.pulsar
@@ -750,13 +793,34 @@ export class SystemScale {
     if (this._glideT > 2.4) this._glideTo = null;
   }
 
-  onKey() { return false; }
+  toggleRel() {
+    if (!this.skyRel) return;
+    this.rel.on = !this.rel.on;
+    if (this.rel.on) {
+      this.focusPlanet(-1);
+      this.camera.getWorldDirection(this.rel.dir);
+      this.rel.target = Math.max(this.rel.target, 0.5);
+      this.controls.enabled = false;
+      this.app.hud.setHint('relativistic cruise · w faster, s slower · j to disengage');
+    } else {
+      this.controls.enabled = true;
+      this.controls.target.copy(this.camera.position).addScaledVector(this.rel.dir, 120);
+      this.app.hud.setHint('');
+    }
+  }
+
+  onKey(code) {
+    if (code === 'KeyJ') { this.toggleRel(); return true; }
+    return false;
+  }
   enter() {}
   exit() { this.controls.enabled = false; }
-  resume() { this.controls.enabled = true; }
+  resume() { if (!this.rel.on) this.controls.enabled = true; }
 
   dispose() {
     this.controls.dispose();
+    window.removeEventListener('keydown', this._relKd);
+    window.removeEventListener('keyup', this._relKu);
     this.scene.traverse(o => {
       if (o.geometry) o.geometry.dispose();
       if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
@@ -766,4 +830,4 @@ export class SystemScale {
 
 export const PULSAR_NOTE = `This star died in a supernova; you are inside the wreckage. What remains is a <em>neutron star</em> — a couple of solar masses squeezed into a city, spinning with lighthouse beams thrown off its magnetic poles, which is why it pulses. The filament shell around you is the explosion, still coasting outward millennia later. Planets here are second-generation worlds: the very first exoplanets ever discovered (PSR B1257+12, 1992) orbit exactly such a corpse. The period in the readout is honest millisecond-pulsar territory; the beams are slowed a millionfold so your eyes can follow them.`;
 
-export const SYSTEM_NOTE = `Every orbit here is honest mechanics: periods follow Kepler's third law (<em>P² = a³/M★</em>) and positions come from solving Kepler's equation <em>M = E − e·sin E</em> by Newton's method each frame. The star's color is its blackbody spectrum; its temperature and luminosity follow main-sequence scaling from the mass this seed drew. Radial distances are gently compressed for visibility — the numbers in the cards are the true ones. Click a world to read it; click again to enter orbit. Speed up time and watch the inner worlds whirl while the outer giants creep.`;
+export const SYSTEM_NOTE = `Every orbit here is honest mechanics: periods follow Kepler's third law (<em>P² = a³/M★</em>) and positions come from solving Kepler's equation <em>M = E − e·sin E</em> by Newton's method each frame. The star's color is its blackbody spectrum; its temperature and luminosity follow main-sequence scaling from the mass this seed drew. Radial distances are gently compressed for visibility — the numbers in the cards are the true ones. Click a world to read it; click again to enter orbit. And press <em>J</em>: the ship runs relativistic, and the galactic sky obeys special relativity star by star — exact aberration crowds the stars ahead, the Doppler factor walks each one along the blackbody ramp (blue ahead, ember behind), intensity beams as δ³, and the system's clocks visibly outrun yours by γ. Every formula is the real one.`;

@@ -3,6 +3,89 @@
 
 import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
+import { NOISE_GLSL } from './planet.js';
+
+// ------------------------------------------------ volumetric nebulae ------
+// A bounding sphere rendered back-face; each fragment marches a ray through
+// the volume accumulating emission from 3D fbm density. Real depth, real
+// parallax — clouds you can orbit.
+
+const VOLNEB_VERT = /* glsl */`
+  varying vec3 vW;
+  void main() {
+    vW = (modelMatrix * vec4(position, 1.0)).xyz;
+    gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0);
+  }
+`;
+
+const VOLNEB_FRAG = /* glsl */`
+  precision highp float;
+  uniform vec3 uCenter;
+  uniform float uR;
+  uniform vec3 uCam;
+  uniform vec3 uColA;
+  uniform vec3 uColB;
+  uniform float uSeed;
+  uniform float uGain;
+  varying vec3 vW;
+  ${NOISE_GLSL}
+
+  void main() {
+    vec3 rd = normalize(vW - uCam);
+    vec3 oc = uCam - uCenter;
+    float b = dot(oc, rd);
+    float c = dot(oc, oc) - uR * uR;
+    float disc = b * b - c;
+    if (disc < 0.0) discard;
+    float sq = sqrt(disc);
+    float t0 = max(-b - sq, 0.0);
+    float t1 = -b + sq;
+    if (t1 <= t0) discard;
+
+    const int STEPS = 16;
+    float dt = (t1 - t0) / float(STEPS);
+    vec3 acc = vec3(0.0);
+    vec3 sd = vec3(uSeed * 3.1, uSeed * 7.7, uSeed * 1.9);
+    for (int i = 0; i < STEPS; i++) {
+      float t = t0 + (float(i) + 0.5) * dt;
+      vec3 p = (uCam + rd * t - uCenter) / uR;
+      float rad = length(p);
+      float n = fbm3(p * 2.4 + sd) * 0.5 + 0.5;
+      float dens = smoothstep(0.32, 0.8, n) * smoothstep(1.0, 0.3, rad);
+      float hue = fbm3(p * 1.2 - sd) * 0.5 + 0.5;
+      acc += mix(uColA, uColB, hue) * dens;
+    }
+    acc *= uGain / float(STEPS);
+    acc = acc / (1.0 + acc * 1.6);   // shoulder: stay luminous, never foggy
+    gl_FragColor = vec4(acc, 1.0);
+  }
+`;
+
+/** an emission nebula with genuine volume — additive, orbitable */
+export function makeVolumetricNebula(seed, radius, colA, colB, camPosUniform, gain = 1.4) {
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 24, 16),
+    new THREE.ShaderMaterial({
+      uniforms: {
+        uCenter: { value: new THREE.Vector3() },
+        uR: { value: radius },
+        uCam: camPosUniform,
+        uColA: { value: colA },
+        uColB: { value: colB },
+        uSeed: { value: (seed % 100) + 0.37 },
+        uGain: { value: gain },
+      },
+      vertexShader: VOLNEB_VERT,
+      fragmentShader: VOLNEB_FRAG,
+      side: THREE.BackSide,
+      blending: THREE.AdditiveBlending,
+      transparent: true, depthWrite: false, depthTest: false,
+    }));
+  mesh.onBeforeRender = () => {
+    mesh.getWorldPosition(mesh.material.uniforms.uCenter.value);
+  };
+  return mesh;
+}
 
 // -------------------------------------------------------- noise canvas ----
 

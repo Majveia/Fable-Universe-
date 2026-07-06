@@ -4,6 +4,70 @@
 import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
 import { softDotTexture, nebulaTexture } from './nebula.js';
+import { blackbodyRGB } from './planet.js';
+
+// Blackbody color ramp, log-spaced 1500 K → 30000 K (T = 1500·20^u)
+let _rampTex = null, _rampCols = null;
+function blackbodyRamp() {
+  if (_rampTex) return { tex: _rampTex, cols: _rampCols };
+  const N = 128;
+  const data = new Uint8Array(N * 4);
+  _rampCols = [];
+  for (let i = 0; i < N; i++) {
+    const T = 1500 * Math.pow(20, i / (N - 1));
+    const c = blackbodyRGB(T);
+    data[i * 4] = c.r * 255; data[i * 4 + 1] = c.g * 255; data[i * 4 + 2] = c.b * 255; data[i * 4 + 3] = 255;
+    _rampCols.push(c);
+  }
+  _rampTex = new THREE.DataTexture(data, N, 1, THREE.RGBAFormat);
+  _rampTex.minFilter = _rampTex.magFilter = THREE.LinearFilter;
+  _rampTex.needsUpdate = true;
+  return { tex: _rampTex, cols: _rampCols };
+}
+
+// Special relativity, star by star: exact aberration, Doppler-shifted
+// blackbody color (T' = Tδ walks the ramp), and δ³ headlight beaming.
+const RELSKY_VERT = /* glsl */`
+  uniform float uBeta;
+  uniform vec3 uDir;
+  uniform sampler2D uRamp;
+  uniform float uPx;
+  uniform float uRadius;
+  attribute float aBright;
+  attribute float aTemp;
+  varying vec3 vCol;
+  void main() {
+    vec3 d = normalize(position);
+    float b = uBeta;
+    float ct = dot(d, uDir);
+    float gam = 1.0 / sqrt(max(1.0 - b * b, 1e-6));
+    float ctp = clamp((ct + b) / (1.0 + b * ct), -1.0, 1.0);
+    vec3 perp = d - uDir * ct;
+    float pl = length(perp);
+    vec3 dp = pl > 1e-4
+      ? normalize(uDir * ctp + perp * (sqrt(max(1.0 - ctp * ctp, 0.0)) / pl))
+      : d;
+    float dopp = 1.0 / (gam * (1.0 - b * ctp));
+    float u = clamp(aTemp + log(dopp) / 2.9957, 0.02, 0.98); // ln(20)
+    vec3 col = texture2D(uRamp, vec2(u, 0.5)).rgb;
+    float br = aBright * min(pow(dopp, 3.0), 18.0);
+    vCol = min(col * br, vec3(3.0));
+    vec4 mv = modelViewMatrix * vec4(dp * uRadius, 1.0);
+    gl_PointSize = clamp(uPx * (1.15 + 0.9 * min(br, 2.0)), 1.0, 5.5);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const RELSKY_FRAG = /* glsl */`
+  precision highp float;
+  varying vec3 vCol;
+  void main() {
+    vec2 c = gl_PointCoord - 0.5;
+    float r2 = dot(c, c);
+    if (r2 > 0.25) discard;
+    gl_FragColor = vec4(vCol * exp(-r2 * 13.0), 1.0);
+  }
+`;
 
 /**
  * The night sky as it truly is from a point inside a galaxy: every one of the
@@ -18,8 +82,10 @@ export function makeGalaxySkyFromWithin(starData, time, vrot, viewerPos, radius)
   const group = new THREE.Group();
   const { aR, aTheta, aY, aColor, aSize } = starData;
   const N = aR.length;
+  const ramp = blackbodyRamp();
   const pos = new Float32Array(N * 3);
-  const col = new Float32Array(N * 3);
+  const bright = new Float32Array(N);
+  const temp = new Float32Array(N);
   const K_LUM = 60; // display-unit luminance scale, tuned for the band to glow
   let j = 0;
   let bulgeDir = null;
@@ -35,21 +101,40 @@ export function makeGalaxySkyFromWithin(starData, time, vrot, viewerPos, radius)
     pos[j * 3 + 1] = wy * inv * radius;
     pos[j * 3 + 2] = wz * inv * radius;
     const b = Math.min((K_LUM * (0.5 + aSize[i])) / d2, 1.5);
-    col[j * 3] = aColor[i * 3] * b;
-    col[j * 3 + 1] = aColor[i * 3 + 1] * b;
-    col[j * 3 + 2] = aColor[i * 3 + 2] * b;
+    // estimate a blackbody temperature from the star's color, so the
+    // relativistic Doppler shift can walk it along the ramp honestly
+    const r0 = aColor[i * 3], g0 = aColor[i * 3 + 1], b0 = aColor[i * 3 + 2];
+    const rb = b0 / Math.max(r0, 1e-4);
+    const T = Math.min(Math.max(6400 * Math.pow(rb, 2.2), 1600), 28000);
+    const u = Math.log(T / 1500) / Math.log(20);
+    temp[j] = u;
+    const rc = ramp.cols[Math.min(Math.max((u * 127) | 0, 0), 127)];
+    const lum0 = 0.35 * r0 + 0.55 * g0 + 0.1 * b0;
+    const lumR = 0.35 * rc.r + 0.55 * rc.g + 0.1 * rc.b;
+    bright[j] = b * lum0 / Math.max(lumR, 0.05);
     j++;
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, j * 3), 3));
-  geo.setAttribute('color', new THREE.BufferAttribute(col.subarray(0, j * 3), 3));
+  geo.setAttribute('aBright', new THREE.BufferAttribute(bright.subarray(0, j), 1));
+  geo.setAttribute('aTemp', new THREE.BufferAttribute(temp.subarray(0, j), 1));
   geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), radius * 1.01);
-  const stars = new THREE.Points(geo, new THREE.PointsMaterial({
-    size: radius * 0.0019, vertexColors: true, sizeAttenuation: true,
-    map: softDotTexture(64), transparent: true, depthWrite: false,
+  const relUniforms = {
+    uBeta: { value: 0 },
+    uDir: { value: new THREE.Vector3(0, 0, -1) },
+    uRamp: { value: ramp.tex },
+    uPx: { value: Math.min(window.devicePixelRatio, 2) },
+    uRadius: { value: radius },
+  };
+  const stars = new THREE.Points(geo, new THREE.ShaderMaterial({
+    uniforms: relUniforms,
+    vertexShader: RELSKY_VERT,
+    fragmentShader: RELSKY_FRAG,
+    transparent: true, depthWrite: false, depthTest: false,
     blending: THREE.AdditiveBlending,
   }));
   group.add(stars);
+  group.userData.rel = relUniforms;
 
   // the bulge glows toward galactic center
   bulgeDir = new THREE.Vector3(-viewerPos.x, -viewerPos.y * 0.4, -viewerPos.z);

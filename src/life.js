@@ -117,11 +117,53 @@ export function addLife(s) {
   s.scene.add(trunks); s.scene.add(canopies);
 
   // -------------------------------------------------------- skimmers ----
+  // real bodies now: a fuselage and two wings that beat in the vertex
+  // shader, banking into their turns
   const NB = 30;
-  const boids = new THREE.InstancedMesh(
-    new THREE.ConeGeometry(0.55, 2.6, 4),
-    new THREE.MeshStandardMaterial({ color: 0x1b1d22, roughness: 0.8 }),
-    NB);
+  const skimGeo = (() => {
+    const verts = [
+      // fuselage diamond (double-sided via DoubleSide)
+      0, 0, -1.5, -0.24, 0, 0.15, 0.24, 0, 0.15,
+      -0.24, 0, 0.15, 0, 0, 1.15, 0.24, 0, 0.15,
+      // left wing
+      -0.2, 0, -0.25, -1.75, 0.02, 0.5, -0.25, 0, 0.55,
+      // right wing
+      0.2, 0, -0.25, 0.25, 0, 0.55, 1.75, 0.02, 0.5,
+    ];
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3));
+    return geo;
+  })();
+  const phases = new Float32Array(NB);
+  for (let i = 0; i < NB; i++) phases[i] = r.float(0, 6.28);
+  skimGeo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(phases, 1));
+  const skimMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uColor: { value: new THREE.Color(0x16181d) } },
+    vertexShader: /* glsl */`
+      attribute float aPhase;
+      uniform float uTime;
+      varying float vShade;
+      void main() {
+        vec3 p = position;
+        float wing = smoothstep(0.18, 0.5, abs(p.x));
+        float flap = sin(uTime * (6.5 + fract(aPhase) * 2.5) + aPhase * 17.0);
+        p.y += abs(p.x) * flap * 0.55 * wing;
+        vShade = 0.75 + 0.25 * flap * wing;
+        #ifdef USE_INSTANCING
+          vec4 w = modelMatrix * instanceMatrix * vec4(p, 1.0);
+        #else
+          vec4 w = modelMatrix * vec4(p, 1.0);
+        #endif
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }`,
+    fragmentShader: /* glsl */`
+      precision highp float;
+      uniform vec3 uColor;
+      varying float vShade;
+      void main() { gl_FragColor = vec4(uColor * vShade, 1.0); }`,
+    side: THREE.DoubleSide,
+  });
+  const boids = new THREE.InstancedMesh(skimGeo, skimMat, NB);
   const bp = [], bv = [];
   const center = new THREE.Vector3(r.float(-200, 200), 60, r.float(-200, 200));
   for (let i = 0; i < NB; i++) {
@@ -130,6 +172,85 @@ export function addLife(s) {
   }
   s.scene.add(boids);
   const wander = { t: 0 };
+
+  // -------------------------------------------------------- striders ----
+  // tall two-legged grazers, legs swinging in true antiphase
+  let striders = null, strState = null;
+  const strMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uColor: { value: canopyColor.clone().multiplyScalar(0.45) } },
+    vertexShader: /* glsl */`
+      attribute float aLimb;   // 0 body · +1 right leg · −1 left leg
+      attribute float aPhase;
+      uniform float uTime;
+      varying float vShade;
+      void main() {
+        vec3 p = position;
+        float gait = uTime * 3.1 + aPhase;
+        if (abs(aLimb) > 0.5) {
+          float sw = sin(gait + (aLimb > 0.0 ? 0.0 : 3.14159)) * 0.42;
+          float hip = 2.3;
+          vec2 rel = vec2(p.z, p.y - hip);
+          p.z = rel.x * cos(sw) - rel.y * sin(sw);
+          p.y = hip + rel.x * sin(sw) + rel.y * cos(sw);
+        } else {
+          p.y += 0.07 * sin(gait * 2.0); // the walk's bob
+        }
+        vShade = 0.65 + 0.35 * smoothstep(0.0, 3.4, p.y);
+        #ifdef USE_INSTANCING
+          vec4 w = modelMatrix * instanceMatrix * vec4(p, 1.0);
+        #else
+          vec4 w = modelMatrix * vec4(p, 1.0);
+        #endif
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }`,
+    fragmentShader: /* glsl */`
+      precision highp float;
+      uniform vec3 uColor;
+      varying float vShade;
+      void main() { gl_FragColor = vec4(uColor * vShade, 1.0); }`,
+    side: THREE.DoubleSide,
+  });
+  if (r.chance(0.7)) {
+    const parts = [];
+    const box = (w, h, dpt, cx, cy, cz, limb) => {
+      const g = new THREE.BoxGeometry(w, h, dpt);
+      g.translate(cx, cy, cz);
+      const pos = g.attributes.position;
+      for (let i = 0; i < pos.count; i++) parts.push([pos.getX(i), pos.getY(i), pos.getZ(i), limb]);
+      for (const ii of g.index.array) partsIdx.push(ii + baseOffset);
+      baseOffset += pos.count;
+      g.dispose();
+    };
+    let partsIdx = [], baseOffset = 0;
+    box(0.7, 0.55, 1.5, 0, 2.5, 0, 0);        // torso
+    box(0.16, 1.1, 0.16, 0, 3.3, -0.75, 0);   // neck
+    box(0.3, 0.22, 0.55, 0, 3.9, -0.95, 0);   // head
+    box(0.13, 2.35, 0.2, 0.24, 1.18, 0, 1);   // right leg
+    box(0.13, 2.35, 0.2, -0.24, 1.18, 0, -1); // left leg
+    const NS = 5;
+    const pArr = new Float32Array(parts.length * 3);
+    const lArr = new Float32Array(parts.length);
+    parts.forEach((v, i) => { pArr[i * 3] = v[0]; pArr[i * 3 + 1] = v[1]; pArr[i * 3 + 2] = v[2]; lArr[i] = v[3]; });
+    const sgeo = new THREE.BufferGeometry();
+    sgeo.setAttribute('position', new THREE.BufferAttribute(pArr, 3));
+    sgeo.setAttribute('aLimb', new THREE.BufferAttribute(lArr, 1));
+    sgeo.setIndex(partsIdx);
+    const sph = new Float32Array(NS);
+    for (let i = 0; i < NS; i++) sph[i] = r.float(0, 6.28);
+    sgeo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(sph, 1));
+    striders = new THREE.InstancedMesh(sgeo, strMat, NS);
+    strState = [];
+    for (let i = 0; i < NS; i++) {
+      let x = 0, z = 0, h = null;
+      for (let tr = 0; tr < 60; tr++) {
+        x = r.float(-450, 450); z = r.float(-450, 450);
+        h = dryland(x, z);
+        if (h !== null) break;
+      }
+      strState.push({ x, z, heading: r.float(0, 6.28), speed: r.float(0.8, 1.6), scale: r.float(0.9, 1.8) });
+    }
+    s.scene.add(striders);
+  }
 
   // -------------------------------------------------- night spores ------
   let spores = null;
@@ -189,16 +310,43 @@ export function addLife(s) {
         if (sp > 22) bv[i].multiplyScalar(22 / sp);
         if (sp < 7) bv[i].multiplyScalar(7 / Math.max(sp, 0.01));
         bp[i].addScaledVector(bv[i], cdt);
-        // orient cone along velocity, flap by scale pulse
-        q.setFromUnitVectors(up, diff.copy(bv[i]).normalize());
+        // face the flight direction, bank into the turn; wings flap in-shader
         d.position.copy(bp[i]);
-        d.quaternion.copy(q);
-        const flap = 1 + 0.35 * Math.sin(time * 9 + i * 1.7);
-        d.scale.set(flap, 1, 1);
+        d.lookAt(diff.copy(bp[i]).add(bv[i]));
+        const right = diff.copy(bv[i]).cross(up).normalize();
+        const bank = Math.min(Math.max(-acc.dot(right) * 0.05, -0.65), 0.65);
+        d.rotateZ(bank);
+        d.scale.setScalar(1.1);
         d.updateMatrix();
         boids.setMatrixAt(i, d.matrix);
       }
       boids.instanceMatrix.needsUpdate = true;
+      skimMat.uniforms.uTime.value = time;
+
+      if (striders) {
+        strMat.uniforms.uTime.value = time;
+        for (let i = 0; i < strState.length; i++) {
+          const st = strState[i];
+          st.heading += (Math.random() - 0.5) * dt * 0.6;
+          // steer home if straying, turn from water and steep ground
+          const dHome = Math.hypot(st.x, st.z);
+          if (dHome > 520) st.heading = Math.atan2(-st.z, -st.x) + (Math.random() - 0.5);
+          const nx = st.x + Math.cos(st.heading) * st.speed * dt * 4;
+          const nz = st.z + Math.sin(st.heading) * st.speed * dt * 4;
+          const nh = s.heightAt(nx, nz);
+          if (s.seaLevel !== null && nh < s.seaLevel + 1.2) {
+            st.heading += 1.7;
+          } else {
+            st.x = nx; st.z = nz;
+          }
+          d.position.set(st.x, s.heightAt(st.x, st.z), st.z);
+          d.rotation.set(0, -st.heading - Math.PI / 2, 0);
+          d.scale.setScalar(st.scale);
+          d.updateMatrix();
+          striders.setMatrixAt(i, d.matrix);
+        }
+        striders.instanceMatrix.needsUpdate = true;
+      }
 
       if (spores) {
         const night = 1 - day;

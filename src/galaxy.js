@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { hash, RNG, galaxyName, starName } from './rng.js';
-import { makeNebulaSprites, softDotTexture, galaxyAtlasTexture } from './nebula.js';
+import { makeNebulaSprites, softDotTexture, galaxyAtlasTexture, makeVolumetricNebula } from './nebula.js';
 import { COSMO } from './cosmology.js';
 import { CollisionSim, COLLISION_NOTE } from './collision.js';
 
@@ -477,6 +477,28 @@ export class GalaxyScale {
     this.nebulaMesh = makeNebulaSprites(spots, this.uniforms);
     this.nebulaMesh.renderOrder = 3;
     this.scene.add(this.nebulaMesh);
+
+    // and a handful with true volume: raymarched HII clouds along the arms
+    const camU = { value: this.camera.position };
+    for (let i = 0; i < 9; i++) {
+      const rad = R * (0.2 + 0.65 * r.next());
+      let th = r.float(0, Math.PI * 2);
+      if (P.type !== 'irregular') {
+        const armPhase = Math.log(Math.max(rad, 6) / (R * 0.045)) / tanP;
+        const k = Math.round((th - armPhase) / (2 * Math.PI / P.arms));
+        th = armPhase + k * (2 * Math.PI / P.arms) + r.gauss() * 0.08;
+      }
+      const warm = r.chance(0.6);
+      const neb = makeVolumetricNebula(
+        hash(P.seed, 0x0e8, i),
+        R * r.float(0.045, 0.085),
+        warm ? new THREE.Color(0.5, 0.1, 0.13) : new THREE.Color(0.1, 0.4, 0.38),
+        warm ? new THREE.Color(0.36, 0.16, 0.3) : new THREE.Color(0.22, 0.24, 0.5),
+        camU, 0.7);
+      neb.position.set(rad * Math.cos(th), r.gauss() * R * 0.012, rad * Math.sin(th));
+      neb.renderOrder = 3;
+      this.scene.add(neb);
+    }
   }
 
   _buildCore() {

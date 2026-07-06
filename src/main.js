@@ -22,7 +22,7 @@ const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, b
 const HINTS = {
   cosmic: 'drag to look · scroll to zoom · space plays cosmic time · click a bright node to enter a galaxy · n compares gravity vs linear theory',
   galaxy: 'drag to look · scroll to zoom · click a star to visit its system · click the core to meet the nucleus · esc to ascend',
-  system: 'click a world to read it · double-click to enter orbit · land from the card · space pauses · + − bends time · esc to ascend',
+  system: 'click a world to read it · double-click to enter orbit · land from the card · j engages relativistic cruise · esc to ascend',
   blackhole: 'drag to orbit the horizon · scroll to lean closer · esc to ascend',
   surface: 'drag to look · wasd to walk · shift runs · f flies · space pauses the day · esc to return to orbit',
   clouds: 'drag to steer · you fly where you look · w dives faster, s eases off · + − trims the cruise · esc to climb out',
