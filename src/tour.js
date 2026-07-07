@@ -89,7 +89,13 @@ export class Tour {
       case 'ground': {
         // slow pan across the world
         if (s.kind === 'surface' || s.kind === 'clouds') s.yaw += dt * 0.055;
+        // once per landing, call down a little drama
+        if (s.kind === 'surface' && !this._struck && this.timer < 12 && Math.random() < 0.04) {
+          this._struck = true;
+          s.strikeMeteor();
+        }
         if (this.timer <= 0) {
+          this._struck = false;
           app.popTo(app.stack.length - 2);
           this.stage = 'ground-out';
           this.timer = 4;

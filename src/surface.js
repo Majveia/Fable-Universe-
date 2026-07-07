@@ -240,6 +240,7 @@ export class SurfaceScale {
     this._buildSiblings();
     this.life = addLife(this);
     this.settlement = addSettlement(this);
+    this._initImpacts();
 
     // spawn on land, eyes toward the sunrise
     const spawn = this.spawn;
@@ -292,6 +293,7 @@ export class SurfaceScale {
     this.liftY = 0;
     const p = new THREE.Vector3();
 
+    this.impacts = []; // craters carved into the crust, persistent per visit
     this._heightFn = (x, z) => {
       p.copy(dir).multiplyScalar(Rworld).addScaledVector(east, x).addScaledVector(north, z).normalize();
       const macro = planetHeight(p.x, p.y, p.z, pp.noiseSeed) - ocean;
@@ -302,7 +304,17 @@ export class SurfaceScale {
         + fbm2(x * 0.009 + 31.7, z * 0.009 + 11.3, 3) * 6;
       // the horizon truly curves with this world's radius
       h -= (x * x + z * z) / (2 * Rworld * 0.34);
-      return h + this.liftY;
+      h += this.liftY;
+      // craters: a raised rim ringing a depressed bowl
+      for (let i = 0; i < this.impacts.length; i++) {
+        const im = this.impacts[i];
+        const d = Math.hypot(x - im.x, z - im.z) / im.r;
+        if (d > 2.2) continue;
+        const bowl = -im.depth * Math.max(1 - d * d, -0.15);
+        const rim = im.depth * 0.55 * Math.exp(-((d - 1) * (d - 1)) * 9);
+        h += (bowl + rim) * im.grown;
+      }
+      return h;
     };
 
     // spawn scan BEFORE meshing, so a waterlocked lift bakes into the rings
@@ -342,6 +354,7 @@ export class SurfaceScale {
       }
       geo.computeVertexNormals();
       const mesh = new THREE.Mesh(geo, this.terrainMat);
+      mesh.userData.drop = drop;
       this.terrain.add(mesh);
     }
     this.scene.add(this.terrain);
@@ -644,6 +657,126 @@ export class SurfaceScale {
     return out.set(Math.cos(ph) * 0.9, Math.sin(ph), Math.sin(ph * 0.7) * 0.45 + 0.2).normalize();
   }
 
+  // ------------------------------------------------------- impacts -------
+  _initImpacts() {
+    const pp = this.pp;
+    // airless/barren worlds are cratered; those near a belt or comet get hits
+    const airless = pp.typeId === 0 || pp.typeId === 3;
+    this.impactRate = airless ? 9 : 26; // mean seconds between falls
+    this._nextImpact = 3 + Math.random() * this.impactRate;
+    this.meteor = null;
+    this.craterGroup = new THREE.Group();
+    this.scene.add(this.craterGroup);
+
+    // ancient craters already on airless ground, so you don't arrive blank
+    if (airless) {
+      const r = new RNG(hash(pp.seed, 0x0cae));
+      const n = r.int(3, 7);
+      for (let i = 0; i < n; i++) {
+        const th = r.float(0, 6.28), rad = r.float(120, 620);
+        this._carveCrater(Math.cos(th) * rad, Math.sin(th) * rad, r.float(28, 90), 1, false);
+      }
+    }
+  }
+
+  _carveCrater(x, z, radius, grown, scorch) {
+    const im = { x, z, r: radius, depth: radius * 0.28, grown };
+    this.impacts.push(im);
+    this._retessellateAround(x, z, radius * 2.3);
+    // charred ejecta ring on the surface
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(radius * 0.55, radius * 1.7, 40, 1),
+      new THREE.MeshBasicMaterial({
+        color: scorch ? 0x120a08 : 0x1a140f, transparent: true,
+        opacity: scorch ? 0.55 : 0.32, side: THREE.DoubleSide, depthWrite: false,
+      }));
+    ring.position.set(x, 0, z);
+    ring.rotation.x = -Math.PI / 2;
+    ring.renderOrder = 2;
+    this.craterGroup.add(ring);
+    ring.userData.follow = () => { ring.position.y = this.heightAt(x, z) + 0.6; };
+    ring.userData.follow();
+    return im;
+  }
+
+  /** rebuild the vertices of any ring mesh near (x,z) so a fresh crater shows */
+  _retessellateAround(x, z, reach) {
+    for (const mesh of this.terrain.children) {
+      const pos = mesh.geometry.attributes.position;
+      let touched = false;
+      for (let i = 0; i < pos.count; i++) {
+        const px = pos.getX(i), pz = pos.getZ(i);
+        if (Math.abs(px - x) < reach && Math.abs(pz - z) < reach) {
+          pos.setY(i, this._heightFn(px, pz) - mesh.userData.drop);
+          touched = true;
+        }
+      }
+      if (touched) { pos.needsUpdate = true; mesh.geometry.computeVertexNormals(); }
+    }
+  }
+
+  strikeMeteor(now = false) {
+    if (this.meteor) return;
+    const th = Math.random() * 6.28;
+    const reach = now ? 300 : 700;
+    const tx = this.camera.position.x + Math.cos(th) * (120 + Math.random() * reach);
+    const tz = this.camera.position.z + Math.sin(th) * (120 + Math.random() * reach);
+    const from = new THREE.Vector3(tx - 260, 900 + Math.random() * 400, tz + 340);
+    const head = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: softDotTexture(), color: new THREE.Color(1.6, 1.2, 0.7),
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+    }));
+    head.scale.setScalar(10);
+    head.position.copy(from);
+    this.scene.add(head);
+    // a short trail
+    const N = 40;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
+    const trail = new THREE.Points(geo, new THREE.PointsMaterial({
+      color: new THREE.Color(1.0, 0.6, 0.3), size: 5, map: softDotTexture(),
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.7,
+    }));
+    this.scene.add(trail);
+    const target = new THREE.Vector3(tx, this.heightAt(tx, tz), tz);
+    this.meteor = { head, trail, from: from.clone(), target, t: 0, dur: now ? 1.2 : 2.0, size: 24 + Math.random() * 70 };
+  }
+
+  _updateMeteor(dt) {
+    this._nextImpact -= dt;
+    if (this._nextImpact <= 0) { this._nextImpact = this.impactRate * (0.6 + Math.random()); this.strikeMeteor(); }
+    const m = this.meteor;
+    if (!m) return;
+    m.t += dt;
+    const f = Math.min(m.t / m.dur, 1);
+    m.head.position.lerpVectors(m.from, m.target, f * f);
+    m.head.scale.setScalar(10 + 26 * f);
+    const N = m.trail.geometry.attributes.position;
+    for (let i = 0; i < N.count; i++) {
+      const tf = f - (i / N.count) * 0.12;
+      const p = m.from.clone().lerp(m.target, Math.max(tf, 0) ** 2);
+      N.setXYZ(i, p.x, p.y, p.z);
+    }
+    N.needsUpdate = true;
+    if (f >= 1) {
+      // impact: carve, flash, throw ejecta
+      this._carveCrater(m.target.x, m.target.z, m.size, 1, true);
+      const flash = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: softDotTexture(), color: new THREE.Color(2.4, 1.9, 1.2),
+        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+      }));
+      flash.position.copy(m.target).setY(this.heightAt(m.target.x, m.target.z) + m.size * 0.4);
+      flash.scale.setScalar(m.size * 4);
+      this.scene.add(flash);
+      this._flash = { sp: flash, t: 0 };
+      this.scene.remove(m.head); this.scene.remove(m.trail);
+      m.head.material.dispose(); m.trail.geometry.dispose(); m.trail.material.dispose();
+      this.meteor = null;
+      this.pp.hasImpacts = true;
+      if (this.app.audio) this.app.audio.warp('dive'); // a concussion
+    }
+  }
+
   // ------------------------------------------------------------ input ----
   _bindInput() {
     this._onKeyDown = (e) => this.keys.add(e.code);
@@ -670,6 +803,7 @@ export class SurfaceScale {
 
   onKey(code) {
     if (code === 'KeyF') { this.fly = !this.fly; return true; }
+    if (code === 'KeyX') { this.strikeMeteor(true); return true; }
     return false;
   }
 
@@ -734,6 +868,15 @@ export class SurfaceScale {
     }
     if (this.life) this.life.update(dt, this.uSunDir.value.y);
     if (this.settlement) this.settlement.update(dt, this.uSunDir.value.y);
+    this._updateMeteor(dt);
+    if (this._flash) {
+      this._flash.t += dt;
+      const g = 1 - this._flash.t / 0.8;
+      this._flash.sp.material.opacity = Math.max(g, 0);
+      this._flash.sp.scale.multiplyScalar(1 + dt * 1.5);
+      if (g <= 0) { this.scene.remove(this._flash.sp); this._flash.sp.material.dispose(); this._flash = null; }
+    }
+    for (const c of this.craterGroup.children) c.userData.follow?.();
 
     // movement (skip while the hyperzoom still owns the camera)
     if (this.controls.enabled) {
@@ -776,6 +919,7 @@ export class SurfaceScale {
       ['world', pp.name],
       ['class', pp.type + (pp.inhabited ? ' · inhabited' : '')],
       ['biosphere', this.life ? 'flora + fauna' : '—'],
+      ['craters', this.impacts.length ? String(this.impacts.length) : '—'],
       ['surface gravity', g.toFixed(2) + ' g'],
       ['equilibrium temp', pp.Teq + ' K'],
       ['mode', this.fly ? 'flight (f to walk)' : 'on foot (f to fly)'],

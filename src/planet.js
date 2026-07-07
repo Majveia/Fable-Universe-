@@ -245,6 +245,7 @@ const STAR_FRAG = /* glsl */`
   uniform float uTime;
   uniform float uSeed;
   uniform vec3 uCamPos;
+  uniform float uBright;
   varying vec3 vN;
   varying vec3 vObj;
   varying vec3 vW;
@@ -259,9 +260,9 @@ const STAR_FRAG = /* glsl */`
     // limb darkening (real stars dim toward the edge)
     float mu = clamp(dot(n, viewDir), 0.0, 1.0);
     float limb = 0.35 + 0.65 * pow(mu, 0.6);
-    vec3 col = uColor * granule * limb * 2.6;
+    vec3 col = uColor * granule * limb * 2.6 * uBright;
     // hot flecks
-    col += uColor * smoothstep(0.62, 0.95, g) * 1.4;
+    col += uColor * smoothstep(0.62, 0.95, g) * 1.4 * uBright;
     gl_FragColor = vec4(col, 1.0);
   }
 `;
@@ -371,6 +372,7 @@ export function makeStarSurfaceMaterial(color, seed, camPosUniform, timeUniform)
       uTime: timeUniform,
       uSeed: { value: seed },
       uCamPos: camPosUniform,
+      uBright: { value: 1 },
     },
     vertexShader: SURF_VERT,
     fragmentShader: STAR_FRAG,

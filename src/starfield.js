@@ -136,6 +136,26 @@ export function makeGalaxySkyFromWithin(starData, time, vrot, viewerPos, radius)
   group.add(stars);
   group.userData.rel = relUniforms;
 
+  // the brightest stars ahead become real destinations for interstellar
+  // travel: keep their sky directions + a deterministic identity each
+  const cand = [];
+  for (let i = 0; i < j; i++) {
+    cand.push({ i, b: bright[i] });
+  }
+  cand.sort((a, b) => b.b - a.b);
+  const targets = [];
+  const seen = cand.slice(0, 520);
+  for (const c of seen) {
+    const dx = pos[c.i * 3], dy = pos[c.i * 3 + 1], dz = pos[c.i * 3 + 2];
+    const inv = 1 / Math.hypot(dx, dy, dz);
+    const dir = new THREE.Vector3(dx * inv, dy * inv, dz * inv);
+    // stable neighbor seed from quantized sky direction
+    const q = 40;
+    const seed = hash(Math.round(dir.x * q), Math.round(dir.y * q), Math.round(dir.z * q), 0x5741) >>> 0;
+    targets.push({ dir, seed, temp: temp[c.i] });
+  }
+  group.userData.targets = targets;
+
   // the bulge glows toward galactic center
   bulgeDir = new THREE.Vector3(-viewerPos.x, -viewerPos.y * 0.4, -viewerPos.z);
   const dCore = Math.max(bulgeDir.length(), 8);

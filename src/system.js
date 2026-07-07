@@ -317,6 +317,8 @@ export class SystemScale {
       const sky = makeGalaxySkyFromWithin(gview.starData, gview.time, gview.vrot, gview.pos, 17000);
       this.scene.add(sky);
       this.skyRel = sky.userData.rel;
+      this.skyTargets = sky.userData.targets || [];
+      this.arrivalName = starName(this.ctx.starSeed);
     } else {
       this.scene.add(makeSkyDome(P.seed, 18000));
     }
@@ -601,6 +603,7 @@ export class SystemScale {
       if (this._relKeys.has('KeyW')) this.rel.target = Math.min(this.rel.target + dt * 0.35, 0.985);
       if (this._relKeys.has('KeyS')) this.rel.target = Math.max(this.rel.target - dt * 0.5, 0.02);
       this.rel.beta += (this.rel.target - this.rel.beta) * (1 - Math.exp(-1.6 * dt));
+      this._trackDestination(dt);
     } else if (this.rel.beta > 0.001) {
       this.rel.beta *= Math.exp(-2.5 * dt);
     } else {
@@ -615,7 +618,7 @@ export class SystemScale {
       const v = 60 + 2600 * this.rel.beta ** 3;
       this.camera.position.addScaledVector(this.rel.dir, v * dt);
       if (this.camera.position.length() > 13000) this.camera.position.setLength(13000);
-      this.controls.target.copy(this.camera.position).addScaledVector(this.rel.dir, 50);
+      this.camera.lookAt(this.camera.position.clone().add(this.rel.dir));
     }
 
     this._updateDeepTime(dt);
@@ -711,6 +714,7 @@ export class SystemScale {
       return `τ ${tau >= 10 ? tau.toFixed(1) : tau.toFixed(2)} Gyr · ${this.deep.phase}`;
     }
     if (this.rel.beta > 0.01) {
+      if (this.rel.lock) return `→ ${this.rel.lockName} · ${Math.max(this.rel.dist, 0).toFixed(2)} ly`;
       return `β ${this.rel.beta.toFixed(2)} · γ ${this.rel.gamma.toFixed(2)}`;
     }
     const y = this.days / 365.25;
@@ -732,13 +736,19 @@ export class SystemScale {
       ];
     }
     if (this.rel.on) {
-      return [
+      const rows = [
         ['system', P.name],
         ['velocity', 'β = ' + this.rel.beta.toFixed(3) + ' c'],
         ['lorentz factor', 'γ = ' + this.rel.gamma.toFixed(2)],
         ['time dilation', '1 s aboard = ' + this.rel.gamma.toFixed(2) + ' s here'],
-        ['sky', 'aberration + Doppler + δ³ beaming'],
       ];
+      if (this.rel.lock) {
+        rows.push(['destination', this.rel.lockName]);
+        rows.push(['distance', Math.max(this.rel.dist, 0).toFixed(2) + ' ly']);
+      } else {
+        rows.push(['destination', 'steer toward a star to lock']);
+      }
+      return rows;
     }
     return [
       ['system', P.name],
@@ -757,6 +767,19 @@ export class SystemScale {
   }
 
   // ------------------------------------------------------------ input ----
+  // steer the flight vector while cruising (controls are off in cruise)
+  onPointerDown(e) { if (this.rel.on) this._steer = { x: e.clientX, y: e.clientY }; }
+  onPointerUp() { this._steer = null; }
+  onPointerMove(e) {
+    if (!this.rel.on || !this._steer) return;
+    const dx = (e.clientX - this._steer.x) * 0.0022;
+    const dy = (e.clientY - this._steer.y) * 0.0022;
+    this._steer = { x: e.clientX, y: e.clientY };
+    const up = new THREE.Vector3(0, 1, 0);
+    const right = new THREE.Vector3().crossVectors(this.rel.dir, up).normalize();
+    this.rel.dir.addScaledVector(right, -dx).addScaledVector(up, -dy).normalize();
+  }
+
   pick(raycaster) {
     const meshes = this.planetNodes.map(n => n.mesh).concat(this.allMoons);
     const hits = raycaster.intersectObjects(meshes, false);
@@ -928,8 +951,14 @@ export class SystemScale {
     this.starMesh.scale.setScalar(dR / this.starDrawR);
     const col = blackbodyRGB(st.T);
     this.starMesh.material.uniforms.uColor.value.copy(col);
+    // a bigger disk covers more of the frame, so ease its surface exposure and
+    // bloom back to keep the giant readable instead of a white blowout
+    const cover = Math.min(dR / 40, 1);
+    this.starMesh.material.uniforms.uBright.value = 1 - 0.72 * cover;
     const glow = this.starMesh.children.find(c => c.isSprite);
-    if (glow) glow.material.color.copy(col).multiplyScalar(0.8);
+    if (glow) glow.material.color.copy(col).multiplyScalar(0.8 * (1 - 0.7 * cover));
+    this.bloomSettings.strength = 0.75 - 0.5 * cover;
+    if (this.app.active() === this) this.app.post.tune(this.bloomSettings);
 
     // -- supernova: one violent frame at the crossing
     if (D.massive && D.x >= 1 && !D.snFired) {
@@ -1027,6 +1056,34 @@ export class SystemScale {
       const engulfed = dR * 0.98 > drawR(pp.a * (1 - pp.e));
       node.group.visible = !engulfed;
     }
+  }
+
+  /** lock the star nearest the flight vector; close the distance to it */
+  _trackDestination(dt) {
+    if (!this.skyTargets || !this.skyTargets.length || this._arriving) return;
+    const d = this.rel.dir;
+    let best = null, bestDot = 0.9; // must be within ~25° of the bow
+    for (const t of this.skyTargets) {
+      const dot = t.dir.dot(d);
+      if (dot > bestDot) { bestDot = dot; best = t; }
+    }
+    if (best !== this.rel.lock) {
+      this.rel.lock = best;
+      this.rel.dist = best ? 4.2 : 0;             // light-years to a neighbor
+      this.rel.lockName = best ? starName(best.seed) : '';
+    }
+    if (best && this.rel.beta > 0.55) {
+      // faster & better-aimed → closing quicker
+      this.rel.dist -= dt * (this.rel.beta - 0.5) * 3.4 * (bestDot - 0.9) / 0.1;
+      if (this.rel.dist <= 0) this._arrive(best);
+    }
+  }
+
+  _arrive(target) {
+    if (this._arriving) return;
+    this._arriving = true;
+    this.rel.target = 0.985;                       // one last surge, then a veil
+    this.app.arriveAtStar(this, target.seed);
   }
 
   toggleRel() {

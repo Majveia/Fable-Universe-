@@ -101,9 +101,15 @@ factor `δ = 1/(γ(1−βcosθ'))` walks each star's blackbody color along a
 temperature ramp (blue-white ahead, embers behind), intensity beams as δ³
 (the headlight effect), and the system's clocks visibly outrun yours by γ —
 throttle to 0.985c and watch a year pass in your minute. Every formula is
-the real one.
+the real one — and it is now real **transportation**: steer the bow onto
+any star ahead and it locks as a destination with a name and a light-year
+distance; hold your heading and you close the gap and *arrive*, the system
+torn down and rebuilt around the star you aimed at. The galaxy is a place
+you can cross.
 
 ![relativistic cruise at 0.93c](docs/screenshots/18-relativistic.png)
+
+![interstellar destination locked](docs/screenshots/22-interstellar.png)
 
 And hold **]**: **deep time**. The star's whole life rides a lever — real
 scaling tracks (`t_MS = 10·M^−2.5 Gyr`), the slow main-sequence brightening,
@@ -141,9 +147,15 @@ light through fissures at night. Stand on the moon of a ringed giant and
 the parent world hangs vast and tidally fixed overhead, rendered by its
 real orbital shader and lit by the local sun — it runs through true phases
 as the day passes. The sibling planets wander the sun's arc at their true
-elongations. The HUD reports true surface gravity, GM/R².
+elongations. The HUD reports true surface gravity, GM/R². And the sky is not always
+kind — press **X** (or just wait) and a meteor streaks down, flashes on
+impact, and leaves a bowl-and-rim **crater** baked permanently into the
+terrain's height field, ringed with scorched ejecta. Airless worlds arrive
+already pockmarked with ancient ones.
 
 ![giant in the sky](docs/screenshots/12-moon-giant.png)
+
+![a barren, cratered world at dusk](docs/screenshots/23-barren-craters.png)
 
 Worlds in the liquid-water band grow a **biosphere**: alien flora in a
 palette seeded by the world itself, winged skimmers that beat and bank

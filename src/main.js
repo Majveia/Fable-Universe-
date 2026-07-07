@@ -22,9 +22,9 @@ const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, b
 const HINTS = {
   cosmic: 'drag to look · scroll to zoom · space plays cosmic time · click a bright node to enter a galaxy · n compares gravity vs linear theory',
   galaxy: 'drag to look · scroll to zoom · click a star to visit its system · click the core to meet the nucleus · esc to ascend',
-  system: 'click a world to read it · land from its card · j engages relativistic cruise · hold ] to age the star · esc to ascend',
+  system: 'click a world · land from its card · j to cruise (steer into a star to travel there) · hold ] to age the star · esc to ascend',
   blackhole: 'drag to orbit the horizon · scroll to lean closer · esc to ascend',
-  surface: 'drag to look · wasd to walk · shift runs · f flies · space pauses the day · esc to return to orbit',
+  surface: 'drag to look · wasd walk · shift runs · f flies · x calls down a meteor · space pauses the day · esc to orbit',
   clouds: 'drag to steer · you fly where you look · w dives faster, s eases off · + − trims the cruise · esc to climb out',
 };
 
@@ -328,6 +328,30 @@ class App {
     } else if (s.kind === 'system' && hit.type === 'planet') {
       s.focusPlanet(hit.index);
     }
+  }
+
+  /** interstellar arrival: replace the current system with the neighbor star */
+  arriveAtStar(fromSys, starSeed) {
+    if (this._warping) return;
+    this._warping = true;
+    this.hud.hideCard();
+    this.audio.warp('dive');
+    // a flash of starlight streaking past, then the new system fades in
+    this.hud.veil(new THREE.Color(0.55, 0.62, 0.85));
+    const depth = this.stack.indexOf(fromSys);
+    setTimeout(() => {
+      const gpos = fromSys.ctx.galaxyPos;
+      while (this.stack.length > depth) {
+        const sc = this.stack.pop();
+        sc.exit();
+        sc.dispose();
+      }
+      const sys = new SystemScale(this, { starSeed, galaxyPos: gpos });
+      this.stack.push(sys);
+      sys.enter();
+      this._syncScale();
+      this._warping = false;
+    }, 260);
   }
 
   landOn(s, p) {
