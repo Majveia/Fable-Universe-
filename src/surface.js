@@ -695,7 +695,9 @@ export class SurfaceScale {
     ring.renderOrder = 2;
     this.craterGroup.add(ring);
     ring.userData.follow = () => { ring.position.y = this.heightAt(x, z) + 0.6; };
-    ring.userData.follow();
+    // the ground just moved under every ring — reseat them once, here,
+    // instead of re-evaluating the height field per frame for static decals
+    for (const c of this.craterGroup.children) c.userData.follow();
     return im;
   }
 
@@ -772,7 +774,6 @@ export class SurfaceScale {
       this.scene.remove(m.head); this.scene.remove(m.trail);
       m.head.material.dispose(); m.trail.geometry.dispose(); m.trail.material.dispose();
       this.meteor = null;
-      this.pp.hasImpacts = true;
       if (this.app.audio) this.app.audio.warp('dive'); // a concussion
     }
   }
@@ -876,7 +877,6 @@ export class SurfaceScale {
       this._flash.sp.scale.multiplyScalar(1 + dt * 1.5);
       if (g <= 0) { this.scene.remove(this._flash.sp); this._flash.sp.material.dispose(); this._flash = null; }
     }
-    for (const c of this.craterGroup.children) c.userData.follow?.();
 
     // movement (skip while the hyperzoom still owns the camera)
     if (this.controls.enabled) {

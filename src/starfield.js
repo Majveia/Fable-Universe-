@@ -136,23 +136,33 @@ export function makeGalaxySkyFromWithin(starData, time, vrot, viewerPos, radius)
   group.add(stars);
   group.userData.rel = relUniforms;
 
-  // the brightest stars ahead become real destinations for interstellar
-  // travel: keep their sky directions + a deterministic identity each
-  const cand = [];
-  for (let i = 0; i < j; i++) {
-    cand.push({ i, b: bright[i] });
+  // bright stars become destinations for interstellar travel. Bucket the sky
+  // by direction and keep each bucket's brightest, so wherever the bow points
+  // there is somewhere to go — then add the overall brightest for density
+  // along the band.
+  const buckets = new Map();
+  for (let idx = 0; idx < j; idx++) {
+    const dx = pos[idx * 3], dy = pos[idx * 3 + 1], dz = pos[idx * 3 + 2];
+    const inv = 1 / Math.hypot(dx, dy, dz);
+    const key = (Math.round(dx * inv * 3) + 4) * 81 + (Math.round(dy * inv * 3) + 4) * 9 + (Math.round(dz * inv * 3) + 4);
+    const cur = buckets.get(key);
+    if (!cur || bright[idx] > cur.b) buckets.set(key, { i: idx, b: bright[idx] });
   }
+  const cand = [];
+  for (let idx = 0; idx < j; idx++) cand.push({ i: idx, b: bright[idx] });
   cand.sort((a, b) => b.b - a.b);
+  const chosen = new Set();
+  for (const c of buckets.values()) chosen.add(c.i);
+  for (let k = 0; k < 320 && k < cand.length; k++) chosen.add(cand[k].i);
   const targets = [];
-  const seen = cand.slice(0, 520);
-  for (const c of seen) {
-    const dx = pos[c.i * 3], dy = pos[c.i * 3 + 1], dz = pos[c.i * 3 + 2];
+  for (const i of chosen) {
+    const dx = pos[i * 3], dy = pos[i * 3 + 1], dz = pos[i * 3 + 2];
     const inv = 1 / Math.hypot(dx, dy, dz);
     const dir = new THREE.Vector3(dx * inv, dy * inv, dz * inv);
-    // stable neighbor seed from quantized sky direction
+    // stable neighbor identity from the quantized sky direction
     const q = 40;
     const seed = hash(Math.round(dir.x * q), Math.round(dir.y * q), Math.round(dir.z * q), 0x5741) >>> 0;
-    targets.push({ dir, seed, temp: temp[c.i] });
+    targets.push({ dir, seed, temp: temp[i] });
   }
   group.userData.targets = targets;
 

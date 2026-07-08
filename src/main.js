@@ -333,12 +333,14 @@ class App {
   /** interstellar arrival: replace the current system with the neighbor star */
   arriveAtStar(fromSys, starSeed) {
     if (this._warping) return;
+    const depth = this.stack.indexOf(fromSys);
+    if (depth < 1) return; // system already torn down mid-flight
     this._warping = true;
     this.hud.hideCard();
     this.audio.warp('dive');
     // a flash of starlight streaking past, then the new system fades in
     this.hud.veil(new THREE.Color(0.55, 0.62, 0.85));
-    const depth = this.stack.indexOf(fromSys);
+    const arrive = { dir: fromSys.rel.dir.toArray() };
     setTimeout(() => {
       const gpos = fromSys.ctx.galaxyPos;
       while (this.stack.length > depth) {
@@ -346,10 +348,11 @@ class App {
         sc.exit();
         sc.dispose();
       }
-      const sys = new SystemScale(this, { starSeed, galaxyPos: gpos });
+      const sys = new SystemScale(this, { starSeed, galaxyPos: gpos, arrive });
       this.stack.push(sys);
       sys.enter();
       this._syncScale();
+      this.audio.warp('ascend');
       this._warping = false;
     }, 260);
   }

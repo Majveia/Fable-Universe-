@@ -102,14 +102,17 @@ temperature ramp (blue-white ahead, embers behind), intensity beams as δ³
 (the headlight effect), and the system's clocks visibly outrun yours by γ —
 throttle to 0.985c and watch a year pass in your minute. Every formula is
 the real one — and it is now real **transportation**: steer the bow onto
-any star ahead and it locks as a destination with a name and a light-year
-distance; hold your heading and you close the gap and *arrive*, the system
-torn down and rebuilt around the star you aimed at. The galaxy is a place
-you can cross.
+any star ahead and it locks as a destination with a name, a spectral class,
+and a light-year distance; hold your heading and you close the gap and
+*arrive* — still moving. You streak into the new system on your old flight
+vector, bleed off the last of the β while its worlds resolve around you, and
+only then does the helm come back. The galaxy is a place you can cross.
 
 ![relativistic cruise at 0.93c](docs/screenshots/18-relativistic.png)
 
 ![interstellar destination locked](docs/screenshots/22-interstellar.png)
+
+![arriving at the destination still moving at 0.3c](docs/screenshots/24-arrival.png)
 
 And hold **]**: **deep time**. The star's whole life rides a lever — real
 scaling tracks (`t_MS = 10·M^−2.5 Gyr`), the slow main-sequence brightening,

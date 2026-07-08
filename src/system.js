@@ -290,6 +290,19 @@ export class SystemScale {
 
     this.bloomSettings = { strength: 0.75, radius: 0.65, threshold: 0.0 };
     if (this.params.pulsar) this.noteOverride = PULSAR_NOTE;
+
+    // arriving from another star: come in hot on the old flight vector,
+    // still relativistic, and bleed the speed off inside the new system
+    if (ctx.arrive) {
+      this.rel.on = true;
+      this.rel.beta = 0.62;
+      this.rel.target = 0.04;
+      this.rel.dir.fromArray(ctx.arrive.dir).normalize();
+      this.camera.position.copy(this.rel.dir).multiplyScalar(-3600);
+      this.camera.position.y += 300;
+      this.camera.lookAt(this.camera.position.clone().add(this.rel.dir));
+      this.controls.enabled = false;
+    }
   }
 
   /** where this system sits inside its parent galaxy (for the true sky) */
@@ -318,7 +331,6 @@ export class SystemScale {
       this.scene.add(sky);
       this.skyRel = sky.userData.rel;
       this.skyTargets = sky.userData.targets || [];
-      this.arrivalName = starName(this.ctx.starSeed);
     } else {
       this.scene.add(makeSkyDome(P.seed, 18000));
     }
@@ -604,6 +616,15 @@ export class SystemScale {
       if (this._relKeys.has('KeyS')) this.rel.target = Math.max(this.rel.target - dt * 0.5, 0.02);
       this.rel.beta += (this.rel.target - this.rel.beta) * (1 - Math.exp(-1.6 * dt));
       this._trackDestination(dt);
+      // arrival momentum spent — hand the helm back
+      if (this.ctx.arrive && this.rel.beta < 0.09) {
+        this.ctx.arrive = null;
+        this.rel.on = false;
+        this.rel.target = 0.5;
+        this.controls.enabled = true;
+        this.controls.target.copy(this.camera.position).addScaledVector(this.rel.dir, 150);
+        this.app.hud.setHint('arrived · ' + this.params.name);
+      }
     } else if (this.rel.beta > 0.001) {
       this.rel.beta *= Math.exp(-2.5 * dt);
     } else {
@@ -742,8 +763,11 @@ export class SystemScale {
         ['lorentz factor', 'γ = ' + this.rel.gamma.toFixed(2)],
         ['time dilation', '1 s aboard = ' + this.rel.gamma.toFixed(2) + ' s here'],
       ];
-      if (this.rel.lock) {
-        rows.push(['destination', this.rel.lockName]);
+      if (this.ctx.arrive) {
+        rows.push(['destination', P.name + ' · decelerating']);
+      } else if (this.rel.lock) {
+        const Tlock = 1500 * Math.pow(20, this.rel.lock.temp);
+        rows.push(['destination', `${this.rel.lockName} · ${spectralClass(Tlock)}-class`]);
         rows.push(['distance', Math.max(this.rel.dist, 0).toFixed(2) + ' ly']);
       } else {
         rows.push(['destination', 'steer toward a star to lock']);
@@ -1061,6 +1085,7 @@ export class SystemScale {
   /** lock the star nearest the flight vector; close the distance to it */
   _trackDestination(dt) {
     if (!this.skyTargets || !this.skyTargets.length || this._arriving) return;
+    if (this.ctx.arrive) return; // still decelerating into this system
     const d = this.rel.dir;
     let best = null, bestDot = 0.9; // must be within ~25° of the bow
     for (const t of this.skyTargets) {
