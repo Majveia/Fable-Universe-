@@ -16,9 +16,10 @@ import { SystemScale, SYSTEM_NOTE } from './system.js';
 import { BlackHoleScale, BLACKHOLE_NOTE } from './blackhole.js';
 import { SurfaceScale, SURFACE_NOTE } from './surface.js';
 import { CloudsScale, CLOUDS_NOTE } from './clouds.js';
+import { PlanetScale, PLANET_NOTE } from './planetscale.js';
 import { starName } from './rng.js';
 
-const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE };
+const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE, planet: PLANET_NOTE };
 const HINTS = {
   cosmic: 'drag to look · scroll to zoom · space plays cosmic time · click a bright node to enter a galaxy · n compares gravity vs linear theory',
   galaxy: 'drag to look · scroll to zoom · click a star to visit its system · click the core to meet the nucleus · esc to ascend',
@@ -26,12 +27,14 @@ const HINTS = {
   blackhole: 'drag to orbit the horizon · scroll to lean closer · esc to ascend',
   surface: 'drag to look · wasd walk · shift runs · f flies · x calls down a meteor · space pauses the day · esc to orbit',
   clouds: 'drag to steer · you fly where you look · w dives faster, s eases off · + − trims the cruise · esc to climb out',
+  planet: 'drag to steer · wasd fly · r/f climb & dive · shift hurries · speed follows altitude · get low (or press l) to land · esc to orbit',
 };
 
 class App {
   constructor() {
     const url = new URL(window.location.href);
     this.seed = parseInt(url.searchParams.get('seed')) || 1138;
+    this.quadOn = url.searchParams.get('quad') !== '0';
 
     this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: 'high-performance' });
     this.renderer.setClearColor(0x000000, 1);
@@ -98,9 +101,18 @@ class App {
     if (s) {
       this.active().exit();
       this.stack.push(new SystemScale(this, { starSeed: s }));
-      // deeper still? a world, a moon, a cloud deck
+      // deeper still? a world, a moon, a cloud deck — or the whole globe
       const pIdx = parseInt(url.searchParams.get('p'));
       const sys = this.active();
+      const plIdx = parseInt(url.searchParams.get('pl'));
+      const plNode = Number.isInteger(plIdx) ? sys.planetNodes[plIdx] : null;
+      if (plNode && plNode.pp.typeId <= 4 && this.quadOn && !Number.isInteger(pIdx)) {
+        const ctx = this._approachCtx(sys, plNode.pp);
+        sys.exit();
+        this.stack.push(new PlanetScale(this, ctx));
+        this.active().enter();
+        return;
+      }
       const node = Number.isInteger(pIdx) ? sys.planetNodes[pIdx] : null;
       if (node) {
         const base = { system: sys.params, sunColor: sys.starColor, hostIndex: pIdx };
@@ -132,11 +144,12 @@ class App {
   /** keep the URL pointing at where you are, so places can be shared */
   _reflectUrl() {
     const u = new URL(window.location.href);
-    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl']) u.searchParams.delete(k);
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl']) u.searchParams.delete(k);
     for (const sc of this.stack) {
       if (sc.kind === 'galaxy') u.searchParams.set('g', sc.ctx.galaxySeed);
       if (sc.kind === 'system') u.searchParams.set('s', sc.ctx.starSeed);
       if (sc.kind === 'blackhole') u.searchParams.set('bh', '1');
+      if (sc.kind === 'planet') u.searchParams.set('pl', sc.ctx.hostIndex);
       if (sc.kind === 'surface') {
         u.searchParams.set('p', sc.ctx.hostIndex);
         if (sc.ctx.moonIndex !== undefined) u.searchParams.set('moon', sc.ctx.moonIndex);
@@ -204,6 +217,7 @@ class App {
   _worldInfo(s) {
     if (s.kind === 'surface') return { type: s.pp.type, atmo: s.atmo };
     if (s.kind === 'clouds') return { type: s.pp.type, atmo: 1.5 };
+    if (s.kind === 'planet') return { type: s.pp.type, atmo: 0.55 };
     return null;
   }
 
@@ -226,6 +240,7 @@ class App {
       const s = this.stack[i];
       const label = s.kind === 'galaxy' ? s.params.name
         : s.kind === 'system' ? s.params.name
+        : s.kind === 'planet' ? s.pp.name + ' · orbit'
         : s.kind === 'surface' ? s.pp.name + ' · surface'
         : s.kind === 'clouds' ? s.pp.name + ' · cloud deck'
         : 'nucleus';
@@ -363,6 +378,49 @@ class App {
       () => s.planetNodes[p.index].group.position);
   }
 
+  /** everything the whole-planet scale needs, captured from the live system */
+  _approachCtx(s, p) {
+    const node = s.planetNodes[p.index];
+    if (node.group.position.lengthSq() === 0) s.update(0); // deep link: seat the orbits
+    const sunDir = s.uSunPos.value.clone().sub(node.group.position).normalize();
+    const fromDir = s.camera.position.clone().sub(node.group.position).normalize();
+    const moons = node.moons.map(m => ({
+      dist: m.userData.dist, drawR: m.userData.drawR ?? 0.2,
+      phase: m.userData.phase, rate: m.userData.rate,
+    }));
+    return {
+      planet: p, system: s.params, sunColor: s.starColor, hostIndex: p.index,
+      sunDir: sunDir.toArray(), fromDir: fromDir.toArray(), moons,
+      gview: s._galaxyView(),
+    };
+  }
+
+  /** fall out of the system view onto the whole streaming globe */
+  approach(s, p) {
+    this.push(
+      new PlanetScale(this, this._approachCtx(s, p)),
+      () => s.planetNodes[p.index].group.position);
+  }
+
+  /** low over the quadtree terrain, the walkable surface takes the handoff */
+  landFromPlanet(pl) {
+    if (this._warping) return;
+    this._warping = true;
+    this.hud.hideCard();
+    this.audio.warp('dive');
+    this.hud.veil(pl.pp.atmoColor.clone().multiplyScalar(1.4).add(new THREE.Color(0.22, 0.22, 0.25)));
+    const site = pl.camPos.clone().normalize();
+    setTimeout(() => {
+      pl.exit();
+      this.stack.push(new SurfaceScale(this, {
+        planet: pl.pp, system: pl.ctx.system, sunColor: pl.ctx.sunColor,
+        hostIndex: pl.ctx.hostIndex, landingDir: [site.x, site.y, site.z],
+      }));
+      this._syncScale();
+      this._warping = false;
+    }, 300);
+  }
+
   cruise(s, p) {
     this.push(
       new CloudsScale(this, { planet: p, system: s.params, sunColor: s.starColor, hostIndex: p.index }),
@@ -375,7 +433,7 @@ class App {
   markPlace() {
     const u = new URL(window.location.href);
     const params = {};
-    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl']) {
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl']) {
       const v = u.searchParams.get(k);
       if (v !== null) params[k] = v;
     }
@@ -383,6 +441,7 @@ class App {
       sc.kind === 'cosmic' ? 'universe ' + this.seed
         : sc.kind === 'galaxy' ? sc.params.name
         : sc.kind === 'system' ? sc.params.name
+        : sc.kind === 'planet' ? sc.pp.name + ' orbit'
         : sc.kind === 'surface' ? sc.pp.name
         : sc.kind === 'clouds' ? sc.pp.name + ' clouds'
         : 'nucleus').join(' ▸ ');
@@ -402,7 +461,7 @@ class App {
     const e = this.log[i];
     if (!e || this._warping || this.zoom.busy) return;
     const u = new URL(window.location.href);
-    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl']) u.searchParams.delete(k);
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl']) u.searchParams.delete(k);
     u.searchParams.set('seed', e.seed);
     for (const [k, v] of Object.entries(e.params)) u.searchParams.set(k, v);
     if (e.seed !== this.seed) { window.location.href = u; return; } // other universe: cold jump
@@ -541,8 +600,8 @@ class App {
     const actions = [{ label: 'enter orbit', cb: () => s.focusPlanet(p.index) }];
     if (p.typeId <= 4) {
       actions.push({
-        label: 'descend to surface',
-        cb: () => this.push(
+        label: this.quadOn ? 'descend from orbit' : 'descend to surface',
+        cb: () => this.quadOn ? this.approach(s, p) : this.push(
           new SurfaceScale(this, { planet: p, system: s.params, sunColor: s.starColor, hostIndex: p.index }),
           () => s.planetNodes[p.index].group.position),
       });

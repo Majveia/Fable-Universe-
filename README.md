@@ -20,13 +20,15 @@ Best experienced full-screen, in the dark, on an OLED display. The background
 is true `#000` black.
 
 Optional URL parameters: `?seed=42` (a different universe), `?n=96`
-(cosmic-web tracer resolution per axis, default 68 → 314k particles).
+(cosmic-web tracer resolution per axis, default 68 → 314k particles),
+`?qk=4` (planet-quadtree quality: tile budget vs fidelity, default 6.5),
+`?quad=0` (skip the streaming-planet scale, land directly).
 
 Your location is reflected into the URL as you travel (`?g=…&s=…`, `&bh=1`
-at the nucleus), so any galaxy, star system or black hole in any universe
-is a bookmarkable, shareable address.
+at the nucleus, `&pl=…` on approach, `&p=…` on the ground), so any place
+in any universe is a bookmarkable, shareable address.
 
-## The five scales
+## The six scales
 
 You descend through nested scales — and the transitions are **seamless
 hyperzooms**: the camera falls toward what you clicked, the scales swap
@@ -129,7 +131,36 @@ forgives, though the universe would not.
 
 ![supernova aftermath](docs/screenshots/21-supernova-remnant.png)
 
-### 4 · The surface — set foot on it
+### 4 · The planet, whole — a true streaming quadtree
+Choose **descend from orbit** and the planet stops being a textured ball.
+It becomes a **chunked-LOD quadtree** on a tangent-warped cube sphere: six
+root tiles that split in four wherever the view demands more, meshed in a
+**Web Worker pool** from the exact height field the orbital shader paints —
+the continent you aimed at from space is the one that rises to meet you.
+A parent tile keeps drawing until all four children have streamed in (no
+holes, no popping from nothing), dropped skirts seal every seam between
+neighboring depths, and an LRU cache re-serves ground you've already
+overflown. Fly with **WASD** and **R/F** — *your speed is your altitude*,
+thousands of km/s at apoapsis, a crawl over the dunes — while the HUD
+reads out true altitude, tile counts, and the finest resident grid.
+
+Precision is the quiet trick. float32 runs out five digits before a
+planet-sized world reaches walking distance, so vertices are stored
+relative to their tile's center (built in float64 in the worker), the
+camera never leaves the scene origin, and the planet itself carries the
+negative camera position in JavaScript doubles — the GPU only ever sees
+the small difference. Half a meter over the rocks, nothing jitters.
+
+Get low and level and the walkable surface below takes the handoff in
+place. Esc climbs back to a low hover; Esc again returns to the system.
+`?pl=<index>` deep-links an approach; `?quad=0` restores the direct
+landing; `?qk=` trades tile budget for fidelity on modest GPUs.
+
+![the streaming globe from low orbit](docs/screenshots/25-quadtree-orbit.png)
+
+![tiles resolving on the way down](docs/screenshots/26-quadtree-descent.png)
+
+### 5 · The surface — set foot on it
 Every solid world — **and every moon** — can be landed on from its info
 card, and the descent is **continuous**: the same Ashima simplex noise the
 orbital shader draws is ported exactly to JavaScript (`src/terrain.js`), so
@@ -180,7 +211,7 @@ the deck, as it does on Jupiter.
 
 ![cloud deck](docs/screenshots/14-cloud-dive.png)
 
-### 5 · The nucleus — a black hole, computed honestly
+### 6 · The nucleus — a black hole, computed honestly
 Every pixel's ray is integrated through Schwarzschild spacetime
 (`d²x/dλ² = −(3/2)h²x/r⁵`, the exact null-geodesic equation, 170 steps per
 pixel). The photon ring, the accretion disk arching over and under the
@@ -225,18 +256,28 @@ as the Event Horizon Telescope observed at M87*.
 
 ```
 index.html          shell, import map, HUD styling
-src/main.js         scale stack, input, adaptive quality
+src/main.js         scale stack, input, deep links, logbook, adaptive quality
 src/transition.js   seamless hyperzoom dives between scales
 src/cosmology.js    ΛCDM: growth factor D(a), cosmic age t(a)
-src/cosmic.js       the cosmic web (scale 0): N-body + Zel'dovich fallback
+src/cosmic.js       the cosmic web: N-body + Zel'dovich fallback
 src/nbody.js        GPU particle-mesh N-body: FFT Poisson solver, leapfrog
-src/galaxy.js       procedural galaxies (scale 1)
-src/system.js       Keplerian star systems, binaries (scale 2)
+src/galaxy.js       procedural galaxies, supernovae, volumetric nebulas
+src/collision.js    interacting galaxy pairs: restricted three-body tides
+src/system.js       Keplerian systems, binaries, pulsars, deep time
 src/planet.js       GLSL worlds: surfaces, clouds, atmospheres, rings, star
-src/surface.js      landable planet surfaces (scale 3)
-src/blackhole.js    Schwarzschild geodesic raymarcher (scale 4)
+src/planetscale.js  the whole globe: streaming quadtree descent
+src/quadtree.js     chunked-LOD cube-sphere: split/merge, LRU, streaming
+src/tilebuild.js    tile mesher — main-thread roots + Web Worker pool
+src/terrain.js      exact JS port of the GLSL height field
+src/surface.js      walkable surfaces: LOD rings, craters, moons in the sky
+src/clouds.js       gas-giant cloud-deck cruise
+src/life.js         procedural creatures with gaits
+src/settlement.js   towers and beacons on inhabited worlds
+src/blackhole.js    Schwarzschild geodesic raymarcher
+src/tour.js         the cinematic auto-pilot (T)
+src/audio.js        generative ambient beds per scale
 src/nebula.js       procedural nebula textures & sprites
-src/starfield.js    in-galaxy sky dome
+src/starfield.js    galaxy-from-within sky, relativistic star shading
 src/post.js         HDR bloom pipeline
 src/hud.js          the interface
 src/rng.js          deterministic hashing, RNG, name synthesis

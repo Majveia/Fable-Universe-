@@ -27,6 +27,7 @@ export class Tour {
     this.active = false;
     for (const s of this.app.stack) {
       if (s.controls && 'autoRotate' in s.controls) s.controls.autoRotate = false;
+      if (s.kind === 'planet') s.tourAutopilot = false;
     }
     this.app.hud.setHint('');
   }
@@ -79,10 +80,25 @@ export class Tour {
           const pick = P.find(p => p.inhabited) || P.find(p => p.hasRings) || P.find(p => p.typeId <= 4) || P[0];
           if (!pick) { app.popTo(app.stack.length - 2); this.stage = 'galaxy-core'; this.timer = 6; return; }
           this._orbit(false);
-          if (pick.typeId <= 4) app.landOn(s, pick);
-          else app.cruise(s, pick);
+          if (pick.typeId <= 4) {
+            if (app.quadOn) { app.approach(s, pick); this.stage = 'planet'; this.timer = 26; return; }
+            app.landOn(s, pick);
+          } else {
+            app.cruise(s, pick);
+          }
           this.stage = 'ground';
           this.timer = 17;
+        }
+        break;
+      }
+      case 'planet': {
+        // ride the streaming descent until the surface takes the handoff
+        if (s.kind === 'surface') { this.stage = 'ground'; this.timer = 17; return; }
+        if (s.kind === 'planet') {
+          s.tourAutopilot = true;
+          if (this.timer <= 0) s.landNow();
+        } else {
+          this.stage = 'ground-out'; this.timer = 3;
         }
         break;
       }

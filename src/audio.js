@@ -127,7 +127,7 @@ export class Ambience {
       n.connect(lp); lp.connect(ng); ng.connect(out);
       keep(...this._lfo(0.06, 160, lp.frequency, 260));
       keep(...this._lfo(0.11, 0.06, ng.gain, 0.1));
-    } else if (kind === 'surface' || kind === 'clouds') {
+    } else if (kind === 'surface' || kind === 'clouds' || kind === 'planet') {
       const atmo = world?.atmo ?? 1;
       const type = world?.type ?? '';
       // wind, thickness set by the actual atmosphere
