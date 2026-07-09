@@ -14,7 +14,7 @@
 
 import * as THREE from 'three';
 import { QuadtreePlanet } from './quadtree.js';
-import { NOISE_GLSL, makeAtmosphereMaterial, makeCloudMaterial } from './planet.js';
+import { NOISE_GLSL, makeCloudMaterial } from './planet.js';
 import { makeGalaxySkyFromWithin, makeSkyDome } from './starfield.js';
 import { softDotTexture } from './nebula.js';
 
@@ -196,6 +196,93 @@ const OCEAN_FRAG = /* glsl */`
   }
 `;
 
+const ATMO2_VERT = /* glsl */`
+  varying vec3 vRay;   // camera sits at the render origin: world pos = the ray
+  void main() {
+    vec4 w = modelMatrix * vec4(position, 1.0);
+    vRay = w.xyz;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+
+// Single-scattering Rayleigh + Mie, marched per sky pixel (Nishita).
+// Terrain pixels are depth-culled, so this shades only the sky and the limb:
+// blue noon, red terminator, and stars that fade up through the residual
+// transmittance at dusk — no lookup tables, no faked gradients.
+const ATMO2_FRAG = /* glsl */`
+  precision highp float;
+  uniform vec3  uCamPos;    // planet frame
+  uniform vec3  uSunDir;
+  uniform float uR;         // ground sphere
+  uniform float uRa;        // top of atmosphere
+  uniform vec3  uBetaR;
+  uniform float uBetaM;
+  uniform float uHr;
+  uniform float uHm;
+  uniform float uSunI;
+  varying vec3 vRay;
+
+  // ray/sphere: returns entry/exit distances along d from o, or -1s
+  vec2 rsi(vec3 o, vec3 d, float r) {
+    float b = dot(o, d);
+    float c = dot(o, o) - r * r;
+    float disc = b * b - c;
+    if (disc < 0.0) return vec2(-1.0);
+    float s = sqrt(disc);
+    return vec2(-b - s, -b + s);
+  }
+
+  void main() {
+    vec3 dir = normalize(vRay);
+    vec3 o = uCamPos;
+    vec2 atm = rsi(o, dir, uRa);
+    if (atm.y < 0.0) discard;
+    float t0 = max(atm.x, 0.0);
+    float t1 = atm.y;
+    vec2 gnd = rsi(o, dir, uR);
+    if (gnd.x > 0.0) t1 = min(t1, gnd.x);
+    if (t1 <= t0) discard;
+
+    const int N = 12;
+    float dt = (t1 - t0) / float(N);
+    vec3 sumR = vec3(0.0);
+    float sumM = 0.0;
+    float odR = 0.0, odM = 0.0;
+    for (int i = 0; i < N; i++) {
+      vec3 x = o + dir * (t0 + (float(i) + 0.5) * dt);
+      float h = length(x) - uR;
+      float dR = exp(-h / uHr) * dt;
+      float dM = exp(-h / uHm) * dt;
+      odR += dR; odM += dM;
+      // optical depth toward the sun — zero if the planet is in the way
+      vec2 sg = rsi(x, uSunDir, uR);
+      if (sg.x > 0.0) continue;
+      float st1 = rsi(x, uSunDir, uRa).y;
+      float sodR = 0.0, sodM = 0.0;
+      const int M = 4;
+      float sdt = st1 / float(M);
+      for (int j = 0; j < M; j++) {
+        vec3 y = x + uSunDir * (float(j) + 0.5) * sdt;
+        float hy = length(y) - uR;
+        sodR += exp(-hy / uHr) * sdt;
+        sodM += exp(-hy / uHm) * sdt;
+      }
+      vec3 T = exp(-uBetaR * (odR + sodR) - uBetaM * 1.1 * (odM + sodM));
+      sumR += T * dR;
+      sumM += (T.r + T.g + T.b) / 3.0 * dM;
+    }
+    float mu = dot(dir, uSunDir);
+    float phR = 3.0 / (16.0 * 3.14159) * (1.0 + mu * mu);
+    const float g = 0.76;
+    float phM = 3.0 / (8.0 * 3.14159) * (1.0 - g * g) * (1.0 + mu * mu)
+      / ((2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
+    vec3 inscatter = (sumR * uBetaR * phR + vec3(sumM * uBetaM * phM)) * uSunI;
+    vec3 T = exp(-uBetaR * odR - uBetaM * 1.1 * odM);
+    float a = 1.0 - (T.r + T.g + T.b) / 3.0;
+    gl_FragColor = vec4(inscatter, a);
+  }
+`;
+
 const MOON_VERT = /* glsl */`
   varying vec3 vN;
   void main() {
@@ -335,23 +422,41 @@ export class PlanetScale {
       Math.min(Math.max(340 * Math.sqrt(lum) / Math.max(pp.a, 0.2), 150), 950));
     this.scene.add(this.sunSprite);
 
-    // -- atmosphere shell and cloud deck, straight from the orbital kit
-    this._plCenter = { value: new THREE.Vector3() };
-    this._camZero = { value: new THREE.Vector3() };
-    const atmoShell = new THREE.Mesh(
-      new THREE.SphereGeometry(this.R * 1.045, 96, 64),
-      makeAtmosphereMaterial(pp, this._sunPosBig, this._camZero, this._plCenter));
-    // private color so the shell can fade as the camera drops inside it
-    // (additive interior glow would otherwise wash out the whole frame)
-    this._atmoBase = pp.atmoColor.clone();
-    atmoShell.material.uniforms.uColor = { value: this._atmoBase.clone() };
-    this._atmoCol = atmoShell.material.uniforms.uColor;
-    this.planetGroup.add(atmoShell);
+    // -- the sky is computed, not painted: single-scattering raymarch
+    const atmoAmt2 = pp.typeId === 0 ? 0.2 : pp.typeId === 4 ? 0.5 : 1.0;
+    this._camPlanet = { value: new THREE.Vector3() };
+    if (url.searchParams.get('atm') !== '0' && atmoAmt2 > 0.05) {
+      const beta = pp.atmoColor.clone().multiplyScalar(0.0095 * atmoAmt2);
+      this.atmoShell = new THREE.Mesh(
+        new THREE.SphereGeometry(this.R * 1.06, 64, 48),
+        new THREE.ShaderMaterial({
+          uniforms: {
+            uCamPos: this._camPlanet,
+            uSunDir: this.uSunDir,
+            uR: { value: this.R },
+            uRa: { value: this.R * 1.06 },
+            uBetaR: { value: new THREE.Vector3(Math.max(beta.r, 5e-4), Math.max(beta.g, 5e-4), Math.max(beta.b, 5e-4)) },
+            uBetaM: { value: 2.2e-4 * atmoAmt2 },
+            uHr: { value: this.R * 0.012 },
+            uHm: { value: this.R * 0.0032 },
+            uSunI: { value: 15 },
+          },
+          vertexShader: ATMO2_VERT,
+          fragmentShader: ATMO2_FRAG,
+          side: THREE.BackSide,
+          transparent: true,
+          premultipliedAlpha: true,
+          depthWrite: false,
+        }));
+      this.atmoShell.renderOrder = 3;
+      this.planetGroup.add(this.atmoShell);
+    }
     if (pp.clouds > 0.05) {
       this.cloudMesh = new THREE.Mesh(
         new THREE.SphereGeometry(this.R * 1.014, 96, 64),
         makeCloudMaterial(pp, this._sunPosBig, this.uTime));
       this._cloudAmt = this.cloudMesh.material.uniforms.uAmt;
+      this.cloudMesh.renderOrder = 1;
       this.planetGroup.add(this.cloudMesh);
     }
 
@@ -472,13 +577,9 @@ export class PlanetScale {
     if (this.playing) this.days += dt * this.speedDays;
     this.uSunDir.value.applyAxisAngle(Y_AXIS, dt * 0.004);
     this._sunPosBig.value.copy(this.uSunDir.value).multiplyScalar(1e7);
-    this._plCenter.value.copy(this.planetGroup.position);
+    this._camPlanet.value.copy(this.camPos);
     this.sunSprite.position.copy(this.uSunDir.value).multiplyScalar(9000);
     this.uHazeK.value = this.hazeBase * Math.exp(-Math.max(alt, 0) / (this.R * 0.012));
-    // fade the shells as you fall through them
-    const shellH = this.R * 0.045;
-    const inAtmo = Math.pow(Math.min(Math.max(alt / shellH, 0.1), 1), 1.6);
-    this._atmoCol.value.copy(this._atmoBase).multiplyScalar(inAtmo);
     if (this.cloudMesh) {
       this.cloudMesh.rotation.y += dt * 0.0004;
       const deckH = this.R * 0.014;
@@ -587,4 +688,4 @@ const _north = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
 
-export const PLANET_NOTE = `The whole globe, streamed. The planet is a <b>chunked-LOD quadtree</b> on a tangent-warped cube sphere: six root tiles that split in four wherever the view demands more, down to a grid a few dozen meters wide. Tiles are meshed in a <b>Web Worker pool</b> from the exact height field the orbital shader draws, so the continent you aimed at from space is the one that rises to meet you; a parent tile keeps drawing until all four children arrive, and dropped skirts hide every seam between depths. Precision is the quiet trick: vertices are stored relative to their tile's center, the camera never leaves the origin, and the planet carries the negative camera position in double precision — so at half a meter over the rocks, nothing jitters. Fly with <em>WASD</em>, <em>R/F</em> for altitude; your speed is your altitude. Get low and the walkable surface takes over seamlessly.`;
+export const PLANET_NOTE = `One continuous scale, orbit to boots. The planet is a <b>chunked-LOD quadtree</b> on a tangent-warped cube sphere: six root tiles splitting wherever the view demands, meshed in a <b>Web Worker pool</b> from one height field — macro continents plus kilometre and metre relief bands — shared verbatim with the collision code, so what streams in is exactly what you stand on. <b>Geomorphing</b> lerps every vertex toward its parent-grid shape by view distance, so LOD transitions carry zero pop. Seas are a second quadtree wearing <b>Fresnel water</b> with analytic wave trains over true bathymetry; the sky is a <b>single-scattering raymarch</b> (Rayleigh + Mie), so noon is blue, the terminator burns red, and stars fade up through the real transmittance at dusk. The camera never leaves the origin — the planet carries the negative camera position in double precision, and the near plane follows your altitude from centimetres to orbit. Touch down and you are walking; <em>R</em> lifts off; <em>L</em> steps into the wild.`;

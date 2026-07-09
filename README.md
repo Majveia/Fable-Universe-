@@ -131,30 +131,46 @@ forgives, though the universe would not.
 
 ![supernova aftermath](docs/screenshots/21-supernova-remnant.png)
 
-### 4 · The planet, whole — a true streaming quadtree
+### 4 · The planet, whole — orbit to boots, one continuous scale
 Choose **descend from orbit** and the planet stops being a textured ball.
 It becomes a **chunked-LOD quadtree** on a tangent-warped cube sphere: six
 root tiles that split in four wherever the view demands more, meshed in a
-**Web Worker pool** from the exact height field the orbital shader paints —
-the continent you aimed at from space is the one that rises to meet you.
-A parent tile keeps drawing until all four children have streamed in (no
-holes, no popping from nothing), dropped skirts seal every seam between
-neighboring depths, and an LRU cache re-serves ground you've already
-overflown. Fly with **WASD** and **R/F** — *your speed is your altitude*,
-thousands of km/s at apoapsis, a crawl over the dunes — while the HUD
-reads out true altitude, tile counts, and the finest resident grid.
+**Web Worker pool** from one height field — the exact macro continents the
+orbital shader paints, plus kilometre and metre relief bands — shared
+verbatim with the collision code. A parent tile keeps drawing until all
+four children have streamed in, and **geomorphing** lerps every vertex
+(and its normal) toward its parent-grid shape by view distance, so a
+child spawns wearing its parent's exact geometry and refines as you
+close: LOD transitions carry zero pop, no cuts, no fades.
 
-Precision is the quiet trick. float32 runs out five digits before a
-planet-sized world reaches walking distance, so vertices are stored
+Fly with **WASD** and **R/F** — *your speed is your altitude*, thousands
+of km/s at apoapsis — and just keep descending: under two eye-heights the
+scale sets you down and **you are walking**, boots held to the same field
+the tiles are meshed from (measured ground-glue error: 0.000 m), the
+camera near plane riding your altitude from centimetres to orbit. **R**
+lifts off again. **L** steps into the classic close-up surface, where the
+creatures and settlements still live.
+
+Worlds with seas carry a second quadtree wearing **water**: Schlick
+Fresnel against the sky, three analytic wave trains plus noise breakup,
+sun glint, and depth-tinted color computed from the true bathymetry
+beneath — coastlines are real geometric intersections, not texture edges.
+And the sky itself is *computed*: a **single-scattering Rayleigh + Mie
+raymarch** (per-pixel, with per-sample sun transmittance and the planet's
+own shadow) replaces every painted gradient — noon is blue because the
+math says so, the terminator burns red, and at dusk the stars fade up
+through the actual transmittance.
+
+Precision is the quiet trick under all of it. float32 runs out five
+digits before a planet reaches walking distance, so vertices are stored
 relative to their tile's center (built in float64 in the worker), the
-camera never leaves the scene origin, and the planet itself carries the
-negative camera position in JavaScript doubles — the GPU only ever sees
-the small difference. Half a meter over the rocks, nothing jitters.
+camera never leaves the scene origin, and the planet carries the negative
+camera position in JavaScript doubles — the GPU only ever sees the small
+difference. Standing on the rocks, nothing jitters.
 
-Get low and level and the walkable surface below takes the handoff in
-place. Esc climbs back to a low hover; Esc again returns to the system.
 `?pl=<index>` deep-links an approach; `?quad=0` restores the direct
-landing; `?qk=` trades tile budget for fidelity on modest GPUs.
+landing; `?qk=` trades tile budget for fidelity; `?atm=0`, `?gm=0` toggle
+the sky and the morphing.
 
 ![the streaming globe from low orbit](docs/screenshots/25-quadtree-orbit.png)
 
