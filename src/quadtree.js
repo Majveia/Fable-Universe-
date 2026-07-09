@@ -42,6 +42,8 @@ export class QuadtreePlanet {
       sea: (pp.typeId === 1 || pp.typeId === 2) && pp.oceanLevel > -0.5,
       R: this.R, amp: this.amp, res: this.res,
       skirtK: opts.skirtK ?? 1,
+      flat: opts.flat ?? null,     // constant-height sheet (the ocean surface)
+      bathy: !!opts.bathy,         // true terrain under a real water surface
     };
 
     // one index ARRAY serves every tile, but each geometry gets its own
@@ -53,11 +55,12 @@ export class QuadtreePlanet {
     this.tiles = new Map();      // key → { mesh, geo }
     this.pending = new Set();    // keys in flight to a worker
     this.results = [];           // built tiles awaiting GPU upload
-    this.cap = 620;              // LRU tile budget
+    this.cap = 900;              // LRU tile budget
     this.stats = { drawn: 0, cached: 0, pending: 0, built: 6, maxDepth: 0, tris: 0 };
 
     // worker pool
-    const n = Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
+    const n = opts.workers
+      ?? Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
     this.workers = [];
     this.idle = [];
     for (let w = 0; w < n; w++) {
@@ -150,7 +153,7 @@ export class QuadtreePlanet {
       if (depth >= 2 && cDir.dot(camDir) <
         Math.cos(horizon + ang * 2.4 + Math.sqrt(2 * this.amp / this.R) + 0.02)) return;
 
-      const dist = Math.max(_v4.copy(c).sub(camPos).length() - this.R * ang, this.amp * 0.5);
+      const dist = Math.max(_v4.copy(c).sub(camPos).length() - this.R * ang, 0.002);
       const chord = this.R * ang * 2;
       const key = face + ':' + depth + ':' + i + ':' + j;
       const tile = this.tiles.get(key);

@@ -9,7 +9,7 @@
 // continents the fragment shader paints are the continents you saw from the
 // system view.
 
-import { planetHeight } from './terrain.js';
+import { planetHeight, fbm } from './terrain.js';
 
 // cube faces: right, up, normal — one consistent basis shared with quadtree.js
 export const FACES = [
@@ -39,11 +39,30 @@ export function uvToDir(f, u, v, out) {
   return out;
 }
 
-/** radius of the crust along a unit direction, in draw units */
+/**
+ * Radius of the crust along a unit direction, in draw units.
+ *
+ * One field for every consumer: the macro continents from the orbital
+ * shader, plus a kilometre band and a metre band of fbm relief so the
+ * ground is worth standing on. The bands exist at every LOD depth —
+ * coarse tiles undersample them into sub-pixel noise, fine tiles resolve
+ * them — so geomorphing, collision and rendering always agree.
+ */
 export function surfaceRadius(dx, dy, dz, job) {
+  if (job.flat != null) return job.R + job.amp * job.flat;   // the sea sheet
   let h = planetHeight(dx, dy, dz, job.seed);
-  if (job.sea) h = Math.max(h, job.ocean);
-  return job.R + job.amp * h;
+  // with a real water surface above, the terrain keeps its true bathymetry;
+  // without one, the old sea-level clamp still fakes a flat dark sea
+  const drowned = job.sea && !job.bathy && h < job.ocean;
+  if (drowned) h = job.ocean;
+  let r = job.R + job.amp * h;
+  if (!drowned) {
+    const s = job.seed;
+    const inland = 0.25 + Math.min(Math.max((h - (job.sea ? job.ocean : -0.1)) * 2.5, 0), 1.2);
+    r += fbm(dx * 880 + s * 3.7, dy * 880 + s * 5.1, dz * 880 + s * 7.3) * 0.11 * inland;
+    r += fbm(dx * 21000 + s * 11.3, dy * 21000 + s * 13.7, dz * 21000 + s * 17.9) * 0.014 * inland;
+  }
+  return r;
 }
 
 /**

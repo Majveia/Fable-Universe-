@@ -134,6 +134,68 @@ const TILE_FRAG = /* glsl */`
   }
 `;
 
+const OCEAN_FRAG = /* glsl */`
+  precision highp float;
+  uniform float uSeed;
+  uniform vec3  uSunDir;
+  uniform float uTime;
+  uniform float uOcean;
+  uniform vec3  uColA;      // deep water (the world's own palette)
+  uniform vec3  uColC;      // shallows
+  uniform vec3  uHaze;
+  uniform float uHazeK;
+  varying vec3 vDir;
+  varying vec3 vN;
+  varying vec3 vView;
+  ${NOISE_GLSL}
+
+  void main() {
+    vec3 dir = normalize(vDir);
+    vec3 viewDir = normalize(-vView);
+    float dCam = length(vView);
+    vec3 sunDir = normalize(uSunDir);
+    float dayS = dot(dir, sunDir);
+    float light = smoothstep(-0.12, 0.25, dayS);
+
+    // waves: three trochoidal trains in the local tangent frame plus a
+    // noise band for breakup — analytic slopes, no texture, no mesh cost
+    vec3 e1 = normalize(cross(abs(dir.y) > 0.94 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0), dir));
+    vec3 e2 = cross(dir, e1);
+    float fade = 1.0 - smoothstep(30.0, 700.0, dCam);   // waves matter near you
+    vec2 slope = vec2(0.0);
+    if (fade > 0.001) {
+      float x1 = dot(vDir, e1), x2 = dot(vDir, e2);
+      slope += vec2(0.9, 0.42) * cos(x1 * 84.0 + x2 * 31.0 + uTime * 0.55) * 0.10;
+      slope += vec2(-0.35, 0.83) * cos(x1 * -98.0 + x2 * 241.0 + uTime * 0.9) * 0.065;
+      slope += vec2(0.6, -0.75) * cos(x1 * 590.0 + x2 * 214.0 + uTime * 1.6) * 0.045;
+      float n1 = snoise(dir * 5200.0 + vec3(uTime * 0.12, uSeed, 0.0));
+      slope += vec2(n1, -n1) * 0.05;
+      slope *= fade;
+    }
+    vec3 n = normalize(dir + e1 * slope.x + e2 * slope.y);
+
+    // what the water sits over: the true bathymetry, recomputed here
+    vec3 sd = vec3(uSeed * 17.31, uSeed * 9.17, uSeed * 31.7);
+    float h = fbm(dir * 2.3 + sd) * 0.75 + ridged(dir * 5.0 + sd * 1.7) * 0.45 - 0.28;
+    float depth = clamp((uOcean - h) * 2.2, 0.0, 1.0);
+    vec3 body = mix(uColC * 0.6, uColA * 0.35, depth) * (light * 0.9 + 0.012);
+
+    // Fresnel against a procedural sky, sun glint on the wave normals
+    float F = 0.02 + 0.98 * pow(1.0 - max(dot(n, viewDir), 0.0), 5.0);
+    vec3 refl = reflect(-viewDir, n);
+    float elev = clamp(dot(refl, dir), 0.0, 1.0);
+    float sunUp = clamp(dayS * 0.85 + 0.25, 0.0, 1.0);
+    vec3 sky = mix(uHaze * 1.15, uHaze * 0.35, sqrt(elev)) * sunUp;
+    float glintN = max(dot(refl, sunDir), 0.0);
+    vec3 glint = vec3(1.0, 0.97, 0.9) * (pow(glintN, 420.0) * 1.6 + pow(glintN, 40.0) * 0.12) * light;
+
+    vec3 col = mix(body, sky, F) + glint;
+    float fog = 1.0 - exp(-dCam * uHazeK);
+    col = mix(col, uHaze * sunUp, fog);
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
 const MOON_VERT = /* glsl */`
   varying vec3 vN;
   void main() {
@@ -211,17 +273,49 @@ export class PlanetScale {
       fragmentShader: TILE_FRAG,
     });
 
+    const hasSea = (pp.typeId === 1 || pp.typeId === 2) && pp.oceanLevel > -0.5;
+    const qres = parseInt(url.searchParams.get('qr')) || 33;
+    const qdepth = parseInt(url.searchParams.get('qd')) || 18;
+    const qsplit = parseFloat(url.searchParams.get('qk')) || 0;
     this.quad = new QuadtreePlanet(pp, {
       R: this.R, amp: this.amp,
-      res: parseInt(url.searchParams.get('qr')) || 33,
-      maxDepth: parseInt(url.searchParams.get('qd')) || 13,
-      splitK: parseFloat(url.searchParams.get('qk')) || 0,
+      res: qres, maxDepth: qdepth, splitK: qsplit,
       skirtK: url.searchParams.has('sk') ? parseFloat(url.searchParams.get('sk')) : 1,
+      bathy: hasSea,
       makeMaterial,
     });
     this.planetGroup = new THREE.Group();
     this.planetGroup.add(this.quad.group);
     this.scene.add(this.planetGroup);
+
+    // -- the sea: a second quadtree, flat at sea level, wearing water
+    this.seaR = hasSea ? this.R + this.amp * pp.oceanLevel : -1;
+    if (hasSea) {
+      const makeOcean = (center, splitD) => new THREE.ShaderMaterial({
+        uniforms: {
+          uCenter: { value: center },
+          uSplitD: { value: splitD },
+          uMorphOn: this._morphOn,
+          uSeed: { value: pp.noiseSeed },
+          uSunDir: this.uSunDir,
+          uTime: this.uTime,
+          uOcean: { value: pp.oceanLevel },
+          uColA: { value: pp.colA },
+          uColC: { value: pp.colC },
+          uHaze: this.uHazeCol,
+          uHazeK: this.uHazeK,
+        },
+        vertexShader: TILE_VERT,
+        fragmentShader: OCEAN_FRAG,
+      });
+      this.ocean = new QuadtreePlanet(pp, {
+        R: this.R, amp: this.amp,
+        res: qres, maxDepth: Math.min(qdepth, 12), splitK: qsplit,
+        flat: pp.oceanLevel, workers: 2,
+        makeMaterial: makeOcean,
+      });
+      this.planetGroup.add(this.ocean.group);
+    }
 
     // -- the true sky, carried down from the system view
     const gv = ctx.gview;
@@ -290,6 +384,13 @@ export class PlanetScale {
     this.bloomSettings = { strength: 0.28, radius: 0.55, threshold: 0.7 };
     this._spd = 0;
     this._landing = false;
+    this.walk = false;                 // on foot: gravity holds you to the crust
+    this.eyeH = 0.0009;                // ~2.2 m in draw units
+  }
+
+  /** the radius you can stand on: terrain, or the sea surface over it */
+  _groundR(dir) {
+    return Math.max(this.quad.heightAt(dir), this.seaR);
   }
 
   // ------------------------------------------------------------- loop ----
@@ -300,26 +401,42 @@ export class PlanetScale {
     east.normalize();
     const north = _north.crossVectors(up, east);
 
-    const surfR = this.quad.heightAt(up);
+    const surfR = this._groundR(up);
     const alt = this.camPos.length() - surfR;
     this.altUnits = alt;
 
-    // fly: the throttle is your altitude
+    // walking begins where flying bottoms out; R lifts you back into flight
+    if (!this.walk && alt < this.eyeH * 2.2) this.walk = true;
+    if (this.walk && this.keys.has('KeyR')) { this.walk = false; this.camPos.addScaledVector(up, 0.004); }
+
     const boost = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) ? 3.4 : 1;
-    const spd = Math.min(Math.max(alt * 0.8, 0.05), 1600) * boost;
     this._spd = 0;
     const fwd = _fwd.copy(north).multiplyScalar(Math.cos(this.yaw)).addScaledVector(east, Math.sin(this.yaw));
     fwd.multiplyScalar(Math.cos(this.pitch)).addScaledVector(up, Math.sin(this.pitch)).normalize();
     const right = _right.crossVectors(fwd, up).normalize();
-    if (this.keys.has('KeyW')) { this.camPos.addScaledVector(fwd, spd * dt); this._spd = spd; }
-    if (this.keys.has('KeyS')) { this.camPos.addScaledVector(fwd, -spd * dt); this._spd = spd; }
-    if (this.keys.has('KeyA')) { this.camPos.addScaledVector(right, -spd * dt); this._spd = spd; }
-    if (this.keys.has('KeyD')) { this.camPos.addScaledVector(right, spd * dt); this._spd = spd; }
-    if (this.keys.has('KeyR')) { this.camPos.addScaledVector(up, spd * dt); this._spd = spd; }
-    if (this.keys.has('KeyF')) { this.camPos.addScaledVector(up, -spd * dt); this._spd = spd; }
+    if (this.walk) {
+      // on foot: tangential steps at human speed, boots glued to the field
+      const spd = 0.0026 * boost;
+      const fwdT = _north.copy(fwd).addScaledVector(up, -fwd.dot(up)).normalize();
+      if (this.keys.has('KeyW')) { this.camPos.addScaledVector(fwdT, spd * dt); this._spd = spd; }
+      if (this.keys.has('KeyS')) { this.camPos.addScaledVector(fwdT, -spd * dt); this._spd = spd; }
+      if (this.keys.has('KeyA')) { this.camPos.addScaledVector(right, -spd * dt); this._spd = spd; }
+      if (this.keys.has('KeyD')) { this.camPos.addScaledVector(right, spd * dt); this._spd = spd; }
+      const upNow = _up.copy(this.camPos).normalize();
+      this.camPos.copy(upNow).multiplyScalar(this._groundR(upNow) + this.eyeH);
+    } else {
+      // in flight: the throttle is your altitude
+      const spd = Math.min(Math.max(alt * 0.8, 0.008), 1600) * boost;
+      if (this.keys.has('KeyW')) { this.camPos.addScaledVector(fwd, spd * dt); this._spd = spd; }
+      if (this.keys.has('KeyS')) { this.camPos.addScaledVector(fwd, -spd * dt); this._spd = spd; }
+      if (this.keys.has('KeyA')) { this.camPos.addScaledVector(right, -spd * dt); this._spd = spd; }
+      if (this.keys.has('KeyD')) { this.camPos.addScaledVector(right, spd * dt); this._spd = spd; }
+      if (this.keys.has('KeyR')) { this.camPos.addScaledVector(up, spd * dt); this._spd = spd; }
+      if (this.keys.has('KeyF')) { this.camPos.addScaledVector(up, -spd * dt); this._spd = spd; }
+    }
 
     // the tour flies itself down
-    if (this.tourAutopilot) {
+    if (this.tourAutopilot && !this.walk) {
       this.yaw += dt * 0.03;
       this.pitch += (-0.35 - this.pitch) * Math.min(dt * 0.6, 1);
       const drop = (alt * 0.085 + 0.4) * dt;
@@ -327,9 +444,19 @@ export class PlanetScale {
       this._spd = alt * 0.085 + 0.4;
     }
 
-    // never through the crust
-    const floor = this.quad.heightAt(_up.copy(this.camPos).normalize()) + 0.55;
-    if (this.camPos.length() < floor) this.camPos.setLength(floor);
+    // never through the crust or under the waves (walking stands exactly on them)
+    if (!this.walk) {
+      const floor = this._groundR(_up.copy(this.camPos).normalize()) + this.eyeH;
+      if (this.camPos.length() < floor) this.camPos.setLength(floor);
+    }
+
+    // the near plane follows your altitude: centimetres on foot, tens of
+    // units in orbit — float depth is always spent where you are
+    const near = Math.min(Math.max(alt * 0.25, 0.0004), 30);
+    if (Math.abs(near - this.camera.near) > this.camera.near * 0.25) {
+      this.camera.near = near;
+      this.camera.updateProjectionMatrix();
+    }
 
     // orient: local horizon stays level
     this.camera.up.copy(up);
@@ -338,6 +465,7 @@ export class PlanetScale {
     // camera-relative world: the planet wears the negative camera position
     this.planetGroup.position.copy(this.camPos).negate();
     this.quad.update(this.camPos);
+    if (this.ocean) this.ocean.update(this.camPos);
 
     // -- environment
     this.uTime.value += dt;
@@ -363,11 +491,6 @@ export class PlanetScale {
       m.mesh.position.set(Math.cos(th) * m.dist, 0, Math.sin(th) * m.dist);
     }
 
-    // low and level: the surface takes the handoff
-    if (!this._landing && alt < 2.3) {
-      this._landing = true;
-      this.app.landFromPlanet(this);
-    }
   }
 
   landNow() {
@@ -383,6 +506,7 @@ export class PlanetScale {
   // ------------------------------------------------------------ input ----
   onWheel(e) {
     // scroll = altitude, multiplicative — the Google-Earth feel
+    if (this.walk) { if (e.deltaY < 0) this.walk = false; else return; }
     this.camPos.multiplyScalar(1 + Math.sign(e.deltaY) * 0.055);
     if (this.camPos.length() > this.R * 5) this.camPos.setLength(this.R * 5);
   }
@@ -416,9 +540,11 @@ export class PlanetScale {
       ['world', this.pp.name],
       ['class', this.pp.type + (this.pp.inhabited ? ' · inhabited' : '')],
       ['radius', Math.round(this.pp.radiusE * 6371).toLocaleString() + ' km'],
+      ['mode', this.walk ? 'on foot' : 'flight'],
       ['altitude', this._fmtKm(Math.max(this.altUnits ?? 0, 0) * this.unitKm)],
       ['speed', this._spd > 0 ? this._fmtKm(this._spd * this.unitKm) + '/s' : '—'],
       ['terrain tiles', `${S.drawn} drawn · ${S.cached} cached${S.pending ? ` · ${S.pending} streaming` : ''}`],
+      ...(this.ocean ? [['sea tiles', `${this.ocean.stats.drawn} drawn · ${this.ocean.stats.cached} cached`]] : []),
       ['triangles', S.tris >= 1e6 ? (S.tris / 1e6).toFixed(2) + ' M' : Math.round(S.tris / 1e3) + ' k'],
       ['finest grid', this._fmtKm(spacing)],
     ];
@@ -435,17 +561,18 @@ export class PlanetScale {
   enter() {}
   exit() {}
   resume() {
-    // climbing out of the surface: lift to a low hover so the handoff
-    // doesn't immediately re-fire
-    const surfR = this.quad.heightAt(_up.copy(this.camPos).normalize());
+    // climbing out of the classic surface: lift to a low hover
+    const surfR = this._groundR(_up.copy(this.camPos).normalize());
     if (this.camPos.length() < surfR + 40) this.camPos.setLength(surfR + 40);
     this._landing = false;
+    this.walk = false;
   }
 
   dispose() {
     window.removeEventListener('keydown', this._kd);
     window.removeEventListener('keyup', this._ku);
     this.quad.dispose();
+    if (this.ocean) this.ocean.dispose();
     this.scene.traverse(o => {
       if (o.geometry) o.geometry.dispose();
       if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
