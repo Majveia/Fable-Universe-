@@ -20,13 +20,23 @@ import { softDotTexture } from './nebula.js';
 
 const TILE_VERT = /* glsl */`
   uniform vec3 uCenter;     // tile center, planet frame (static per tile)
+  uniform float uSplitD;    // this depth's split distance
+  uniform float uMorphOn;
+  attribute vec3 aMorph;    // this vertex, as the parent grid renders it
+  attribute vec3 aMorphN;
   varying vec3 vDir;        // planet-frame direction — the noise domain
   varying vec3 vN;
   varying vec3 vView;       // view-space position: precise near the camera
   void main() {
-    vDir = uCenter + position;
-    vN = normal;
-    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    // geomorph: children spawn wearing the parent's shape (m=1 at twice the
+    // split distance, where the swap happens) and relax into their own
+    // detail as the camera closes — LOD transitions carry zero pop
+    float d0 = length((modelViewMatrix * vec4(position, 1.0)).xyz);
+    float m = uMorphOn * clamp((d0 / uSplitD - 1.05) / 0.8, 0.0, 1.0);
+    vec3 p = mix(position, aMorph, m);
+    vDir = uCenter + p;
+    vN = normalize(mix(normal, aMorphN, m));
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
     vView = mv.xyz;
     gl_Position = projectionMatrix * mv;
   }
@@ -178,9 +188,12 @@ export class PlanetScale {
     this.hazeBase = 0.012 * atmoAmt;
     this.uHazeCol = { value: pp.atmoColor.clone().multiplyScalar(0.9).add(new THREE.Color(0.02, 0.02, 0.03)) };
 
-    const makeMaterial = (center) => new THREE.ShaderMaterial({
+    this._morphOn = { value: url.searchParams.get('gm') === '0' ? 0 : 1 };
+    const makeMaterial = (center, splitD) => new THREE.ShaderMaterial({
       uniforms: {
         uCenter: { value: center },
+        uSplitD: { value: splitD },
+        uMorphOn: this._morphOn,
         uType: { value: pp.typeId },
         uSeed: { value: pp.noiseSeed },
         uSunDir: this.uSunDir,

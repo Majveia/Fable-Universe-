@@ -30,11 +30,10 @@ export class QuadtreePlanet {
     this.pp = pp;
     this.R = opts.R;
     this.amp = opts.amp;
-    this.res = opts.res ?? 33;
+    this.res = (opts.res ?? 33) | 1; // odd, so parent grids align with children
     this.maxDepth = opts.maxDepth ?? 13;
     this.makeMaterial = opts.makeMaterial;
     this.splitK = opts.splitK || 6.5;   // split when dist < chord · splitK (~4 px error)
-    this.mergeK = this.splitK * 1.45;
 
     this.group = new THREE.Group();
     this.job = {
@@ -98,10 +97,14 @@ export class QuadtreePlanet {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(data.pos, 3));
     geo.setAttribute('normal', new THREE.BufferAttribute(data.norm, 3));
+    geo.setAttribute('aMorph', new THREE.BufferAttribute(data.morph, 3));
+    geo.setAttribute('aMorphN', new THREE.BufferAttribute(data.morphN, 3));
     geo.setIndex(new THREE.BufferAttribute(this.indexArray, 1));
     geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), data.boundR * 1.05);
     const center = new THREE.Vector3(data.center[0], data.center[1], data.center[2]);
-    const mesh = new THREE.Mesh(geo, this.makeMaterial(center));
+    const depth = parseInt(data.key.split(':')[1], 10);
+    const splitD = this.R * (Math.PI / 2) / (1 << depth) * this.splitK;
+    const mesh = new THREE.Mesh(geo, this.makeMaterial(center, splitD));
     mesh.position.copy(center);
     mesh.visible = false;
     this.group.add(mesh);

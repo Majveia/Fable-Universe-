@@ -78,6 +78,8 @@ export function buildTile(job) {
   const nGrid = res * res, nSkirt = 4 * res;
   const pos = new Float32Array((nGrid + nSkirt) * 3);
   const norm = new Float32Array((nGrid + nSkirt) * 3);
+  const morph = new Float32Array((nGrid + nSkirt) * 3);
+  const morphN = new Float32Array((nGrid + nSkirt) * 3);
   let boundR = 0;
 
   for (let y = 0; y < res; y++) {
@@ -100,9 +102,37 @@ export function buildTile(job) {
     }
   }
 
-  // skirt: rim vertices dropped toward the planet center, hiding any seam
-  // between tiles of different depth
-  const drop = (R * span * 0.055 + job.amp * 1.2) * (job.skirtK ?? 1);
+  // geomorph targets: what this vertex looks like on the parent's grid.
+  // The parent's vertices over this quadrant are exactly this tile's
+  // even-index samples, so the target is a bilerp of the surrounding
+  // even-index corners — a child spawns wearing its parent's shape and
+  // refines as the camera closes. Roots have no parent: target = self.
+  for (let y = 0; y < res; y++) {
+    for (let x = 0; x < res; x++) {
+      const o = (y * res + x) * 3;
+      if (depth === 0) {
+        morph[o] = pos[o]; morph[o + 1] = pos[o + 1]; morph[o + 2] = pos[o + 2];
+        morphN[o] = norm[o]; morphN[o + 1] = norm[o + 1]; morphN[o + 2] = norm[o + 2];
+        continue;
+      }
+      const px0 = x & ~1, py0 = y & ~1;
+      const px1 = Math.min(px0 + 2, res - 1), py1 = Math.min(py0 + 2, res - 1);
+      const fx = (x - px0) / 2, fy = (y - py0) / 2;
+      const k00 = (py0 * res + px0) * 3, k10 = (py0 * res + px1) * 3;
+      const k01 = (py1 * res + px0) * 3, k11 = (py1 * res + px1) * 3;
+      for (let c = 0; c < 3; c++) {
+        morph[o + c] =
+          (pos[k00 + c] * (1 - fx) + pos[k10 + c] * fx) * (1 - fy) +
+          (pos[k01 + c] * (1 - fx) + pos[k11 + c] * fx) * fy;
+        morphN[o + c] =
+          (norm[k00 + c] * (1 - fx) + norm[k10 + c] * fx) * (1 - fy) +
+          (norm[k01 + c] * (1 - fx) + norm[k11 + c] * fx) * fy;
+      }
+    }
+  }
+
+  // skirt: a shallow insurance stub — geomorphing closes the real cracks
+  const drop = (R * span * 0.02 + job.amp * 0.35) * (job.skirtK ?? 1);
   const rim = (edge, t) => edge === 0 ? t : edge === 1 ? (res - 1) * res + t
     : edge === 2 ? t * res : t * res + (res - 1);
   for (let e = 0; e < 4; e++) {
@@ -111,13 +141,16 @@ export function buildTile(job) {
       const o = (nGrid + e * res + t) * 3;
       const wx = pos[g] + cx, wy = pos[g + 1] + cy, wz = pos[g + 2] + cz;
       const inv = drop / (Math.hypot(wx, wy, wz) || 1);
-      pos[o] = pos[g] - wx * inv; pos[o + 1] = pos[g + 1] - wy * inv; pos[o + 2] = pos[g + 2] - wz * inv;
+      const dx = wx * inv, dy = wy * inv, dz = wz * inv;
+      pos[o] = pos[g] - dx; pos[o + 1] = pos[g + 1] - dy; pos[o + 2] = pos[g + 2] - dz;
       norm[o] = norm[g]; norm[o + 1] = norm[g + 1]; norm[o + 2] = norm[g + 2];
+      morph[o] = morph[g] - dx; morph[o + 1] = morph[g + 1] - dy; morph[o + 2] = morph[g + 2] - dz;
+      morphN[o] = morphN[g]; morphN[o + 1] = morphN[g + 1]; morphN[o + 2] = morphN[g + 2];
     }
   }
 
   return {
-    key: job.key, pos, norm,
+    key: job.key, pos, norm, morph, morphN,
     center: [cx, cy, cz],
     boundR: Math.sqrt(boundR) + drop,
   };
@@ -160,6 +193,6 @@ export function buildIndices(res) {
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
   self.onmessage = (e) => {
     const out = buildTile(e.data);
-    self.postMessage(out, [out.pos.buffer, out.norm.buffer]);
+    self.postMessage(out, [out.pos.buffer, out.norm.buffer, out.morph.buffer, out.morphN.buffer]);
   };
 }
