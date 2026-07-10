@@ -92,13 +92,22 @@ export class Tour {
         break;
       }
       case 'planet': {
-        // ride the streaming descent until the surface takes the handoff
-        if (s.kind === 'surface') { this.stage = 'ground'; this.timer = 17; return; }
-        if (s.kind === 'planet') {
-          s.tourAutopilot = true;
-          if (this.timer <= 0) s.landNow();
-        } else {
-          this.stage = 'ground-out'; this.timer = 3;
+        // ride the descent all the way to the ground — it's one scale now
+        if (s.kind !== 'planet') { this.stage = 'ground-out'; this.timer = 3; return; }
+        s.tourAutopilot = true;
+        if (s.walk) {
+          s.yaw += dt * 0.09;   // a slow pan across the country
+          if (!this._struck && this.timer < 14 && Math.random() < 0.03) {
+            this._struck = true;
+            s.strikeMeteor(false);
+          }
+        }
+        if (this.timer <= 0) {
+          this._struck = false;
+          s.tourAutopilot = false;
+          app.popTo(app.stack.length - 2);
+          this.stage = 'ground-out';
+          this.timer = 3;
         }
         break;
       }

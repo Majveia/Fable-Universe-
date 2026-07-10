@@ -62,6 +62,19 @@ export function surfaceRadius(dx, dy, dz, job) {
     r += fbm(dx * 880 + s * 3.7, dy * 880 + s * 5.1, dz * 880 + s * 7.3) * 0.11 * inland;
     r += fbm(dx * 21000 + s * 11.3, dy * 21000 + s * 13.7, dz * 21000 + s * 17.9) * 0.014 * inland;
   }
+  // craters: bowls and rims stamped straight into the crust — packed as
+  // [siteX, siteY, siteZ, angularRadius, depth] per scar
+  const C = job.craters;
+  if (C) {
+    for (let i = 0; i < C.length; i += 5) {
+      const ddx = dx - C[i], ddy = dy - C[i + 1], ddz = dz - C[i + 2];
+      const rc = C[i + 3];
+      const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+      if (d2 > rc * rc * 4.84) continue;
+      const x = Math.sqrt(d2) / rc;
+      r += C[i + 4] * (-Math.max(1 - x * x, -0.15) + 0.55 * Math.exp(-9 * (x - 1) * (x - 1)));
+    }
+  }
   return r;
 }
 
@@ -172,6 +185,7 @@ export function buildTile(job) {
     key: job.key, pos, norm, morph, morphN,
     center: [cx, cy, cz],
     boundR: Math.sqrt(boundR) + drop,
+    gen: job.gen,
   };
 }
 

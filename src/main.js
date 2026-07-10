@@ -27,7 +27,7 @@ const HINTS = {
   blackhole: 'drag to orbit the horizon · scroll to lean closer · esc to ascend',
   surface: 'drag to look · wasd walk · shift runs · f flies · x calls down a meteor · space pauses the day · esc to orbit',
   clouds: 'drag to steer · you fly where you look · w dives faster, s eases off · + − trims the cruise · esc to climb out',
-  planet: 'drag to steer · wasd fly · r/f climb & dive · touch down and you are walking · r lifts off · l steps into the wild (creatures & ruins) · esc to orbit',
+  planet: 'drag to steer · wasd fly · r/f climb & dive · touch down and you are walking · r lifts off · x calls down a meteor · esc to orbit',
 };
 
 class App {
@@ -106,14 +106,20 @@ class App {
       const sys = this.active();
       const plIdx = parseInt(url.searchParams.get('pl'));
       const plNode = Number.isInteger(plIdx) ? sys.planetNodes[plIdx] : null;
-      if (plNode && plNode.pp.typeId <= 4 && this.quadOn && !Number.isInteger(pIdx)) {
-        const ctx = this._approachCtx(sys, plNode.pp);
+      // planet surfaces live on the globe now: old ?p= planet links follow
+      const pNode = Number.isInteger(pIdx) ? sys.planetNodes[pIdx] : null;
+      const redirected = pNode && pNode.pp.typeId <= 4 && this.quadOn
+        && url.searchParams.get('moon') === null && !url.searchParams.get('cl');
+      const globeNode = (plNode && plNode.pp.typeId <= 4 && this.quadOn) ? plNode
+        : (redirected ? pNode : null);
+      if (globeNode) {
+        const ctx = this._approachCtx(sys, globeNode.pp);
         sys.exit();
         this.stack.push(new PlanetScale(this, ctx));
         this.active().enter();
         return;
       }
-      const node = Number.isInteger(pIdx) ? sys.planetNodes[pIdx] : null;
+      const node = pNode;
       if (node) {
         const base = { system: sys.params, sunColor: sys.starColor, hostIndex: pIdx };
         if (url.searchParams.get('cl') && node.pp.typeId >= 5) {
@@ -402,24 +408,6 @@ class App {
       () => s.planetNodes[p.index].group.position);
   }
 
-  /** low over the quadtree terrain, the walkable surface takes the handoff */
-  landFromPlanet(pl) {
-    if (this._warping) return;
-    this._warping = true;
-    this.hud.hideCard();
-    this.audio.warp('dive');
-    this.hud.veil(pl.pp.atmoColor.clone().multiplyScalar(1.4).add(new THREE.Color(0.22, 0.22, 0.25)));
-    const site = pl.camPos.clone().normalize();
-    setTimeout(() => {
-      pl.exit();
-      this.stack.push(new SurfaceScale(this, {
-        planet: pl.pp, system: pl.ctx.system, sunColor: pl.ctx.sunColor,
-        hostIndex: pl.ctx.hostIndex, landingDir: [site.x, site.y, site.z],
-      }));
-      this._syncScale();
-      this._warping = false;
-    }, 300);
-  }
 
   cruise(s, p) {
     this.push(

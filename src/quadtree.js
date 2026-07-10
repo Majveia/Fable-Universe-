@@ -44,6 +44,8 @@ export class QuadtreePlanet {
       skirtK: opts.skirtK ?? 1,
       flat: opts.flat ?? null,     // constant-height sheet (the ocean surface)
       bathy: !!opts.bathy,         // true terrain under a real water surface
+      craters: opts.craters ?? null,
+      gen: 0,
     };
 
     // one index ARRAY serves every tile, but each geometry gets its own
@@ -96,6 +98,35 @@ export class QuadtreePlanet {
     return planetHeight(dir.x, dir.y, dir.z, this.job.seed);
   }
 
+  /**
+   * Punch a new crater into the field at runtime: every consumer (workers,
+   * collision, future tiles) reads the same job, so consistency is free —
+   * only the already-built tiles under the scar need eviction and restream.
+   */
+  addCrater(dx, dy, dz, radUnits, depthUnits) {
+    const arr = this.job.craters ?? (this.job.craters = []);
+    const rc = radUnits / this.R;
+    arr.push(dx, dy, dz, rc, depthUnits);
+    this.job.gen++;
+    const reach = rc * 2.4;
+    const site = _v1.set(dx, dy, dz);
+    let evicted = 0;
+    for (const [key, t] of this.tiles) {
+      const [f, d, i, j] = key.split(':').map(Number);
+      const ang = HALF_ANG / (1 << d);
+      // coarse tiles can't resolve the scar anyway — leave them be
+      if (this.R * ang * 2 / (this.res - 1) > radUnits * 3) continue;
+      this._center(f, d, i, j, _v2).multiplyScalar(1 / this.R);
+      if (_v2.distanceTo(site) > reach + ang * 1.7) continue;
+      t.geo.dispose(); t.mesh.material.dispose();
+      this.group.remove(t.mesh);
+      this.tiles.delete(key);
+      this._shown.delete(key);
+      if (++evicted > 160) break;
+    }
+    return evicted;
+  }
+
   _adopt(data) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(data.pos, 3));
@@ -131,6 +162,8 @@ export class QuadtreePlanet {
     while (this.results.length && uploads < 4) {
       const data = this.results.shift();
       this.pending.delete(data.key);
+      // stale generation: built before the field last changed — drop it
+      if (data.gen !== this.job.gen) continue;
       if (!this.tiles.has(data.key)) { this._adopt(data); S.built++; }
       uploads++;
     }

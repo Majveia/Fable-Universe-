@@ -17,6 +17,11 @@ import { QuadtreePlanet } from './quadtree.js';
 import { NOISE_GLSL, makeCloudMaterial } from './planet.js';
 import { makeGalaxySkyFromWithin, makeSkyDome } from './starfield.js';
 import { softDotTexture } from './nebula.js';
+import { hash, RNG } from './rng.js';
+import { snoise } from './terrain.js';
+import { addLife } from './life.js';
+import { addSettlement } from './settlement.js';
+import { buildScatterLUTs } from './scatterlut.js';
 
 const TILE_VERT = /* glsl */`
   uniform vec3 uCenter;     // tile center, planet frame (static per tile)
@@ -134,6 +139,43 @@ const TILE_FRAG = /* glsl */`
   }
 `;
 
+// the ocean's vertex stage: same RTC + geomorph as the land, plus the
+// primary swell train as true Gerstner displacement near the camera —
+// crests sharpen, troughs flatten, silhouettes actually move
+const OCEAN_VERT = /* glsl */`
+  uniform vec3 uCenter;
+  uniform float uSplitD;
+  uniform float uMorphOn;
+  uniform float uTime;
+  attribute vec3 aMorph;
+  attribute vec3 aMorphN;
+  varying vec3 vDir;
+  varying vec3 vN;
+  varying vec3 vView;
+  void main() {
+    float d0 = length((modelViewMatrix * vec4(position, 1.0)).xyz);
+    float m = uMorphOn * clamp((d0 / uSplitD - 1.05) / 0.8, 0.0, 1.0);
+    vec3 p = mix(position, aMorph, m);
+    vec3 pf = uCenter + p;
+    vec3 dir = normalize(pf);
+    float fade = 1.0 - smoothstep(8.0, 70.0, d0);
+    if (fade > 0.001) {
+      vec3 e1 = normalize(cross(abs(dir.y) > 0.94 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0), dir));
+      vec3 e2 = cross(dir, e1);
+      float ph = dot(pf, e1) * 84.0 + dot(pf, e2) * 31.0 + uTime * 0.55;
+      float A = 0.0016 * fade;
+      vec2 dw = vec2(0.906, 0.423);   // the swell's travel direction
+      p += (e1 * dw.x + e2 * dw.y) * (A * 0.8 * cos(ph));
+      p += dir * (A * sin(ph));
+    }
+    vDir = uCenter + p;
+    vN = normalize(mix(normal, aMorphN, m));
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    vView = mv.xyz;
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
 const OCEAN_FRAG = /* glsl */`
   precision highp float;
   uniform float uSeed;
@@ -205,10 +247,10 @@ const ATMO2_VERT = /* glsl */`
   }
 `;
 
-// Single-scattering Rayleigh + Mie, marched per sky pixel (Nishita).
-// Terrain pixels are depth-culled, so this shades only the sky and the limb:
-// blue noon, red terminator, and stars that fade up through the residual
-// transmittance at dusk — no lookup tables, no faked gradients.
+// Rayleigh + Mie, marched per sky pixel — with the atmosphere's memory in
+// two precomputed tables: transmittance T(h,μ) replaces the nested sun
+// march, and Hillaire's Ψ(h,μs) adds every scattering order past the first,
+// which is what keeps the sky blue after the sun has set.
 const ATMO2_FRAG = /* glsl */`
   precision highp float;
   uniform vec3  uCamPos;    // planet frame
@@ -220,6 +262,9 @@ const ATMO2_FRAG = /* glsl */`
   uniform float uHr;
   uniform float uHm;
   uniform float uSunI;
+  uniform sampler2D uTexT;
+  uniform sampler2D uTexMS;
+  uniform float uPsiScale;
   varying vec3 vRay;
 
   // ray/sphere: returns entry/exit distances along d from o, or -1s
@@ -230,6 +275,17 @@ const ATMO2_FRAG = /* glsl */`
     if (disc < 0.0) return vec2(-1.0);
     float s = sqrt(disc);
     return vec2(-b - s, -b + s);
+  }
+
+  vec2 lutUV(float h, float mu) {
+    return vec2((mu + 0.3) / 1.3, h / (uRa - uR));
+  }
+  vec3 sunT(float h, float mu) {
+    vec3 s = texture2D(uTexT, lutUV(h, mu)).rgb;
+    return s * s;   // sqrt-encoded
+  }
+  vec3 psiMS(float h, float mu) {
+    return texture2D(uTexMS, lutUV(h, mu)).rgb * uPsiScale;
   }
 
   void main() {
@@ -246,37 +302,29 @@ const ATMO2_FRAG = /* glsl */`
     const int N = 12;
     float dt = (t1 - t0) / float(N);
     vec3 sumR = vec3(0.0);
-    float sumM = 0.0;
+    vec3 sumM = vec3(0.0);
+    vec3 msL = vec3(0.0);
     float odR = 0.0, odM = 0.0;
     for (int i = 0; i < N; i++) {
       vec3 x = o + dir * (t0 + (float(i) + 0.5) * dt);
-      float h = length(x) - uR;
+      float xr = length(x);
+      float h = xr - uR;
       float dR = exp(-h / uHr) * dt;
       float dM = exp(-h / uHm) * dt;
       odR += dR; odM += dM;
-      // optical depth toward the sun — zero if the planet is in the way
-      vec2 sg = rsi(x, uSunDir, uR);
-      if (sg.x > 0.0) continue;
-      float st1 = rsi(x, uSunDir, uRa).y;
-      float sodR = 0.0, sodM = 0.0;
-      const int M = 4;
-      float sdt = st1 / float(M);
-      for (int j = 0; j < M; j++) {
-        vec3 y = x + uSunDir * (float(j) + 0.5) * sdt;
-        float hy = length(y) - uR;
-        sodR += exp(-hy / uHr) * sdt;
-        sodM += exp(-hy / uHm) * sdt;
-      }
-      vec3 T = exp(-uBetaR * (odR + sodR) - uBetaM * 1.1 * (odM + sodM));
-      sumR += T * dR;
-      sumM += (T.r + T.g + T.b) / 3.0 * dM;
+      vec3 Tv = exp(-uBetaR * odR - uBetaM * 1.1 * odM);
+      float mus = dot(x, uSunDir) / xr;
+      vec3 Ts = sunT(h, mus);
+      sumR += Tv * Ts * dR;
+      sumM += Tv * Ts * dM;
+      msL += Tv * psiMS(h, mus) * (uBetaR * dR + vec3(uBetaM * dM));
     }
     float mu = dot(dir, uSunDir);
     float phR = 3.0 / (16.0 * 3.14159) * (1.0 + mu * mu);
     const float g = 0.76;
     float phM = 3.0 / (8.0 * 3.14159) * (1.0 - g * g) * (1.0 + mu * mu)
       / ((2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
-    vec3 inscatter = (sumR * uBetaR * phR + vec3(sumM * uBetaM * phM)) * uSunI;
+    vec3 inscatter = (sumR * uBetaR * phR + sumM * uBetaM * phM + msL) * uSunI;
     vec3 T = exp(-uBetaR * odR - uBetaM * 1.1 * odM);
     float a = 1.0 - (T.r + T.g + T.b) / 3.0;
     gl_FragColor = vec4(inscatter, a);
@@ -364,11 +412,28 @@ export class PlanetScale {
     const qres = parseInt(url.searchParams.get('qr')) || 33;
     const qdepth = parseInt(url.searchParams.get('qd')) || 18;
     const qsplit = parseFloat(url.searchParams.get('qk')) || 0;
+
+    // ancient scars: airless worlds carry their bombardment in the field
+    // itself, so every LOD and the collision agree about every crater
+    let craters = null;
+    if (pp.typeId === 0 || pp.typeId === 3) {
+      const cr = new RNG(hash(pp.seed, 0x0cae));
+      craters = [];
+      const n = cr.int(26, 46);
+      for (let i = 0; i < n; i++) {
+        const z = cr.float(-1, 1), th = cr.float(0, Math.PI * 2);
+        const q = Math.sqrt(1 - z * z);
+        const rad = cr.power(0.05, 0.9, 1.6);
+        craters.push(q * Math.cos(th), z, q * Math.sin(th), rad / this.R, rad * 0.28);
+      }
+    }
+
     this.quad = new QuadtreePlanet(pp, {
       R: this.R, amp: this.amp,
       res: qres, maxDepth: qdepth, splitK: qsplit,
       skirtK: url.searchParams.has('sk') ? parseFloat(url.searchParams.get('sk')) : 1,
       bathy: hasSea,
+      craters,
       makeMaterial,
     });
     this.planetGroup = new THREE.Group();
@@ -392,12 +457,12 @@ export class PlanetScale {
           uHaze: this.uHazeCol,
           uHazeK: this.uHazeK,
         },
-        vertexShader: TILE_VERT,
+        vertexShader: OCEAN_VERT,
         fragmentShader: OCEAN_FRAG,
       });
       this.ocean = new QuadtreePlanet(pp, {
         R: this.R, amp: this.amp,
-        res: qres, maxDepth: Math.min(qdepth, 12), splitK: qsplit,
+        res: qres, maxDepth: Math.min(qdepth, 14), splitK: qsplit,
         flat: pp.oceanLevel, workers: 2,
         makeMaterial: makeOcean,
       });
@@ -427,6 +492,12 @@ export class PlanetScale {
     this._camPlanet = { value: new THREE.Vector3() };
     if (url.searchParams.get('atm') !== '0' && atmoAmt2 > 0.05) {
       const beta = pp.atmoColor.clone().multiplyScalar(0.0095 * atmoAmt2);
+      const betaR = new THREE.Vector3(Math.max(beta.r, 5e-4), Math.max(beta.g, 5e-4), Math.max(beta.b, 5e-4));
+      const betaM = 2.2e-4 * atmoAmt2;
+      const luts = buildScatterLUTs({
+        R: this.R, Ra: this.R * 1.06, betaR, betaM,
+        Hr: this.R * 0.012, Hm: this.R * 0.0032,
+      });
       this.atmoShell = new THREE.Mesh(
         new THREE.SphereGeometry(this.R * 1.06, 64, 48),
         new THREE.ShaderMaterial({
@@ -435,11 +506,14 @@ export class PlanetScale {
             uSunDir: this.uSunDir,
             uR: { value: this.R },
             uRa: { value: this.R * 1.06 },
-            uBetaR: { value: new THREE.Vector3(Math.max(beta.r, 5e-4), Math.max(beta.g, 5e-4), Math.max(beta.b, 5e-4)) },
-            uBetaM: { value: 2.2e-4 * atmoAmt2 },
+            uBetaR: { value: betaR },
+            uBetaM: { value: betaM },
             uHr: { value: this.R * 0.012 },
             uHm: { value: this.R * 0.0032 },
             uSunI: { value: 15 },
+            uTexT: { value: luts.texT },
+            uTexMS: { value: luts.texMS },
+            uPsiScale: { value: luts.psiScale },
           },
           vertexShader: ATMO2_VERT,
           fragmentShader: ATMO2_FRAG,
@@ -491,6 +565,81 @@ export class PlanetScale {
     this._landing = false;
     this.walk = false;                 // on foot: gravity holds you to the crust
     this.eyeH = 0.0009;                // ~2.2 m in draw units
+
+    // lights for the standard-material life (trees, masts) at the anchor
+    this.dirLight = new THREE.DirectionalLight(0xffffff, 1.25);
+    this.planetGroup.add(this.dirLight);
+    this.planetGroup.add(this.dirLight.target);
+    this.scene.add(new THREE.AmbientLight(0x404855, 0.4));
+
+    this.anchor = null;                // the local pocket of life underfoot
+    this._anchorT = 0;
+    this.meteor = null;
+    this._flash = null;
+  }
+
+  /** the same fbm the night-lights shader keys cities to — land on a glow,
+   *  find the towers */
+  _cityMask(dir) {
+    const s = this.pp.noiseSeed;
+    let px = dir.x * 5 + s * 17.31 * 2.3, py = dir.y * 5 + s * 9.17 * 2.3, pz = dir.z * 5 + s * 31.7 * 2.3;
+    let v = 0, a = 0.5;
+    for (let o = 0; o < 3; o++) {
+      v += a * snoise(px, py, pz);
+      px = px * 2.07 + 11.3; py = py * 2.07 + 11.3; pz = pz * 2.07 + 11.3;
+      a *= 0.5;
+    }
+    return Math.min(Math.max((v - 0.35) / 0.4, 0), 1);
+  }
+
+  /**
+   * A biome anchor: a planet-frame group at the ground point under you,
+   * oriented east/up/north and scaled metres→units, exposing exactly the
+   * host contract the classic surface gave life.js and settlement.js.
+   */
+  _buildAnchor(upDir) {
+    const a = upDir.clone();
+    const aR = this._groundR(a);
+    const mpu = this.unitKm * 1000;
+    let east = new THREE.Vector3(0, 1, 0).cross(a);
+    if (east.lengthSq() < 1e-6) east = new THREE.Vector3(1, 0, 0).cross(a);
+    east.normalize();
+    const north = new THREE.Vector3().crossVectors(a, east);
+    const group = new THREE.Group();
+    group.position.copy(a).multiplyScalar(aR);
+    group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(east, a, north));
+    group.scale.setScalar(1 / mpu);
+    this.planetGroup.add(group);
+    const anchorPos = group.position.clone();
+    const hv = new THREE.Vector3();
+    const host = {
+      pp: this.pp,
+      scene: group,
+      spawn: { x: 0, z: 0 },
+      seaLevel: this.seaR > 0 ? (this.seaR - aR) * mpu : null,
+      amp: 280,
+      uSunDir: this.uSunDir,
+      uSunColor: { value: (this.ctx.sunColor ?? new THREE.Color(1, 1, 1)).clone() },
+      heightAt: (x, z) => {
+        hv.copy(anchorPos).addScaledVector(east, x / mpu).addScaledVector(north, z / mpu).normalize();
+        return (this.quad.heightAt(hv) * hv.dot(a) - aR) * mpu;
+      },
+    };
+    this.anchor = {
+      a, aR, mpu, group,
+      life: addLife(host),
+      settlement: this._cityMask(a) > 0.25 ? addSettlement(host) : null,
+    };
+  }
+
+  _dropAnchor() {
+    if (!this.anchor) return;
+    this.planetGroup.remove(this.anchor.group);
+    this.anchor.group.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
+    });
+    this.anchor = null;
   }
 
   /** the radius you can stand on: terrain, or the sea surface over it */
@@ -540,13 +689,16 @@ export class PlanetScale {
       if (this.keys.has('KeyF')) { this.camPos.addScaledVector(up, -spd * dt); this._spd = spd; }
     }
 
-    // the tour flies itself down
+    // the tour flies itself down, all the way to standing
     if (this.tourAutopilot && !this.walk) {
       this.yaw += dt * 0.03;
-      this.pitch += (-0.35 - this.pitch) * Math.min(dt * 0.6, 1);
+      this.pitch += (-0.3 - this.pitch) * Math.min(dt * 0.6, 1);
       const drop = (alt * 0.085 + 0.4) * dt;
-      this.camPos.setLength(Math.max(this.camPos.length() - drop, surfR + 1.2));
+      this.camPos.setLength(Math.max(this.camPos.length() - drop, surfR + this.eyeH));
       this._spd = alt * 0.085 + 0.4;
+    }
+    if (this.tourAutopilot && this.walk) {
+      this.pitch += (-0.03 - this.pitch) * Math.min(dt * 0.8, 1);
     }
 
     // never through the crust or under the waves (walking stands exactly on them)
@@ -572,12 +724,48 @@ export class PlanetScale {
     this.quad.update(this.camPos);
     if (this.ocean) this.ocean.update(this.camPos);
 
+    // life on the ground: a pocket of creatures and buildings follows you
+    this._anchorT -= dt;
+    if (alt < 8) {
+      const driftU = this.anchor ? this.anchor.a.distanceTo(up) * this.R : 1e9;
+      if (driftU > 0.6 / this.unitKm && this._anchorT <= 0) {
+        this._dropAnchor();
+        this._buildAnchor(up.clone());
+        this._anchorT = 2.5;
+      }
+    } else if (alt > 20 && this.anchor) {
+      this._dropAnchor();
+    }
+    if (this.anchor) {
+      const sunY = this.uSunDir.value.dot(this.anchor.a);
+      this.anchor.life?.update(dt, sunY);
+      this.anchor.settlement?.update(dt, sunY);
+    }
+
+    // meteors: on demand (X) — and, on airless worlds, the sky's own idea
+    this._updateMeteor(dt);
+    if (this._flash) {
+      this._flash.t += dt;
+      const g = 1 - this._flash.t / 0.8;
+      this._flash.sp.material.opacity = Math.max(g, 0);
+      this._flash.sp.scale.multiplyScalar(1 + dt * 1.4);
+      if (g <= 0) {
+        this.planetGroup.remove(this._flash.sp);
+        this._flash.sp.material.dispose();
+        this._flash = null;
+      }
+    }
+    if ((this.pp.typeId === 0 || this.pp.typeId === 3) && alt < 6 && !this.meteor && Math.random() < dt / 28) {
+      this.strikeMeteor(true);
+    }
+
     // -- environment
     this.uTime.value += dt;
     if (this.playing) this.days += dt * this.speedDays;
     this.uSunDir.value.applyAxisAngle(Y_AXIS, dt * 0.004);
     this._sunPosBig.value.copy(this.uSunDir.value).multiplyScalar(1e7);
     this._camPlanet.value.copy(this.camPos);
+    this.dirLight.position.copy(this.uSunDir.value).multiplyScalar(6000);
     this.sunSprite.position.copy(this.uSunDir.value).multiplyScalar(9000);
     this.uHazeK.value = this.hazeBase * Math.exp(-Math.max(alt, 0) / (this.R * 0.012));
     if (this.cloudMesh) {
@@ -594,14 +782,61 @@ export class PlanetScale {
 
   }
 
-  landNow() {
-    if (this._landing) return;
-    if (this.altUnits > 420) {
-      this.app.hud.setHint('too high to land — dive with f first');
-      return;
+  // ---------------------------------------------------------- meteors ----
+  strikeMeteor(auto) {
+    if (this.meteor) return;
+    let dirT;
+    if (auto) {
+      const up = this.camPos.clone().normalize();
+      dirT = up.addScaledVector(new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5), 0.0012).normalize();
+    } else {
+      const look = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+      dirT = this.camPos.clone()
+        .addScaledVector(look, Math.max(this.altUnits ?? 1, 0.2) * 2 + 0.7).normalize();
     }
-    this._landing = true;
-    this.app.landFromPlanet(this);
+    const target = dirT.clone().multiplyScalar(this.quad.heightAt(dirT));
+    const from = target.clone()
+      .addScaledVector(dirT, 22)
+      .addScaledVector(new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize(), 11);
+    const head = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: softDotTexture(), color: new THREE.Color(2.0, 1.5, 0.9),
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+    }));
+    head.scale.setScalar(0.35);
+    this.planetGroup.add(head);
+    const trailGeo = new THREE.BufferGeometry().setFromPoints([from, from]);
+    const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
+      color: 0xffd9a0, transparent: true, opacity: 0.8,
+    }));
+    this.planetGroup.add(trail);
+    this.meteor = { t: 0, dur: 1.15, from, target, dirT, head, trail };
+  }
+
+  _updateMeteor(dt) {
+    const m = this.meteor;
+    if (!m) return;
+    m.t += dt;
+    const f = Math.min(m.t / m.dur, 1);
+    m.head.position.lerpVectors(m.from, m.target, f * f);
+    const tail = m.head.position.clone().lerp(m.from, 0.16);
+    m.trail.geometry.setFromPoints([tail, m.head.position]);
+    if (f >= 1) {
+      this.planetGroup.remove(m.head); this.planetGroup.remove(m.trail);
+      m.head.material.dispose(); m.trail.geometry.dispose(); m.trail.material.dispose();
+      const rad = 0.02 + Math.random() * 0.06;
+      const evicted = this.quad.addCrater(m.dirT.x, m.dirT.y, m.dirT.z, rad, rad * 0.28);
+      const flash = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: softDotTexture(), color: new THREE.Color(2.4, 1.9, 1.2),
+        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+      }));
+      flash.position.copy(m.target).addScaledVector(m.dirT, rad);
+      flash.scale.setScalar(rad * 7);
+      this.planetGroup.add(flash);
+      this._flash = { sp: flash, t: 0 };
+      this._lastStrike = { evicted, rad };
+      this.meteor = null;
+      if (this.app.audio) this.app.audio.warp('dive');
+    }
   }
 
   // ------------------------------------------------------------ input ----
@@ -622,7 +857,7 @@ export class PlanetScale {
     this.pitch = Math.min(Math.max(this.pitch - dy, -1.5), 1.5);
   }
   onKey(code) {
-    if (code === 'KeyL') { this.landNow(); return true; }
+    if (code === 'KeyX') { this.strikeMeteor(false); return true; }
     return false;
   }
   pick() { return null; }
@@ -646,6 +881,7 @@ export class PlanetScale {
       ['speed', this._spd > 0 ? this._fmtKm(this._spd * this.unitKm) + '/s' : '—'],
       ['terrain tiles', `${S.drawn} drawn · ${S.cached} cached${S.pending ? ` · ${S.pending} streaming` : ''}`],
       ...(this.ocean ? [['sea tiles', `${this.ocean.stats.drawn} drawn · ${this.ocean.stats.cached} cached`]] : []),
+      ...(this.quad.job.craters ? [['craters', String(this.quad.job.craters.length / 5)]] : []),
       ['triangles', S.tris >= 1e6 ? (S.tris / 1e6).toFixed(2) + ' M' : Math.round(S.tris / 1e3) + ' k'],
       ['finest grid', this._fmtKm(spacing)],
     ];
@@ -672,6 +908,7 @@ export class PlanetScale {
   dispose() {
     window.removeEventListener('keydown', this._kd);
     window.removeEventListener('keyup', this._ku);
+    this._dropAnchor();
     this.quad.dispose();
     if (this.ocean) this.ocean.dispose();
     this.scene.traverse(o => {
@@ -688,4 +925,4 @@ const _north = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
 
-export const PLANET_NOTE = `One continuous scale, orbit to boots. The planet is a <b>chunked-LOD quadtree</b> on a tangent-warped cube sphere: six root tiles splitting wherever the view demands, meshed in a <b>Web Worker pool</b> from one height field — macro continents plus kilometre and metre relief bands — shared verbatim with the collision code, so what streams in is exactly what you stand on. <b>Geomorphing</b> lerps every vertex toward its parent-grid shape by view distance, so LOD transitions carry zero pop. Seas are a second quadtree wearing <b>Fresnel water</b> with analytic wave trains over true bathymetry; the sky is a <b>single-scattering raymarch</b> (Rayleigh + Mie), so noon is blue, the terminator burns red, and stars fade up through the real transmittance at dusk. The camera never leaves the origin — the planet carries the negative camera position in double precision, and the near plane follows your altitude from centimetres to orbit. Touch down and you are walking; <em>R</em> lifts off; <em>L</em> steps into the wild.`;
+export const PLANET_NOTE = `One continuous scale, orbit to boots. The planet is a <b>chunked-LOD quadtree</b> on a tangent-warped cube sphere: six root tiles splitting wherever the view demands, meshed in a <b>Web Worker pool</b> from one height field — macro continents plus kilometre and metre relief bands — shared verbatim with the collision code, so what streams in is exactly what you stand on. <b>Geomorphing</b> lerps every vertex toward its parent-grid shape by view distance, so LOD transitions carry zero pop. Seas are a second quadtree wearing <b>Fresnel water</b> with analytic wave trains over true bathymetry; the sky is a <b>single-scattering raymarch</b> (Rayleigh + Mie), so noon is blue, the terminator burns red, and stars fade up through the real transmittance at dusk. The camera never leaves the origin — the planet carries the negative camera position in double precision, and the near plane follows your altitude from centimetres to orbit. Touch down and you are walking among the creatures and towers that live here — settlements rise exactly where the night-lights mask glows from orbit, craters are stamped into the field itself, and <em>X</em> calls a new one down. <em>R</em> lifts off.`;
