@@ -148,18 +148,31 @@ of km/s at apoapsis — and just keep descending: under two eye-heights the
 scale sets you down and **you are walking**, boots held to the same field
 the tiles are meshed from (measured ground-glue error: 0.000 m), the
 camera near plane riding your altitude from centimetres to orbit. **R**
-lifts off again. **L** steps into the classic close-up surface, where the
-creatures and settlements still live.
+lifts off again.
+
+And the world is *inhabited in place* now. Under eight units of altitude
+a **biome anchor** appears at the ground point — a local east/up/north
+frame speaking the exact host contract the old close-up surface spoke —
+and the tufts, alien trees, boid skimmers, antiphase striders, and night
+spores spawn onto the globe itself. Settlements rise **exactly where the
+night-lights shader glows from orbit** (the same fbm mask gates both):
+land on a glow, find the towers. Airless worlds carry their bombardment
+in the height field — dozens of ancient bowl-and-rim scars at every LOD —
+and **X** calls down a live meteor whose crater joins the shared field on
+impact (verified: the ground at the strike point drops 45 m and six
+tiles restream). The classic surface scale is retired for planets; old
+`?p=` links follow you onto the globe.
 
 Worlds with seas carry a second quadtree wearing **water**: Schlick
-Fresnel against the sky, three analytic wave trains plus noise breakup,
-sun glint, and depth-tinted color computed from the true bathymetry
-beneath — coastlines are real geometric intersections, not texture edges.
-And the sky itself is *computed*: a **single-scattering Rayleigh + Mie
-raymarch** (per-pixel, with per-sample sun transmittance and the planet's
-own shadow) replaces every painted gradient — noon is blue because the
-math says so, the terminator burns red, and at dusk the stars fade up
-through the actual transmittance.
+Fresnel against the sky, analytic wave trains plus noise breakup, sun
+glint, depth-tinted color from the true bathymetry — and near the camera
+the primary swell is **true Gerstner geometry**, crests sharpening and
+silhouettes actually moving. The sky is *computed*: a **Rayleigh + Mie
+raymarch** fed by a CPU-precomputed transmittance table and **Hillaire's
+multiple-scattering factor Ψ(h, μs)** — noon is blue because the math
+says so, the terminator burns red, and after sunset the sky holds a real
+luminous twilight (Ψ stays nonzero with the sun 10° below the horizon)
+while the stars fade up through the actual transmittance.
 
 Precision is the quiet trick under all of it. float32 runs out five
 digits before a planet reaches walking distance, so vertices are stored
@@ -181,6 +194,10 @@ the sky and the morphing.
 ![the shore: Fresnel water over true bathymetry](docs/screenshots/28-shore.png)
 
 ![the terminator, computed: scattering sunset with stars overhead](docs/screenshots/29-sunset.png)
+
+![alien trees on the open globe, walking at 1 m](docs/screenshots/30-life-globe.png)
+
+![civil twilight: multiple scattering holds the blue after sunset](docs/screenshots/31-twilight.png)
 
 ### 5 · The surface — set foot on it
 Every solid world — **and every moon** — can be landed on from its info
