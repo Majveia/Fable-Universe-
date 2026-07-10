@@ -176,6 +176,12 @@ the sky and the morphing.
 
 ![tiles resolving on the way down](docs/screenshots/26-quadtree-descent.png)
 
+![standing on the same globe, morning light on the relief](docs/screenshots/27-standing.png)
+
+![the shore: Fresnel water over true bathymetry](docs/screenshots/28-shore.png)
+
+![the terminator, computed: scattering sunset with stars overhead](docs/screenshots/29-sunset.png)
+
 ### 5 · The surface — set foot on it
 Every solid world — **and every moon** — can be landed on from its info
 card, and the descent is **continuous**: the same Ashima simplex noise the
