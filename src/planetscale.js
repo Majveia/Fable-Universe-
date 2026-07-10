@@ -604,7 +604,8 @@ export class PlanetScale {
     let east = new THREE.Vector3(0, 1, 0).cross(a);
     if (east.lengthSq() < 1e-6) east = new THREE.Vector3(1, 0, 0).cross(a);
     east.normalize();
-    const north = new THREE.Vector3().crossVectors(a, east);
+    // right-handed: east × up = north, or the quaternion becomes a mirror
+    const north = new THREE.Vector3().crossVectors(east, a);
     const group = new THREE.Group();
     group.position.copy(a).multiplyScalar(aR);
     group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(east, a, north));
@@ -626,9 +627,10 @@ export class PlanetScale {
       },
     };
     this.anchor = {
-      a, aR, mpu, group,
+      a, aR, mpu, group, east, north, pos: anchorPos,
       life: addLife(host),
-      settlement: this._cityMask(a) > 0.25 ? addSettlement(host) : null,
+      // any spot the night-lights shader would glow gets its towers
+      settlement: this._cityMask(a) > 0.02 ? addSettlement(host) : null,
     };
   }
 
