@@ -59,8 +59,30 @@ export function surfaceRadius(dx, dy, dz, job) {
   if (!drowned) {
     const s = job.seed;
     const inland = 0.25 + Math.min(Math.max((h - (job.sea ? job.ocean : -0.1)) * 2.5, 0), 1.2);
-    r += fbm(dx * 880 + s * 3.7, dy * 880 + s * 5.1, dz * 880 + s * 7.3) * 0.11 * inland;
-    r += fbm(dx * 21000 + s * 11.3, dy * 21000 + s * 13.7, dz * 21000 + s * 17.9) * 0.014 * inland;
+
+    // rivers: a second fbm's zero-crossings, alive only between the shore
+    // and the highlands, widening and deepening on their way to the sea.
+    // riverT < 1 is the channel; the fragment shader recomputes the same
+    // network to lay water in the bed, and valleys damp the relief bands
+    // below — analytic erosion, consistent at every LOD and underfoot.
+    let riverT = 9, carve = 0;
+    if (job.sea) {
+      const above = h - job.ocean;
+      if (above > 0.002 && above < 0.42) {
+        const rv = fbm(dx * 45 + s * 7.7, dy * 45 + s * 3.1, dz * 45 + s * 13.9);
+        const w = 0.010 + 0.020 * Math.max(1 - above * 3.5, 0);
+        riverT = Math.abs(rv) / w;
+        if (riverT < 1) {
+          carve = (0.016 + 0.024 * Math.max(1 - above * 3, 0))
+            * (1 - riverT * riverT) * Math.min(above * 60, 1);
+        }
+      }
+    }
+    const alluvium = riverT < 2.5 ? 0.3 + 0.7 * (riverT / 2.5) : 1;
+
+    r += fbm(dx * 880 + s * 3.7, dy * 880 + s * 5.1, dz * 880 + s * 7.3) * 0.11 * inland * alluvium;
+    r += fbm(dx * 21000 + s * 11.3, dy * 21000 + s * 13.7, dz * 21000 + s * 17.9) * 0.014 * inland * alluvium;
+    r -= carve;
   }
   // craters: bowls and rims stamped straight into the crust — packed as
   // [siteX, siteY, siteZ, angularRadius, depth] per scar

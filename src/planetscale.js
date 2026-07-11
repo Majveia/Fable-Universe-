@@ -61,6 +61,7 @@ const TILE_FRAG = /* glsl */`
   uniform vec3  uColC;
   uniform vec3  uHaze;
   uniform float uHazeK;
+  uniform float uHasSea;
   varying vec3 vDir;
   varying vec3 vN;
   varying vec3 vView;
@@ -116,6 +117,23 @@ const TILE_FRAG = /* glsl */`
         float grid = smoothstep(0.55, 0.95, fbm(p * 26.0 + sd));
         float nightside = smoothstep(0.05, -0.22, dayS);
         emit += vec3(1.0, 0.72, 0.42) * megac * grid * nightside * 1.15;
+      }
+      // rivers: the same network the mesher carved — water lies in the beds
+      if (uHasSea > 0.5) {
+        float above = h - uOcean;
+        if (above > 0.002 && above < 0.42) {
+          vec3 sd2 = vec3(uSeed * 7.7, uSeed * 3.1, uSeed * 13.9);
+          float rv = fbm(p * 45.0 + sd2);
+          float w = 0.010 + 0.020 * max(1.0 - above * 3.5, 0.0);
+          float t = abs(rv) / w;
+          if (t < 1.2) {
+            float wet = 1.0 - smoothstep(0.45, 0.75, t);
+            float bank = 1.0 - smoothstep(0.75, 1.2, t);
+            col = mix(col, col * 0.82, bank * 0.6);              // damp banks
+            col = mix(col, mix(uColC * 0.55, uColA * 0.3, 0.4), wet);
+            spec = max(spec, pow(max(dot(reflect(-sunDir, n), viewDir), 0.0), 90.0) * 0.7 * wet);
+          }
+        }
       }
     }
 
@@ -403,6 +421,8 @@ export class PlanetScale {
         uColC: { value: pp.colC },
         uHaze: this.uHazeCol,
         uHazeK: this.uHazeK,
+        // evaluated at tile-build time, safely after hasSea is set below
+        uHasSea: { value: hasSea ? 1 : 0 },
       },
       vertexShader: TILE_VERT,
       fragmentShader: TILE_FRAG,
