@@ -163,6 +163,32 @@ impact (verified: the ground at the strike point drops 45 m and six
 tiles restream). The classic surface scale is retired for planets; old
 `?p=` links follow you onto the globe.
 
+The land itself drains: a second fbm's zero-crossings carve **river
+channels** into the shared field, alive between the shore and the
+highlands, widening toward the sea, their valley floors damped into
+alluvium — and the fragment shader lays a specular water ribbon in every
+bed, so from altitude the lowlands read as branching river systems.
+(They are honest *analytic* rivers: on steep ground they cascade across
+contours like mountain torrents rather than solving a global watershed.)
+And the fauna is an **ecology** now: the sphere is quantized into
+regions, each with a persisted population (localStorage) that grows
+logistically between your visits; flora density follows regional
+richness, striders bolt when you close within 55 m — sliding along
+shores instead of aiming into the sea — skimmer flocks give you a wide
+berth, and a meteor strike scatters everything. The HUD shows the
+regional census.
+
+Overhead, on inhabited worlds, there is a **second civilization of
+scale**: stations on inclined orbits (truss, habitat ring, panel wings)
+and ships flying errands between stations, launch corridors, and deep
+space. Every hull's sprite follows the true sunlit test against the
+planet's shadow cylinder — from the grass at night they are moving
+lights among the stars that redden and vanish into eclipse mid-pass. The
+cloud deck they descend through is **volumetric**: a raymarched slab
+with fbm density, wind drift, and two-tap sun transmittance — fall
+through it and the world whites out and returns (`?vc=0` keeps the old
+shell; `?vs=` tunes the march).
+
 Worlds with seas carry a second quadtree wearing **water**: Schlick
 Fresnel against the sky, analytic wave trains plus noise breakup, sun
 glint, depth-tinted color from the true bathymetry — and near the camera
@@ -198,6 +224,12 @@ the sky and the morphing.
 ![alien trees on the open globe, walking at 1 m](docs/screenshots/30-life-globe.png)
 
 ![civil twilight: multiple scattering holds the blue after sunset](docs/screenshots/31-twilight.png)
+
+![rivers running to the sea, from 137 km](docs/screenshots/32-rivers.png)
+
+![the volumetric deck from above](docs/screenshots/33-clouds-above.png)
+
+![inside the deck: the crossing whiteout](docs/screenshots/34-clouds-inside.png)
 
 ### 5 · The surface — set foot on it
 Every solid world — **and every moon** — can be landed on from its info
