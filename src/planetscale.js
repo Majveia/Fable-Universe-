@@ -22,6 +22,7 @@ import { snoise } from './terrain.js';
 import { addLife } from './life.js';
 import { addSettlement } from './settlement.js';
 import { buildScatterLUTs } from './scatterlut.js';
+import { addOrbitals } from './orbital.js';
 
 const TILE_VERT = /* glsl */`
   uniform vec3 uCenter;     // tile center, planet frame (static per tile)
@@ -349,6 +350,86 @@ const ATMO2_FRAG = /* glsl */`
   }
 `;
 
+// The cloud deck as a volume: a raymarched slab between two radii, fbm
+// density with a bottom-heavy profile, wind drift, two sun taps with a
+// powder term. Descend through it and the world whites out and returns —
+// no billboard ever did that.
+const VCLOUD_FRAG = /* glsl */`
+  precision highp float;
+  uniform vec3  uCamPos;
+  uniform vec3  uSunDir;
+  uniform float uR;
+  uniform float uRb;
+  uniform float uRt;
+  uniform float uCov;
+  uniform float uTime;
+  uniform float uSeed;
+  uniform vec3  uSunCol;
+  uniform float uSteps;
+  varying vec3 vRay;
+  ${NOISE_GLSL}
+
+  vec2 rsi(vec3 o, vec3 d, float r) {
+    float b = dot(o, d);
+    float c = dot(o, o) - r * r;
+    float disc = b * b - c;
+    if (disc < 0.0) return vec2(-1.0);
+    float s = sqrt(disc);
+    return vec2(-b - s, -b + s);
+  }
+
+  float cloudDens(vec3 x) {
+    float h01 = clamp((length(x) - uRb) / (uRt - uRb), 0.0, 1.0);
+    vec3 q = x * (9.0 / uR) + vec3(uSeed * 3.1, uSeed * 7.7, uSeed * 1.3)
+      + vec3(uTime * 0.004, 0.0, uTime * 0.0022);
+    float f = fbm3(q);
+    float profile = smoothstep(0.02, 0.22, h01) * (1.0 - smoothstep(0.55, 1.0, h01));
+    return smoothstep(0.5 - uCov * 0.42, 0.62, f * 0.5 + 0.5) * profile;
+  }
+
+  void main() {
+    vec3 dir = normalize(vRay);
+    vec3 o = uCamPos;
+    vec2 top = rsi(o, dir, uRt);
+    if (top.y < 0.0) discard;
+    vec2 base = rsi(o, dir, uRb);
+    float r0 = length(o);
+    float t0, t1;
+    if (r0 > uRt) { t0 = max(top.x, 0.0); t1 = (base.x > 0.0) ? base.x : top.y; }
+    else if (r0 > uRb) { t0 = 0.0; t1 = (base.x > 0.0) ? base.x : top.y; }
+    else { t0 = base.y; t1 = top.y; }
+    vec2 gnd = rsi(o, dir, uR);
+    if (gnd.x > 0.0 && gnd.x < t0) discard;
+    if (gnd.x > 0.0) t1 = min(t1, gnd.x);
+    if (t1 <= t0) discard;
+    t1 = min(t1, t0 + (uRt - uRb) * 14.0);   // cap the horizon-grazing march
+
+    int N = int(uSteps);
+    float dt = (t1 - t0) / float(N);
+    vec3 acc = vec3(0.0);
+    float T = 1.0;
+    for (int i = 0; i < 24; i++) {
+      if (i >= N) break;
+      vec3 x = o + dir * (t0 + (float(i) + 0.5) * dt);
+      float d = cloudDens(x);
+      if (d < 0.004) continue;
+      float s1 = cloudDens(x + uSunDir * (uRt - uRb) * 0.25);
+      float s2 = cloudDens(x + uSunDir * (uRt - uRb) * 0.7);
+      float Tsun = exp(-(s1 + s2) * 2.6);
+      float powder = 1.0 - exp(-d * 8.0);
+      float mu = dot(dir, uSunDir);
+      float daylight = smoothstep(-0.08, 0.15, dot(normalize(x), uSunDir));
+      vec3 cCol = uSunCol * ((Tsun * powder * (0.55 + 0.45 * mu) * 1.5 + 0.12) * daylight + 0.015);
+      float a = 1.0 - exp(-d * dt * (30.0 / (uRt - uRb)));
+      acc += T * a * cCol;
+      T *= 1.0 - a;
+      if (T < 0.02) break;
+    }
+    if (T > 0.995) discard;
+    gl_FragColor = vec4(acc, 1.0 - T);
+  }
+`;
+
 const MOON_VERT = /* glsl */`
   varying vec3 vN;
   void main() {
@@ -546,12 +627,43 @@ export class PlanetScale {
       this.planetGroup.add(this.atmoShell);
     }
     if (pp.clouds > 0.05) {
-      this.cloudMesh = new THREE.Mesh(
-        new THREE.SphereGeometry(this.R * 1.014, 96, 64),
-        makeCloudMaterial(pp, this._sunPosBig, this.uTime));
-      this._cloudAmt = this.cloudMesh.material.uniforms.uAmt;
-      this.cloudMesh.renderOrder = 1;
-      this.planetGroup.add(this.cloudMesh);
+      if (url.searchParams.get('vc') !== '0') {
+        // the volumetric deck
+        this.cloudMesh = new THREE.Mesh(
+          new THREE.SphereGeometry(this.R * 1.024, 48, 32),
+          new THREE.ShaderMaterial({
+            uniforms: {
+              uCamPos: this._camPlanet,
+              uSunDir: this.uSunDir,
+              uR: { value: this.R },
+              uRb: { value: this.R * 1.010 },
+              uRt: { value: this.R * 1.020 },
+              uCov: { value: pp.clouds },
+              uTime: this.uTime,
+              uSeed: { value: pp.noiseSeed },
+              uSunCol: { value: (ctx.sunColor ?? new THREE.Color(1, 1, 1)).clone() },
+              uSteps: { value: parseInt(url.searchParams.get('vs')) || 16 },
+            },
+            vertexShader: ATMO2_VERT,
+            fragmentShader: VCLOUD_FRAG,
+            side: THREE.BackSide,
+            transparent: true,
+            premultipliedAlpha: true,
+            depthWrite: false,
+            depthTest: false,
+          }));
+        this.cloudMesh.renderOrder = 2;
+        this.planetGroup.add(this.cloudMesh);
+        this._cloudAmt = null;
+      } else {
+        // legacy billboard shell
+        this.cloudMesh = new THREE.Mesh(
+          new THREE.SphereGeometry(this.R * 1.014, 96, 64),
+          makeCloudMaterial(pp, this._sunPosBig, this.uTime));
+        this._cloudAmt = this.cloudMesh.material.uniforms.uAmt;
+        this.cloudMesh.renderOrder = 1;
+        this.planetGroup.add(this.cloudMesh);
+      }
     }
 
     // -- moons, keeping their system-scale orbits (rescaled)
@@ -567,6 +679,9 @@ export class PlanetScale {
       this.planetGroup.add(mesh);
       this.moons.push({ mesh, dist: m.dist * scaleF, phase: m.phase, rate: m.rate });
     }
+
+    // civilization overhead: stations and ship traffic (inhabited worlds)
+    this.orbitals = addOrbitals(this);
 
     this.days = 0;
     this.speedDays = 12;
@@ -800,6 +915,7 @@ export class PlanetScale {
       this.anchor.settlement?.update(dt, sunY);
     }
     if (this._scareT > 0) this._scareT -= dt;
+    this.orbitals?.update(dt);
 
     // meteors: on demand (X) — and, on airless worlds, the sky's own idea
     this._updateMeteor(dt);
@@ -827,10 +943,10 @@ export class PlanetScale {
     this.dirLight.position.copy(this.uSunDir.value).multiplyScalar(6000);
     this.sunSprite.position.copy(this.uSunDir.value).multiplyScalar(9000);
     this.uHazeK.value = this.hazeBase * Math.exp(-Math.max(alt, 0) / (this.R * 0.012));
-    if (this.cloudMesh) {
+    if (this.cloudMesh && this._cloudAmt) {
+      // legacy shell only: the volumetric deck needs no fade tricks
       this.cloudMesh.rotation.y += dt * 0.0004;
       const deckH = this.R * 0.014;
-      // thinner than the orbital ball's deck — the ground is the show here
       this._cloudAmt.value = this.pp.clouds * 0.55 *
         Math.min(Math.max((alt - deckH * 0.3) / deckH, 0.1), 1);
     }
@@ -970,6 +1086,7 @@ export class PlanetScale {
     window.removeEventListener('keydown', this._kd);
     window.removeEventListener('keyup', this._ku);
     this._dropAnchor();
+    this.orbitals?.dispose();
     this.quad.dispose();
     if (this.ocean) this.ocean.dispose();
     this.scene.traverse(o => {
