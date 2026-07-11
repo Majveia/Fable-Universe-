@@ -38,6 +38,10 @@ export function addLife(s) {
   if (!isBiosphere(pp)) return null;
   const r = new RNG(hash(pp.seed, 0x11fe));
   const EXT = 1400;
+  // ecology: the host may carry a persistent regional population; without
+  // one (moons, classic surface) the old defaults stand
+  const eco = s.eco ?? null;
+  const vegF = eco?.veg ?? 1;
 
   const vegColor = new THREE.Color().setHSL(r.float(0.06, 0.62), r.float(0.4, 0.65), r.float(0.22, 0.34));
   const canopyColor = vegColor.clone().offsetHSL(r.float(-0.05, 0.05), 0, r.float(-0.04, 0.08));
@@ -74,10 +78,11 @@ export function addLife(s) {
     map: bladeTexture(r), transparent: true, alphaTest: 0.3,
     color: vegColor.clone(), side: THREE.DoubleSide, depthWrite: true,
   });
-  const tufts = new THREE.InstancedMesh(tuftGeo, tuftMat, 650);
+  const nTufts = Math.max(80, Math.round(650 * vegF));
+  const tufts = new THREE.InstancedMesh(tuftGeo, tuftMat, nTufts);
   const d = new THREE.Object3D();
   let placed = 0;
-  for (let i = 0; i < 2200 && placed < 650; i++) {
+  for (let i = 0; i < 2200 && placed < nTufts; i++) {
     const x = r.float(-EXT / 2, EXT / 2), z = r.float(-EXT / 2, EXT / 2);
     const h = dryland(x, z);
     if (h === null) continue;
@@ -93,10 +98,11 @@ export function addLife(s) {
   // ---------------------------------------------------------- trees ----
   const trunkMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.07, 0.3, 0.22), roughness: 1 });
   const canopyMat = new THREE.MeshStandardMaterial({ color: canopyColor, roughness: 0.9, flatShading: true });
-  const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.14, 0.3, 1, 5), trunkMat, 130);
-  const canopies = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), canopyMat, 130);
+  const nTrees = Math.max(20, Math.round(130 * vegF));
+  const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.14, 0.3, 1, 5), trunkMat, nTrees);
+  const canopies = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), canopyMat, nTrees);
   let t = 0;
-  for (let i = 0; i < 1400 && t < 130; i++) {
+  for (let i = 0; i < 1400 && t < nTrees; i++) {
     const x = r.float(-EXT / 2, EXT / 2), z = r.float(-EXT / 2, EXT / 2);
     const h = dryland(x, z);
     if (h === null) continue;
@@ -119,7 +125,7 @@ export function addLife(s) {
   // -------------------------------------------------------- skimmers ----
   // real bodies now: a fuselage and two wings that beat in the vertex
   // shader, banking into their turns
-  const NB = 30;
+  const NB = eco ? Math.max(4, Math.min(44, eco.skimmers)) : 30;
   const skimGeo = (() => {
     const verts = [
       // fuselage diamond (double-sided via DoubleSide)
@@ -210,7 +216,8 @@ export function addLife(s) {
       void main() { gl_FragColor = vec4(uColor * vShade, 1.0); }`,
     side: THREE.DoubleSide,
   });
-  if (r.chance(0.7)) {
+  const NS_WANT = eco ? Math.min(eco.striders, 9) : (r.chance(0.7) ? 5 : 0);
+  if (NS_WANT > 0) {
     const parts = [];
     const box = (w, h, dpt, cx, cy, cz, limb) => {
       const g = new THREE.BoxGeometry(w, h, dpt);
@@ -227,7 +234,7 @@ export function addLife(s) {
     box(0.3, 0.22, 0.55, 0, 3.9, -0.95, 0);   // head
     box(0.13, 2.35, 0.2, 0.24, 1.18, 0, 1);   // right leg
     box(0.13, 2.35, 0.2, -0.24, 1.18, 0, -1); // left leg
-    const NS = 5;
+    const NS = NS_WANT;
     const pArr = new Float32Array(parts.length * 3);
     const lArr = new Float32Array(parts.length);
     parts.forEach((v, i) => { pArr[i * 3] = v[0]; pArr[i * 3 + 1] = v[1]; pArr[i * 3 + 2] = v[2]; lArr[i] = v[3]; });
@@ -247,8 +254,11 @@ export function addLife(s) {
         h = dryland(x, z);
         if (h !== null) break;
       }
+      // no dry ground found — this one doesn't get dropped into the sea
+      if (h === null) continue;
       strState.push({ x, z, heading: r.float(0, 6.28), speed: r.float(0.8, 1.6), scale: r.float(0.9, 1.8) });
     }
+    striders.count = strState.length;
     s.scene.add(striders);
   }
 
@@ -281,6 +291,11 @@ export function addLife(s) {
       const day = Math.min(Math.max((sunY + 0.1) * 3, 0), 1);
       tuftMat.color.copy(vegColor).multiplyScalar(0.15 + 0.85 * day);
 
+      // the wild reacts to you: your position in local metres, if the host
+      // knows it, plus a fright flag (meteor strikes scatter everything)
+      const cam = s.camLocal?.();
+      const scared = s.scared?.() ?? false;
+
       // boids
       const cdt = Math.min(dt, 0.08);
       wander.t += dt;
@@ -302,6 +317,12 @@ export function addLife(s) {
         }
         diff.subVectors(center, bp[i]);
         acc.addScaledVector(diff, 0.02);
+        // give the visitor a wide berth
+        if (cam) {
+          diff.set(bp[i].x - cam.x, bp[i].y - cam.y, bp[i].z - cam.z);
+          const dc = diff.length();
+          if (dc < 45) acc.addScaledVector(diff.normalize(), (scared ? 2.2 : 0.9) * (1 - dc / 45) * 8);
+        }
         const ground = s.heightAt(bp[i].x, bp[i].z) + 18;
         if (bp[i].y < ground) acc.y += (ground - bp[i].y) * 0.6;
         if (bp[i].y > ground + 70) acc.y -= (bp[i].y - ground - 70) * 0.2;
@@ -331,13 +352,28 @@ export function addLife(s) {
           // steer home if straying, turn from water and steep ground
           const dHome = Math.hypot(st.x, st.z);
           if (dHome > 520) st.heading = Math.atan2(-st.z, -st.x) + (Math.random() - 0.5);
-          const nx = st.x + Math.cos(st.heading) * st.speed * dt * 4;
-          const nz = st.z + Math.sin(st.heading) * st.speed * dt * 4;
+          // flee the visitor — but a flee-er blocked by water slides along
+          // the shore instead of re-aiming into it forever
+          let hurry = 1;
+          if (cam) {
+            const fx = st.x - cam.x, fz = st.z - cam.z;
+            const d2 = fx * fx + fz * fz;
+            if (d2 < 55 * 55 || scared) {
+              if (!st.blocked) st.heading = Math.atan2(fz, fx) + (Math.random() - 0.5) * 0.4;
+              hurry = 4;
+            }
+          } else if (scared) {
+            hurry = 3;
+          }
+          const nx = st.x + Math.cos(st.heading) * st.speed * dt * 4 * hurry;
+          const nz = st.z + Math.sin(st.heading) * st.speed * dt * 4 * hurry;
           const nh = s.heightAt(nx, nz);
           if (s.seaLevel !== null && nh < s.seaLevel + 1.2) {
             st.heading += 1.7;
+            st.blocked = 3;
           } else {
             st.x = nx; st.z = nz;
+            if (st.blocked) st.blocked--;
           }
           d.position.set(st.x, s.heightAt(st.x, st.z), st.z);
           d.rotation.set(0, -st.heading - Math.PI / 2, 0);

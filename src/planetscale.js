@@ -596,6 +596,7 @@ export class PlanetScale {
     this._anchorT = 0;
     this.meteor = null;
     this._flash = null;
+    this._scareT = 0;
   }
 
   /** the same fbm the night-lights shader keys cities to — land on a glow,
@@ -610,6 +611,35 @@ export class PlanetScale {
       a *= 0.5;
     }
     return Math.min(Math.max((v - 0.35) / 0.4, 0), 1);
+  }
+
+  /**
+   * Ecology: the sphere is quantized into regions, each with a
+   * deterministic carrying capacity (regional richness) and a persisted
+   * population that grows logistically between your visits. Come back in
+   * an hour and the herd has changed.
+   */
+  _ecoFor(a) {
+    const q = 28;
+    const key = (hash(Math.round(a.x * q), Math.round(a.y * q), Math.round(a.z * q), this.pp.seed) >>> 0).toString(36);
+    const rng = new RNG(parseInt(key, 36) >>> 0);
+    const veg = 0.4 + 0.6 * rng.next();
+    const K = { s: Math.round(2 + veg * 7), k: Math.round(10 + veg * 30) };
+    let db = {};
+    try { db = JSON.parse(localStorage.getItem('aeon-eco-v1') || '{}'); } catch { /* fresh */ }
+    const now = Date.now();
+    let st = db[key];
+    if (!st) {
+      st = { s: Math.round(K.s * rng.float(0.35, 1)), k: Math.round(K.k * rng.float(0.35, 1)), t: now };
+    } else {
+      // logistic growth over the hours you were away, capped at a month
+      const dtH = Math.min(Math.max((now - st.t) / 3.6e6, 0), 720);
+      const grow = (n, cap) => Math.min(cap, Math.round(n + (n + 0.5) * 0.08 * dtH * (1 - n / cap)));
+      st.s = grow(st.s, K.s); st.k = grow(st.k, K.k); st.t = now;
+    }
+    db[key] = st;
+    try { localStorage.setItem('aeon-eco-v1', JSON.stringify(db)); } catch { /* full */ }
+    return { striders: st.s, skimmers: st.k, veg, key };
   }
 
   /**
@@ -645,9 +675,15 @@ export class PlanetScale {
         hv.copy(anchorPos).addScaledVector(east, x / mpu).addScaledVector(north, z / mpu).normalize();
         return (this.quad.heightAt(hv) * hv.dot(a) - aR) * mpu;
       },
+      eco: this._ecoFor(a),
+      camLocal: () => {
+        _hc.copy(this.camPos).sub(anchorPos);
+        return { x: _hc.dot(east) * mpu, y: _hc.dot(a) * mpu, z: _hc.dot(north) * mpu };
+      },
+      scared: () => this._scareT > 0,
     };
     this.anchor = {
-      a, aR, mpu, group, east, north, pos: anchorPos,
+      a, aR, mpu, group, east, north, pos: anchorPos, eco: host.eco,
       life: addLife(host),
       // any spot the night-lights shader would glow gets its towers
       settlement: this._cityMask(a) > 0.02 ? addSettlement(host) : null,
@@ -763,6 +799,7 @@ export class PlanetScale {
       this.anchor.life?.update(dt, sunY);
       this.anchor.settlement?.update(dt, sunY);
     }
+    if (this._scareT > 0) this._scareT -= dt;
 
     // meteors: on demand (X) — and, on airless worlds, the sky's own idea
     this._updateMeteor(dt);
@@ -847,6 +884,7 @@ export class PlanetScale {
       m.head.material.dispose(); m.trail.geometry.dispose(); m.trail.material.dispose();
       const rad = 0.02 + Math.random() * 0.06;
       const evicted = this.quad.addCrater(m.dirT.x, m.dirT.y, m.dirT.z, rad, rad * 0.28);
+      this._scareT = 9;   // everything nearby bolts
       const flash = new THREE.Sprite(new THREE.SpriteMaterial({
         map: softDotTexture(), color: new THREE.Color(2.4, 1.9, 1.2),
         blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
@@ -904,6 +942,7 @@ export class PlanetScale {
       ['terrain tiles', `${S.drawn} drawn · ${S.cached} cached${S.pending ? ` · ${S.pending} streaming` : ''}`],
       ...(this.ocean ? [['sea tiles', `${this.ocean.stats.drawn} drawn · ${this.ocean.stats.cached} cached`]] : []),
       ...(this.quad.job.craters ? [['craters', String(this.quad.job.craters.length / 5)]] : []),
+      ...(this.anchor?.eco ? [['regional fauna', `${this.anchor.eco.striders} striders · ${this.anchor.eco.skimmers} skimmers`]] : []),
       ['triangles', S.tris >= 1e6 ? (S.tris / 1e6).toFixed(2) + ' M' : Math.round(S.tris / 1e3) + ' k'],
       ['finest grid', this._fmtKm(spacing)],
     ];
@@ -941,6 +980,7 @@ export class PlanetScale {
 }
 
 // scratch vectors
+const _hc = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _east = new THREE.Vector3();
 const _north = new THREE.Vector3();
