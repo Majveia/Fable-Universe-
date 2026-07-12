@@ -45,6 +45,7 @@ export class QuadtreePlanet {
       flat: opts.flat ?? null,     // constant-height sheet (the ocean surface)
       bathy: !!opts.bathy,         // true terrain under a real water surface
       craters: opts.craters ?? null,
+      hydro: opts.hydro ?? null,   // watershed corridor atlas {atlas, n}
       gen: 0,
     };
 

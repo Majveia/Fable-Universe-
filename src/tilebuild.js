@@ -40,6 +40,30 @@ export function uvToDir(f, u, v, out) {
 }
 
 /**
+ * Sample a 3×2 cube-face atlas (the watershed corridor map) along a unit
+ * direction — bilinear, clamped one texel inside each face so filtering
+ * never bleeds across the seams. The tile fragment repeats this arithmetic.
+ */
+export function sampleHydro(atlas, n, dx, dy, dz) {
+  const ax = Math.abs(dx), ay = Math.abs(dy), az = Math.abs(dz);
+  let f;
+  if (ax >= ay && ax >= az) f = dx > 0 ? 0 : 1;
+  else if (ay >= ax && ay >= az) f = dy > 0 ? 2 : 3;
+  else f = dz > 0 ? 4 : 5;
+  const F = FACES[f];
+  const dn = dx * F.n[0] + dy * F.n[1] + dz * F.n[2];
+  const a = (dx * F.r[0] + dy * F.r[1] + dz * F.r[2]) / dn;
+  const b = (dx * F.u[0] + dy * F.u[1] + dz * F.u[2]) / dn;
+  const AW = 3 * n;
+  const x = Math.min(Math.max(((a + 1) / 2) * n - 0.5, 0.51), n - 1.51) + (f % 3) * n;
+  const y = Math.min(Math.max(((b + 1) / 2) * n - 0.5, 0.51), n - 1.51) + ((f / 3) | 0) * n;
+  const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0;
+  const k = y0 * AW + x0;
+  return ((atlas[k] * (1 - fx) + atlas[k + 1] * fx) * (1 - fy)
+    + (atlas[k + AW] * (1 - fx) + atlas[k + AW + 1] * fx) * fy) / 255;
+}
+
+/**
  * Radius of the crust along a unit direction, in draw units.
  *
  * One field for every consumer: the macro continents from the orbital
@@ -60,21 +84,25 @@ export function surfaceRadius(dx, dy, dz, job) {
     const s = job.seed;
     const inland = 0.25 + Math.min(Math.max((h - (job.sea ? job.ocean : -0.1)) * 2.5, 0), 1.2);
 
-    // rivers: a second fbm's zero-crossings, alive only between the shore
-    // and the highlands, widening and deepening on their way to the sea.
-    // riverT < 1 is the channel; the fragment shader recomputes the same
-    // network to lay water in the bed, and valleys damp the relief bands
-    // below — analytic erosion, consistent at every LOD and underfoot.
+    // rivers: fine analytic meanders, gated and scaled by the watershed
+    // corridors — a second fbm's zero-crossings supply the channel shape,
+    // but a channel only exists where the global flow solve says water
+    // actually passes, and its width and depth follow the accumulated flow.
+    // riverT < 1 is the channel; the fragment recomputes the same network.
     let riverT = 9, carve = 0;
     if (job.sea) {
       const above = h - job.ocean;
       if (above > 0.002 && above < 0.42) {
-        const rv = fbm(dx * 45 + s * 7.7, dy * 45 + s * 3.1, dz * 45 + s * 13.9);
-        const w = 0.010 + 0.020 * Math.max(1 - above * 3.5, 0);
-        riverT = Math.abs(rv) / w;
-        if (riverT < 1) {
-          carve = (0.016 + 0.024 * Math.max(1 - above * 3, 0))
-            * (1 - riverT * riverT) * Math.min(above * 60, 1);
+        const corridor = job.hydro
+          ? sampleHydro(job.hydro.atlas, job.hydro.n, dx, dy, dz) : 1;
+        if (corridor > 0.06) {
+          const rv = fbm(dx * 45 + s * 7.7, dy * 45 + s * 3.1, dz * 45 + s * 13.9);
+          const w = (0.010 + 0.020 * Math.max(1 - above * 3.5, 0)) * (0.35 + 0.9 * corridor);
+          riverT = Math.abs(rv) / w;
+          if (riverT < 1) {
+            carve = (0.016 + 0.024 * Math.max(1 - above * 3, 0))
+              * (1 - riverT * riverT) * Math.min(above * 60, 1) * (0.4 + 0.8 * corridor);
+          }
         }
       }
     }

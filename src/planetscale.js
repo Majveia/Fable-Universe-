@@ -23,6 +23,7 @@ import { addLife } from './life.js';
 import { addSettlement } from './settlement.js';
 import { buildScatterLUTs } from './scatterlut.js';
 import { addOrbitals } from './orbital.js';
+import { solveWatershed } from './hydrology.js';
 
 const TILE_VERT = /* glsl */`
   uniform vec3 uCenter;     // tile center, planet frame (static per tile)
@@ -63,10 +64,37 @@ const TILE_FRAG = /* glsl */`
   uniform vec3  uHaze;
   uniform float uHazeK;
   uniform float uHasSea;
+  uniform float uHasHydro;
+  uniform sampler2D uHydro;
+  uniform float uHydroN;
   varying vec3 vDir;
   varying vec3 vN;
   varying vec3 vView;
   ${NOISE_GLSL}
+
+  // the watershed corridor atlas — same arithmetic as the JS sampler
+  float hydroAt(vec3 p) {
+    vec3 ap = abs(p);
+    float f; vec3 fr; vec3 fu; vec3 fn;
+    if (ap.x >= ap.y && ap.x >= ap.z) {
+      if (p.x > 0.0) { f = 0.0; fr = vec3(0.0, 0.0, -1.0); fu = vec3(0.0, 1.0, 0.0); fn = vec3(1.0, 0.0, 0.0); }
+      else { f = 1.0; fr = vec3(0.0, 0.0, 1.0); fu = vec3(0.0, 1.0, 0.0); fn = vec3(-1.0, 0.0, 0.0); }
+    } else if (ap.y >= ap.x && ap.y >= ap.z) {
+      if (p.y > 0.0) { f = 2.0; fr = vec3(1.0, 0.0, 0.0); fu = vec3(0.0, 0.0, -1.0); fn = vec3(0.0, 1.0, 0.0); }
+      else { f = 3.0; fr = vec3(1.0, 0.0, 0.0); fu = vec3(0.0, 0.0, 1.0); fn = vec3(0.0, -1.0, 0.0); }
+    } else {
+      if (p.z > 0.0) { f = 4.0; fr = vec3(1.0, 0.0, 0.0); fu = vec3(0.0, 1.0, 0.0); fn = vec3(0.0, 0.0, 1.0); }
+      else { f = 5.0; fr = vec3(-1.0, 0.0, 0.0); fu = vec3(0.0, 1.0, 0.0); fn = vec3(0.0, 0.0, -1.0); }
+    }
+    float dn = dot(p, fn);
+    float a = dot(p, fr) / dn;
+    float b = dot(p, fu) / dn;
+    float col5 = mod(f, 3.0);
+    float row = floor(f / 3.0);
+    float x = clamp((a + 1.0) * 0.5 * uHydroN - 0.5, 0.51, uHydroN - 1.51) + col5 * uHydroN + 0.5;
+    float y = clamp((b + 1.0) * 0.5 * uHydroN - 0.5, 0.51, uHydroN - 1.51) + row * uHydroN + 0.5;
+    return texture2D(uHydro, vec2(x / (3.0 * uHydroN), y / (2.0 * uHydroN))).r;
+  }
 
   void main() {
     vec3 n = normalize(vN);
@@ -119,20 +147,24 @@ const TILE_FRAG = /* glsl */`
         float nightside = smoothstep(0.05, -0.22, dayS);
         emit += vec3(1.0, 0.72, 0.42) * megac * grid * nightside * 1.15;
       }
-      // rivers: the same network the mesher carved — water lies in the beds
+      // rivers: the same network the mesher carved — water lies in the beds,
+      // and only where the watershed corridors say water actually flows
       if (uHasSea > 0.5) {
         float above = h - uOcean;
         if (above > 0.002 && above < 0.42) {
-          vec3 sd2 = vec3(uSeed * 7.7, uSeed * 3.1, uSeed * 13.9);
-          float rv = fbm(p * 45.0 + sd2);
-          float w = 0.010 + 0.020 * max(1.0 - above * 3.5, 0.0);
-          float t = abs(rv) / w;
-          if (t < 1.2) {
-            float wet = 1.0 - smoothstep(0.45, 0.75, t);
-            float bank = 1.0 - smoothstep(0.75, 1.2, t);
-            col = mix(col, col * 0.82, bank * 0.6);              // damp banks
-            col = mix(col, mix(uColC * 0.55, uColA * 0.3, 0.4), wet);
-            spec = max(spec, pow(max(dot(reflect(-sunDir, n), viewDir), 0.0), 90.0) * 0.7 * wet);
+          float corridor = uHasHydro > 0.5 ? hydroAt(p) : 1.0;
+          if (corridor > 0.06) {
+            vec3 sd2 = vec3(uSeed * 7.7, uSeed * 3.1, uSeed * 13.9);
+            float rv = fbm(p * 45.0 + sd2);
+            float w = (0.010 + 0.020 * max(1.0 - above * 3.5, 0.0)) * (0.35 + 0.9 * corridor);
+            float t = abs(rv) / w;
+            if (t < 1.2) {
+              float wet = 1.0 - smoothstep(0.45, 0.75, t);
+              float bank = 1.0 - smoothstep(0.75, 1.2, t);
+              col = mix(col, col * 0.82, bank * 0.6);            // damp banks
+              col = mix(col, mix(uColC * 0.55, uColA * 0.3, 0.4), wet);
+              spec = max(spec, pow(max(dot(reflect(-sunDir, n), viewDir), 0.0), 90.0) * 0.7 * wet);
+            }
           }
         }
       }
@@ -504,6 +536,9 @@ export class PlanetScale {
         uHazeK: this.uHazeK,
         // evaluated at tile-build time, safely after hasSea is set below
         uHasSea: { value: hasSea ? 1 : 0 },
+        uHasHydro: { value: this.hydro ? 1 : 0 },
+        uHydro: { value: this._hydroTex },
+        uHydroN: { value: this.hydro ? this.hydro.n : 1 },
       },
       vertexShader: TILE_VERT,
       fragmentShader: TILE_FRAG,
@@ -529,12 +564,29 @@ export class PlanetScale {
       }
     }
 
+    // the watershed: a real global flow solve, baked once (~1 s), gating
+    // every river the worker carves and the fragment paints
+    this.hydro = hasSea && url.searchParams.get('hy') !== '0'
+      ? solveWatershed(pp.noiseSeed, pp.oceanLevel, this.amp) : null;
+    if (this.hydro) {
+      this._hydroTex = new THREE.DataTexture(
+        this.hydro.atlas, 3 * this.hydro.n, 2 * this.hydro.n,
+        THREE.RedFormat, THREE.UnsignedByteType);
+      this._hydroTex.magFilter = this._hydroTex.minFilter = THREE.LinearFilter;
+      this._hydroTex.unpackAlignment = 1;
+      this._hydroTex.needsUpdate = true;
+    } else {
+      this._hydroTex = new THREE.DataTexture(new Uint8Array([0]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType);
+      this._hydroTex.needsUpdate = true;
+    }
+
     this.quad = new QuadtreePlanet(pp, {
       R: this.R, amp: this.amp,
       res: qres, maxDepth: qdepth, splitK: qsplit,
       skirtK: url.searchParams.has('sk') ? parseFloat(url.searchParams.get('sk')) : 1,
       bathy: hasSea,
       craters,
+      hydro: this.hydro ? { atlas: this.hydro.atlas, n: this.hydro.n } : null,
       makeMaterial,
     });
     this.planetGroup = new THREE.Group();
