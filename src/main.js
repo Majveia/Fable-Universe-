@@ -2,7 +2,10 @@
 //
 // Four nested scales, one stack:
 //   cosmic web  →  galaxy  →  star system  →  (galactic nucleus: black hole)
-// Everything is procedural and deterministic: one integer seeds it all.
+// Everything is procedural: one integer seeds it all. The integer itself is
+// rolled fresh each visit — every arrival is a universe nobody has seen —
+// and reflected into the URL, so any universe you're standing in can be
+// shared by copying the address bar.
 
 import * as THREE from 'three';
 import { Post } from './post.js';
@@ -21,19 +24,23 @@ import { starName } from './rng.js';
 
 const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE, planet: PLANET_NOTE };
 const HINTS = {
-  cosmic: 'drag to look · scroll to zoom · space plays cosmic time · click a bright node to enter a galaxy · n compares gravity vs linear theory',
+  cosmic: 'drag to look · scroll to zoom · space plays cosmic time · click a bright node to enter a galaxy · n compares gravity vs linear theory · u rolls a fresh universe',
   galaxy: 'drag to look · scroll to zoom · click a star to visit its system · click the core to meet the nucleus · esc to ascend',
   system: 'click a world · land from its card · j to cruise (steer into a star to travel there) · hold ] to age the star · esc to ascend',
   blackhole: 'drag to orbit the horizon · scroll to lean closer · esc to ascend',
   surface: 'drag to look · wasd walk · shift runs · f flies · x calls down a meteor · space pauses the day · esc to orbit',
   clouds: 'drag to steer · you fly where you look · w dives faster, s eases off · + − trims the cruise · esc to climb out',
-  planet: 'drag to steer · wasd fly · r/f climb & dive · touch down and you are walking · b boards a shuttle to the station · x calls a meteor · esc to orbit',
+  planet: 'autopilot is flying you down · drag to look around · any key takes the helm · b boards a shuttle · x calls a meteor · esc to orbit',
 };
 
 class App {
   constructor() {
     const url = new URL(window.location.href);
-    this.seed = parseInt(url.searchParams.get('seed')) || 1138;
+    // a pinned ?seed= is honored (links, logbook, tests); otherwise the
+    // dice roll — this visit's universe exists for the first time right now
+    const pinned = parseInt(url.searchParams.get('seed'));
+    this.seed = Number.isInteger(pinned) && pinned > 0 ? pinned
+      : (crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff) || 1138;
     this.quadOn = url.searchParams.get('quad') !== '0';
 
     this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: 'high-performance' });
@@ -147,9 +154,17 @@ class App {
     }
   }
 
+  /** roll a universe nobody has ever seen (a cold jump, honestly fresh) */
+  freshUniverse() {
+    const u = new URL(window.location.href);
+    for (const k of ['seed', 'g', 's', 'bh', 'p', 'moon', 'cl', 'pl']) u.searchParams.delete(k);
+    window.location.href = u;
+  }
+
   /** keep the URL pointing at where you are, so places can be shared */
   _reflectUrl() {
     const u = new URL(window.location.href);
+    u.searchParams.set('seed', this.seed);
     for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl']) u.searchParams.delete(k);
     for (const sc of this.stack) {
       if (sc.kind === 'galaxy') u.searchParams.set('g', sc.ctx.galaxySeed);
@@ -296,7 +311,9 @@ class App {
         case 'BracketRight': s.scrub?.(1); break;
         case 'KeyH': document.querySelectorAll('.hud').forEach(el => el.style.visibility = el.style.visibility === 'hidden' ? '' : 'hidden'); break;
         case 'KeyM': this.hud.setMuted(this.audio.toggleMute()); break;
-        case 'KeyB': this.hud.toggleLog(); break;
+        // the scale speaks first: on a planet, B is the shuttle, not the log
+        case 'KeyB': if (!s.onKey?.('KeyB')) this.hud.toggleLog(); break;
+        case 'KeyU': this.freshUniverse(); break;
         default: s.onKey?.(e.code);
       }
     });
