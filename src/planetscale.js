@@ -67,6 +67,8 @@ const TILE_FRAG = /* glsl */`
   uniform float uHasHydro;
   uniform sampler2D uHydro;
   uniform float uHydroN;
+  uniform float uWet;
+  uniform float uWetMode;   // 0 rain-slick · 1 snow-dust
   varying vec3 vDir;
   varying vec3 vN;
   varying vec3 vView;
@@ -177,6 +179,18 @@ const TILE_FRAG = /* glsl */`
       float near2 = 1.0 - smoothstep(2.0, 42.0, dCam);
       float d2 = near2 > 0.002 ? snoise(p * 14000.0 + sd * 1.3) : 0.0;
       col *= 1.0 + d1 * 0.11 * near1 + d2 * 0.09 * near2;
+    }
+
+    // weather memory: rain slicks and darkens the land near you; snow dusts it
+    if (uWet > 0.01 && h >= uOcean) {
+      float flat5 = smoothstep(0.93, 1.0, dot(n, p));
+      float nearW = 1.0 - smoothstep(2.0, 60.0, dCam);
+      if (uWetMode < 0.5) {
+        col *= 1.0 - 0.22 * uWet * nearW;
+        spec = max(spec, pow(max(dot(reflect(-sunDir, n), viewDir), 0.0), 60.0) * 0.4 * uWet * flat5 * nearW);
+      } else {
+        col = mix(col, vec3(0.88, 0.9, 0.95), 0.35 * uWet * flat5 * nearW);
+      }
     }
 
     float ambient = 0.012;
@@ -512,6 +526,8 @@ export class PlanetScale {
     this.uSunDir = { value: new THREE.Vector3().fromArray(ctx.sunDir || [1, 0.2, 0]).normalize() };
     this.uTime = { value: 0 };
     this.uHazeK = { value: 0 };
+    this.uWet = { value: 0 };
+    this.uWetMode = { value: pp.Teq < 265 ? 1 : 0 };   // 1 = snow
     const atmoAmt = pp.typeId === 0 ? 0.25 : pp.typeId === 4 ? 0.4 : 1.0;
     this.hazeBase = 0.012 * atmoAmt;
     this.uHazeCol = { value: pp.atmoColor.clone().multiplyScalar(0.9).add(new THREE.Color(0.02, 0.02, 0.03)) };
@@ -539,6 +555,8 @@ export class PlanetScale {
         uHasHydro: { value: this.hydro ? 1 : 0 },
         uHydro: { value: this._hydroTex },
         uHydroN: { value: this.hydro ? this.hydro.n : 1 },
+        uWet: this.uWet,
+        uWetMode: this.uWetMode,
       },
       vertexShader: TILE_VERT,
       fragmentShader: TILE_FRAG,
@@ -764,6 +782,81 @@ export class PlanetScale {
     this.meteor = null;
     this._flash = null;
     this._scareT = 0;
+
+    // weather: driven by the SAME cloud field the volumetric deck renders
+    this.wx = { wet: 0, raining: false, snow: pp.Teq < 265 };
+    this._rain = null;
+  }
+
+  /** the volumetric deck's density formula, mirrored in JS — sampled at
+   *  the zenith to decide whether it is raining where you stand */
+  _cloudAt(dir) {
+    if (!this.cloudMesh || this._cloudAmt) return 0;   // volumetrics only
+    const Rb = this.R * 1.010, Rt = this.R * 1.020;
+    const rad = (Rb + Rt) / 2;
+    const t = this.uTime.value;
+    const s = this.pp.noiseSeed;
+    const k = 9 / this.R;
+    let px = dir.x * rad * k + s * 3.1 + t * 0.004;
+    let py = dir.y * rad * k + s * 7.7;
+    let pz = dir.z * rad * k + s * 1.3 + t * 0.0022;
+    let v = 0, a = 0.5;
+    for (let o = 0; o < 3; o++) {
+      v += a * snoise(px, py, pz);
+      px = px * 2.07 + 11.3; py = py * 2.07 + 11.3; pz = pz * 2.07 + 11.3;
+      a *= 0.5;
+    }
+    const f = v * 0.5 + 0.5;
+    const cov = this.pp.clouds;
+    const lo = 0.5 - cov * 0.42;
+    const d = Math.min(Math.max((f - lo) / (0.62 - lo), 0), 1);
+    return d * 0.8;   // mid-deck height profile ≈ 0.8
+  }
+
+  _buildRain() {
+    const N = 420;
+    const pos = new Float32Array(N * 2 * 3);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1);
+    const mat = new THREE.LineBasicMaterial({
+      color: this.wx.snow ? 0xdde4ee : 0x9fb4c8, transparent: true, opacity: 0,
+    });
+    const lines = new THREE.LineSegments(geo, mat);
+    lines.frustumCulled = false;
+    this.scene.add(lines);   // camera-frame: the camera sits at the origin
+    const drops = [];
+    for (let i = 0; i < N; i++) {
+      drops.push(new THREE.Vector3(
+        (Math.random() - 0.5) * 0.03,
+        Math.random() * 0.03 - 0.01,
+        (Math.random() - 0.5) * 0.03));
+    }
+    this._rain = { lines, geo, pos, drops, N };
+  }
+
+  _updateRain(dt, up) {
+    if (!this._rain && this.wx.wet <= 0) return;
+    if (!this._rain) this._buildRain();
+    const R = this._rain;
+    const vis = this.wx.raining ? Math.min(this.wx.wet * 3, 1) : 0;
+    R.lines.material.opacity = vis * 0.55;
+    R.lines.visible = vis > 0.01;
+    if (!R.lines.visible) return;
+    const fall = this.wx.snow ? 0.0016 : 0.012;         // m/s scaled to units
+    const len = this.wx.snow ? 0.00025 : 0.0022;
+    const sway = this.wx.snow ? 0.0012 : 0.0002;
+    const t = this.uTime.value;
+    for (let i = 0; i < R.N; i++) {
+      const d = R.drops[i];
+      d.addScaledVector(up, -fall * dt);
+      d.x += Math.sin(t * 1.3 + i) * sway * dt * 60;
+      if (d.dot(up) < -0.012) d.addScaledVector(up, 0.028);
+      const o = i * 6;
+      R.pos[o] = d.x; R.pos[o + 1] = d.y; R.pos[o + 2] = d.z;
+      R.pos[o + 3] = d.x + up.x * len; R.pos[o + 4] = d.y + up.y * len; R.pos[o + 5] = d.z + up.z * len;
+    }
+    R.geo.attributes.position.needsUpdate = true;
   }
 
   /** the same fbm the night-lights shader keys cities to — land on a glow,
@@ -969,6 +1062,16 @@ export class PlanetScale {
     if (this._scareT > 0) this._scareT -= dt;
     this.orbitals?.update(dt);
 
+    // weather: overcast overhead and you below the deck = precipitation;
+    // the ground remembers the rain for a while after the sky clears
+    const deckBase = this.R * 1.010;
+    this.wx.raining = this.camPos.length() < deckBase - 1
+      && this._cloudAt(up) > 0.3;
+    this.wx.wet = Math.min(Math.max(
+      this.wx.wet + (this.wx.raining ? dt / 18 : -dt / 30), 0), 1);
+    this.uWet.value = this.wx.wet;
+    this._updateRain(dt, up);
+
     // meteors: on demand (X) — and, on airless worlds, the sky's own idea
     this._updateMeteor(dt);
     if (this._flash) {
@@ -1111,6 +1214,9 @@ export class PlanetScale {
       ...(this.ocean ? [['sea tiles', `${this.ocean.stats.drawn} drawn · ${this.ocean.stats.cached} cached`]] : []),
       ...(this.quad.job.craters ? [['craters', String(this.quad.job.craters.length / 5)]] : []),
       ...(this.anchor?.eco ? [['regional fauna', `${this.anchor.eco.striders} striders · ${this.anchor.eco.skimmers} skimmers`]] : []),
+      ...(this.cloudMesh && !this._cloudAmt ? [['weather', this.wx.raining
+        ? (this.wx.snow ? 'snowing' : 'raining')
+        : this.wx.wet > 0.05 ? 'clearing · ground wet' : 'fair']] : []),
       ['triangles', S.tris >= 1e6 ? (S.tris / 1e6).toFixed(2) + ' M' : Math.round(S.tris / 1e3) + ' k'],
       ['finest grid', this._fmtKm(spacing)],
     ];
