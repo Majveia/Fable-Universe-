@@ -344,6 +344,9 @@ export class SystemScale {
       snFired: false,
       flashT: -1,
     };
+    // don't advertise the lever on stars that decline it (giants, binaries)
+    this.hintOverride = () => 'click a world · land from its card · j to cruise (steer into a star to travel there)'
+      + (this.deep.eligible ? ' · hold ] to age the star' : '') + ' · esc to ascend';
 
     // relativistic cruise state (J to engage)
     this.rel = { on: false, beta: 0, target: 0.5, gamma: 1, dir: new THREE.Vector3(0, 0, -1) };

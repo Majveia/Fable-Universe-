@@ -250,7 +250,7 @@ class App {
     this.post.setScene(s.scene, s.camera);
     this.post.tune(s.bloomSettings);
     this.hud.setNote(s.noteOverride ?? NOTES[s.kind]);
-    this.hud.setHint(HINTS[s.kind]);
+    this.hud.setHint(s.hintOverride?.() ?? HINTS[s.kind]);
     this.audio.setScale(s.kind, this._worldInfo(s));
     this._crumbs();
   }

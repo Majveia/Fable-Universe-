@@ -6,6 +6,12 @@ unfold into a cosmos you can fall through — from the large-scale structure of
 spacetime down to rain-free ocean worlds and the warped light around a
 supermassive black hole.
 
+And the integer itself is **rolled fresh every visit**: the universe you
+arrive in exists for the first time when the page loads, nobody has seen it
+before, and the roll is reflected straight into the URL — copy the address
+bar and anyone can stand where you stood. Press **U** anywhere to roll
+another one.
+
 ![the cosmic web](docs/screenshots/2-cosmic-now.png)
 
 ## Run it
@@ -19,10 +25,11 @@ python3 -m http.server 8080
 Best experienced full-screen, in the dark, on an OLED display. The background
 is true `#000` black.
 
-Optional URL parameters: `?seed=42` (a different universe), `?n=96`
-(cosmic-web tracer resolution per axis, default 68 → 314k particles),
-`?qk=4` (planet-quadtree quality: tile budget vs fidelity, default 6.5),
-`?quad=0` (skip the streaming-planet scale, land directly).
+Optional URL parameters: `?seed=42` (pin a universe — omit it and every
+visit rolls a new one), `?n=96` (cosmic-web tracer resolution per axis,
+default 68 → 314k particles), `?qk=4` (planet-quadtree quality: tile budget
+vs fidelity, default 6.5), `?quad=0` (skip the streaming-planet scale, land
+directly), `?ap=0` (arrive in orbit with the helm instead of the autopilot).
 
 Your location is reflected into the URL as you travel (`?g=…&s=…`, `&bh=1`
 at the nucleus, `&pl=…` on approach, `&p=…` on the ground), so any place
@@ -35,7 +42,9 @@ hyperzooms**: the camera falls toward what you clicked, the scales swap
 mid-motion under a passing snapshot, and you arrive still moving. No cuts,
 no fades to black. **Click** selects, **double-click** dives, **Esc**
 ascends, **Space** pauses time, **+ / −** bend it, **H** hides the
-interface, **drag / scroll** to fly.
+interface, **U** rolls a fresh universe, **drag / scroll** to fly. Every
+control on every scale is exercised by a headless audit suite that drives
+real key and pointer events through the same paths your hands do.
 
 ### 1 · The cosmic web — a real N-body simulation
 262,144 dark-matter particles run through a **particle-mesh N-body code on
@@ -143,12 +152,25 @@ four children have streamed in, and **geomorphing** lerps every vertex
 child spawns wearing its parent's exact geometry and refines as you
 close: LOD transitions carry zero pop, no cuts, no fades.
 
-Fly with **WASD** and **R/F** — *your speed is your altitude*, thousands
-of km/s at apoapsis — and just keep descending: under two eye-heights the
-scale sets you down and **you are walking**, boots held to the same field
-the tiles are meshed from (measured ground-glue error: 0.000 m), the
-camera near plane riding your altitude from centimetres to orbit. **R**
-lifts off again.
+You don't have to fly it yourself: from the moment you arrive, **the
+autopilot has the ship**. A descent director picks a landing site —
+sunlit, dry ground, biased toward high relief and, on inhabited worlds,
+toward the city-lights glow — and flies the whole fall for you: a
+great-circle glide out of orbit, through the volumetric cloud deck
+mid-way, into a long terrain-following low glide with the camera easing
+from looking down at a world to looking out at a country, then a flare,
+and **touchdown, walking**, about 44 seconds after you pressed the
+button. Drag to look around freely the whole way down — the ship keeps
+flying — or touch any key and the helm is instantly yours.
+
+![the autopilot's low glide: 81 m up in the rain, skimmers off the bow](docs/screenshots/36-autopilot.png)
+
+Fly manually with **WASD** and **R/F** — *your speed is your altitude*,
+thousands of km/s at apoapsis — and just keep descending: under two
+eye-heights the scale sets you down and **you are walking**, boots held
+to the same field the tiles are meshed from (measured ground-glue error:
+0.000 m), the camera near plane riding your altitude from centimetres to
+orbit. **R** lifts off again.
 
 And the world is *inhabited in place* now. Under eight units of altitude
 a **biome anchor** appears at the ground point — a local east/up/north
@@ -318,12 +340,16 @@ as the Event Horizon Telescope observed at M87*.
   hyperzoom. `M` mutes.
 - **OLED-first**: everything luminous over true black; HDR half-float
   pipeline with selective bloom; hairline typographic HUD that fades away.
-- **Deterministic**: every galaxy, star, planet, name and civilization is a
-  pure function of `hash(seed, …)`. Universe 1138's Delta Cora is the same
-  Delta Cora on every machine, forever.
-- **A logbook** (`B`, or the ◈ button): mark any place — a cloud deck, a
-  moon, a colliding pair — and warp back to it later. Entries are just the
-  same shareable coordinates the URL always carries.
+- **Non-deterministic universe, deterministic worlds**: every visit rolls a
+  fresh seed, so no two arrivals are the same cosmos — but within a seed,
+  every galaxy, star, planet, name and civilization is a pure function of
+  `hash(seed, …)`. Universe 1138's Delta Cora is the same Delta Cora on
+  every machine, forever; the URL always carries your seed, so the universe
+  you rolled is yours to share. `U` rolls another.
+- **A logbook** (`B`, or the ◈ button — on a planet `B` belongs to the
+  shuttle, use the button): mark any place — a cloud deck, a moon, a
+  colliding pair — and warp back to it later. Entries are just the same
+  shareable coordinates the URL always carries, across universes.
 - **A tour mode** (`T`): AEON flies itself — creation plays out, a node is
   chosen, the camera falls through a galaxy to a star, lands somewhere or
   sinks into a cloud deck, visits the black hole, and begins again
