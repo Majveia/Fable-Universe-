@@ -81,7 +81,8 @@ export class Tour {
           if (!pick) { app.popTo(app.stack.length - 2); this.stage = 'galaxy-core'; this.timer = 6; return; }
           this._orbit(false);
           if (pick.typeId <= 4) {
-            if (app.quadOn) { app.approach(s, pick); this.stage = 'planet'; this.timer = 26; return; }
+            // the descent director flies ~44 s; leave time to stand around
+            if (app.quadOn) { app.approach(s, pick); this.stage = 'planet'; this.timer = 56; return; }
             app.landOn(s, pick);
           } else {
             app.cruise(s, pick);

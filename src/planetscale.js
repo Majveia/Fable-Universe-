@@ -497,6 +497,7 @@ const MOON_FRAG = /* glsl */`
 const AMP_BY_TYPE = { 0: 15, 1: 11, 2: 7, 3: 14, 4: 13 };
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const Z_AXIS = new THREE.Vector3(0, 0, 1);
+const MOVE_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyR', 'KeyF'];
 
 export class PlanetScale {
   constructor(app, ctx) {
@@ -787,6 +788,93 @@ export class PlanetScale {
     this.wx = { wet: 0, raining: false, snow: pp.Teq < 265 };
     this._rain = null;
     this.ride = null;                    // aboard a shuttle to the station
+
+    // the descent director: arriving from the system view, the ship flies
+    // itself down — one graceful fall, orbit to standing, yours to take
+    // over the moment you touch a control (?ap=0 keeps the helm manual)
+    this.auto = null;
+    this._autoHint = false;
+    if (url.searchParams.get('ap') !== '0') this._engageAutopilot();
+  }
+
+  // -------------------------------------------------------- autopilot ----
+  /** pick a landing site and fly the whole descent: orbit to boots */
+  _engageAutopilot(dur = 44) {
+    if (this.walk || this.ride || this.auto) return;
+    const sun = this.uSunDir.value;
+    const from = this.camPos.clone().normalize();
+    // the site: sunlit, dry, scenic — and on inhabited worlds, the lights
+    let best = null, bs = -1e9;
+    for (let i = 0; i < 380; i++) {
+      const z = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
+      const q = Math.sqrt(1 - z * z);
+      _t5.set(q * Math.cos(th), z, q * Math.sin(th));
+      const day = _t5.dot(sun);
+      if (day < 0.15) continue;                  // touch down in daylight
+      const arc = from.angleTo(_t5);
+      if (arc > 1.35) continue;                  // stay on this face
+      const h = this.quad.heightAt(_t5);
+      if (this.seaR > 0 && h < this.seaR + 0.02) continue;   // dry ground
+      let score = day * 1.5 + (h - this.R) / this.amp - Math.abs(_t5.y) * 0.7 - arc * 0.4;
+      if (this.pp.inhabited) score += this._cityMask(_t5) * 4;
+      if (score > bs) { bs = score; best = _t5.clone(); }
+    }
+    this.auto = {
+      t: 0, dur,
+      from, site: best ?? from.clone(),          // all-sea worlds: straight down
+      alt0: Math.max(this.camPos.length() - this._groundR(from), 1),
+      look: 0,                                   // free-look window after a drag
+    };
+  }
+
+  _cancelAuto(hint) {
+    if (!this.auto) return;
+    this.auto = null;
+    this.app.hud.setHint(hint ?? 'you have the helm · wasd fly · r/f climb & dive · b boards a shuttle · esc to orbit');
+  }
+
+  _updateAuto(dt) {
+    const A = this.auto;
+    A.t += dt / A.dur;
+    if (A.look > 0) A.look -= dt;
+    const u = Math.min(A.t, 1);
+    // bearing: a great-circle glide toward the site, front-loaded — the
+    // transit happens up high, then you drift down onto the destination
+    const sm = 1 - Math.pow(1 - u, 2.2);
+    const dir = _t5.copy(A.from).multiplyScalar(1 - sm).addScaledVector(A.site, sm).normalize();
+    // altitude: fast out of orbit, through the deck mid-way, a long low
+    // final glide that follows the terrain, then the flare
+    const alt = A.alt0 * Math.pow(1 - u, 3.2) * Math.exp(-6 * u);
+    const clearance = this.eyeH + 0.9 * Math.pow(1 - u, 1.35);
+    const gr = this._groundR(dir);
+    const prev = _t7.copy(this.camPos);
+    this.camPos.copy(dir).multiplyScalar(gr + Math.max(alt, clearance));
+    const vel = _t6.copy(this.camPos).sub(prev);
+    this._spd = vel.length() / Math.max(dt, 1e-6);
+    if (u >= 1) {
+      // touchdown: boots take it from here
+      const upT = _a1.copy(this.camPos).normalize();
+      this.camPos.copy(upT).multiplyScalar(this._groundR(upT) + this.eyeH);
+      this.auto = null;
+      this.walk = true;
+      this.app.hud.setHint('touchdown · wasd to walk · r lifts off · b boards a shuttle');
+      return;
+    }
+    if (A.look <= 0) {
+      // eyes follow the ground track, easing level as the ground rises
+      const upN = _a1.copy(this.camPos).normalize();
+      let eastN = _a2.crossVectors(Y_AXIS, upN);
+      if (eastN.lengthSq() < 1e-6) eastN = _a2.crossVectors(Z_AXIS, upN);
+      eastN.normalize();
+      const northN = _a3.crossVectors(upN, eastN);
+      if (vel.lengthSq() > 1e-14) {
+        const yawT = Math.atan2(vel.dot(eastN), vel.dot(northN));
+        const dy = ((yawT - this.yaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+        this.yaw += dy * Math.min(dt * 1.4, 1);
+      }
+      const pitchT = -0.07 - 0.95 * Math.pow(1 - u, 1.7);
+      this.pitch += (pitchT - this.pitch) * Math.min(dt * 0.9, 1);
+    }
   }
 
   // ---------------------------------------------------------- boarding ----
@@ -1045,6 +1133,15 @@ export class PlanetScale {
     if (!this.walk && !this.ride && alt < this.eyeH * 2.2) this.walk = true;
     if (this.walk && this.keys.has('KeyR')) { this.walk = false; this.camPos.addScaledVector(up, 0.004); }
 
+    // the autopilot yields to any hand on the stick
+    if (this.auto && !this._autoHint) {
+      this._autoHint = true;
+      this.app.hud.setHint('autopilot has the ship · drag to look around · any key takes the helm');
+    }
+    if (this.auto) {
+      for (const k of MOVE_KEYS) if (this.keys.has(k)) { this._cancelAuto(); break; }
+    }
+
     const boost = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) ? 3.4 : 1;
     this._spd = 0;
     const fwd = _fwd.copy(north).multiplyScalar(Math.cos(this.yaw)).addScaledVector(east, Math.sin(this.yaw));
@@ -1074,14 +1171,13 @@ export class PlanetScale {
       if (this.keys.has('KeyF')) { this.camPos.addScaledVector(up, -spd * dt); this._spd = spd; }
     }
 
-    // the tour flies itself down, all the way to standing
-    if (this.tourAutopilot && !this.walk) {
-      this.yaw += dt * 0.03;
-      this.pitch += (-0.3 - this.pitch) * Math.min(dt * 0.6, 1);
-      const drop = (alt * 0.085 + 0.4) * dt;
-      this.camPos.setLength(Math.max(this.camPos.length() - drop, surfR + this.eyeH));
-      this._spd = alt * 0.085 + 0.4;
+    // the descent director: the approach engages it, the tour asks for it
+    if (this.tourAutopilot && !this.auto && !this.walk && !this.ride) this._engageAutopilot(34);
+    if (this.auto && (this.walk || this.ride)) {
+      this.auto = null;
+      if (this.walk) this.app.hud.setHint('touchdown · wasd to walk · r lifts off · b boards a shuttle');
     }
+    if (this.auto) this._updateAuto(dt);
     if (this.tourAutopilot && this.walk) {
       this.pitch += (-0.03 - this.pitch) * Math.min(dt * 0.8, 1);
     }
@@ -1241,6 +1337,7 @@ export class PlanetScale {
   // ------------------------------------------------------------ input ----
   onWheel(e) {
     // scroll = altitude, multiplicative — the Google-Earth feel
+    this._cancelAuto();
     if (this.walk) { if (e.deltaY < 0) this.walk = false; else return; }
     this.camPos.multiplyScalar(1 + Math.sign(e.deltaY) * 0.055);
     if (this.camPos.length() > this.R * 5) this.camPos.setLength(this.R * 5);
@@ -1254,6 +1351,8 @@ export class PlanetScale {
     this._drag = { x: e.clientX, y: e.clientY };
     this.yaw += dx;
     this.pitch = Math.min(Math.max(this.pitch - dy, -1.5), 1.5);
+    // dragging during the descent is free look — the ship keeps flying
+    if (this.auto) this.auto.look = 3;
   }
   onKey(code) {
     if (code === 'KeyX') { this.strikeMeteor(false); return true; }
@@ -1281,7 +1380,7 @@ export class PlanetScale {
       ['world', this.pp.name],
       ['class', this.pp.type + (this.pp.inhabited ? ' · inhabited' : '')],
       ['radius', Math.round(this.pp.radiusE * 6371).toLocaleString() + ' km'],
-      ['mode', this.ride ? 'shuttle · corridor' : this.walk ? 'on foot' : 'flight'],
+      ['mode', this.ride ? 'shuttle · corridor' : this.auto ? 'autopilot · descent' : this.walk ? 'on foot' : 'flight'],
       ['altitude', this._fmtKm(Math.max(this.altUnits ?? 0, 0) * this.unitKm)],
       ['speed', this._spd > 0 ? this._fmtKm(this._spd * this.unitKm) + '/s' : '—'],
       ['terrain tiles', `${S.drawn} drawn · ${S.cached} cached${S.pending ? ` · ${S.pending} streaming` : ''}`],
@@ -1333,6 +1432,9 @@ const _hc = new THREE.Vector3();
 const _t5 = new THREE.Vector3();
 const _t6 = new THREE.Vector3();
 const _t7 = new THREE.Vector3();
+const _a1 = new THREE.Vector3();
+const _a2 = new THREE.Vector3();
+const _a3 = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _east = new THREE.Vector3();
 const _north = new THREE.Vector3();
