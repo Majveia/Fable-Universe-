@@ -27,7 +27,7 @@ const HINTS = {
   blackhole: 'drag to orbit the horizon · scroll to lean closer · esc to ascend',
   surface: 'drag to look · wasd walk · shift runs · f flies · x calls down a meteor · space pauses the day · esc to orbit',
   clouds: 'drag to steer · you fly where you look · w dives faster, s eases off · + − trims the cruise · esc to climb out',
-  planet: 'drag to steer · wasd fly · r/f climb & dive · touch down and you are walking · r lifts off · x calls down a meteor · esc to orbit',
+  planet: 'drag to steer · wasd fly · r/f climb & dive · touch down and you are walking · b boards a shuttle to the station · x calls a meteor · esc to orbit',
 };
 
 class App {

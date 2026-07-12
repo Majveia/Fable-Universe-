@@ -88,7 +88,23 @@ export function addOrbitals(s) {
     group.add(g);
     ships.push({ obj: g, spr, state: 'idle', wait: r.float(2, 25), t: 0, dur: 1, ph: r.float(0, 6.28) });
   }
-  // route endpoints: functions of time, so a moving station still docks
+  // route endpoints: functions of time, so a moving station still docks.
+  // Ports work by daylight: launch/landing corridors prefer the lit side.
+  const stats = { launches: 0, daySide: 0 };
+  const daylitDir = () => {
+    const sun = s.uSunDir.value;
+    let best = null, bd = -2;
+    for (let k = 0; k < 5; k++) {
+      const z = Math.random() * 2 - 1, th = Math.random() * 6.28;
+      const q = Math.sqrt(1 - z * z);
+      const d = new THREE.Vector3(q * Math.cos(th), z, q * Math.sin(th));
+      const day = d.dot(sun);
+      if (day > bd) { bd = day; best = d; }
+    }
+    stats.launches++;
+    if (best.dot(s.uSunDir.value) > 0) stats.daySide++;
+    return best;
+  };
   const endpoint = (time) => {
     const roll = Math.random();
     if (roll < 0.55 && stations.length) {
@@ -96,10 +112,8 @@ export function addOrbitals(s) {
       return (tt, out) => stationPos(st, tt, out);
     }
     if (roll < 0.85) {
-      // a point low over the world (a launch/landing corridor)
-      const z = Math.random() * 2 - 1, th = Math.random() * 6.28;
-      const q = Math.sqrt(1 - z * z);
-      const d = new THREE.Vector3(q * Math.cos(th), z, q * Math.sin(th));
+      // a launch/landing corridor, on the working (day) side of the world
+      const d = daylitDir();
       return (tt, out) => out.copy(d).multiplyScalar(R * 1.03);
     }
     // gone to deep space
@@ -118,6 +132,11 @@ export function addOrbitals(s) {
   let time = 0;
   return {
     stations: stations.length,
+    stats,
+    /** a live handle on the first station, for anything that wants to dock */
+    board: () => stations.length
+      ? { pos: (out) => stationPos(stations[0], time, out) }
+      : null,
     update(dt) {
       time += dt;
       const sun = s.uSunDir.value;

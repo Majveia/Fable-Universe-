@@ -786,6 +786,70 @@ export class PlanetScale {
     // weather: driven by the SAME cloud field the volumetric deck renders
     this.wx = { wet: 0, raining: false, snow: pp.Teq < 265 };
     this._rain = null;
+    this.ride = null;                    // aboard a shuttle to the station
+  }
+
+  // ---------------------------------------------------------- boarding ----
+  boardShuttle() {
+    if (!this.orbitals || this.ride) return;
+    const dock = this.orbitals.board();
+    if (!dock) return;
+    const craft = new THREE.Group();
+    const hull = new THREE.Mesh(
+      new THREE.ConeGeometry(0.0012, 0.005, 6),
+      new THREE.MeshStandardMaterial({ color: 0xb8bec7, roughness: 0.4, metalness: 0.7 }));
+    hull.rotation.x = Math.PI / 2;
+    craft.add(hull);
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: softDotTexture(), color: new THREE.Color(1.6, 1.1, 0.5),
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+    }));
+    glow.scale.setScalar(0.004);
+    glow.position.z = -0.003;
+    craft.add(glow);
+    this.planetGroup.add(craft);
+    this.ride = { t: 0, dur: 46, from: this.camPos.clone(), dock, craft };
+    this.walk = false;
+    this.app.hud.setHint('riding the corridor · drag to look · b to bail');
+    if (this.app.audio) this.app.audio.warp('dive');
+  }
+
+  _endRide(docked) {
+    const r = this.ride;
+    if (!r) return;
+    this.planetGroup.remove(r.craft);
+    r.craft.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
+    });
+    this.ride = null;
+    this.app.hud.setHint(docked ? 'docked · you have the helm' : '');
+  }
+
+  _updateRide(dt, up) {
+    const r = this.ride;
+    if (!r) return;
+    r.t += dt / r.dur;
+    const to = _t5;
+    r.dock.pos(to);
+    if (r.t >= 1) {
+      // release just off the station
+      this.camPos.copy(to).addScaledVector(up, 2.2);
+      this._endRide(true);
+      return;
+    }
+    const sm = r.t * r.t * (3 - 2 * r.t);
+    const r0 = r.from.length(), r1 = to.length();
+    const dir = _t6.copy(r.from).multiplyScalar(1 - sm).addScaledVector(to, sm).normalize();
+    const rad = r0 * (1 - sm) + r1 * sm + Math.sin(Math.PI * sm) * this.R * 0.03;
+    const prev = _t7.copy(this.camPos);
+    this.camPos.copy(dir).multiplyScalar(rad);
+    // the craft rides just ahead of your view, nose along the velocity
+    const vel = _t6.copy(this.camPos).sub(prev);
+    r.craft.position.copy(this.camPos)
+      .addScaledVector(up, -0.0022)
+      .addScaledVector(vel.lengthSq() > 0 ? vel.clone().normalize() : up, 0.006);
+    if (vel.lengthSq() > 1e-12) r.craft.lookAt(_t7.copy(r.craft.position).add(vel));
   }
 
   /** the volumetric deck's density formula, mirrored in JS — sampled at
@@ -978,7 +1042,7 @@ export class PlanetScale {
     this.altUnits = alt;
 
     // walking begins where flying bottoms out; R lifts you back into flight
-    if (!this.walk && alt < this.eyeH * 2.2) this.walk = true;
+    if (!this.walk && !this.ride && alt < this.eyeH * 2.2) this.walk = true;
     if (this.walk && this.keys.has('KeyR')) { this.walk = false; this.camPos.addScaledVector(up, 0.004); }
 
     const boost = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) ? 3.4 : 1;
@@ -986,7 +1050,10 @@ export class PlanetScale {
     const fwd = _fwd.copy(north).multiplyScalar(Math.cos(this.yaw)).addScaledVector(east, Math.sin(this.yaw));
     fwd.multiplyScalar(Math.cos(this.pitch)).addScaledVector(up, Math.sin(this.pitch)).normalize();
     const right = _right.crossVectors(fwd, up).normalize();
-    if (this.walk) {
+    if (this.ride) {
+      this._updateRide(dt, up);
+      this._spd = this.ride ? (this.R * 0.4) / this.ride.dur : 0;
+    } else if (this.walk) {
       // on foot: tangential steps at human speed, boots glued to the field
       const spd = 0.0026 * boost;
       const fwdT = _north.copy(fwd).addScaledVector(up, -fwd.dot(up)).normalize();
@@ -1019,8 +1086,9 @@ export class PlanetScale {
       this.pitch += (-0.03 - this.pitch) * Math.min(dt * 0.8, 1);
     }
 
-    // never through the crust or under the waves (walking stands exactly on them)
-    if (!this.walk) {
+    // never through the crust or under the waves (walking stands exactly on
+    // them; the ride's arc is trusted)
+    if (!this.walk && !this.ride) {
       const floor = this._groundR(_up.copy(this.camPos).normalize()) + this.eyeH;
       if (this.camPos.length() < floor) this.camPos.setLength(floor);
     }
@@ -1189,6 +1257,12 @@ export class PlanetScale {
   }
   onKey(code) {
     if (code === 'KeyX') { this.strikeMeteor(false); return true; }
+    if (code === 'KeyB') {
+      if (this.ride) this._endRide(false);
+      else if ((this.altUnits ?? 9) < 6) this.boardShuttle();
+      else this.app.hud.setHint('shuttles board from the ground');
+      return true;
+    }
     return false;
   }
   pick() { return null; }
@@ -1207,7 +1281,7 @@ export class PlanetScale {
       ['world', this.pp.name],
       ['class', this.pp.type + (this.pp.inhabited ? ' · inhabited' : '')],
       ['radius', Math.round(this.pp.radiusE * 6371).toLocaleString() + ' km'],
-      ['mode', this.walk ? 'on foot' : 'flight'],
+      ['mode', this.ride ? 'shuttle · corridor' : this.walk ? 'on foot' : 'flight'],
       ['altitude', this._fmtKm(Math.max(this.altUnits ?? 0, 0) * this.unitKm)],
       ['speed', this._spd > 0 ? this._fmtKm(this._spd * this.unitKm) + '/s' : '—'],
       ['terrain tiles', `${S.drawn} drawn · ${S.cached} cached${S.pending ? ` · ${S.pending} streaming` : ''}`],
@@ -1256,6 +1330,9 @@ export class PlanetScale {
 
 // scratch vectors
 const _hc = new THREE.Vector3();
+const _t5 = new THREE.Vector3();
+const _t6 = new THREE.Vector3();
+const _t7 = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _east = new THREE.Vector3();
 const _north = new THREE.Vector3();
