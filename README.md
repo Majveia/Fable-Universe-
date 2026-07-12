@@ -163,13 +163,19 @@ impact (verified: the ground at the strike point drops 45 m and six
 tiles restream). The classic surface scale is retired for planets; old
 `?p=` links follow you onto the globe.
 
-The land itself drains: a second fbm's zero-crossings carve **river
-channels** into the shared field, alive between the shore and the
-highlands, widening toward the sea, their valley floors damped into
-alluvium — and the fragment shader lays a specular water ribbon in every
-bed, so from altitude the lowlands read as branching river systems.
-(They are honest *analytic* rivers: on steep ground they cascade across
-contours like mountain torrents rather than solving a global watershed.)
+The land itself drains — and now it drains *correctly*: a *real global
+flow solve* (priority-flood depression filling seeded from the sea, D8
+steepest-descent accumulation on a cube grid, ~1 s baked per world)
+produces **watershed corridors that provably reach the ocean**, and the
+fine fbm meanders live only inside them, their width and depth following
+the accumulated flow. Valley floors damp into alluvium; the fragment
+shader lays a specular water ribbon in every bed; tributaries join
+trunks and trunks find the sea, filling the occasional inland basin into
+a lake on the way. And the sky above answers: the volumetric deck's own
+density field, sampled at your zenith, decides the **weather** — rain
+streaks or drifting snow when you stand under the overcast, a wetness
+that slicks and darkens the ground for a while after the sky clears,
+all reported in the HUD.
 And the fauna is an **ecology** now: the sphere is quantized into
 regions, each with a persisted population (localStorage) that grows
 logistically between your visits; flora density follows regional
@@ -181,9 +187,14 @@ regional census.
 Overhead, on inhabited worlds, there is a **second civilization of
 scale**: stations on inclined orbits (truss, habitat ring, panel wings)
 and ships flying errands between stations, launch corridors, and deep
-space. Every hull's sprite follows the true sunlit test against the
-planet's shadow cylinder — from the grass at night they are moving
-lights among the stars that redden and vanish into eclipse mid-pass. The
+space — and the ports keep daylight hours, concentrating launches on the
+lit side of the world. Every hull's sprite follows the true sunlit test
+against the planet's shadow cylinder — from the grass at night they are
+moving lights among the stars that redden and vanish into eclipse
+mid-pass. And you can go with them: press **B** on the ground and a
+shuttle rides you up the corridor arc, ~46 seconds of your planet
+falling away under free look, releasing you at the station's live
+position with the helm back in your hands. The
 cloud deck they descend through is **volumetric**: a raymarched slab
 with fbm density, wind drift, and two-tap sun transmittance — fall
 through it and the world whites out and returns (`?vc=0` keeps the old
@@ -225,11 +236,13 @@ the sky and the morphing.
 
 ![civil twilight: multiple scattering holds the blue after sunset](docs/screenshots/31-twilight.png)
 
-![rivers running to the sea, from 137 km](docs/screenshots/32-rivers.png)
+![tributaries converging on a highland lake, from 84 km](docs/screenshots/32-rivers.png)
 
 ![the volumetric deck from above](docs/screenshots/33-clouds-above.png)
 
 ![inside the deck: the crossing whiteout](docs/screenshots/34-clouds-inside.png)
+
+![riding the corridor: the planet falls away](docs/screenshots/35-ride.png)
 
 ### 5 · The surface — set foot on it
 Every solid world — **and every moon** — can be landed on from its info
