@@ -30,7 +30,7 @@ const HINTS = {
   blackhole: 'drag to orbit the horizon · scroll to lean closer · esc to ascend',
   surface: 'drag to look · wasd walk · shift runs · f flies · x calls down a meteor · space pauses the day · esc to orbit',
   clouds: 'drag to steer · you fly where you look · w dives faster, s eases off · + − trims the cruise · esc to climb out',
-  planet: 'autopilot is flying you down · drag to look around · any key takes the helm · b boards a shuttle · x calls a meteor · esc to orbit',
+  planet: 'autopilot is flying you down · drag to look around · any key takes the helm · b boards a shuttle · x calls a meteor · esc flies you back to orbit',
 };
 
 class App {
@@ -301,7 +301,9 @@ class App {
       switch (e.code) {
         case 'Escape':
         case 'Backspace':
-          if (s.kind === 'system' && s.focusIndex >= 0) { s.focusPlanet(-1); this.hud.hideCard(); }
+          if (this._transfer) { this._transfer = null; this.hud.setHint(''); }
+          else if (s.kind === 'planet' && s.beginAscent?.()) { /* the climb-out flies you */ }
+          else if (s.kind === 'system' && s.focusIndex >= 0) { s.focusPlanet(-1); this.hud.hideCard(); }
           else this.popTo(this.stack.length - 2);
           break;
         case 'Space': s.togglePlay?.(); e.preventDefault(); break;
@@ -430,6 +432,31 @@ class App {
     this.push(
       new CloudsScale(this, { planet: p, system: s.params, sunColor: s.starColor, hostIndex: p.index }),
       () => s.planetNodes[p.index].group.position);
+  }
+
+  // ------------------------------------------------------- transfer ----
+  /** the interplanetary autopilot: glide across the system to the world
+   *  you clicked, then hand the fall to the descent director — with the
+   *  ascent director, grass to grass is Esc and one card button */
+  beginTransfer(s, p) {
+    if (this._warping || this.zoom.busy) return;
+    this.hud.hideCard();
+    s.focusPlanet(p.index);
+    this._transfer = { sys: s, p, t: 0 };
+    this.hud.setHint('transfer autopilot · making for ' + p.name + ' · esc aborts');
+  }
+
+  _tickTransfer(dt) {
+    const T = this._transfer;
+    const s = this.active();
+    if (s !== T.sys) { this._transfer = null; return; }   // arrived, or you left
+    if (this._warping || this.zoom.busy) return;
+    T.t += dt;
+    const node = T.sys.planetNodes[T.p.index].group.position;
+    const near = T.sys.camera.position.distanceTo(node) < Math.max(T.p.drawRadius * 8, 6);
+    if ((T.t > 2.5 && near) || T.t > 18) {
+      this.approach(T.sys, T.p);         // the descent director lands you
+    }
   }
 
   // ---------------------------------------------------------- logbook ----
@@ -610,6 +637,12 @@ class App {
           new SurfaceScale(this, { planet: p, system: s.params, sunColor: s.starColor, hostIndex: p.index }),
           () => s.planetNodes[p.index].group.position),
       });
+      if (this.quadOn) {
+        actions.push({
+          label: 'fly there · autopilot',
+          cb: () => this.beginTransfer(s, p),
+        });
+      }
     } else {
       actions.push({
         label: 'dive the cloud deck',
@@ -644,6 +677,7 @@ class App {
       this._warping = false;
     }
     this.tour.update(dt);
+    if (this._transfer) this._tickTransfer(dt);
     const s = this.active();
     s.update(dt);
     s.glide?.(dt);
