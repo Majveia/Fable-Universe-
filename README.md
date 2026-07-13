@@ -212,6 +212,8 @@ runs high, wearing wet sand in the shader, laced with shallows. All of
 it formula-exact between worker, collision, and paint. Continental
 worlds grow real deltas; ocean worlds, honestly, barely gather a river.
 
+![a river mouth from 13.7 km: lobes and shallows where the trunk meets the sea](docs/screenshots/37-delta.png)
+
 And the sky above answers: the volumetric deck's own density field,
 sampled at your zenith, decides the **weather** — rain streaks or
 drifting snow under the overcast, a wetness that slicks and darkens the
@@ -229,6 +231,8 @@ hold `.` and watch winter come. The **snow line migrates** hemisphere by
 hemisphere (the cap-line term keys on the live subsolar latitude — the
 shader needs no extra uniform), temperate worlds trade rain for snow in
 local winter, and the HUD names the season under your feet.
+
+![deep winter at 35°N: subsolar −21°, the rivers dark in the snow](docs/screenshots/39-winter.png)
 And the fauna is an **ecology** now: the sphere is quantized into
 regions, each with a persisted population (localStorage) that grows
 logistically between your visits; flora density follows regional
@@ -251,7 +255,11 @@ airlock onto the **ring deck**: a walkable catwalk inside the habitat
 torus, floor plates, ribs, and handrails at true scale, where the hull
 culls itself from within so the whole sky — your planet, the stars, the
 traffic — **wheels past as the station spins**. W/S walk the deck, A/D
-cross it, B steps back off with the helm in your hands. The
+cross it, B steps back off with the helm in your hands.
+
+![the ring deck: your world past the hull](docs/screenshots/38-ring-deck.png)
+
+The
 cloud deck they descend through is **volumetric**: a raymarched slab
 with fbm density, wind drift, and two-tap sun transmittance — fall
 through it and the world whites out and returns (`?vc=0` keeps the old
