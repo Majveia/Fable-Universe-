@@ -92,9 +92,9 @@ export function surfaceRadius(dx, dy, dz, job) {
     let riverT = 9, carve = 0;
     if (job.sea) {
       const above = h - job.ocean;
+      const corridor = job.hydro && above > -0.05 && above < 0.5
+        ? sampleHydro(job.hydro.atlas, job.hydro.n, dx, dy, dz) : (job.hydro ? 0 : 1);
       if (above > 0.002 && above < 0.42) {
-        const corridor = job.hydro
-          ? sampleHydro(job.hydro.atlas, job.hydro.n, dx, dy, dz) : 1;
         if (corridor > 0.06) {
           const rv = fbm(dx * 45 + s * 7.7, dy * 45 + s * 3.1, dz * 45 + s * 13.9);
           const w = (0.010 + 0.020 * Math.max(1 - above * 3.5, 0)) * (0.35 + 0.9 * corridor);
@@ -104,6 +104,21 @@ export function surfaceRadius(dx, dy, dz, job) {
               * (1 - riverT * riverT) * Math.min(above * 60, 1) * (0.4 + 0.8 * corridor);
           }
         }
+      }
+      // erosion history — the terrain remembers the water. Trunk corridors
+      // carve broad swales (the more upstream area, the wider the valley
+      // reads from the air)…
+      if (job.hydro && corridor > 0.12 && above > 0.02 && above < 0.5) {
+        const band = Math.min((above - 0.02) * 24, 1) * Math.min((0.5 - above) * 4, 1);
+        r -= 0.14 * corridor * corridor * band;
+      }
+      // …and what the river took, the sea receives: braided deposition
+      // fans where the trunks cross the shoreline — bars breach the water
+      // where the braid noise runs high, shallows lace between them
+      if (job.hydro && job.bathy && corridor > 0.2 && above > -0.05 && above < 0.02) {
+        const shore = 1 - Math.min(Math.abs(above + 0.015) / 0.05, 1);
+        const braid = 0.5 + 0.5 * fbm(dx * 260 + s * 23.1, dy * 260 + s * 29.3, dz * 260 + s * 31.7);
+        r += (0.12 + 0.10 * braid) * corridor * shore;
       }
     }
     const alluvium = riverT < 2.5 ? 0.3 + 0.7 * (riverT / 2.5) : 1;

@@ -178,6 +178,18 @@ export function solveWatershed(seed, ocean, amp) {
     for (let k = 0; k < 4; k++) m = Math.max(m, flow[nbr(c, k)] * 0.72);
     flow2[c] = m;
   }
+  // the plume: where a trunk meets the sea, its discharge splats into the
+  // receiving water cells — this is the zone the mesher builds deltas in
+  for (let c = 0; c < C; c++) {
+    if (flow[c] <= 0) continue;
+    const d = down[c];
+    if (d < 0 || E[d] > 0) continue;       // not a mouth
+    flow2[d] = Math.max(flow2[d], flow[c] * 0.9);
+    for (let k = 0; k < 4; k++) {
+      const b = nbr(d, k);
+      if (E[b] <= 0) flow2[b] = Math.max(flow2[b], flow[c] * 0.55);
+    }
+  }
 
   const AW = 3 * n, AH = 2 * n;
   const atlas = new Uint8Array(AW * AH);
