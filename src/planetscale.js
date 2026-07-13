@@ -1367,7 +1367,8 @@ export class PlanetScale {
     this.altUnits = alt;
 
     // walking begins where flying bottoms out; R lifts you back into flight
-    if (!this.walk && !this.ride && alt < this.eyeH * 2.2) this.walk = true;
+    // (the climb-out gets one frame of grace, or boots recapture the ship)
+    if (!this.walk && !this.ride && !this.asc && alt < this.eyeH * 2.2) this.walk = true;
     if (this.walk && this.keys.has('KeyR')) { this.walk = false; this.camPos.addScaledVector(up, 0.004); }
 
     // the autopilot yields to any hand on the stick
