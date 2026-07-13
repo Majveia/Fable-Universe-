@@ -163,6 +163,15 @@ and **touchdown, walking**, about 44 seconds after you pressed the
 button. Drag to look around freely the whole way down — the ship keeps
 flying — or touch any key and the helm is instantly yours.
 
+The trip home is flown too: **Esc near the ground engages the ascent
+director** — a slow liftoff steepening into the burn, the nose easing up
+and then rolling over to watch the world shrink, handing off seamlessly
+to the system view at apex. Esc again skips ahead; any key keeps you
+on-world with the helm. And from the system view, every landable world's
+card offers **fly there · autopilot**: the ship glides the transfer
+across the system and hands the fall to the descent director. With both
+directors, grass on world A to grass on world B is Esc and one button.
+
 ![the autopilot's low glide: 81 m up in the rain, skimmers off the bow](docs/screenshots/36-autopilot.png)
 
 Fly manually with **WASD** and **R/F** — *your speed is your altitude*,
@@ -193,11 +202,33 @@ fine fbm meanders live only inside them, their width and depth following
 the accumulated flow. Valley floors damp into alluvium; the fragment
 shader lays a specular water ribbon in every bed; tributaries join
 trunks and trunks find the sea, filling the occasional inland basin into
-a lake on the way. And the sky above answers: the volumetric deck's own
-density field, sampled at your zenith, decides the **weather** — rain
-streaks or drifting snow when you stand under the overcast, a wetness
-that slicks and darkens the ground for a while after the sky clears,
-all reported in the HUD.
+a lake on the way. The terrain itself now **remembers the water**: trunk
+corridors carve broad swales (a hundred metres deep at full flow — the
+more upstream area, the wider the valley reads from the air, and the
+greener), and where a trunk crosses the shoreline its discharge splats
+into the receiving water cells and the mesher deposits a **braided
+delta** — a fan whose bars breach the sea surface where the braid noise
+runs high, wearing wet sand in the shader, laced with shallows. All of
+it formula-exact between worker, collision, and paint. Continental
+worlds grow real deltas; ocean worlds, honestly, barely gather a river.
+
+And the sky above answers: the volumetric deck's own density field,
+sampled at your zenith, decides the **weather** — rain streaks or
+drifting snow under the overcast, a wetness that slicks and darkens the
+ground for a while after the sky clears. The wind advects the whole
+field on a watchable timescale, so **fronts arrive and leave** while you
+stand there; the densest cells are **thunderstorms** — lightning
+double-strikes inside the deck and throws a point light across the wet
+ground — and the painted rivers **swell while the ground is wet**, a
+live discharge multiplier widening every ribbon up to 1.8×. The HUD
+calls it: fair, raining, thunderstorm, blizzard.
+
+Every world **leans**, too. An axial tilt (up to ~29°) makes the sun's
+declination ride the orbital phase, so the time lever is planetary now —
+hold `.` and watch winter come. The **snow line migrates** hemisphere by
+hemisphere (the cap-line term keys on the live subsolar latitude — the
+shader needs no extra uniform), temperate worlds trade rain for snow in
+local winter, and the HUD names the season under your feet.
 And the fauna is an **ecology** now: the sphere is quantized into
 regions, each with a persisted population (localStorage) that grows
 logistically between your visits; flora density follows regional
@@ -215,8 +246,12 @@ against the planet's shadow cylinder — from the grass at night they are
 moving lights among the stars that redden and vanish into eclipse
 mid-pass. And you can go with them: press **B** on the ground and a
 shuttle rides you up the corridor arc, ~46 seconds of your planet
-falling away under free look, releasing you at the station's live
-position with the helm back in your hands. The
+falling away under free look — and docking steps you through the
+airlock onto the **ring deck**: a walkable catwalk inside the habitat
+torus, floor plates, ribs, and handrails at true scale, where the hull
+culls itself from within so the whole sky — your planet, the stars, the
+traffic — **wheels past as the station spins**. W/S walk the deck, A/D
+cross it, B steps back off with the helm in your hands. The
 cloud deck they descend through is **volumetric**: a raymarched slab
 with fbm density, wind drift, and two-tap sun transmittance — fall
 through it and the world whites out and returns (`?vc=0` keeps the old
