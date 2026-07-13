@@ -133,9 +133,16 @@ export function addOrbitals(s) {
   return {
     stations: stations.length,
     stats,
-    /** a live handle on the first station, for anything that wants to dock */
+    /** a live handle on the first station, for anything that wants to dock —
+     *  position, the spinning group itself, and the habitat ring's true
+     *  dimensions in draw units (torus 0.16/0.03 × the station's scale) */
     board: () => stations.length
-      ? { pos: (out) => stationPos(stations[0], time, out) }
+      ? {
+          pos: (out) => stationPos(stations[0], time, out),
+          obj: stations[0].obj,
+          ringR: 0.16 * stations[0].obj.scale.x,
+          tubeR: 0.03 * stations[0].obj.scale.x,
+        }
       : null,
     update(dt) {
       time += dt;

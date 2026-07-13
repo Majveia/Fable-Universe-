@@ -69,6 +69,7 @@ const TILE_FRAG = /* glsl */`
   uniform float uHydroN;
   uniform float uWet;
   uniform float uWetMode;   // 0 rain-slick · 1 snow-dust
+  uniform float uFlow;      // live discharge: rivers widen after rain
   varying vec3 vDir;
   varying vec3 vN;
   varying vec3 vView;
@@ -117,6 +118,7 @@ const TILE_FRAG = /* glsl */`
     float cont = fbm(p * 2.3 + sd);
     float mount = ridged(p * 5.0 + sd * 1.7);
     float h = cont * 0.75 + mount * 0.45 - 0.28;
+    float corridor = (uHasSea > 0.5 && uHasHydro > 0.5) ? hydroAt(p) : 1.0;
 
     if (uType == 4) {
       // lava world: black basalt, glowing fracture network
@@ -130,6 +132,15 @@ const TILE_FRAG = /* glsl */`
       col = mix(uColC * 0.6, uColA * 0.35, depth);
       float ripple = 0.8 + 0.25 * snoise(p * 900.0 + vec3(uTime * 0.08));
       spec = pow(max(dot(reflect(-sunDir, n), viewDir), 0.0), 110.0) * 0.9 * ripple;
+      // deltas: the deposition fans the mesher raised wear wet sand
+      if (uHasHydro > 0.5 && corridor > 0.2) {
+        float shoreD = 1.0 - min(abs(h - uOcean + 0.015) / 0.05, 1.0);
+        if (shoreD > 0.0) {
+          vec3 sand = mix(uColC, uColB, 0.55) * 0.9;
+          col = mix(col, sand, min(corridor * shoreD * 1.2, 0.85));
+          spec *= 0.35;
+        }
+      }
     } else {
       // land
       float above = h - uOcean;
@@ -140,7 +151,11 @@ const TILE_FRAG = /* glsl */`
         col = mix(col, uColC, crack * 0.6);
         spec = pow(max(dot(reflect(-sunDir, n), viewDir), 0.0), 60.0) * 0.45;
       }
-      float caps = smoothstep(uIceCap, uIceCap + 0.12, abs(lat) + h * 0.18);
+      // the snow line migrates with the season: the winter hemisphere's cap
+      // reaches down while the summer one retreats — uSunDir.y IS the
+      // subsolar latitude's sine, so the shader needs no extra uniform
+      float capLine = uIceCap + sign(lat) * uSunDir.y * 0.8;
+      float caps = smoothstep(capLine, capLine + 0.12, abs(lat) + h * 0.18);
       float snow = smoothstep(0.55, 0.7, above);
       col = mix(col, vec3(0.93, 0.95, 1.0), max(caps, snow));
       if (uCity > 0.5 && h >= uOcean) {
@@ -149,16 +164,26 @@ const TILE_FRAG = /* glsl */`
         float nightside = smoothstep(0.05, -0.22, dayS);
         emit += vec3(1.0, 0.72, 0.42) * megac * grid * nightside * 1.15;
       }
+      // erosion history: trunk valleys read greener and their mouths wear
+      // the fans the mesher deposited
+      if (uHasSea > 0.5 && uHasHydro > 0.5) {
+        float aboveE = h - uOcean;
+        float vband = min(max((aboveE - 0.02) * 24.0, 0.0), 1.0) * min(max((0.5 - aboveE) * 4.0, 0.0), 1.0);
+        col = mix(col, uColC, 0.30 * corridor * vband);
+        float shoreE = 1.0 - min(abs(aboveE + 0.015) / 0.05, 1.0);
+        if (corridor > 0.2 && shoreE > 0.0) {
+          col = mix(col, mix(uColC, uColB, 0.55) * 0.9, min(corridor * shoreE, 0.8));
+        }
+      }
       // rivers: the same network the mesher carved — water lies in the beds,
       // and only where the watershed corridors say water actually flows
       if (uHasSea > 0.5) {
         float above = h - uOcean;
         if (above > 0.002 && above < 0.42) {
-          float corridor = uHasHydro > 0.5 ? hydroAt(p) : 1.0;
           if (corridor > 0.06) {
             vec3 sd2 = vec3(uSeed * 7.7, uSeed * 3.1, uSeed * 13.9);
             float rv = fbm(p * 45.0 + sd2);
-            float w = (0.010 + 0.020 * max(1.0 - above * 3.5, 0.0)) * (0.35 + 0.9 * corridor);
+            float w = (0.010 + 0.020 * max(1.0 - above * 3.5, 0.0)) * (0.35 + 0.9 * corridor) * uFlow;
             float t = abs(rv) / w;
             if (t < 1.2) {
               float wet = 1.0 - smoothstep(0.45, 0.75, t);
@@ -426,8 +451,9 @@ const VCLOUD_FRAG = /* glsl */`
 
   float cloudDens(vec3 x) {
     float h01 = clamp((length(x) - uRb) / (uRt - uRb), 0.0, 1.0);
+    // the wind: fronts arrive and leave on a watchable timescale
     vec3 q = x * (9.0 / uR) + vec3(uSeed * 3.1, uSeed * 7.7, uSeed * 1.3)
-      + vec3(uTime * 0.004, 0.0, uTime * 0.0022);
+      + vec3(uTime * 0.024, 0.0, uTime * 0.0132);
     float f = fbm3(q);
     float profile = smoothstep(0.02, 0.22, h01) * (1.0 - smoothstep(0.55, 1.0, h01));
     return smoothstep(0.5 - uCov * 0.42, 0.62, f * 0.5 + 0.5) * profile;
@@ -529,6 +555,7 @@ export class PlanetScale {
     this.uHazeK = { value: 0 };
     this.uWet = { value: 0 };
     this.uWetMode = { value: pp.Teq < 265 ? 1 : 0 };   // 1 = snow
+    this.uFlow = { value: 1 };           // rivers swell while the ground is wet
     const atmoAmt = pp.typeId === 0 ? 0.25 : pp.typeId === 4 ? 0.4 : 1.0;
     this.hazeBase = 0.012 * atmoAmt;
     this.uHazeCol = { value: pp.atmoColor.clone().multiplyScalar(0.9).add(new THREE.Color(0.02, 0.02, 0.03)) };
@@ -558,6 +585,7 @@ export class PlanetScale {
         uHydroN: { value: this.hydro ? this.hydro.n : 1 },
         uWet: this.uWet,
         uWetMode: this.uWetMode,
+        uFlow: this.uFlow,
       },
       vertexShader: TILE_VERT,
       fragmentShader: TILE_FRAG,
@@ -754,7 +782,18 @@ export class PlanetScale {
     // civilization overhead: stations and ship traffic (inhabited worlds)
     this.orbitals = addOrbitals(this);
 
-    this.days = 0;
+    // seasons: every world leans. The sun's declination follows the orbital
+    // phase (the days counter — Space pauses it, . and , bend it), so the
+    // time lever is planetary now: speed the clock and watch winter come.
+    const tr = new RNG(hash(pp.seed, 0x5ea5));
+    this.tilt = tr.float(0.06, 0.5);
+    this.yearDays = Math.max(pp.periodYears * 365.25, 20);
+    const sd0 = new THREE.Vector3().fromArray(ctx.sunDir || [1, 0.2, 0]).normalize();
+    this._sunLon = Math.atan2(sd0.z, sd0.x);
+    // seat the year so today's declination matches the approach geometry
+    const decl0 = Math.asin(Math.min(Math.max(sd0.y, -0.95), 0.95));
+    const orb0 = Math.asin(Math.min(Math.max(decl0 / this.tilt, -1), 1));
+    this.days = (orb0 / (Math.PI * 2)) * this.yearDays;
     this.speedDays = 12;
     this.playing = true;
     this.keys = new Set();
@@ -785,16 +824,65 @@ export class PlanetScale {
     this._scareT = 0;
 
     // weather: driven by the SAME cloud field the volumetric deck renders
-    this.wx = { wet: 0, raining: false, snow: pp.Teq < 265 };
+    this.wx = { wet: 0, raining: false, storm: false, snow: pp.Teq < 265 };
     this._rain = null;
+    this._bolt = null;
     this.ride = null;                    // aboard a shuttle to the station
+    this.inside = null;                  // walking the station's ring deck
+    this._ring = null;
 
     // the descent director: arriving from the system view, the ship flies
     // itself down — one graceful fall, orbit to standing, yours to take
     // over the moment you touch a control (?ap=0 keeps the helm manual)
     this.auto = null;
     this._autoHint = false;
+    this.asc = null;                     // the climb-out, mirror of the fall
     if (url.searchParams.get('ap') !== '0') this._engageAutopilot();
+  }
+
+  // ------------------------------------------------------------ ascent ----
+  /** Esc low over the world: fly the climb-out, then hand off to the
+   *  system view. Returns true if the director took the key. */
+  beginAscent() {
+    if (this.asc) { this.asc = null; return false; }   // Esc again: skip up
+    if (this.ride || this.inside) return false;
+    if (this.camPos.length() - this.R > this.R * 0.9) return false; // already high
+    this.walk = false;
+    this.auto = null;
+    this.asc = { t: 0, dur: 13, r0: this.camPos.length(), look: 0 };
+    this.app.hud.setHint('climbing out · esc again to skip · any key keeps you here');
+    if (this.app.audio) this.app.audio.warp('ascend');
+    return true;
+  }
+
+  _cancelAscent() {
+    if (!this.asc) return;
+    this.asc = null;
+    this.app.hud.setHint('you have the helm · wasd fly · r/f climb & dive · esc to orbit');
+  }
+
+  _updateAscent(dt) {
+    const A = this.asc;
+    A.t += dt / A.dur;
+    if (A.look > 0) A.look -= dt;
+    const u = Math.min(A.t, 1);
+    if (u >= 1) {
+      this.asc = null;
+      this.app.popTo(this.app.stack.length - 2);
+      return;
+    }
+    // slow liftoff, hard burn at the top
+    const e = u * u * (0.35 + 0.65 * u);
+    const prev = this.camPos.length();
+    this.camPos.setLength(A.r0 + (this.R * 2.55 - A.r0) * e);
+    this._spd = (this.camPos.length() - prev) / Math.max(dt, 1e-6);
+    if (A.look <= 0) {
+      // eyes: nose up through the climb, then roll over to watch the
+      // world shrink — the pose the system view receives you in
+      const pitchT = u < 0.5 ? 0.55 : -1.05;
+      this.pitch += (pitchT - this.pitch) * Math.min(dt * (u < 0.5 ? 0.8 : 1.3), 1);
+      this.yaw += dt * 0.05;
+    }
   }
 
   // -------------------------------------------------------- autopilot ----
@@ -921,9 +1009,11 @@ export class PlanetScale {
     const to = _t5;
     r.dock.pos(to);
     if (r.t >= 1) {
-      // release just off the station
-      this.camPos.copy(to).addScaledVector(up, 2.2);
+      // docked: step through the airlock onto the ring deck
+      const dock = r.dock;
+      this.camPos.copy(to);
       this._endRide(true);
+      this._enterInside(dock);
       return;
     }
     const sm = r.t * r.t * (3 - 2 * r.t);
@@ -949,9 +1039,9 @@ export class PlanetScale {
     const t = this.uTime.value;
     const s = this.pp.noiseSeed;
     const k = 9 / this.R;
-    let px = dir.x * rad * k + s * 3.1 + t * 0.004;
+    let px = dir.x * rad * k + s * 3.1 + t * 0.024;
     let py = dir.y * rad * k + s * 7.7;
-    let pz = dir.z * rad * k + s * 1.3 + t * 0.0022;
+    let pz = dir.z * rad * k + s * 1.3 + t * 0.0132;
     let v = 0, a = 0.5;
     for (let o = 0; o < 3; o++) {
       v += a * snoise(px, py, pz);
@@ -993,6 +1083,7 @@ export class PlanetScale {
     const R = this._rain;
     const vis = this.wx.raining ? Math.min(this.wx.wet * 3, 1) : 0;
     R.lines.material.opacity = vis * 0.55;
+    R.lines.material.color.set(this.wx.snow ? 0xdde4ee : 0x9fb4c8);
     R.lines.visible = vis > 0.01;
     if (!R.lines.visible) return;
     const fall = this.wx.snow ? 0.0016 : 0.012;         // m/s scaled to units
@@ -1009,6 +1100,152 @@ export class PlanetScale {
       R.pos[o + 3] = d.x + up.x * len; R.pos[o + 4] = d.y + up.y * len; R.pos[o + 5] = d.z + up.z * len;
     }
     R.geo.attributes.position.needsUpdate = true;
+  }
+
+  // ---------------------------------------------------- the ring deck ----
+  /** the interior: a walkable catwalk ring inside the habitat torus. The
+   *  hull culls itself from within (backfaces), so the whole sky — the
+   *  planet, the stars, the traffic — wheels past as the station spins. */
+  _buildRing(dock) {
+    const g = new THREE.Group();
+    const R0 = dock.ringR, tube = dock.tubeR;
+    const rf = R0 + tube * 0.55;             // spinward is down: the floor
+    const N = 44;
+    const plateGeo = new THREE.BoxGeometry(tube * 1.15, tube * 0.06, (2 * Math.PI * rf / N) * 1.06);
+    const plateMat = new THREE.MeshStandardMaterial({ color: 0x39404a, roughness: 0.85, metalness: 0.3 });
+    const ribGeo = new THREE.TorusGeometry(tube * 0.96, tube * 0.035, 6, 28);
+    const ribMat = new THREE.MeshStandardMaterial({ color: 0x555d68, roughness: 0.5, metalness: 0.7 });
+    const glowMat = new THREE.MeshBasicMaterial({ color: 0xcfdce8 });
+    const X = new THREE.Vector3(1, 0, 0);
+    const m4 = new THREE.Matrix4();
+    for (let i = 0; i < N; i++) {
+      const th = (i / N) * Math.PI * 2;
+      const rho = new THREE.Vector3(0, Math.sin(th), -Math.cos(th));
+      const tau = new THREE.Vector3(0, Math.cos(th), Math.sin(th));
+      const q = new THREE.Quaternion().setFromRotationMatrix(m4.makeBasis(X, rho, tau));
+      const plate = new THREE.Mesh(plateGeo, plateMat);
+      plate.position.copy(rho).multiplyScalar(rf);
+      plate.quaternion.copy(q);
+      g.add(plate);
+      if (i % 4 === 0) {
+        const rib = new THREE.Mesh(ribGeo, ribMat);   // structure, for parallax
+        rib.position.copy(rho).multiplyScalar(R0);
+        rib.quaternion.copy(q);
+        g.add(rib);
+        const lamp = new THREE.Mesh(new THREE.BoxGeometry(tube * 0.12, tube * 0.02, tube * 0.12), glowMat);
+        lamp.position.copy(rho).multiplyScalar(R0 - tube * 0.5);   // the ceiling
+        lamp.quaternion.copy(q);
+        g.add(lamp);
+      }
+    }
+    // handrails: two continuous rings at waist height
+    const railGeo = new THREE.TorusGeometry(rf - tube * 0.1, tube * 0.012, 5, 96);
+    for (const sx of [-0.42, 0.42]) {
+      const rail = new THREE.Mesh(railGeo, ribMat);
+      rail.position.x = tube * sx;
+      rail.rotation.y = Math.PI / 2;           // into the ring's YZ plane
+      g.add(rail);
+    }
+    this.planetGroup.add(g);
+    this._ring = g;
+  }
+
+  _enterInside(dock) {
+    if (!dock.obj) return;                     // an old handle: stay outside
+    if (!this._ring) this._buildRing(dock);
+    this._ring.visible = true;
+    this.inside = { dock, theta: 0, lat: 0 };
+    this.walk = false;
+    this.pitch = 0;
+    this.app.hud.setHint('aboard the ring · w/s walk the deck · a/d cross it · b steps off · esc leaves for orbit');
+  }
+
+  _exitInside() {
+    const I = this.inside;
+    this.inside = null;
+    if (this._ring) this._ring.visible = false;
+    const out = _t5;
+    I.dock.pos(out);
+    const away = _t6.copy(out).normalize();
+    this.camPos.copy(out).addScaledVector(away, 2.2);
+    this.pitch = -0.5;
+    this.app.hud.setHint('back outside · you have the helm · esc to orbit');
+  }
+
+  _updateInside(dt) {
+    const I = this.inside;
+    const st = I.dock.obj;
+    this._ring.position.copy(st.position);
+    this._ring.quaternion.copy(st.quaternion);
+    // walk: w/s along the deck (the way you face), a/d across it
+    const boost = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) ? 2.6 : 1;
+    const spd = 0.0016 * boost;
+    const rf = I.dock.ringR + I.dock.tubeR * 0.55;
+    let mv = 0, sv = 0;
+    if (this.keys.has('KeyW')) mv += 1;
+    if (this.keys.has('KeyS')) mv -= 1;
+    if (this.keys.has('KeyA')) sv -= 1;
+    if (this.keys.has('KeyD')) sv += 1;
+    const fwdSign = Math.cos(this.yaw) >= 0 ? 1 : -1;
+    I.theta += (mv * fwdSign * spd * dt) / rf;
+    I.lat = Math.min(Math.max(I.lat + sv * spd * dt, -I.dock.tubeR * 0.42), I.dock.tubeR * 0.42);
+    this._spd = (mv || sv) ? spd : 0;
+    // the local frame, spun by the live station
+    const rho = _a1.set(0, Math.sin(I.theta), -Math.cos(I.theta)).applyQuaternion(st.quaternion);
+    const tau = _a2.set(0, Math.cos(I.theta), Math.sin(I.theta)).applyQuaternion(st.quaternion);
+    const ex = _a3.set(1, 0, 0).applyQuaternion(st.quaternion);
+    this.camPos.copy(st.position)
+      .addScaledVector(rho, rf - 0.0007)       // eyes 1.7 m over the deck
+      .addScaledVector(ex, I.lat);
+    // spin gravity: down is outward, up is toward the hub
+    const upI = _up.copy(rho).negate();
+    const fwd = _fwd.copy(tau).multiplyScalar(Math.cos(this.yaw)).addScaledVector(ex, Math.sin(this.yaw));
+    fwd.multiplyScalar(Math.cos(this.pitch)).addScaledVector(upI, Math.sin(this.pitch)).normalize();
+    this.camera.up.copy(upI);
+    this.camera.lookAt(fwd);
+    this.planetGroup.position.copy(this.camPos).negate();
+  }
+
+  /** lightning: a flash inside the deck over a dense cell near the zenith,
+   *  and a point light that throws the strike across the wet ground */
+  _spawnBolt(up) {
+    const e1 = new THREE.Vector3(0, 1, 0).cross(up);
+    if (e1.lengthSq() < 1e-6) e1.set(1, 0, 0).cross(up);
+    e1.normalize();
+    const e2 = new THREE.Vector3().crossVectors(up, e1);
+    let dir = null;
+    for (let i = 0; i < 6; i++) {
+      const d = up.clone()
+        .addScaledVector(e1, (Math.random() - 0.5) * 0.05)
+        .addScaledVector(e2, (Math.random() - 0.5) * 0.05).normalize();
+      if (this._cloudAt(d) > 0.5) { dir = d; break; }
+    }
+    if (!dir) return;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: softDotTexture(), color: new THREE.Color(1.9, 2.1, 2.6),
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0,
+    }));
+    sprite.scale.setScalar(22);
+    sprite.position.copy(dir).multiplyScalar(this.R * 1.0105);
+    const light = new THREE.PointLight(0xcfdcff, 0, 0, 2);
+    light.position.copy(dir).multiplyScalar(this._groundR(dir) + 3);
+    this.planetGroup.add(sprite, light);
+    this._bolt = { t: 0, sprite, light };
+  }
+
+  _updateBolt(dt) {
+    const B = this._bolt;
+    B.t += dt;
+    const t = B.t;   // the classic double hit: strike, dark beat, re-strike
+    const o = t < 0.07 ? 1 : t < 0.13 ? 0.25 : t < 0.2 ? 0.85 : Math.max(1 - (t - 0.2) / 0.22, 0);
+    B.sprite.material.opacity = o;
+    B.light.intensity = o * 260;
+    if (t > 0.45) {
+      this.planetGroup.remove(B.sprite, B.light);
+      B.sprite.material.map.dispose();
+      B.sprite.material.dispose();
+      this._bolt = null;
+    }
   }
 
   /** the same fbm the night-lights shader keys cities to — land on a glow,
@@ -1138,8 +1375,10 @@ export class PlanetScale {
       this._autoHint = true;
       this.app.hud.setHint('autopilot has the ship · drag to look around · any key takes the helm');
     }
-    if (this.auto) {
-      for (const k of MOVE_KEYS) if (this.keys.has(k)) { this._cancelAuto(); break; }
+    if (this.auto || this.asc) {
+      for (const k of MOVE_KEYS) {
+        if (this.keys.has(k)) { this._cancelAuto(); this._cancelAscent(); break; }
+      }
     }
 
     const boost = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) ? 3.4 : 1;
@@ -1150,6 +1389,9 @@ export class PlanetScale {
     if (this.ride) {
       this._updateRide(dt, up);
       this._spd = this.ride ? (this.R * 0.4) / this.ride.dur : 0;
+    } else if (this.inside) {
+      // the deck walk happens after the station has moved this frame
+      this._spd = 0;
     } else if (this.walk) {
       // on foot: tangential steps at human speed, boots glued to the field
       const spd = 0.0026 * boost;
@@ -1172,26 +1414,29 @@ export class PlanetScale {
     }
 
     // the descent director: the approach engages it, the tour asks for it
-    if (this.tourAutopilot && !this.auto && !this.walk && !this.ride) this._engageAutopilot(34);
+    if (this.tourAutopilot && !this.auto && !this.walk && !this.ride && !this.inside) this._engageAutopilot(34);
     if (this.auto && (this.walk || this.ride)) {
       this.auto = null;
       if (this.walk) this.app.hud.setHint('touchdown · wasd to walk · r lifts off · b boards a shuttle');
     }
     if (this.auto) this._updateAuto(dt);
+    if (this.asc && (this.walk || this.ride)) this.asc = null;
+    if (this.asc) this._updateAscent(dt);
     if (this.tourAutopilot && this.walk) {
       this.pitch += (-0.03 - this.pitch) * Math.min(dt * 0.8, 1);
     }
 
     // never through the crust or under the waves (walking stands exactly on
-    // them; the ride's arc is trusted)
-    if (!this.walk && !this.ride) {
+    // them; the ride's arc and the ring deck are trusted)
+    if (!this.walk && !this.ride && !this.inside) {
       const floor = this._groundR(_up.copy(this.camPos).normalize()) + this.eyeH;
       if (this.camPos.length() < floor) this.camPos.setLength(floor);
     }
 
     // the near plane follows your altitude: centimetres on foot, tens of
-    // units in orbit — float depth is always spent where you are
-    const near = Math.min(Math.max(alt * 0.25, 0.0004), 30);
+    // units in orbit — float depth is always spent where you are. Indoors
+    // everything is metres away, whatever the altitude says.
+    const near = this.inside ? 0.0004 : Math.min(Math.max(alt * 0.25, 0.0004), 30);
     if (Math.abs(near - this.camera.near) > this.camera.near * 0.25) {
       this.camera.near = near;
       this.camera.updateProjectionMatrix();
@@ -1225,16 +1470,24 @@ export class PlanetScale {
     }
     if (this._scareT > 0) this._scareT -= dt;
     this.orbitals?.update(dt);
+    // aboard: the camera rides the live ring, after the station has moved
+    if (this.inside) this._updateInside(dt);
 
     // weather: overcast overhead and you below the deck = precipitation;
     // the ground remembers the rain for a while after the sky clears
     const deckBase = this.R * 1.010;
-    this.wx.raining = this.camPos.length() < deckBase - 1
-      && this._cloudAt(up) > 0.3;
+    const dens = this._cloudAt(up);
+    this.wx.storm = dens > 0.55;         // the densest cells carry lightning
+    this.wx.raining = this.camPos.length() < deckBase - 1 && dens > 0.3;
     this.wx.wet = Math.min(Math.max(
       this.wx.wet + (this.wx.raining ? dt / 18 : -dt / 30), 0), 1);
     this.uWet.value = this.wx.wet;
+    this.uFlow.value = 1 + this.wx.wet * 0.8;   // the rivers answer the rain
     this._updateRain(dt, up);
+    if (!this._bolt && this.wx.raining && this.wx.storm && Math.random() < dt / 5) {
+      this._spawnBolt(up);
+    }
+    if (this._bolt) this._updateBolt(dt);
 
     // meteors: on demand (X) — and, on airless worlds, the sky's own idea
     this._updateMeteor(dt);
@@ -1256,7 +1509,20 @@ export class PlanetScale {
     // -- environment
     this.uTime.value += dt;
     if (this.playing) this.days += dt * this.speedDays;
-    this.uSunDir.value.applyAxisAngle(Y_AXIS, dt * 0.004);
+    // the sun: daily sweep in longitude, seasonal sweep in declination
+    this._sunLon += dt * 0.004;
+    const orb = (this.days / this.yearDays) * Math.PI * 2;
+    const decl = this.tilt * Math.sin(orb);
+    const cosD = Math.cos(decl);
+    this.uSunDir.value.set(
+      Math.cos(this._sunLon) * cosD, Math.sin(decl), Math.sin(this._sunLon) * cosD);
+    // seasonal snow: temperate worlds trade rain for snow in local winter
+    const camLat = up.y;
+    this.wx.snow = this.pp.Teq < 265
+      || (this.pp.Teq < 300 && Math.abs(camLat) > 0.35 && -Math.sign(camLat) * decl > 0.04);
+    this.uWetMode.value = this.wx.snow ? 1 : 0;
+    this._decl = decl;
+    this._orb = orb;
     this._sunPosBig.value.copy(this.uSunDir.value).multiplyScalar(1e7);
     this._camPlanet.value.copy(this.camPos);
     this.dirLight.position.copy(this.uSunDir.value).multiplyScalar(6000);
@@ -1338,6 +1604,7 @@ export class PlanetScale {
   onWheel(e) {
     // scroll = altitude, multiplicative — the Google-Earth feel
     this._cancelAuto();
+    this._cancelAscent();
     if (this.walk) { if (e.deltaY < 0) this.walk = false; else return; }
     this.camPos.multiplyScalar(1 + Math.sign(e.deltaY) * 0.055);
     if (this.camPos.length() > this.R * 5) this.camPos.setLength(this.R * 5);
@@ -1351,13 +1618,15 @@ export class PlanetScale {
     this._drag = { x: e.clientX, y: e.clientY };
     this.yaw += dx;
     this.pitch = Math.min(Math.max(this.pitch - dy, -1.5), 1.5);
-    // dragging during the descent is free look — the ship keeps flying
+    // dragging during a flown leg is free look — the ship keeps flying
     if (this.auto) this.auto.look = 3;
+    if (this.asc) this.asc.look = 3;
   }
   onKey(code) {
     if (code === 'KeyX') { this.strikeMeteor(false); return true; }
     if (code === 'KeyB') {
-      if (this.ride) this._endRide(false);
+      if (this.inside) this._exitInside();
+      else if (this.ride) this._endRide(false);
       else if ((this.altUnits ?? 9) < 6) this.boardShuttle();
       else this.app.hud.setHint('shuttles board from the ground');
       return true;
@@ -1373,6 +1642,14 @@ export class PlanetScale {
     return (km * 1000).toFixed(0) + ' m';
   }
 
+  _seasonLabel() {
+    const hemi = this.camPos.y >= 0 ? 1 : -1;
+    const x = Math.sin(this._orb ?? 0) * hemi;
+    const rising = Math.cos(this._orb ?? 0) * hemi > 0;
+    const name = x > 0.5 ? 'summer' : x < -0.5 ? 'winter' : rising ? 'spring' : 'autumn';
+    return `${name} · subsolar ${((this._decl ?? 0) * 180 / Math.PI).toFixed(0)}°`;
+  }
+
   hudStats() {
     const S = this.quad.stats;
     const spacing = this.R * (Math.PI / 2) / (1 << S.maxDepth) / (this.quad.res - 1) * this.unitKm;
@@ -1380,7 +1657,11 @@ export class PlanetScale {
       ['world', this.pp.name],
       ['class', this.pp.type + (this.pp.inhabited ? ' · inhabited' : '')],
       ['radius', Math.round(this.pp.radiusE * 6371).toLocaleString() + ' km'],
-      ['mode', this.ride ? 'shuttle · corridor' : this.auto ? 'autopilot · descent' : this.walk ? 'on foot' : 'flight'],
+      ['mode', this.inside ? 'aboard · ring deck'
+        : this.ride ? 'shuttle · corridor'
+        : this.asc ? 'autopilot · ascent'
+        : this.auto ? 'autopilot · descent'
+        : this.walk ? 'on foot' : 'flight'],
       ['altitude', this._fmtKm(Math.max(this.altUnits ?? 0, 0) * this.unitKm)],
       ['speed', this._spd > 0 ? this._fmtKm(this._spd * this.unitKm) + '/s' : '—'],
       ['terrain tiles', `${S.drawn} drawn · ${S.cached} cached${S.pending ? ` · ${S.pending} streaming` : ''}`],
@@ -1388,8 +1669,10 @@ export class PlanetScale {
       ...(this.quad.job.craters ? [['craters', String(this.quad.job.craters.length / 5)]] : []),
       ...(this.anchor?.eco ? [['regional fauna', `${this.anchor.eco.striders} striders · ${this.anchor.eco.skimmers} skimmers`]] : []),
       ...(this.cloudMesh && !this._cloudAmt ? [['weather', this.wx.raining
-        ? (this.wx.snow ? 'snowing' : 'raining')
+        ? (this.wx.storm ? (this.wx.snow ? 'blizzard' : 'thunderstorm')
+          : (this.wx.snow ? 'snowing' : 'raining'))
         : this.wx.wet > 0.05 ? 'clearing · ground wet' : 'fair']] : []),
+      ['season', this._seasonLabel()],
       ['triangles', S.tris >= 1e6 ? (S.tris / 1e6).toFixed(2) + ' M' : Math.round(S.tris / 1e3) + ' k'],
       ['finest grid', this._fmtKm(spacing)],
     ];
