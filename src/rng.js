@@ -80,3 +80,15 @@ export function planetName(systemName, index, seed) {
 }
 
 export function romanNumeral(i) { return ROMAN[Math.min(i, ROMAN.length - 1)]; }
+
+const C_PRE = ['Kor', 'Vel', 'Nar', 'Osh', 'Tir', 'Mal', 'Ess', 'Dra', 'Yel', 'Cal', 'Rho', 'Sab', 'Ith', 'Ques', 'Bre', 'Zan'];
+const C_END = ['veth', 'mora', 'dan', 'ossa', 'rin', 'thal', 'ex', 'una', 'gard', 'ive', 'ath', 'olis', ' port', 'esh'];
+const C_TITLE = ['New ', 'Port ', 'Cape ', 'High ', 'Old ', 'Grand '];
+
+/** metropolis names: the biggest lights on the night side get called something */
+export function cityName(seed, ci, cj, ck) {
+  const r = new RNG(hash(seed, ci, cj, ck, 0xc17a));
+  let n = r.pick(C_PRE) + r.pick(C_END);
+  if (r.chance(0.3)) n = r.pick(C_TITLE) + n;
+  return n;
+}

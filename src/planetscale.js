@@ -24,6 +24,7 @@ import { addSettlement } from './settlement.js';
 import { buildScatterLUTs } from './scatterlut.js';
 import { addOrbitals } from './orbital.js';
 import { solveWatershed } from './hydrology.js';
+import { CityField } from './city.js';
 
 const TILE_VERT = /* glsl */`
   uniform vec3 uCenter;     // tile center, planet frame (static per tile)
@@ -782,6 +783,11 @@ export class PlanetScale {
     // civilization overhead: stations and ship traffic (inhabited worlds)
     this.orbitals = addOrbitals(this);
 
+    // civilization underfoot: full metropolises where the night-lights
+    // burn hardest — street grids, skylines, bridges, harbors (?ct=0 skips)
+    this.cities = pp.inhabited && url.searchParams.get('ct') !== '0'
+      ? new CityField(this) : null;
+
     // seasons: every world leans. The sun's declination follows the orbital
     // phase (the days counter — Space pauses it, . and , bend it), so the
     // time lever is planetary now: speed the clock and watch winter come.
@@ -906,6 +912,14 @@ export class PlanetScale {
       let score = day * 1.5 + (h - this.R) / this.amp - Math.abs(_t5.y) * 0.7 - arc * 0.4;
       if (this.pp.inhabited) score += this._cityMask(_t5) * 4;
       if (score > bs) { bs = score; best = _t5.clone(); }
+    }
+    // on inhabited worlds the lights won: put the wheels down on the
+    // metropolis plaza itself, not merely near the glow
+    if (best && this.cities) {
+      const site = this.cities.siteNear(best);
+      if (site && site.dir.angleTo(best) < 0.28 && site.landing.dot(sun) > 0.05) {
+        best = site.landing.clone();
+      }
     }
     this.auto = {
       t: 0, dur,
@@ -1325,6 +1339,7 @@ export class PlanetScale {
         return (this.quad.heightAt(hv) * hv.dot(a) - aR) * mpu;
       },
       eco: this._ecoFor(a),
+      urban: this.cities?.insideCity(a) ?? false,
       camLocal: () => {
         _hc.copy(this.camPos).sub(anchorPos);
         return { x: _hc.dot(east) * mpu, y: _hc.dot(a) * mpu, z: _hc.dot(north) * mpu };
@@ -1334,8 +1349,9 @@ export class PlanetScale {
     this.anchor = {
       a, aR, mpu, group, east, north, pos: anchorPos, eco: host.eco,
       life: addLife(host),
-      // any spot the night-lights shader would glow gets its towers
-      settlement: this._cityMask(a) > 0.02 ? addSettlement(host) : null,
+      // any spot the night-lights shader would glow gets its towers —
+      // unless a true metropolis already owns this ground
+      settlement: this._cityMask(a) > 0.02 && !host.urban ? addSettlement(host) : null,
     };
   }
 
@@ -1471,6 +1487,7 @@ export class PlanetScale {
     }
     if (this._scareT > 0) this._scareT -= dt;
     this.orbitals?.update(dt);
+    this.cities?.update(dt);
     // aboard: the camera rides the live ring, after the station has moved
     if (this.inside) this._updateInside(dt);
 
@@ -1669,6 +1686,7 @@ export class PlanetScale {
       ...(this.ocean ? [['sea tiles', `${this.ocean.stats.drawn} drawn · ${this.ocean.stats.cached} cached`]] : []),
       ...(this.quad.job.craters ? [['craters', String(this.quad.job.craters.length / 5)]] : []),
       ...(this.anchor?.eco ? [['regional fauna', `${this.anchor.eco.striders} striders · ${this.anchor.eco.skimmers} skimmers`]] : []),
+      ...(this.cities?.hudRows() ?? []),
       ...(this.cloudMesh && !this._cloudAmt ? [['weather', this.wx.raining
         ? (this.wx.storm ? (this.wx.snow ? 'blizzard' : 'thunderstorm')
           : (this.wx.snow ? 'snowing' : 'raining'))
@@ -1702,6 +1720,7 @@ export class PlanetScale {
     window.removeEventListener('keyup', this._ku);
     this._dropAnchor();
     this.orbitals?.dispose();
+    this.cities?.dispose();
     this.quad.dispose();
     if (this.ocean) this.ocean.dispose();
     this.scene.traverse(o => {

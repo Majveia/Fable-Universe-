@@ -194,6 +194,40 @@ impact (verified: the ground at the strike point drops 45 m and six
 tiles restream). The classic surface scale is retired for planets; old
 `?p=` links follow you onto the globe.
 
+And where the glow burns hardest, the towers become a **metropolis with
+a name**. Every inhabited world quantizes its sphere into cells, and any
+cell whose night-lights fbm peaks hard enough over dry ground grows a
+full deterministic city (`src/city.js`): an island-shaped ellipse of
+true street grid — avenues along the long axis, cross streets every
+eighty-odd metres, one diagonal boulevard cutting the whole plan — with
+**two districted skyline cores** falling away from glass supertalls
+through warm masonry midrise to brick sprawl at the frayed edge, a
+central park mid-island, pocket parks dotting the grid, and a plaza kept
+clear near downtown. The ground itself cooperates: each city **grades
+its terrain into the shared height field** (the crater mechanism's civil
+twin — workers, collision, paint and streets all read the same graded
+crust, and a meteor can still scar downtown because scars apply after
+grading). Where an avenue meets water it can cross, it crosses: a decked
+span with towers, catenary main cables, and a **necklace of lights after
+dark**; where it can't, it ends in a pier — and the piers put **ferries
+on the harbor**, dragging wakes between the marks. Traffic works the
+grid the whole time — hundreds of instanced vehicles, taxi-yellow at
+honest concentration, reading as paired headlight-white and
+taillight-red streams down the canyons at night — street lamps come up
+sodium-warm, the tallest roofs blink their aircraft warnings, and the
+windows **ignite one by one as the dusk deepens**, each keeping its own
+hour. Cities stream in like terrain tiles (a budgeted generator builds
+the blocks across frames, finished long before you're close enough to
+tell) and the whole thing is brutal-instancing-discipline cheap: one
+draw call for every building, one for every car, one for every lamp —
+about fifteen for a city of thousands of pieces. The descent director is
+in on it: on inhabited worlds the autopilot **lands you on the plaza
+downtown**, the HUD names the city, counts its population, vehicles,
+ferries and bridges, and the hamlet settlements stand down inside metro
+limits. Deterministic like everything else — universe 5's Velthal, pop
+8.1 M, is the same Velthal on every machine, forever. `?ct=0` keeps the
+countryside.
+
 The land itself drains — and now it drains *correctly*: a *real global
 flow solve* (priority-flood depression filling seeded from the sea, D8
 steepest-descent accumulation on a cube grid, ~1 s baked per world)
@@ -426,6 +460,8 @@ src/surface.js      walkable surfaces: LOD rings, craters, moons in the sky
 src/clouds.js       gas-giant cloud-deck cruise
 src/life.js         procedural creatures with gaits
 src/settlement.js   towers and beacons on inhabited worlds
+src/city.js         the metropolis: street grids, districted skylines,
+                    bridges, harbors, traffic, and dusk igniting the windows
 src/blackhole.js    Schwarzschild geodesic raymarcher
 src/tour.js         the cinematic auto-pilot (T)
 src/audio.js        generative ambient beds per scale

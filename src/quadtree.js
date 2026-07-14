@@ -128,6 +128,35 @@ export class QuadtreePlanet {
     return evicted;
   }
 
+  /**
+   * Grade a city pad into the field at runtime — the crater's civil twin.
+   * Same contract: every consumer reads the same job, so only the built
+   * tiles under the new ground need eviction and restream.
+   */
+  addPad(dx, dy, dz, radUnits, targetR) {
+    const arr = this.job.pads ?? (this.job.pads = []);
+    const rp = radUnits / this.R;
+    arr.push(dx, dy, dz, rp, targetR);
+    this.job.gen++;
+    const reach = rp * 1.6;
+    const site = _v1.set(dx, dy, dz);
+    let evicted = 0;
+    for (const [key, t] of this.tiles) {
+      const [f, d, i, j] = key.split(':').map(Number);
+      const ang = HALF_ANG / (1 << d);
+      // coarse tiles can't resolve the grading anyway — leave them be
+      if (this.R * ang * 2 / (this.res - 1) > radUnits * 3) continue;
+      this._center(f, d, i, j, _v2).multiplyScalar(1 / this.R);
+      if (_v2.distanceTo(site) > reach + ang * 1.7) continue;
+      t.geo.dispose(); t.mesh.material.dispose();
+      this.group.remove(t.mesh);
+      this.tiles.delete(key);
+      this._shown.delete(key);
+      if (++evicted > 160) break;
+    }
+    return evicted;
+  }
+
   _adopt(data) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(data.pos, 3));

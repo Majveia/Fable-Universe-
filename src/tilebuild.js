@@ -63,6 +63,11 @@ export function sampleHydro(atlas, n, dx, dy, dz) {
     + (atlas[k + AW] * (1 - fx) + atlas[k + AW + 1] * fx) * fy) / 255;
 }
 
+function sstep(a, b, x) {
+  const t = Math.min(Math.max((x - a) / (b - a), 0), 1);
+  return t * t * (3 - 2 * t);
+}
+
 /**
  * Radius of the crust along a unit direction, in draw units.
  *
@@ -127,6 +132,29 @@ export function surfaceRadius(dx, dy, dz, job) {
     r += fbm(dx * 21000 + s * 11.3, dy * 21000 + s * 13.7, dz * 21000 + s * 17.9) * 0.014 * inland * alluvium;
     r -= carve;
   }
+  // city pads: the ground under a metropolis is graded nearly flat, the
+  // way every real city grades its ground — packed as [siteX, siteY,
+  // siteZ, angularRadius, targetRadius]. The same shared-field trick as
+  // the craters below, so streets, boots and tiles stand on one level
+  // city. Applied before the craters: a meteor can still scar downtown.
+  const D = job.pads;
+  if (D) {
+    for (let i = 0; i < D.length; i += 5) {
+      const ddx = dx - D[i], ddy = dy - D[i + 1], ddz = dz - D[i + 2];
+      const rp = D[i + 3];
+      const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+      if (d2 > rp * rp * 1.96) continue;
+      const x = Math.sqrt(d2) / rp;
+      let w = 1 - sstep(0.68, 1.36, x);      // level downtown, feathered rim
+      if (job.sea) {
+        // the harbor keeps its water and the beach keeps its slope
+        const seaRr = job.R + job.amp * job.ocean;
+        w *= Math.min(Math.max((r - seaRr) / 0.005, 0), 1);
+      }
+      if (w > 0) r += (D[i + 4] - r) * w * 0.92;   // a whisper of relief survives
+    }
+  }
+
   // craters: bowls and rims stamped straight into the crust — packed as
   // [siteX, siteY, siteZ, angularRadius, depth] per scar
   const C = job.craters;
