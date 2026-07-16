@@ -243,13 +243,13 @@ and a bay bridge, is the same Sabveth on every machine, forever.
 
 ![Sabveth: downtown against the waterline, ten ferries out](docs/screenshots/44-harbor.png)
 
-![Velthal whole from 1.9 km: the grid etched, two cores, one supertall](docs/screenshots/40-metropolis.png)
+![Oshthal whole from 1.9 km: the grid etched into a river plain, worn in its world's mood](docs/screenshots/40-metropolis.png)
 
 | | |
 | --- | --- |
 | ![midtown at 380 m: towers separate, streets in shadow](docs/screenshots/41-city-canyon.png) | ![dusk from a downtown street: the windows keep their own hours](docs/screenshots/43-dusk-street.png) |
 
-![the ignition: Velthal's eight million windows coming on with the dark](docs/screenshots/42-city-ignition.png)
+![the ignition: four and a half million windows coming on with the dark](docs/screenshots/42-city-ignition.png)
 
 And every world answers to something now — a film, a painting, a game, a
 page read at the right age. Each planet draws a **resonance** at birth
