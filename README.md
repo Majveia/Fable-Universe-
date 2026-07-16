@@ -228,6 +228,14 @@ limits. Deterministic like everything else — universe 5's Velthal, pop
 8.1 M, is the same Velthal on every machine, forever. `?ct=0` keeps the
 countryside.
 
+![Velthal whole from 1.9 km: the grid etched, two cores, one supertall](docs/screenshots/40-metropolis.png)
+
+| | |
+| --- | --- |
+| ![midtown at 380 m: towers separate, streets in shadow](docs/screenshots/41-city-canyon.png) | ![dusk from a downtown street: the windows keep their own hours](docs/screenshots/43-dusk-street.png) |
+
+![the ignition: Velthal's eight million windows coming on with the dark](docs/screenshots/42-city-ignition.png)
+
 The land itself drains — and now it drains *correctly*: a *real global
 flow solve* (priority-flood depression filling seeded from the sea, D8
 steepest-descent accumulation on a cube grid, ~1 s baked per world)
