@@ -33,7 +33,7 @@ import { planetHeight, fbm } from './terrain.js';
 import { sampleHydro } from './tilebuild.js';
 
 const CELL_Q = 10;              // sphere-cell lattice: ~one metro candidate per cell
-const MASK_MIN = 0.34;          // how hard the glow must burn to earn a metro
+const MASK_MIN = 0.27;          // how hard the glow must burn to earn a metro
 const SPAWN_U = 26;             // build inside this camera distance (draw units)
 const DROP_U = 36;              // drop outside this (hysteresis)
 const PAD_U = 110;              // grade the ground from way out — the tile
@@ -902,7 +902,7 @@ export class CityField {
       // ask the glow where it burns hardest in this cell
       const mpu = ps.unitKm * 1000;
       let best = null, bm = 0;
-      for (let i = 0; i < 8; i++) {
+      for (let i = 0; i < 12; i++) {
         _sv2.set(ci + r.float(-0.45, 0.45), cj + r.float(-0.45, 0.45), ck + r.float(-0.45, 0.45))
           .multiplyScalar(1 / CELL_Q).normalize();
         const m = ps._cityMask(_sv2);
@@ -918,9 +918,9 @@ export class CityField {
           east.normalize();
           const north = _sv4.crossVectors(east, best);
           let wetAng = null, wetD = 0;
-          for (const distM of [3200, 6400, 9600]) {
-            for (let k = 0; k < 8; k++) {
-              const ang = (k / 8) * Math.PI * 2 + distM * 0.001;
+          for (const distM of [3200, 6400, 9600, 12800, 16000]) {
+            for (let k = 0; k < 10; k++) {
+              const ang = (k / 10) * Math.PI * 2 + distM * 0.001;
               _sv5.copy(best)
                 .addScaledVector(east, Math.cos(ang) * distM / mpu / ps.R)
                 .addScaledVector(north, Math.sin(ang) * distM / mpu / ps.R).normalize();
