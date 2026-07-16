@@ -233,9 +233,15 @@ about fifteen for a city of thousands of pieces. The descent director is
 in on it: on inhabited worlds the autopilot **lands you on the plaza
 downtown**, the HUD names the city, counts its population, vehicles,
 ferries and bridges, and the hamlet settlements stand down inside metro
-limits. Deterministic like everything else — universe 5's Velthal, pop
-8.1 M, is the same Velthal on every machine, forever. `?ct=0` keeps the
-countryside.
+limits. And the shore pulls: a cell whose glow peaks within reach of
+water slides its city to the coast, so port metros are common the way
+they always have been — downtown against the waterline, ferries
+working the harbor, a bridge over the inlet. Deterministic like
+everything else — universe 5's port of Sabveth, pop 3.8 M, ten ferries
+and a bay bridge, is the same Sabveth on every machine, forever.
+`?ct=0` keeps the countryside.
+
+![Sabveth: downtown against the waterline, ten ferries out](docs/screenshots/44-harbor.png)
 
 ![Velthal whole from 1.9 km: the grid etched, two cores, one supertall](docs/screenshots/40-metropolis.png)
 
