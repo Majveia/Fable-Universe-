@@ -29,6 +29,8 @@
 import * as THREE from 'three';
 import { hash, RNG, cityName } from './rng.js';
 import { softDotTexture } from './nebula.js';
+import { planetHeight, fbm } from './terrain.js';
+import { sampleHydro } from './tilebuild.js';
 
 const CELL_Q = 10;              // sphere-cell lattice: ~one metro candidate per cell
 const MASK_MIN = 0.34;          // how hard the glow must burn to earn a metro
@@ -238,6 +240,24 @@ class City {
     return (this.ps.quad.heightAt(_hv) * _hv.dot(this.a) - this.aR) * this.mpu;
   }
 
+  /** normalized distance into the local river channel (<1 is water) — the
+   *  same corridor-gated fbm the mesher carves and the fragment paints */
+  riverT(x, z) {
+    const ps = this.ps;
+    if (!ps.hydro || ps.seaR <= 0) return 9;
+    _hv.copy(this.pos)
+      .addScaledVector(this.east, x / this.mpu)
+      .addScaledVector(this.north, z / this.mpu).normalize();
+    const s = ps.pp.noiseSeed;
+    const above = planetHeight(_hv.x, _hv.y, _hv.z, s) - ps.pp.oceanLevel;
+    if (above <= 0.002 || above >= 0.42) return 9;
+    const corridor = sampleHydro(ps.hydro.atlas, ps.hydro.n, _hv.x, _hv.y, _hv.z);
+    if (corridor <= 0.06) return 9;
+    const rv = fbm(_hv.x * 45 + s * 7.7, _hv.y * 45 + s * 3.1, _hv.z * 45 + s * 13.9);
+    const w = (0.010 + 0.020 * Math.max(1 - above * 3.5, 0)) * (0.35 + 0.9 * corridor);
+    return Math.abs(rv) / w;
+  }
+
   _uvToXZ(u, v, out) {
     out.x = u * this.cosT - v * this.sinT;
     out.z = u * this.sinT + v * this.cosT;
@@ -287,6 +307,7 @@ class City {
       const n = Math.max(Math.floor((L.hi - L.lo) / SAMPLE_M), 2);
       const xs = new Float64Array(n + 1), zs = new Float64Array(n + 1);
       const gs = new Float64Array(n + 1);
+      const rv = new Uint8Array(n + 1);       // 1 = a river runs here
       for (let i = 0; i <= n; i++) {
         const t = L.lo + (L.hi - L.lo) * (i / n);
         if (L.axis === 'u') this._uvToXZ(t, L.off, p);
@@ -294,6 +315,7 @@ class City {
         else { p.x = Math.cos(L.ang) * t; p.z = Math.sin(L.ang) * t; }
         xs[i] = p.x; zs[i] = p.z;
         gs[i] = this.hAt(p.x, p.z);
+        rv[i] = this.riverT(p.x, p.z) < 1.05 ? 1 : 0;
         if ((i & 63) === 63) yield;
       }
       // ellipse clip for the diagonal
@@ -318,31 +340,37 @@ class City {
       let i = 0;
       while (i <= n) {
         if (!inside(i)) { flush(); i++; continue; }
-        if (!wet(gs[i])) {
+        if (!wet(gs[i]) && !rv[i]) {
           run.push([xs[i], gs[i] + 0.3 + L.cls * 0.12, zs[i]]);
           i++;
           continue;
         }
-        // a water run begins: measure it
-        let j = i;
-        while (j <= n && (wet(gs[j]) || !inside(j))) j++;
+        // a water run begins — sea inlet or river: measure it
+        let j = i, anySea = false;
+        while (j <= n && (wet(gs[j]) || rv[j] || !inside(j))) {
+          if (wet(gs[j])) anySea = true;
+          j++;
+        }
         const gapM = (j - i) * SAMPLE_M;
         if (L.cls >= 2 && j <= n && i > 0 && gapM >= 70 && gapM <= 1100 && run.length) {
-          // bridge it: a decked span with a gentle rise amidships
+          // bridge it: tall decks over the harbor for the boats to pass,
+          // low arched spans over the rivers
           const y0 = gs[i - 1] + 0.6, y1 = gs[j] + 0.6;
-          const deck = Math.max(sea + 13, Math.max(y0, y1) + 2);
+          const deck = anySea
+            ? Math.max(sea + 13, Math.max(y0, y1) + 2)
+            : Math.max(y0, y1) + 3;
           const spanPts = [];
           for (let k2 = i; k2 < j; k2++) {
             const t = (k2 - i + 1) / (j - i + 1);
             const ramp = Math.min(t * 3, (1 - t) * 3, 1);
-            const y = (y0 + (y1 - y0) * t) * (1 - ramp) + (deck + Math.sin(t * Math.PI) * 4) * ramp;
+            const y = (y0 + (y1 - y0) * t) * (1 - ramp) + (deck + Math.sin(t * Math.PI) * (anySea ? 4 : 2)) * ramp;
             run.push([xs[k2], y, zs[k2]]);
             spanPts.push([xs[k2], y, zs[k2]]);
           }
-          this.bridges.push({ span: spanPts, w: L.w, sea });
+          this.bridges.push({ span: spanPts, w: L.w, sea: anySea ? sea : null });
         } else {
           // no crossing: the road ends at the shore — with a pier stub
-          if (run.length >= 6 && L.cls >= 2 && sea !== null) {
+          if (run.length >= 6 && L.cls >= 2 && sea !== null && anySea) {
             const last = run[run.length - 1];
             this.piers.push({ x: xs[i], z: zs[i], hx: xs[i] - last[0], hz: zs[i] - last[1] });
             run.push([xs[i], sea + 3.5, zs[i]]);
@@ -377,6 +405,11 @@ class City {
         const bx = d.position.x, bz = d.position.z;
         const h = this.hAt(bx, bz);
         if (wet(h) || (this.seaM !== null && h < this.seaM + 1.6)) continue;
+        // riverbanks stay green — the water keeps its right of way
+        if (this.riverT(bx, bz) < 1.5) {
+          if (br.chance(0.5)) this._treePts.push([bx + br.float(-30, 30), 0, bz + br.float(-30, 30)]);
+          continue;
+        }
         // steep blocks stay green hillside
         const spread = Math.max(
           Math.abs(this.hAt(bx + 34, bz) - h), Math.abs(this.hAt(bx - 34, bz) - h),
@@ -856,13 +889,29 @@ export class CityField {
     const base = _sv.set(ci, cj, ck);
     if (base.lengthSq() > 1e-6) {
       base.multiplyScalar(1 / CELL_Q).normalize();
-      // ask the glow where it burns hardest in this cell
-      let best = null, bm = 0;
+      // ask the glow where it burns hardest in this cell — with a thumb on
+      // the scale for the shore, the way port cities have always won
+      const mpu = ps.unitKm * 1000;
+      let best = null, bm = 0, bs = -1;
       for (let i = 0; i < 8; i++) {
         _sv2.set(ci + r.float(-0.45, 0.45), cj + r.float(-0.45, 0.45), ck + r.float(-0.45, 0.45))
           .multiplyScalar(1 / CELL_Q).normalize();
         const m = ps._cityMask(_sv2);
-        if (m > bm) { bm = m; best = _sv2.clone(); }
+        let sc = m;
+        if (m >= MASK_MIN && ps.seaR > 0) {
+          let east = _sv3.set(0, 1, 0).cross(_sv2);
+          if (east.lengthSq() < 1e-6) east = _sv3.set(1, 0, 0).cross(_sv2);
+          east.normalize();
+          const north = _sv4.crossVectors(east, _sv2);
+          for (let k = 0; k < 5; k++) {
+            const ang = (k / 5) * Math.PI * 2;
+            _sv5.copy(_sv2)
+              .addScaledVector(east, Math.cos(ang) * 2800 / mpu / ps.R)
+              .addScaledVector(north, Math.sin(ang) * 2800 / mpu / ps.R).normalize();
+            if (ps.quad.heightAt(_sv5) < ps.seaR - 1.5 / mpu) { sc += 0.1; break; }
+          }
+        }
+        if (sc > bs) { bs = sc; bm = m; best = _sv2.clone(); }
       }
       if (best && bm >= MASK_MIN) {
         const h = ps.quad.heightAt(best);
