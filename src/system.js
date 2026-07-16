@@ -11,6 +11,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { hash, RNG, starName, planetName } from './rng.js';
+import { applyResonance } from './resonance.js';
 import { makeSkyDome, makeGalaxySkyFromWithin } from './starfield.js';
 import { softDotTexture, nebulaTexture } from './nebula.js';
 import {
@@ -187,7 +188,9 @@ export function systemParams(starSeed) {
         iceCap = pr.chance(0.4) ? pr.float(0.85, 0.95) : 2.0;
     }
 
-    planets.push({
+    // every world answers to something: the resonance is chosen at birth,
+    // so orbit shader, tiles, weather and HUD all wear the same mood
+    planets.push(applyResonance({
       index: i,
       name: planetName(name, i, starSeed),
       type, typeId: TYPE_IDS[type],
@@ -210,7 +213,7 @@ export function systemParams(starSeed) {
       moons: type.includes('giant') ? pr.int(1, 4) : (pr.chance(0.3) ? 1 : 0),
       note: inhabited ? CIV_NOTES[pr.int(0, CIV_NOTES.length - 1)] : DEAD_NOTES[pr.int(0, DEAD_NOTES.length - 1)],
       seed: hash(starSeed, 0x914, i),
-    });
+    }));
     a *= r.float(1.5, 1.95);
   }
 

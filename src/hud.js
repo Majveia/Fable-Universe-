@@ -59,6 +59,114 @@ export class HUD {
       this._idleT = 0;
       this.hints.classList.remove('faded');
     });
+
+    // on glass, the universe grows thumbs
+    if (window.matchMedia && matchMedia('(pointer: coarse)').matches) this._buildTouch(app);
+  }
+
+  /**
+   * Touch controls: a stick that speaks WASD, hold-buttons for climb and
+   * dive, one context button that flies the ship for you, and a help card.
+   * Everything goes through synthetic key events — the same systems, the
+   * same depth, none of the keyboard.
+   */
+  _buildTouch(app) {
+    document.body.classList.add('coarse');
+    const ui = document.createElement('div');
+    ui.id = 'touch';
+    ui.innerHTML = `
+      <div id="stick"><div id="knob"></div></div>
+      <div id="tbtns">
+        <button id="tb-up" title="climb">▲</button>
+        <button id="tb-down" title="dive">▼</button>
+        <button id="tb-boost" title="boost">≫</button>
+        <button id="tb-go" title="fly me there">⛯</button>
+        <button id="tb-help" title="controls">?</button>
+      </div>
+      <div id="touchhelp">
+        <b>touch controls</b><br>
+        drag — look around<br>
+        pinch — altitude &amp; zoom<br>
+        stick — walk &amp; fly<br>
+        ▲ ▼ — climb &amp; dive · ≫ — boost<br>
+        ⛯ — fly me down · back to orbit<br>
+        tap a world — approach it<br>
+        double-tap — dive deeper</div>`;
+    document.body.appendChild(ui);
+
+    const key = (code, on) =>
+      window.dispatchEvent(new KeyboardEvent(on ? 'keydown' : 'keyup', { code }));
+
+    // hold-buttons: press is keydown, release is keyup
+    const hold = (id, code) => {
+      const b = ui.querySelector(id);
+      b.addEventListener('pointerdown', (e) => { e.preventDefault(); key(code, true); });
+      for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) {
+        b.addEventListener(ev, () => key(code, false));
+      }
+    };
+    hold('#tb-up', 'KeyR');
+    hold('#tb-down', 'KeyF');
+    hold('#tb-boost', 'ShiftLeft');
+
+    // the stick: WASD by displacement, with a dead zone
+    const stick = ui.querySelector('#stick');
+    const knob = ui.querySelector('#knob');
+    const downCodes = new Set();
+    const setCodes = (want) => {
+      for (const c of [...downCodes]) if (!want.has(c)) { key(c, false); downCodes.delete(c); }
+      for (const c of want) if (!downCodes.has(c)) { key(c, true); downCodes.add(c); }
+    };
+    let sid = null;
+    const move = (e) => {
+      const r = stick.getBoundingClientRect();
+      let dx = e.clientX - (r.left + r.width / 2);
+      let dy = e.clientY - (r.top + r.height / 2);
+      const m = Math.hypot(dx, dy), max = r.width * 0.38;
+      if (m > max) { dx *= max / m; dy *= max / m; }
+      knob.style.transform = `translate(${dx}px, ${dy}px)`;
+      const dead = r.width * 0.1;
+      const want = new Set();
+      if (dy < -dead) want.add('KeyW');
+      if (dy > dead) want.add('KeyS');
+      if (dx < -dead) want.add('KeyA');
+      if (dx > dead) want.add('KeyD');
+      setCodes(want);
+    };
+    stick.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      sid = e.pointerId;
+      try { stick.setPointerCapture(sid); } catch { /* synthetic pointers can't be captured */ }
+      move(e);
+    });
+    stick.addEventListener('pointermove', (e) => { if (e.pointerId === sid) move(e); });
+    const end = (e) => {
+      if (e.pointerId !== sid) return;
+      sid = null;
+      knob.style.transform = '';
+      setCodes(new Set());
+    };
+    stick.addEventListener('pointerup', end);
+    stick.addEventListener('pointercancel', end);
+
+    // the one big button: context-aware autopilot
+    this._goBtn = ui.querySelector('#tb-go');
+    this._goBtn.addEventListener('click', () => {
+      const s = app.active();
+      if (s.kind === 'planet') {
+        if (s.auto) s._cancelAuto();
+        else if (s.asc) s.asc = null;
+        else if ((s.altUnits ?? 9e9) < s.R * 0.9) s.beginAscent();
+        else s._engageAutopilot();
+      } else {
+        key('KeyT', true);   // elsewhere, the button conducts the tour
+      }
+    });
+    ui.querySelector('#tb-help').addEventListener('click', () => {
+      ui.querySelector('#touchhelp').classList.toggle('open');
+    });
+    this._touchApp = app;
+    this._goT = 0;
   }
 
   setCrumbs(items) {
@@ -161,5 +269,16 @@ export class HUD {
   tick(dt) {
     this._idleT += dt;
     if (this._idleT > 6) this.hints.classList.add('faded');
+    // the context button wears its current meaning
+    if (this._goBtn && (this._goT += dt) > 0.4) {
+      this._goT = 0;
+      const s = this._touchApp.active();
+      this._goBtn.textContent = s.kind !== 'planet' ? '➤'
+        : (s.auto || s.asc) ? '✕'
+        : (s.altUnits ?? 9e9) < s.R * 0.9 ? '⤴' : '⛯';
+      this._goBtn.title = s.kind !== 'planet' ? 'tour'
+        : (s.auto || s.asc) ? 'take the helm'
+        : (s.altUnits ?? 9e9) < s.R * 0.9 ? 'back to orbit' : 'fly me down';
+    }
   }
 }

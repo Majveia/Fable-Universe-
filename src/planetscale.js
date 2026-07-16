@@ -538,6 +538,9 @@ export class PlanetScale {
     this.amp = AMP_BY_TYPE[pp.typeId] ?? 11;
     this.unitKm = Math.max(pp.radiusE, 0.05) * 6371 / this.R;
 
+    // the world's resonance: an art direction chosen at its birth
+    const res = this.res = pp.res ?? { hazeX: 1, hazeTint: null, bloomX: 1, sunX: 1, rainX: 1, grade: null, line: null };
+
     this.scene = new THREE.Scene();
     // the camera never leaves the origin — the planet moves instead, so
     // float32 precision is always spent where you are looking
@@ -558,8 +561,9 @@ export class PlanetScale {
     this.uWetMode = { value: pp.Teq < 265 ? 1 : 0 };   // 1 = snow
     this.uFlow = { value: 1 };           // rivers swell while the ground is wet
     const atmoAmt = pp.typeId === 0 ? 0.25 : pp.typeId === 4 ? 0.4 : 1.0;
-    this.hazeBase = 0.012 * atmoAmt;
+    this.hazeBase = 0.012 * atmoAmt * res.hazeX;
     this.uHazeCol = { value: pp.atmoColor.clone().multiplyScalar(0.9).add(new THREE.Color(0.02, 0.02, 0.03)) };
+    if (res.hazeTint) this.uHazeCol.value.lerp(new THREE.Color(...res.hazeTint), 0.3);
 
     this._morphOn = { value: url.searchParams.get('gm') === '0' ? 0 : 1 };
     const makeMaterial = (center, splitD) => new THREE.ShaderMaterial({
@@ -685,7 +689,7 @@ export class PlanetScale {
     }));
     const lum = ctx.system?.lum ?? 1;
     this.sunSprite.scale.setScalar(
-      Math.min(Math.max(340 * Math.sqrt(lum) / Math.max(pp.a, 0.2), 150), 950));
+      Math.min(Math.max(340 * Math.sqrt(lum) / Math.max(pp.a, 0.2), 150), 950) * res.sunX);
     this.scene.add(this.sunSprite);
 
     // -- the sky is computed, not painted: single-scattering raymarch
@@ -742,7 +746,8 @@ export class PlanetScale {
               uTime: this.uTime,
               uSeed: { value: pp.noiseSeed },
               uSunCol: { value: (ctx.sunColor ?? new THREE.Color(1, 1, 1)).clone() },
-              uSteps: { value: parseInt(url.searchParams.get('vs')) || 16 },
+              uSteps: { value: parseInt(url.searchParams.get('vs'))
+                || (window.matchMedia && matchMedia('(pointer: coarse)').matches ? 10 : 16) },
             },
             vertexShader: ATMO2_VERT,
             fragmentShader: VCLOUD_FRAG,
@@ -811,7 +816,8 @@ export class PlanetScale {
     // duck-typed for the hyperzoom
     this.controls = { enabled: true, target: new THREE.Vector3(), update: () => {} };
 
-    this.bloomSettings = { strength: 0.28, radius: 0.55, threshold: 0.7 };
+    this.bloomSettings = { strength: 0.28 * res.bloomX, radius: 0.55, threshold: 0.7 };
+    this.gradeSettings = res.grade;
     this._spd = 0;
     this._landing = false;
     this.walk = false;                 // on foot: gravity holds you to the crust
@@ -914,11 +920,13 @@ export class PlanetScale {
       if (score > bs) { bs = score; best = _t5.clone(); }
     }
     // on inhabited worlds the lights won: put the wheels down on the
-    // metropolis plaza itself, not merely near the glow
+    // metropolis plaza itself, not merely near the glow — and grade its
+    // ground now, from orbit, while the tile pipeline has nothing to lose
     if (best && this.cities) {
       const site = this.cities.siteNear(best);
       if (site && site.dir.angleTo(best) < 0.28 && site.landing.dot(sun) > 0.05) {
         best = site.landing.clone();
+        this.cities._installPad(site);
       }
     }
     this.auto = {
@@ -1495,8 +1503,11 @@ export class PlanetScale {
     // the ground remembers the rain for a while after the sky clears
     const deckBase = this.R * 1.010;
     const dens = this._cloudAt(up);
-    this.wx.storm = dens > 0.55;         // the densest cells carry lightning
-    this.wx.raining = this.camPos.length() < deckBase - 1 && dens > 0.3;
+    // the resonance sets the weather's temperament: rain-forward worlds
+    // rain at thinner decks, desert moods hold out for real overcast
+    const rX = this.res.rainX ?? 1;
+    this.wx.storm = dens > 0.55 / rX;    // the densest cells carry lightning
+    this.wx.raining = this.camPos.length() < deckBase - 1 && dens > 0.3 / rX;
     this.wx.wet = Math.min(Math.max(
       this.wx.wet + (this.wx.raining ? dt / 18 : -dt / 30), 0), 1);
     this.uWet.value = this.wx.wet;
@@ -1692,6 +1703,7 @@ export class PlanetScale {
           : (this.wx.snow ? 'snowing' : 'raining'))
         : this.wx.wet > 0.05 ? 'clearing · ground wet' : 'fair']] : []),
       ['season', this._seasonLabel()],
+      ...(this.res.line ? [['mood', this.res.line]] : []),
       ['triangles', S.tris >= 1e6 ? (S.tris / 1e6).toFixed(2) + ' M' : Math.round(S.tris / 1e3) + ' k'],
       ['finest grid', this._fmtKm(spacing)],
     ];
