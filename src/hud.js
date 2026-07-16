@@ -80,6 +80,7 @@ export class HUD {
         <button id="tb-up" title="climb">▲</button>
         <button id="tb-down" title="dive">▼</button>
         <button id="tb-boost" title="boost">≫</button>
+        <button id="tb-shuttle" title="shuttle">⇋</button>
         <button id="tb-go" title="fly me there">⛯</button>
         <button id="tb-help" title="controls">?</button>
       </div>
@@ -89,6 +90,7 @@ export class HUD {
         pinch — altitude &amp; zoom<br>
         stick — walk &amp; fly<br>
         ▲ ▼ — climb &amp; dive · ≫ — boost<br>
+        ⇋ — shuttle: up from the ground, home from the sky<br>
         ⛯ — fly me down · back to orbit<br>
         tap a world — approach it<br>
         double-tap — dive deeper</div>`;
@@ -164,6 +166,12 @@ export class HUD {
     });
     ui.querySelector('#tb-help').addEventListener('click', () => {
       ui.querySelector('#touchhelp').classList.toggle('open');
+    });
+    // the shuttle: B by another name, shown only where shuttles fly
+    this._shBtn = ui.querySelector('#tb-shuttle');
+    this._shBtn.addEventListener('click', () => {
+      const s = app.active();
+      s.onKey?.('KeyB');
     });
     this._touchApp = app;
     this._goT = 0;
@@ -279,6 +287,10 @@ export class HUD {
       this._goBtn.title = s.kind !== 'planet' ? 'tour'
         : (s.auto || s.asc) ? 'take the helm'
         : (s.altUnits ?? 9e9) < s.R * 0.9 ? 'back to orbit' : 'fly me down';
+      this._shBtn.style.display = s.kind === 'planet' && s.pp?.inhabited ? '' : 'none';
+      this._shBtn.textContent = s.ride ? '✕' : s.inside ? '⌂' : (s.altUnits ?? 9e9) < 6 ? '⇴' : '⌂';
+      this._shBtn.title = s.ride ? 'bail out' : s.inside ? 'shuttle home'
+        : (s.altUnits ?? 9e9) < 6 ? 'shuttle to the station' : 'shuttle home';
     }
   }
 }

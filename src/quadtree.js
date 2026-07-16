@@ -16,7 +16,7 @@
 // the small difference (tileCenter − camera): jitter-free at ground level.
 
 import * as THREE from 'three';
-import { buildTile, buildIndices, uvToDir, surfaceRadius } from './tilebuild.js';
+import { buildTile, buildIndices, uvToDir, surfaceRadius, FACES } from './tilebuild.js';
 import { planetHeight } from './terrain.js';
 
 const HALF_ANG = Math.PI / 4;   // half angular span of a cube face
@@ -201,6 +201,30 @@ export class QuadtreePlanet {
     return false;
   }
 
+  /** deepest DRAWN tile under a direction — how converged the visible
+   *  ground is. The descent director holds its flare on this. */
+  depthAt(dir) {
+    const ax = Math.abs(dir.x), ay = Math.abs(dir.y), az = Math.abs(dir.z);
+    let f;
+    if (ax >= ay && ax >= az) f = dir.x > 0 ? 0 : 1;
+    else if (ay >= ax && ay >= az) f = dir.y > 0 ? 2 : 3;
+    else f = dir.z > 0 ? 4 : 5;
+    const F = FACES[f];
+    const dn = dir.x * F.n[0] + dir.y * F.n[1] + dir.z * F.n[2];
+    const a = (dir.x * F.r[0] + dir.y * F.r[1] + dir.z * F.r[2]) / dn;
+    const b = (dir.x * F.u[0] + dir.y * F.u[1] + dir.z * F.u[2]) / dn;
+    // undo the tangent pre-warp: uv are the atan of the gnomonic coords
+    const u = Math.atan(a) / (Math.PI / 4), v = Math.atan(b) / (Math.PI / 4);
+    let best = -1;
+    for (let d = 0; d <= this.maxDepth; d++) {
+      const n = 1 << d;
+      const i = Math.min(Math.max(((u + 1) / 2 * n) | 0, 0), n - 1);
+      const j = Math.min(Math.max(((v + 1) / 2 * n) | 0, 0), n - 1);
+      if (this._shown.has(f + ':' + d + ':' + i + ':' + j)) best = d;
+    }
+    return best;
+  }
+
   /** center of a node's sphere patch, double precision */
   _center(face, depth, i, j, out) {
     const span = 2 / (1 << depth);
@@ -209,7 +233,7 @@ export class QuadtreePlanet {
     return out;
   }
 
-  update(camPos) {
+  update(camPos, focus = null) {
     const S = this.stats;
     S.drawn = 0; S.maxDepth = 0;
 
@@ -244,7 +268,11 @@ export class QuadtreePlanet {
       if (depth >= 2 && cDir.dot(camDir) <
         Math.cos(horizon + ang * 2.4 + Math.sqrt(2 * this.amp / this.R) + 0.02)) return;
 
-      const dist = Math.max(_v4.copy(c).sub(camPos).length() - this.R * ang, 0.002);
+      // split by whichever is nearer: the camera, or the descent director's
+      // focus — the ground you are falling toward streams in ahead of you
+      let near = _v4.copy(c).sub(camPos).length();
+      if (focus) near = Math.min(near, _v5.copy(c).sub(focus).length());
+      const dist = Math.max(near - this.R * ang, 0.002);
       const chord = this.R * ang * 2;
       const key = face + ':' + depth + ':' + i + ':' + j;
       const tile = this.tiles.get(key);
@@ -326,4 +354,5 @@ const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
 const _v4 = new THREE.Vector3();
+const _v5 = new THREE.Vector3();
 let _showSet = new Set();
