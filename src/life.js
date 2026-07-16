@@ -41,7 +41,8 @@ export function addLife(s) {
   // ecology: the host may carry a persistent regional population; without
   // one (moons, classic surface) the old defaults stand
   const eco = s.eco ?? null;
-  const vegF = eco?.veg ?? 1;
+  // downtown, the wild things keep to the parks
+  const vegF = (eco?.veg ?? 1) * (s.urban ? 0.2 : 1);
 
   const vegColor = new THREE.Color().setHSL(r.float(0.06, 0.62), r.float(0.4, 0.65), r.float(0.22, 0.34));
   const canopyColor = vegColor.clone().offsetHSL(r.float(-0.05, 0.05), 0, r.float(-0.04, 0.08));
