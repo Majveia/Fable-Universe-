@@ -249,6 +249,7 @@ class App {
     s.camera.updateProjectionMatrix();
     this.post.setScene(s.scene, s.camera);
     this.post.tune(s.bloomSettings);
+    this.post.grade(s.gradeSettings);
     this.hud.setNote(s.noteOverride ?? NOTES[s.kind]);
     this.hud.setHint(s.hintOverride?.() ?? HINTS[s.kind]);
     this.audio.setScale(s.kind, this._worldInfo(s));
@@ -275,13 +276,51 @@ class App {
     const cv = this.renderer.domElement;
     let down = null;
 
+    // two fingers on the glass = the wheel: pinch is altitude everywhere
+    const tp = new Map();
+    let pinchD = null;
+    const pinchDist = () => {
+      const [a, b] = [...tp.values()];
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
+
     cv.addEventListener('pointerdown', (e) => {
       this.tour.stop();
+      if (e.pointerType === 'touch') {
+        tp.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (tp.size === 2) {
+          pinchD = pinchDist();
+          this.active().onPointerUp?.(e);   // the drag yields to the pinch
+          down = null;
+          return;
+        }
+      }
       down = { x: e.clientX, y: e.clientY };
       this.active().onPointerDown?.(e);
     });
-    cv.addEventListener('pointermove', (e) => this.active().onPointerMove?.(e));
+    cv.addEventListener('pointermove', (e) => {
+      if (e.pointerType === 'touch' && tp.has(e.pointerId)) {
+        tp.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (tp.size >= 2) {
+          const d = pinchDist();
+          if (pinchD !== null && Math.abs(d - pinchD) > 1) {
+            this.active().onWheel?.({ deltaY: (pinchD - d) * 3.2 });
+            pinchD = d;
+          }
+          return;
+        }
+      }
+      this.active().onPointerMove?.(e);
+    });
+    const lift = (e) => {
+      if (e.pointerType === 'touch') {
+        tp.delete(e.pointerId);
+        if (tp.size < 2) pinchD = null;
+      }
+    };
+    cv.addEventListener('pointercancel', lift);
     cv.addEventListener('pointerup', (e) => {
+      lift(e);
       this.active().onPointerUp?.(e);
       if (!down) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);

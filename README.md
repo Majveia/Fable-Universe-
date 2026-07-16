@@ -25,6 +25,15 @@ python3 -m http.server 8080
 Best experienced full-screen, in the dark, on an OLED display. The background
 is true `#000` black.
 
+**It works on a phone.** On any touch screen the universe grows thumbs: a
+stick that walks and flies (it speaks the same WASD the keyboard does,
+through synthetic key events — same systems, same depth), hold-buttons
+for climb, dive and boost, **pinch for altitude** at every scale, and one
+context button that always does the thing you want most — **fly me
+down** from orbit, **back to orbit** from the ground, conduct the tour
+everywhere else. A `?` button explains the gestures. Nothing was
+simplified away; the keyboard just stopped being required.
+
 Optional URL parameters: `?seed=42` (pin a universe — omit it and every
 visit rolls a new one), `?n=96` (cosmic-web tracer resolution per axis,
 default 68 → 314k particles), `?qk=4` (planet-quadtree quality: tile budget
@@ -224,17 +233,41 @@ about fifteen for a city of thousands of pieces. The descent director is
 in on it: on inhabited worlds the autopilot **lands you on the plaza
 downtown**, the HUD names the city, counts its population, vehicles,
 ferries and bridges, and the hamlet settlements stand down inside metro
-limits. Deterministic like everything else — universe 5's Velthal, pop
-8.1 M, is the same Velthal on every machine, forever. `?ct=0` keeps the
-countryside.
+limits. And the shore pulls: a cell whose glow peaks within reach of
+water slides its city to the coast, so port metros are common the way
+they always have been — downtown against the waterline, ferries
+working the harbor, a bridge over the inlet. Deterministic like
+everything else — universe 5's port of Sabveth, pop 3.8 M, ten ferries
+and a bay bridge, is the same Sabveth on every machine, forever.
+`?ct=0` keeps the countryside.
 
-![Velthal whole from 1.9 km: the grid etched, two cores, one supertall](docs/screenshots/40-metropolis.png)
+![Sabveth: downtown against the waterline, ten ferries out](docs/screenshots/44-harbor.png)
+
+![Oshthal whole from 1.9 km: the grid etched into a river plain, worn in its world's mood](docs/screenshots/40-metropolis.png)
 
 | | |
 | --- | --- |
 | ![midtown at 380 m: towers separate, streets in shadow](docs/screenshots/41-city-canyon.png) | ![dusk from a downtown street: the windows keep their own hours](docs/screenshots/43-dusk-street.png) |
 
-![the ignition: Velthal's eight million windows coming on with the dark](docs/screenshots/42-city-ignition.png)
+![the ignition: four and a half million windows coming on with the dark](docs/screenshots/42-city-ignition.png)
+
+And every world answers to something now — a film, a painting, a game, a
+page read at the right age. Each planet draws a **resonance** at birth
+(`src/resonance.js`): a complete art direction — color grade, haze
+density and tint, bloom, the sun's apparent size, the weather's
+temperament, the biosphere's appetite, even the color of a city's
+streetlight — chosen deterministically from a shelf of homages and
+worn consistently from orbit shader to boot level. A hot dry world may
+keep its own counsel in monumental amber (the desert epics); a temperate
+biosphere may get *a sky for wanderers*, saturated and cumulus-stacked
+(the pastoral animations); a rainy inhabited world turns *chrome and
+rain*, cyan lamplight under a heavy deck (the neon nocturnes); ice
+worlds get *winter light*, near-monochrome; ocean worlds remember the
+great wave; lava worlds pay *what the fire owes*. The frame itself goes
+through a new film pass — per-world lift/gain/saturation in linear
+light, a breath of vignette and mid-riding grain (`post.js`) — and the
+HUD wears the epigraph as `mood`. Every dial was already in the engine;
+the resonance just knows where to set them.
 
 The land itself drains — and now it drains *correctly*: a *real global
 flow solve* (priority-flood depression filling seeded from the sea, D8
@@ -470,6 +503,8 @@ src/life.js         procedural creatures with gaits
 src/settlement.js   towers and beacons on inhabited worlds
 src/city.js         the metropolis: street grids, districted skylines,
                     bridges, harbors, traffic, and dusk igniting the windows
+src/resonance.js    per-world art direction: grade, haze, weather
+                    temperament, lamplight — the homage shelf
 src/blackhole.js    Schwarzschild geodesic raymarcher
 src/tour.js         the cinematic auto-pilot (T)
 src/audio.js        generative ambient beds per scale

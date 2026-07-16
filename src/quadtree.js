@@ -175,6 +175,32 @@ export class QuadtreePlanet {
     this.tiles.set(data.key, { mesh, geo });
   }
 
+  /** does this tile overlap any crater or pad added since it was queued?
+   *  (conservative: any overlap at all counts — reach math mirrors the
+   *  eviction tests in addCrater/addPad) */
+  _touchesChangedGround(key) {
+    const [f, d, i, j] = key.split(':').map(Number);
+    const ang = HALF_ANG / (1 << d);
+    this._center(f, d, i, j, _v2).multiplyScalar(1 / this.R);
+    const C = this.job.craters;
+    if (C) {
+      for (let k = 0; k < C.length; k += 5) {
+        const dx = _v2.x - C[k], dy = _v2.y - C[k + 1], dz = _v2.z - C[k + 2];
+        const reach = C[k + 3] * 2.4 + ang * 1.7;
+        if (dx * dx + dy * dy + dz * dz < reach * reach) return true;
+      }
+    }
+    const D = this.job.pads;
+    if (D) {
+      for (let k = 0; k < D.length; k += 5) {
+        const dx = _v2.x - D[k], dy = _v2.y - D[k + 1], dz = _v2.z - D[k + 2];
+        const reach = D[k + 3] * 1.6 + ang * 1.7;
+        if (dx * dx + dy * dy + dz * dz < reach * reach) return true;
+      }
+    }
+    return false;
+  }
+
   /** center of a node's sphere patch, double precision */
   _center(face, depth, i, j, out) {
     const span = 2 / (1 << depth);
@@ -192,8 +218,10 @@ export class QuadtreePlanet {
     while (this.results.length && uploads < 4) {
       const data = this.results.shift();
       this.pending.delete(data.key);
-      // stale generation: built before the field last changed — drop it
-      if (data.gen !== this.job.gen) continue;
+      // stale generation: built before the field last changed. Only the
+      // tiles whose ground actually changed are stale — dropping the whole
+      // in-flight pipeline for one distant pad holes the planet mid-descent
+      if (data.gen !== this.job.gen && this._touchesChangedGround(data.key)) continue;
       if (!this.tiles.has(data.key)) { this._adopt(data); S.built++; }
       uploads++;
     }

@@ -33,9 +33,14 @@ import { planetHeight, fbm } from './terrain.js';
 import { sampleHydro } from './tilebuild.js';
 
 const CELL_Q = 10;              // sphere-cell lattice: ~one metro candidate per cell
-const MASK_MIN = 0.34;          // how hard the glow must burn to earn a metro
+const MASK_MIN = 0.27;          // how hard the glow must burn to earn a metro
 const SPAWN_U = 26;             // build inside this camera distance (draw units)
 const DROP_U = 36;              // drop outside this (hysteresis)
+const PAD_U = 110;              // grade the ground from way out — the tile
+                                // pipeline is cold up here, so nobody sees it
+const ANIM_U = 8;               // cars/boats animate inside ~20 km; beyond
+                                // that they are sub-pixel and sleep
+const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 const SAMPLE_M = 36;            // road polyline sampling step, metres
 const MAX_BUILDINGS = 15000;
 const MAX_ACTIVE = 2;
@@ -265,7 +270,7 @@ class City {
   }
 
   /** pump the budgeted build; returns true when the city stands */
-  step(budgetMs = 6) {
+  step(budgetMs = 4) {
     if (this.built) return true;
     const t0 = performance.now();
     while (performance.now() - t0 < budgetMs) {
@@ -316,7 +321,7 @@ class City {
         xs[i] = p.x; zs[i] = p.z;
         gs[i] = this.hAt(p.x, p.z);
         rv[i] = this.riverT(p.x, p.z) < 1.05 ? 1 : 0;
-        if ((i & 63) === 63) yield;
+        if ((i & 31) === 31) yield;
       }
       // ellipse clip for the diagonal
       const inside = (i) => {
@@ -479,6 +484,7 @@ class City {
             nB++;
           }
         }
+        if ((iu & 15) === 15) yield;   // fine-grained: rows got heavy with the river test
       }
       yield;
     }
@@ -686,18 +692,19 @@ class City {
       }
     }
 
-    // ---- street lamps ----------------------------------------------------
+    // ---- street lamps: sodium by default, or the resonance's color -------
     if (this._lampPts.length) {
       const flat = [];
       for (const q of this._lampPts) flat.push(q[0], q[1], q[2]);
-      this.lamps = this._points(flat, 6, new THREE.Color(1.5, 1.05, 0.5));
+      const lampCol = ps.pp.res?.lamp ?? [1.5, 1.05, 0.5];
+      this.lamps = this._points(flat, 6, new THREE.Color(...lampCol));
       this._lampPts = null;
     }
 
     // ---- traffic ---------------------------------------------------------
     const wide = this.roads.filter(rd => rd.n > 10);
     if (wide.length) {
-      const nCars = Math.min(Math.round(140 * (this.Rc / 1000) ** 1.6), 780);
+      const nCars = Math.round(Math.min(Math.round(140 * (this.Rc / 1000) ** 1.6), 780) * (COARSE ? 0.55 : 1));
       const geo = new THREE.BoxGeometry(4.4, 1.5, 1.9);
       geo.translate(0, 0.75, 0);
       const tints = new Float32Array(nCars * 3);
@@ -795,7 +802,10 @@ class City {
     if (this.lamps) this.lamps.material.opacity = night * 0.9;
     if (this.neck) this.neck.material.opacity = 0.15 + night * 0.85;
 
-    if (this.cars) {
+    // beyond ~20 km the traffic is sub-pixel: let it sleep
+    const nearby = this.pos.distanceTo(this.ps.camPos) < ANIM_U;
+
+    if (nearby && this.cars) {
       const { mesh, agents } = this.cars;
       const d = _car;
       for (let i = 0; i < agents.length; i++) {
@@ -826,7 +836,7 @@ class City {
       mesh.instanceMatrix.needsUpdate = true;
     }
 
-    if (this.boats) {
+    if (nearby && this.boats) {
       const { hulls, cabs, wakes, boats } = this.boats;
       const d = _car;
       for (let i = 0; i < boats.length; i++) {
@@ -889,35 +899,47 @@ export class CityField {
     const base = _sv.set(ci, cj, ck);
     if (base.lengthSq() > 1e-6) {
       base.multiplyScalar(1 / CELL_Q).normalize();
-      // ask the glow where it burns hardest in this cell — with a thumb on
-      // the scale for the shore, the way port cities have always won
+      // ask the glow where it burns hardest in this cell
       const mpu = ps.unitKm * 1000;
-      let best = null, bm = 0, bs = -1;
-      for (let i = 0; i < 8; i++) {
+      let best = null, bm = 0;
+      for (let i = 0; i < 12; i++) {
         _sv2.set(ci + r.float(-0.45, 0.45), cj + r.float(-0.45, 0.45), ck + r.float(-0.45, 0.45))
           .multiplyScalar(1 / CELL_Q).normalize();
         const m = ps._cityMask(_sv2);
-        let sc = m;
-        if (m >= MASK_MIN && ps.seaR > 0) {
-          let east = _sv3.set(0, 1, 0).cross(_sv2);
-          if (east.lengthSq() < 1e-6) east = _sv3.set(1, 0, 0).cross(_sv2);
-          east.normalize();
-          const north = _sv4.crossVectors(east, _sv2);
-          for (let k = 0; k < 5; k++) {
-            const ang = (k / 5) * Math.PI * 2;
-            _sv5.copy(_sv2)
-              .addScaledVector(east, Math.cos(ang) * 2800 / mpu / ps.R)
-              .addScaledVector(north, Math.sin(ang) * 2800 / mpu / ps.R).normalize();
-            if (ps.quad.heightAt(_sv5) < ps.seaR - 1.5 / mpu) { sc += 0.1; break; }
-          }
-        }
-        if (sc > bs) { bs = sc; bm = m; best = _sv2.clone(); }
+        if (m > bm) { bm = m; best = _sv2.clone(); }
       }
       if (best && bm >= MASK_MIN) {
+        const radiusM = 1400 + bm * r.float(2200, 3000);
+        // the shore pulls: if water lies within reach, slide the center so
+        // the waterline crosses the city — port cities have always won
+        if (ps.seaR > 0) {
+          let east = _sv3.set(0, 1, 0).cross(best);
+          if (east.lengthSq() < 1e-6) east = _sv3.set(1, 0, 0).cross(best);
+          east.normalize();
+          const north = _sv4.crossVectors(east, best);
+          let wetAng = null, wetD = 0;
+          for (const distM of [3200, 6400, 9600, 12800, 16000]) {
+            for (let k = 0; k < 10; k++) {
+              const ang = (k / 10) * Math.PI * 2 + distM * 0.001;
+              _sv5.copy(best)
+                .addScaledVector(east, Math.cos(ang) * distM / mpu / ps.R)
+                .addScaledVector(north, Math.sin(ang) * distM / mpu / ps.R).normalize();
+              if (ps.quad.heightAt(_sv5) < ps.seaR - 1.5 / mpu) { wetAng = ang; wetD = distM; break; }
+            }
+            if (wetAng !== null) break;
+          }
+          if (wetAng !== null && wetD > radiusM * 0.55) {
+            const shift = wetD - radiusM * 0.55;    // bring the water to ~half a radius out
+            _sv5.copy(best)
+              .addScaledVector(east, Math.cos(wetAng) * shift / mpu / ps.R)
+              .addScaledVector(north, Math.sin(wetAng) * shift / mpu / ps.R).normalize();
+            // only move to ground that can still hold a downtown
+            if (ps.quad.heightAt(_sv5) > ps.seaR + 3 / mpu) best.copy(_sv5);
+          }
+        }
         const h = ps.quad.heightAt(best);
         const dryM = ps.seaR > 0 ? (h - ps.seaR) * ps.unitKm * 1000 : 100;
         if (dryM > 3 && dryM < 900) {
-          const radiusM = 1400 + bm * r.float(2200, 3000);
           site = {
             dir: best, ci, cj, ck, mask: bm, radiusM,
             key, name: cityName(ps.pp.seed, ci, cj, ck),
@@ -989,8 +1011,10 @@ export class CityField {
       const near = this.siteNear(up);
       if (near && !this.active.has(near.key)) {
         const dU = _sv2.copy(near.dir).multiplyScalar(ps.quad.heightAt(near.dir)).distanceTo(ps.camPos);
+        // grade the ground from far out, while the tile pipeline is cold —
+        // installing it mid-descent evicts the very tiles streaming in
+        if (dU < PAD_U) this._installPad(near);
         if (dU < SPAWN_U) {
-          this._installPad(near);
           this.active.set(near.key, new City(ps, near));
           // never more than two cities resident: drop the farthest
           if (this.active.size > MAX_ACTIVE) {

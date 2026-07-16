@@ -158,6 +158,31 @@
     #card{ display:none; }
     #hints{ display:none; }
   }
+
+  /* ------- touch controls (built by hud.js on coarse pointers) ------- */
+  #app canvas{ touch-action:none; }
+  #touch{ position:fixed; inset:0; pointer-events:none; display:none; z-index:22; }
+  body.coarse #touch{ display:block; }
+  #stick{ position:absolute; left:20px; bottom:92px; width:118px; height:118px; border-radius:50%;
+    border:1px solid var(--hairline); background:rgba(255,255,255,.045);
+    pointer-events:auto; touch-action:none; }
+  #knob{ position:absolute; left:50%; top:50%; width:46px; height:46px; margin:-23px 0 0 -23px;
+    border-radius:50%; background:rgba(255,255,255,.16); border:1px solid var(--ink-faint); }
+  #tbtns{ position:absolute; right:16px; bottom:92px; display:flex; flex-direction:column;
+    gap:10px; pointer-events:auto; }
+  #tbtns button{ width:52px; height:52px; border-radius:50%; border:1px solid var(--hairline);
+    background:rgba(0,0,0,.4); color:var(--ink); font:inherit; font-size:18px; touch-action:none; }
+  #tbtns button:active{ background:rgba(255,255,255,.18); }
+  #touchhelp{ position:absolute; right:82px; bottom:98px; max-width:250px; padding:12px 15px;
+    font-size:11px; line-height:2.05; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--ink-dim); background:rgba(0,0,0,.6); border:1px solid var(--hairline);
+    border-radius:8px; display:none; pointer-events:auto; }
+  #touchhelp b{ color:var(--ink); }
+  #touchhelp.open{ display:block; }
+  @media (pointer:coarse) and (max-width:900px){
+    #stats{ display:none; }
+    #crumbs{ max-width:86vw; }
+  }
 </style>
 <script type="importmap">
 {
