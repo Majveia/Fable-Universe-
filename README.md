@@ -283,6 +283,21 @@ light, a breath of vignette and mid-riding grain (`post.js`) — and the
 HUD wears the epigraph as `mood`. Every dial was already in the engine;
 the resonance just knows where to set them.
 
+The streets carry **citizens** now — hundreds of instanced pedestrians
+walking the avenue sidewalks at strolling pace, muted city cloth with
+the odd bright coat, deterministic like everything else, waking within
+a few kilometres and resting beyond (the HUD counts them *afoot*).
+Worlds that wear winter light hang **aurorae** over their poles after
+dark: two nested curtain shells, an emerald base under a violet crown,
+the same drifting field at different radii so the rays gain true
+parallax as you move — banded on a wandering auroral oval, multiplied
+by the night, two draw calls (`src/aurora.js`). And the resonances
+reached the sound: each mood carries **its own slow chord** into the
+world's audio bed — monumental D–A under the desert epics, a Cmaj-add9
+shimmer for the pastorals, an Am9 nocturne for chrome and rain, two
+high sines far apart for winter light — breathing on long LFOs beneath
+the wind the atmosphere already shapes (`src/audio.js`).
+
 The land itself drains — and now it drains *correctly*: a *real global
 flow solve* (priority-flood depression filling seeded from the sea, D8
 steepest-descent accumulation on a cube grid, ~1 s baked per world)
@@ -519,6 +534,7 @@ src/city.js         the metropolis: street grids, districted skylines,
                     bridges, harbors, traffic, and dusk igniting the windows
 src/resonance.js    per-world art direction: grade, haze, weather
                     temperament, lamplight — the homage shelf
+src/aurora.js       curtain shells over the poles of winter-light worlds
 src/blackhole.js    Schwarzschild geodesic raymarcher
 src/tour.js         the cinematic auto-pilot (T)
 src/audio.js        generative ambient beds per scale
