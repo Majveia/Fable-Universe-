@@ -69,7 +69,9 @@ export function addAurora(s) {
       },
       vertexShader: AURORA_VERT,
       fragmentShader: AURORA_FRAG,
-      side: THREE.BackSide,
+      // both faces: from the ground you stand inside the shell, from
+      // orbit you look across at it — the curtains must read either way
+      side: THREE.DoubleSide,
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
