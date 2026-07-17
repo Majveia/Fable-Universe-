@@ -25,6 +25,7 @@ import { buildScatterLUTs } from './scatterlut.js';
 import { addOrbitals } from './orbital.js';
 import { solveWatershed } from './hydrology.js';
 import { CityField } from './city.js';
+import { addAurora } from './aurora.js';
 
 const TILE_VERT = /* glsl */`
   uniform vec3 uCenter;     // tile center, planet frame (static per tile)
@@ -795,6 +796,9 @@ export class PlanetScale {
     // burn hardest — street grids, skylines, bridges, harbors (?ct=0 skips)
     this.cities = pp.inhabited && url.searchParams.get('ct') !== '0'
       ? new CityField(this) : null;
+
+    // winter-light worlds hang curtains over their poles after dark
+    this.aurora = res.aurora ? addAurora(this) : null;
 
     // seasons: every world leans. The sun's declination follows the orbital
     // phase (the days counter — Space pauses it, . and , bend it), so the
@@ -1805,6 +1809,7 @@ export class PlanetScale {
     this._dropAnchor();
     this.orbitals?.dispose();
     this.cities?.dispose();
+    this.aurora?.dispose();
     this.quad.dispose();
     if (this.ocean) this.ocean.dispose();
     this.scene.traverse(o => {

@@ -7,6 +7,23 @@
 // surfaces. Hyperzooms get a riser; selections get a soft blip. The whole
 // thing idles near silence — it is felt more than heard.
 
+// Each resonance's score: [frequency, amplitude, waveform, breath-rate] per
+// partial. Tuned quiet — these sit under the wind, not over it.
+const MOOD_SCORES = {
+  counsel: [[73.4, 0.10, 'sawtooth', 0.028], [110, 0.06, 'sine', 0.041]],                       // D–A, monumental
+  wanderers: [[261.6, 0.028, 'sine', 0.05], [329.6, 0.022, 'sine', 0.062], [392, 0.02, 'sine', 0.043], [587.3, 0.012, 'sine', 0.071]], // Cmaj add9 shimmer
+  chrome: [[110, 0.07, 'triangle', 0.033], [130.8, 0.05, 'triangle', 0.047], [164.8, 0.04, 'triangle', 0.058], [246.9, 0.02, 'sine', 0.07]], // Am9, nocturne
+  afternoon: [[146.8, 0.06, 'sine', 0.024], [147.9, 0.06, 'sine', 0.031]],                       // detuned unison hush
+  pale: [[220, 0.025, 'sine', 0.055], [277.2, 0.02, 'sine', 0.066], [440, 0.01, 'sine', 0.08]],  // chalk pastel
+  gold: [[146.8, 0.05, 'sine', 0.04], [220, 0.035, 'sine', 0.052], [246.9, 0.02, 'sine', 0.063], [329.6, 0.014, 'sine', 0.075]], // D pentatonic dunes
+  vault: [[98, 0.05, 'sine', 0.021], [196, 0.02, 'sine', 0.034]],                                 // bare octave
+  winterlight: [[880, 0.012, 'sine', 0.019], [1318.5, 0.007, 'sine', 0.027]],                     // two high, far apart
+  greenshade: [[196, 0.04, 'sine', 0.045], [246.9, 0.03, 'sine', 0.055], [293.7, 0.024, 'sine', 0.065]], // G major, overgrown
+  searemembers: [[87.3, 0.08, 'sine', 0.026], [130.8, 0.05, 'sine', 0.038]],                      // F–C tide
+  forge: [[55, 0.10, 'sawtooth', 0.05], [58.3, 0.07, 'sawtooth', 0.062]],                         // minor-second rub
+  procession: [[65.4, 0.07, 'sine', 0.02], [98, 0.045, 'sine', 0.03]],                            // slow giants
+};
+
 export class Ambience {
   constructor() {
     this.ctx = null;
@@ -159,13 +176,25 @@ export class Ambience {
         r.connect(rlp); rlp.connect(rg); rg.connect(out);
         keep(...this._lfo(0.19, 0.22, rg.gain, 0.5));
       }
+      // the resonance scores the world: each mood carries its own slow
+      // chord of partials, breathing on long LFOs — felt more than heard
+      const score = MOOD_SCORES[world?.mood];
+      if (score) {
+        for (const [freq, amp, type2, rate] of score) {
+          const o = keep(this._osc(type2 ?? 'sine', freq));
+          const lp = keep(this._filter('lowpass', Math.max(freq * 2.2, 200)));
+          const og = keep(this._gain(0));
+          o.connect(lp); lp.connect(og); og.connect(out);
+          keep(...this._lfo(rate ?? 0.05, amp, og.gain, amp));
+        }
+      }
     }
     return { out, nodes };
   }
 
   setScale(kind, world) {
     if (!this.ctx) { this._pendingScale = [kind, world]; return; }
-    const key = kind + '|' + (world?.type ?? '') + '|' + (world?.atmo?.toFixed?.(2) ?? '');
+    const key = kind + '|' + (world?.type ?? '') + '|' + (world?.atmo?.toFixed?.(2) ?? '') + '|' + (world?.mood ?? '');
     if (this.current?.key === key) return;
     const t = this.ctx.currentTime;
     if (this.current) {

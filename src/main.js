@@ -236,9 +236,9 @@ class App {
   }
 
   _worldInfo(s) {
-    if (s.kind === 'surface') return { type: s.pp.type, atmo: s.atmo };
-    if (s.kind === 'clouds') return { type: s.pp.type, atmo: 1.5 };
-    if (s.kind === 'planet') return { type: s.pp.type, atmo: 0.55 };
+    if (s.kind === 'surface') return { type: s.pp.type, atmo: s.atmo, mood: s.pp.res?.id };
+    if (s.kind === 'clouds') return { type: s.pp.type, atmo: 1.5, mood: s.pp.res?.id };
+    if (s.kind === 'planet') return { type: s.pp.type, atmo: 0.55, mood: s.pp.res?.id };
     return null;
   }
 
@@ -330,7 +330,7 @@ class App {
       // touch never fires dblclick once touch-action is none: two quick
       // taps in the same place are the double-tap, synthesized here
       const now = performance.now();
-      if (e.pointerType === 'touch' && lastTap && now - lastTap.t < 400
+      if (e.pointerType === 'touch' && lastTap && now - lastTap.t < 500
         && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 34) {
         lastTap = null;
         this._dblclick(e);
