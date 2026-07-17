@@ -25,6 +25,7 @@ import { buildScatterLUTs } from './scatterlut.js';
 import { addOrbitals } from './orbital.js';
 import { solveWatershed } from './hydrology.js';
 import { CityField } from './city.js';
+import { addAurora } from './aurora.js';
 
 const TILE_VERT = /* glsl */`
   uniform vec3 uCenter;     // tile center, planet frame (static per tile)
@@ -760,6 +761,9 @@ export class PlanetScale {
         this.cloudMesh.renderOrder = 2;
         this.planetGroup.add(this.cloudMesh);
         this._cloudAmt = null;
+        // the deck deserves detail when you fly through it
+        this._vSteps = this.cloudMesh.material.uniforms.uSteps;
+        this._vStepsBase = this._vSteps.value;
       } else {
         // legacy billboard shell
         this.cloudMesh = new THREE.Mesh(
@@ -792,6 +796,9 @@ export class PlanetScale {
     // burn hardest — street grids, skylines, bridges, harbors (?ct=0 skips)
     this.cities = pp.inhabited && url.searchParams.get('ct') !== '0'
       ? new CityField(this) : null;
+
+    // winter-light worlds hang curtains over their poles after dark
+    this.aurora = res.aurora ? addAurora(this) : null;
 
     // seasons: every world leans. The sun's declination follows the orbital
     // phase (the days counter — Space pauses it, . and , bend it), so the
@@ -947,6 +954,13 @@ export class PlanetScale {
     const A = this.auto;
     A.t += dt / A.dur;
     if (A.look > 0) A.look -= dt;
+    // the ground must be drawn before the flare: hold short of touchdown
+    // until the tiles under the site converge (ten seconds at the most) —
+    // never again a touchdown waist-deep in a parent-level mesh
+    if (A.t > 0.93) {
+      const depth = this.quad.depthAt(A.site);
+      if (depth >= 0 && depth < 14 && (A.hold = (A.hold ?? 0) + dt) < 10) A.t = 0.93;
+    }
     const u = Math.min(A.t, 1);
     // bearing: a great-circle glide toward the site, front-loaded — the
     // transit happens up high, then you drift down onto the destination
@@ -959,6 +973,10 @@ export class PlanetScale {
     const gr = this._groundR(dir);
     const prev = _t7.copy(this.camPos);
     this.camPos.copy(dir).multiplyScalar(gr + Math.max(alt, clearance));
+    // the ground you are falling toward streams in ahead of you: keep the
+    // quadtree's focus a step below the ship, over the landing site
+    this._descentFocus = (this._descentFocus ?? new THREE.Vector3())
+      .copy(A.site).multiplyScalar(this._groundR(A.site) + Math.max(alt * 0.25, 0.003));
     const vel = _t6.copy(this.camPos).sub(prev);
     this._spd = vel.length() / Math.max(dt, 1e-6);
     if (u >= 1) {
@@ -988,10 +1006,46 @@ export class PlanetScale {
   }
 
   // ---------------------------------------------------------- boarding ----
+  /** B calls a shuttle, both ways: from the ground it rides the corridor
+   *  up to the station; from altitude (or the station itself) it rides
+   *  home — to the nearest metro plaza if one is in reach, else to dry
+   *  ground below. */
   boardShuttle() {
-    if (!this.orbitals || this.ride) return;
-    const dock = this.orbitals.board();
-    if (!dock) return;
+    if (this.ride) return;
+    // fresh altitude — the cached readout can be a frame stale
+    const upNow = _t7.copy(this.camPos).normalize();
+    const alt = this.camPos.length() - this._groundR(upNow);
+    if (alt < 6) {
+      if (!this.orbitals) return;
+      const dock = this.orbitals.board();
+      if (!dock) return;
+      this._beginRide(dock, 'riding the corridor · drag to look · b to bail');
+      return;
+    }
+    // homeward: pick the pad — a city plaza when the lights are near
+    const up = this.camPos.clone().normalize();
+    let dir = null;
+    const site = this.cities?.siteNear(up);
+    if (site && site.dir.angleTo(up) < 0.5) {
+      dir = site.landing.clone();
+      this.cities._installPad(site);
+    }
+    if (!dir) {
+      dir = up.clone();
+      for (let i = 0; i < 40 && this.seaR > 0 && this.quad.heightAt(dir) < this.seaR + 0.001; i++) {
+        dir.copy(up).addScaledVector(_t6.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5), 0.02 * (i + 1)).normalize();
+      }
+    }
+    const groundDir = dir;
+    const dock = {
+      kind: 'ground',
+      pos: (out) => out.copy(groundDir).multiplyScalar(this._groundR(groundDir) + this.eyeH),
+    };
+    if (this.inside) this._exitInside();
+    this._beginRide(dock, 'shuttle home · drag to look · b to bail');
+  }
+
+  _beginRide(dock, hint) {
     const craft = new THREE.Group();
     const hull = new THREE.Mesh(
       new THREE.ConeGeometry(0.0012, 0.005, 6),
@@ -1008,7 +1062,9 @@ export class PlanetScale {
     this.planetGroup.add(craft);
     this.ride = { t: 0, dur: 46, from: this.camPos.clone(), dock, craft };
     this.walk = false;
-    this.app.hud.setHint('riding the corridor · drag to look · b to bail');
+    this.auto = null;
+    this.asc = null;
+    this.app.hud.setHint(hint);
     if (this.app.audio) this.app.audio.warp('dive');
   }
 
@@ -1030,12 +1086,28 @@ export class PlanetScale {
     r.t += dt / r.dur;
     const to = _t5;
     r.dock.pos(to);
+    if (r.dock.kind === 'ground') {
+      // the shuttle home streams its landing zone ahead, and holds its
+      // final approach until the drawn ground has converged
+      this._descentFocus = (this._descentFocus ?? new THREE.Vector3()).copy(to);
+      if (r.t > 0.96) {
+        const d = _t6.copy(to).normalize();
+        const depth = this.quad.depthAt(d);
+        if (depth >= 0 && depth < 14 && (r.hold = (r.hold ?? 0) + dt) < 10) r.t = 0.96;
+      }
+    }
     if (r.t >= 1) {
-      // docked: step through the airlock onto the ring deck
       const dock = r.dock;
       this.camPos.copy(to);
       this._endRide(true);
-      this._enterInside(dock);
+      if (dock.kind === 'ground') {
+        // wheels down: boots take it from here
+        this.walk = true;
+        this.app.hud.setHint('touchdown · wasd to walk · r lifts off · b boards a shuttle');
+      } else {
+        // docked: step through the airlock onto the ring deck
+        this._enterInside(dock);
+      }
       return;
     }
     const sm = r.t * r.t * (3 - 2 * r.t);
@@ -1179,7 +1251,7 @@ export class PlanetScale {
     this.inside = { dock, theta: 0, lat: 0 };
     this.walk = false;
     this.pitch = 0;
-    this.app.hud.setHint('aboard the ring · w/s walk the deck · a/d cross it · b steps off · esc leaves for orbit');
+    this.app.hud.setHint('aboard the ring · w/s walk the deck · a/d cross it · b calls the shuttle home · esc leaves for orbit');
   }
 
   _exitInside() {
@@ -1473,7 +1545,8 @@ export class PlanetScale {
 
     // camera-relative world: the planet wears the negative camera position
     this.planetGroup.position.copy(this.camPos).negate();
-    this.quad.update(this.camPos);
+    if (!this.auto && this.ride?.dock?.kind !== 'ground') this._descentFocus = null;
+    this.quad.update(this.camPos, this._descentFocus);
     if (this.ocean) this.ocean.update(this.camPos);
 
     // life on the ground: a pocket of creatures and buildings follows you
@@ -1557,6 +1630,10 @@ export class PlanetScale {
     this.dirLight.position.copy(this.uSunDir.value).multiplyScalar(6000);
     this.sunSprite.position.copy(this.uSunDir.value).multiplyScalar(9000);
     this.uHazeK.value = this.hazeBase * Math.exp(-Math.max(alt, 0) / (this.R * 0.012));
+    // near and inside the cloud deck, the volumetric march earns more steps
+    if (this._vSteps) {
+      this._vSteps.value = Math.min(Math.round(this._vStepsBase * (alt < this.R * 0.06 ? 1.6 : 1)), 26);
+    }
     if (this.cloudMesh && this._cloudAmt) {
       // legacy shell only: the volumetric deck needs no fade tricks
       this.cloudMesh.rotation.y += dt * 0.0004;
@@ -1654,10 +1731,9 @@ export class PlanetScale {
   onKey(code) {
     if (code === 'KeyX') { this.strikeMeteor(false); return true; }
     if (code === 'KeyB') {
-      if (this.inside) this._exitInside();
+      if (this.inside) this.boardShuttle();       // homeward, from the deck
       else if (this.ride) this._endRide(false);
-      else if ((this.altUnits ?? 9) < 6) this.boardShuttle();
-      else this.app.hud.setHint('shuttles board from the ground');
+      else this.boardShuttle();                   // up from the ground, home from the sky
       return true;
     }
     return false;
@@ -1733,6 +1809,7 @@ export class PlanetScale {
     this._dropAnchor();
     this.orbitals?.dispose();
     this.cities?.dispose();
+    this.aurora?.dispose();
     this.quad.dispose();
     if (this.ocean) this.ocean.dispose();
     this.scene.traverse(o => {

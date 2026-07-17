@@ -28,7 +28,9 @@ is true `#000` black.
 **It works on a phone.** On any touch screen the universe grows thumbs: a
 stick that walks and flies (it speaks the same WASD the keyboard does,
 through synthetic key events — same systems, same depth), hold-buttons
-for climb, dive and boost, **pinch for altitude** at every scale, and one
+for climb, dive and boost, **pinch for altitude** at every scale,
+**double-tap to dive deeper** (synthesized — `touch-action: none`
+silences the native one), a shuttle button on inhabited worlds, and one
 context button that always does the thing you want most — **fly me
 down** from orbit, **back to orbit** from the ground, conduct the tour
 everywhere else. A `?` button explains the gestures. Nothing was
@@ -251,6 +253,18 @@ and a bay bridge, is the same Sabveth on every machine, forever.
 
 ![the ignition: four and a half million windows coming on with the dark](docs/screenshots/42-city-ignition.png)
 
+The descent puts its wheels down honestly: the quadtree takes a second
+focus so the ground you are falling toward streams in ahead of the
+ship, and the flare holds short of touchdown until the drawn tiles
+under the site have converged — never a touchdown waist-deep in a
+parent-level mesh. And **B is a two-way shuttle**: from the ground it
+rides the corridor up to the station ring; from altitude, or straight
+off the ring deck, it rides you home — to the nearest metro plaza when
+the lights are in reach — and ends in boots, not an airlock. Flown
+sequences keep a floor under the adaptive resolution, and the
+volumetric deck earns half again as many march steps when you fly
+through it: the cinema stays cinema.
+
 And every world answers to something now — a film, a painting, a game, a
 page read at the right age. Each planet draws a **resonance** at birth
 (`src/resonance.js`): a complete art direction — color grade, haze
@@ -268,6 +282,21 @@ through a new film pass — per-world lift/gain/saturation in linear
 light, a breath of vignette and mid-riding grain (`post.js`) — and the
 HUD wears the epigraph as `mood`. Every dial was already in the engine;
 the resonance just knows where to set them.
+
+The streets carry **citizens** now — hundreds of instanced pedestrians
+walking the avenue sidewalks at strolling pace, muted city cloth with
+the odd bright coat, deterministic like everything else, waking within
+a few kilometres and resting beyond (the HUD counts them *afoot*).
+Worlds that wear winter light hang **aurorae** over their poles after
+dark: two nested curtain shells, an emerald base under a violet crown,
+the same drifting field at different radii so the rays gain true
+parallax as you move — banded on a wandering auroral oval, multiplied
+by the night, two draw calls (`src/aurora.js`). And the resonances
+reached the sound: each mood carries **its own slow chord** into the
+world's audio bed — monumental D–A under the desert epics, a Cmaj-add9
+shimmer for the pastorals, an Am9 nocturne for chrome and rain, two
+high sines far apart for winter light — breathing on long LFOs beneath
+the wind the atmosphere already shapes (`src/audio.js`).
 
 The land itself drains — and now it drains *correctly*: a *real global
 flow solve* (priority-flood depression filling seeded from the sea, D8
@@ -505,6 +534,7 @@ src/city.js         the metropolis: street grids, districted skylines,
                     bridges, harbors, traffic, and dusk igniting the windows
 src/resonance.js    per-world art direction: grade, haze, weather
                     temperament, lamplight — the homage shelf
+src/aurora.js       curtain shells over the poles of winter-light worlds
 src/blackhole.js    Schwarzschild geodesic raymarcher
 src/tour.js         the cinematic auto-pilot (T)
 src/audio.js        generative ambient beds per scale

@@ -75,6 +75,7 @@ const MOODS = [
     when: (p) => p.type === 'ice' || (p.type === 'terrestrial' && p.Teq < 240),
     grade: { lift: [0.008, 0.010, 0.016], gain: [0.98, 1.00, 1.06], sat: 0.62, vign: 0.20, grain: 0.06 },
     hazeX: 0.9, hazeTint: [0.7, 0.8, 1.0], bloomX: 0.9, sunX: 0.8,
+    aurora: true,                        // winter light earns the polar sky
   },
   {
     id: 'greenshade',                    // the overgrown thought
@@ -131,6 +132,7 @@ export function applyResonance(pp) {
     rainX: mood.rainX ?? 1,
     vegX: mood.vegX ?? 1,
     lamp: mood.lamp ?? null,
+    aurora: mood.aurora ?? false,
   };
   // the palette leans with the mood — gently, the world is still itself
   const pal = mood.palette;

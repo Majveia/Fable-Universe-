@@ -160,6 +160,21 @@ const GROUND_VERT = /* glsl */`
   }
 `;
 
+// citizens are small and numerous: tinted, sun-lit, nothing more
+const PED_FRAG = /* glsl */`
+  precision highp float;
+  uniform vec3 uSunDir;
+  uniform float uNight;
+  varying vec3 vN;
+  varying vec3 vTint;
+  varying float vNose;
+  void main() {
+    float day = 1.0 - uNight;
+    float diff = max(dot(vN, normalize(uSunDir)), 0.0);
+    gl_FragColor = vec4(vTint * (0.05 + diff * day * 0.9 + uNight * 0.06), 1.0);
+  }
+`;
+
 const GROUND_FRAG = /* glsl */`
   precision highp float;
   uniform vec3 uSunDir;
@@ -730,6 +745,36 @@ class City {
       this.cars = { mesh, agents };
     }
 
+    // ---- citizens: the sidewalks carry people ----------------------------
+    const walkable = this.roads.filter(rd => rd.cls >= 2 && rd.n > 10);
+    if (walkable.length) {
+      const nPed = Math.round(Math.min(90 * (this.Rc / 1000) ** 1.6, 520) * (COARSE ? 0.5 : 1));
+      const geo = new THREE.BoxGeometry(0.55, 1.75, 0.55);
+      geo.translate(0, 0.875, 0);
+      const tints = new Float32Array(nPed * 3);
+      const mesh = new THREE.InstancedMesh(geo, new THREE.ShaderMaterial({
+        uniforms: { uSunDir: ps.uSunDir, uNight },
+        vertexShader: CAR_VERT, fragmentShader: PED_FRAG,
+      }), nPed);
+      const agents = [];
+      for (let i = 0; i < nPed; i++) {
+        const rd = walkable[r.int(0, walkable.length - 1)];
+        agents.push({
+          rd, s: r.float(1, rd.n - 2), dir: r.sign(),
+          spd: r.float(1.1, 1.8) / SAMPLE_M,
+          lane: (rd.w / 2 - 1.6) * r.sign() * r.float(0.85, 1),
+        });
+        // clothing: muted city cloth with the odd bright coat
+        const bright = r.chance(0.08);
+        tints[i * 3] = bright ? r.float(0.5, 0.9) : r.float(0.08, 0.35);
+        tints[i * 3 + 1] = bright ? r.float(0.1, 0.5) : tints[i * 3] * r.float(0.8, 1.2);
+        tints[i * 3 + 2] = bright ? r.float(0.1, 0.6) : tints[i * 3] * r.float(0.8, 1.2);
+      }
+      geo.setAttribute('aTint', new THREE.InstancedBufferAttribute(tints, 3));
+      add(mesh);
+      this.peds = { mesh, agents };
+    }
+
     // ---- ferries and their wakes ----------------------------------------
     if (this._routes?.length) {
       const M = this._routes.length;
@@ -834,6 +879,36 @@ class City {
         mesh.setMatrixAt(i, d.matrix);
       }
       mesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // citizens resolve within a few kilometres; beyond that they rest
+    if (this.peds) {
+      const close = this.pos.distanceTo(this.ps.camPos) < 2.2;
+      this.peds.mesh.visible = close;
+      if (close) {
+        const { mesh, agents } = this.peds;
+        const d = _car;
+        for (let i = 0; i < agents.length; i++) {
+          const c = agents[i];
+          c.s += c.dir * c.spd * dt;
+          if (c.s <= 1 || c.s >= c.rd.n - 2) {
+            c.dir *= -1;
+            c.s = Math.min(Math.max(c.s, 1.01), c.rd.n - 2.01);
+          }
+          const i0 = Math.floor(c.s), f = c.s - i0;
+          const P = c.rd.pts;
+          const x = P[i0 * 3] * (1 - f) + P[(i0 + 1) * 3] * f;
+          const y = P[i0 * 3 + 1] * (1 - f) + P[(i0 + 1) * 3 + 1] * f;
+          const z = P[i0 * 3 + 2] * (1 - f) + P[(i0 + 1) * 3 + 2] * f;
+          const hx = (P[(i0 + 1) * 3] - P[i0 * 3]) * c.dir, hz = (P[(i0 + 1) * 3 + 2] - P[i0 * 3 + 2]) * c.dir;
+          const il = 1 / Math.max(Math.hypot(hx, hz), 1e-6);
+          d.position.set(x - hz * il * c.lane, y + 0.1, z + hx * il * c.lane);
+          d.rotation.set(0, Math.atan2(-hz * il, hx * il), 0);
+          d.updateMatrix();
+          mesh.setMatrixAt(i, d.matrix);
+        }
+        mesh.instanceMatrix.needsUpdate = true;
+      }
     }
 
     if (nearby && this.boats) {
@@ -1057,7 +1132,7 @@ export class CityField {
     const popM = best.pop >= 1e6 ? (best.pop / 1e6).toFixed(1) + ' M' : Math.round(best.pop / 1e3) + ' k';
     const rows = [['city', `${best.name} · pop ${popM} · ${ps._fmtKm(bd * ps.unitKm)}`]];
     if (best.built && best.cars) {
-      rows.push(['downtown', `${best.cars.agents.length} vehicles · ${best.boats?.boats.length ?? 0} ferries · ${best.bridges.length} bridges`]);
+      rows.push(['downtown', `${best.cars.agents.length} vehicles · ${best.peds?.agents.length ?? 0} afoot · ${best.boats?.boats.length ?? 0} ferries · ${best.bridges.length} bridges`]);
     }
     return rows;
   }

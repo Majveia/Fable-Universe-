@@ -236,9 +236,9 @@ class App {
   }
 
   _worldInfo(s) {
-    if (s.kind === 'surface') return { type: s.pp.type, atmo: s.atmo };
-    if (s.kind === 'clouds') return { type: s.pp.type, atmo: 1.5 };
-    if (s.kind === 'planet') return { type: s.pp.type, atmo: 0.55 };
+    if (s.kind === 'surface') return { type: s.pp.type, atmo: s.atmo, mood: s.pp.res?.id };
+    if (s.kind === 'clouds') return { type: s.pp.type, atmo: 1.5, mood: s.pp.res?.id };
+    if (s.kind === 'planet') return { type: s.pp.type, atmo: 0.55, mood: s.pp.res?.id };
     return null;
   }
 
@@ -319,13 +319,25 @@ class App {
       }
     };
     cv.addEventListener('pointercancel', lift);
+    let lastTap = null;
     cv.addEventListener('pointerup', (e) => {
       lift(e);
       this.active().onPointerUp?.(e);
       if (!down) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
       down = null;
-      if (moved < 6) this._click(e);
+      if (moved >= 6) return;
+      // touch never fires dblclick once touch-action is none: two quick
+      // taps in the same place are the double-tap, synthesized here
+      const now = performance.now();
+      if (e.pointerType === 'touch' && lastTap && now - lastTap.t < 500
+        && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 34) {
+        lastTap = null;
+        this._dblclick(e);
+        return;
+      }
+      lastTap = { t: now, x: e.clientX, y: e.clientY };
+      this._click(e);
     });
     cv.addEventListener('dblclick', (e) => this._dblclick(e));
     cv.addEventListener('wheel', (e) => this.active().onWheel?.(e), { passive: true });
@@ -731,12 +743,16 @@ class App {
       this.hud.setTime(s.timeReadout?.() ?? '', s.playing ?? true);
     }
 
-    // adaptive resolution: hold 60ish, never look potato unless we must
+    // adaptive resolution: hold 60ish, never look potato unless we must —
+    // and never during a flown sequence, which is exactly when it must
+    // look like cinema: the descent keeps a floor under the resolution
     const p = this._perf;
     p.acc += dt; p.n++;
     if (p.n >= 70) {
       const avg = p.acc / p.n;
-      if (avg > 0.03 && this.dpr > 1) this._setDpr(Math.max(this.dpr - 0.25, 1));
+      const s = this.active();
+      const floor = (s?.auto || s?.asc || s?.ride) ? 1.25 : 1;
+      if (avg > 0.03 && this.dpr > floor) this._setDpr(Math.max(this.dpr - 0.25, floor));
       else if (avg < 0.015 && this.dpr < Math.min(window.devicePixelRatio || 1, 2)) this._setDpr(this.dpr + 0.25);
       p.acc = 0; p.n = 0;
     }
