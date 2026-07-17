@@ -298,6 +298,8 @@ shimmer for the pastorals, an Am9 nocturne for chrome and rain, two
 high sines far apart for winter light — breathing on long LFOs beneath
 the wind the atmosphere already shapes (`src/audio.js`).
 
+![winter light keeps its word: the curtains over Verex III at 40 km](docs/screenshots/45-aurora.png)
+
 The land itself drains — and now it drains *correctly*: a *real global
 flow solve* (priority-flood depression filling seeded from the sea, D8
 steepest-descent accumulation on a cube grid, ~1 s baked per world)
