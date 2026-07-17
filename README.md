@@ -28,7 +28,9 @@ is true `#000` black.
 **It works on a phone.** On any touch screen the universe grows thumbs: a
 stick that walks and flies (it speaks the same WASD the keyboard does,
 through synthetic key events — same systems, same depth), hold-buttons
-for climb, dive and boost, **pinch for altitude** at every scale, and one
+for climb, dive and boost, **pinch for altitude** at every scale,
+**double-tap to dive deeper** (synthesized — `touch-action: none`
+silences the native one), a shuttle button on inhabited worlds, and one
 context button that always does the thing you want most — **fly me
 down** from orbit, **back to orbit** from the ground, conduct the tour
 everywhere else. A `?` button explains the gestures. Nothing was
@@ -250,6 +252,18 @@ and a bay bridge, is the same Sabveth on every machine, forever.
 | ![midtown at 380 m: towers separate, streets in shadow](docs/screenshots/41-city-canyon.png) | ![dusk from a downtown street: the windows keep their own hours](docs/screenshots/43-dusk-street.png) |
 
 ![the ignition: four and a half million windows coming on with the dark](docs/screenshots/42-city-ignition.png)
+
+The descent puts its wheels down honestly: the quadtree takes a second
+focus so the ground you are falling toward streams in ahead of the
+ship, and the flare holds short of touchdown until the drawn tiles
+under the site have converged — never a touchdown waist-deep in a
+parent-level mesh. And **B is a two-way shuttle**: from the ground it
+rides the corridor up to the station ring; from altitude, or straight
+off the ring deck, it rides you home — to the nearest metro plaza when
+the lights are in reach — and ends in boots, not an airlock. Flown
+sequences keep a floor under the adaptive resolution, and the
+volumetric deck earns half again as many march steps when you fly
+through it: the cinema stays cinema.
 
 And every world answers to something now — a film, a painting, a game, a
 page read at the right age. Each planet draws a **resonance** at birth

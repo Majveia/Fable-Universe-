@@ -1008,7 +1008,9 @@ export class PlanetScale {
    *  ground below. */
   boardShuttle() {
     if (this.ride) return;
-    const alt = this.altUnits ?? 9e9;
+    // fresh altitude — the cached readout can be a frame stale
+    const upNow = _t7.copy(this.camPos).normalize();
+    const alt = this.camPos.length() - this._groundR(upNow);
     if (alt < 6) {
       if (!this.orbitals) return;
       const dock = this.orbitals.board();
