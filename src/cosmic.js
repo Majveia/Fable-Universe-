@@ -118,8 +118,11 @@ const NB_VERT = /* glsl */`
   uniform sampler2D uDen;
   uniform float uAScale;
   uniform float uPx;
+  uniform float uTime;
   out float vDelta;
   out float vEdge;
+  out float vHash;
+  out float vNova;
   ${NBODY_LAYOUT.LAYOUT}
 
   void main() {
