@@ -317,6 +317,8 @@ and one in two thousand carries a supernova schedule, blooming white
 and dying ember-red against the OLED black while the camera drifts on
 its own. Each universe opens on its own epigraph.
 
+![the crystal garden on Verex III: spires in ranks on the winter-light ice](docs/screenshots/46-crystal-garden.png)
+
 ![winter light keeps its word: the curtains over Verex III at 40 km](docs/screenshots/45-aurora.png)
 
 The land itself drains — and now it drains *correctly*: a *real global
