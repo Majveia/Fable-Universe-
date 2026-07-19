@@ -20,7 +20,7 @@ import { BlackHoleScale, BLACKHOLE_NOTE } from './blackhole.js';
 import { SurfaceScale, SURFACE_NOTE } from './surface.js';
 import { CloudsScale, CLOUDS_NOTE } from './clouds.js';
 import { PlanetScale, PLANET_NOTE } from './planetscale.js';
-import { starName } from './rng.js';
+import { starName, universeEpigraph } from './rng.js';
 
 const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE, planet: PLANET_NOTE };
 const HINTS = {
@@ -83,7 +83,9 @@ class App {
     this._perf = { acc: 0, n: 0 };
     this._warping = false;
 
-    // splash dissolves into the young universe
+    // splash dissolves into the young universe — each one opens on its line
+    const spl = document.querySelector('#splash p');
+    if (spl) spl.textContent = `universe ${this.seed} · ${universeEpigraph(this.seed)}`;
     setTimeout(() => {
       const s = document.getElementById('splash');
       s.classList.add('gone');
@@ -367,6 +369,8 @@ class App {
         // the scale speaks first: on a planet, B is the shuttle, not the log
         case 'KeyB': if (!s.onKey?.('KeyB')) this.hud.toggleLog(); break;
         case 'KeyU': this.freshUniverse(); break;
+        case 'KeyG': this.hud.toggleAtlas(); break;
+        case 'Slash': this.hud.toggleControls(); break;
         default: s.onKey?.(e.code);
       }
     });
@@ -542,12 +546,27 @@ class App {
   /** warp to a logged place: tear the stack down, rebuild it there */
   travelTo(i) {
     const e = this.log[i];
-    if (!e || this._warping || this.zoom.busy) return;
+    if (!e) return;
+    if (e.seed !== this.seed) {
+      // other universe: cold jump
+      const u = new URL(window.location.href);
+      for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl']) u.searchParams.delete(k);
+      u.searchParams.set('seed', e.seed);
+      for (const [k, v] of Object.entries(e.params)) u.searchParams.set(k, v);
+      window.location.href = u;
+      return;
+    }
+    this.teleport(e.params);
+  }
+
+  /** warp anywhere in this universe — {g, s, pl, p, moon, cl} — behind one
+   *  fade: the Atlas's engine, and the logbook's */
+  teleport(params) {
+    if (this._warping || this.zoom.busy) return;
     const u = new URL(window.location.href);
     for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl']) u.searchParams.delete(k);
-    u.searchParams.set('seed', e.seed);
-    for (const [k, v] of Object.entries(e.params)) u.searchParams.set(k, v);
-    if (e.seed !== this.seed) { window.location.href = u; return; } // other universe: cold jump
+    u.searchParams.set('seed', this.seed);
+    for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
     this._warping = true;
     this.audio.warp('dive');
     this.hud.warp(() => {

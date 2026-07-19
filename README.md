@@ -53,9 +53,16 @@ hyperzooms**: the camera falls toward what you clicked, the scales swap
 mid-motion under a passing snapshot, and you arrive still moving. No cuts,
 no fades to black. **Click** selects, **double-click** dives, **Esc**
 ascends, **Space** pauses time, **+ / −** bend it, **H** hides the
-interface, **U** rolls a fresh universe, **drag / scroll** to fly. Every
-control on every scale is exercised by a headless audit suite that drives
-real key and pointer events through the same paths your hands do.
+interface, **U** rolls a fresh universe, **drag / scroll** to fly — and
+**?** lays every bind on every scale out on one card, so nothing has to
+be remembered.
+
+And you never have to walk home: **G opens the Atlas** (✦ on glass) —
+this system's worlds listed with their types, moods and a ⌂ for the
+inhabited ones, your marked places, and one more button: **somewhere
+wondrous**, which rolls the dice at the whole universe and sets you in
+orbit of a living world you have never seen. Any entry, one tap, one
+fade, and you are there.
 
 ### 1 · The cosmic web — a real N-body simulation
 262,144 dark-matter particles run through a **particle-mesh N-body code on
@@ -298,6 +305,18 @@ shimmer for the pastorals, an Am9 nocturne for chrome and rain, two
 high sines far apart for winter light — breathing on long LFOs beneath
 the wind the atmosphere already shapes (`src/audio.js`).
 
+No world is dead ground anymore (`src/strange.js`): ice worlds grow
+**crystal gardens** that hum with light after dark under standing
+pillars of auroral fire; lava worlds breathe **ember fountains** off the
+fracture heat; barren worlds keep **dust devils** walking their plains —
+and once in a long while, on some airless nowhere, a black slab stands
+in perfect 1 : 4 : 9 proportion, saying nothing. And the opening frame
+itself now dances: the cosmic web's three hundred thousand tracers each
+keep their own clock — no two quite the same color, none holding still —
+and one in two thousand carries a supernova schedule, blooming white
+and dying ember-red against the OLED black while the camera drifts on
+its own. Each universe opens on its own epigraph.
+
 ![winter light keeps its word: the curtains over Verex III at 40 km](docs/screenshots/45-aurora.png)
 
 The land itself drains — and now it drains *correctly*: a *real global
@@ -537,6 +556,8 @@ src/city.js         the metropolis: street grids, districted skylines,
 src/resonance.js    per-world art direction: grade, haze, weather
                     temperament, lamplight — the homage shelf
 src/aurora.js       curtain shells over the poles of winter-light worlds
+src/strange.js      wonders for the quiet worlds: crystal gardens, ember
+                    fountains, dust devils, and one black slab
 src/blackhole.js    Schwarzschild geodesic raymarcher
 src/tour.js         the cinematic auto-pilot (T)
 src/audio.js        generative ambient beds per scale

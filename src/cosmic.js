@@ -32,11 +32,23 @@ const vert = /* glsl */`
   uniform float uD;                // growth factor D(a)
   uniform float uAScale;           // 1 = comoving view, a = physical view
   uniform float uPx;               // pixel-ratio size boost
+  uniform float uTime;
   varying float vDelta;
   varying float vEdge;
+  varying float vHash;
+  varying float vNova;
 
   void main() {
     vec3 q = position;
+    // every tracer keeps its own clock: a hash for twinkle and hue, and —
+    // for one particle in two thousand — a supernova schedule
+    vHash = fract(sin(dot(q, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+    vNova = 0.0;
+    if (vHash > 0.9995) {
+      float lc = fract(uTime / 90.0 + vHash * 991.0);
+      vNova = max(0.0, 1.0 - lc * 30.0);
+      vNova *= vNova;
+    }
     vec3 disp = vec3(0.0);
     float div = 0.0;
     for (int i = 0; i < ${N_MODES}; i++) {
@@ -60,16 +72,19 @@ const vert = /* glsl */`
     vEdge = 1.0 - smoothstep(0.86, 1.0, max(aq.x, max(aq.y, aq.z)));
 
     vec4 mv = modelViewMatrix * vec4(x, 1.0);
-    float size = uPx * (0.95 + 0.6 * clamp(rho - 0.6, 0.0, 2.6));
-    gl_PointSize = clamp(size * (620.0 / -mv.z), 0.75, 5.5);
+    float size = uPx * (0.95 + 0.6 * clamp(rho - 0.6, 0.0, 2.6)) * (1.0 + vNova * 3.5);
+    gl_PointSize = clamp(size * (620.0 / -mv.z), 0.75, 9.0);
     gl_Position = projectionMatrix * mv;
   }
 `;
 
 const frag = /* glsl */`
   precision highp float;
+  uniform float uTime;
   varying float vDelta;
   varying float vEdge;
+  varying float vHash;
+  varying float vNova;
 
   void main() {
     vec2 c = gl_PointCoord - 0.5;
@@ -85,9 +100,14 @@ const frag = /* glsl */`
     vec3 col = t < 0.35
       ? mix(voidC, filC, smoothstep(-1.0, 0.35, t))
       : mix(filC, nodeC, smoothstep(0.35, 2.2, t));
+    // no two lights are quite the same color, and none holds still
+    col *= vec3(1.0 + 0.10 * sin(vHash * 6.283), 1.0 + 0.07 * sin(vHash * 12.6 + 2.0), 1.0 + 0.12 * cos(vHash * 6.283));
     float lum = 0.035 + 0.11 * smoothstep(-0.9, 0.1, t) + 0.38 * smoothstep(0.35, 2.6, t);
+    lum *= 0.86 + 0.14 * sin(uTime * (0.4 + vHash * 1.8) + vHash * 40.0);
+    // a supernova blooms white and dies ember-red
+    col += mix(vec3(1.4, 0.55, 0.32), vec3(1.9, 1.8, 1.55), vNova) * vNova * 2.4;
 
-    gl_FragColor = vec4(col * lum * fall * vEdge, 1.0);
+    gl_FragColor = vec4(col * (lum + vNova) * fall * vEdge, 1.0);
   }
 `;
 
@@ -110,21 +130,33 @@ const NB_VERT = /* glsl */`
     // compress the nonlinear range so halos glow without nuking the frame
     vDelta = clamp(log(1.0 + max(delta, -0.95)) * 1.05 - 0.25, -1.0, 2.5);
 
+    // per-tracer clock: twinkle, hue, and the occasional supernova
+    vHash = fract(sin(float(gl_VertexID) * 0.1031) * 43758.5453);
+    vNova = 0.0;
+    if (vHash > 0.9995) {
+      float lc = fract(uTime / 90.0 + vHash * 991.0);
+      vNova = max(0.0, 1.0 - lc * 30.0);
+      vNova *= vNova;
+    }
+
     vec3 disp = (x - 0.5) * ${BOX.toFixed(1)} * uAScale;
     vec3 ax = abs(x - 0.5) * 2.0;
     vEdge = 1.0 - smoothstep(0.86, 1.0, max(ax.x, max(ax.y, ax.z)));
 
     vec4 mv = modelViewMatrix * vec4(disp, 1.0);
-    float size = uPx * (0.95 + 0.42 * clamp(vDelta, 0.0, 2.0));
-    gl_PointSize = clamp(size * (620.0 / -mv.z), 0.75, 5.0);
+    float size = uPx * (0.95 + 0.42 * clamp(vDelta, 0.0, 2.0)) * (1.0 + vNova * 3.5);
+    gl_PointSize = clamp(size * (620.0 / -mv.z), 0.75, 9.0);
     gl_Position = projectionMatrix * mv;
   }
 `;
 
 const NB_FRAG = /* glsl */`
   precision highp float;
+  uniform float uTime;
   in float vDelta;
   in float vEdge;
+  in float vHash;
+  in float vNova;
   out vec4 fragColor;
 
   void main() {
@@ -139,8 +171,11 @@ const NB_FRAG = /* glsl */`
     vec3 col = t < 0.35
       ? mix(voidC, filC, smoothstep(-1.0, 0.35, t))
       : mix(filC, nodeC, smoothstep(0.35, 2.2, t));
+    col *= vec3(1.0 + 0.10 * sin(vHash * 6.283), 1.0 + 0.07 * sin(vHash * 12.6 + 2.0), 1.0 + 0.12 * cos(vHash * 6.283));
     float lum = 0.035 + 0.1 * smoothstep(-0.9, 0.1, t) + 0.3 * smoothstep(0.35, 2.4, t);
-    fragColor = vec4(col * lum * fall * vEdge, 1.0);
+    lum *= 0.86 + 0.14 * sin(uTime * (0.4 + vHash * 1.8) + vHash * 40.0);
+    col += mix(vec3(1.4, 0.55, 0.32), vec3(1.9, 1.8, 1.55), vNova) * vNova * 2.4;
+    fragColor = vec4(col * (lum + vNova) * fall * vEdge, 1.0);
   }
 `;
 
@@ -250,12 +285,14 @@ export class CosmicScale {
       kArr.push(new THREE.Vector3(...m.k));
       apArr.push(new THREE.Vector2(m.amp, m.phase));
     }
+    this.uTime = { value: 0 };
     this.uniforms = {
       uK: { value: kArr },
       uAP: { value: apArr },
       uD: { value: COSMO.growth(this.a) },
       uAScale: { value: 1 },
       uPx: { value: Math.min(window.devicePixelRatio, 2) },
+      uTime: this.uTime,
     };
     const mat = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
@@ -291,6 +328,7 @@ export class CosmicScale {
       uDen: { value: this.sim.densityTexture },
       uAScale: { value: 1 },
       uPx: { value: Math.min(window.devicePixelRatio, 2) },
+      uTime: this.uTime,
     };
     this.nbPoints = new THREE.Points(geo, new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
@@ -319,6 +357,8 @@ export class CosmicScale {
 
   // ------------------------------------------------------------- loop ----
   update(dt) {
+    // the dance never pauses: twinkle and supernovae run on their own clock
+    this.uTime.value += dt;
     if (this.mode === 'nbody') {
       if (this.playing && this.a < 1) {
         const da = this.a * (Math.exp(this.rate * dt) - 1);
