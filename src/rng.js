@@ -92,3 +92,22 @@ export function cityName(seed, ci, cj, ck) {
   if (r.chance(0.3)) n = r.pick(C_TITLE) + n;
   return n;
 }
+
+// every universe opens on its own line — the fable frame
+const EPIGRAPHS = [
+  'every light you see is an address',
+  'the void remembers where it put things',
+  'somewhere in here, somebody is home',
+  'all of this happened, somewhere else',
+  'matter is patient · light is not',
+  'begin anywhere · it all connects',
+  'the filaments were first to know',
+  'gravity is just a long memory',
+  'nothing here was drawn twice',
+  'a story told in three hundred thousand lights',
+];
+
+export function universeEpigraph(seed) {
+  const r = new RNG(hash(seed, 0xfab1e));
+  return r.pick(EPIGRAPHS);
+}

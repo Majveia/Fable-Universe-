@@ -1,6 +1,25 @@
 // The interface: a few hairlines of type floating over the void.
 // Everything fades; the universe is the UI.
 
+import { systemParams } from './system.js';
+
+const CONTROLS_HTML = `
+  <b>everywhere</b><br>
+  click — select · double-click — dive<br>
+  esc — ascend · scroll / pinch — altitude<br>
+  space — pause time · + − — bend it · [ ] — scrub<br>
+  t — tour · g — atlas · ? — this card<br>
+  h — hide the interface · m — sound<br>
+  b — logbook · u — a new universe<br>
+  <b>on a planet</b><br>
+  w a s d — fly &amp; walk · r f — climb &amp; dive<br>
+  shift — boost · x — call a meteor<br>
+  b — shuttle: up from the ground, home from the sky<br>
+  esc — the climb-out flies you to orbit<br>
+  <b>on glass</b><br>
+  drag — look · pinch — altitude · stick — move<br>
+  ⛯ — fly me · ⇋ — shuttle · double-tap — dive`;
+
 export class HUD {
   constructor(app) {
     this.app = app;
@@ -49,6 +68,27 @@ export class HUD {
     this.science.appendChild(this.logPanel);
     logBtn.onclick = () => this.toggleLog();
 
+    // the atlas: anywhere in the universe, one step
+    const atlasBtn = document.createElement('button');
+    atlasBtn.textContent = '✦';
+    atlasBtn.title = 'atlas (g)';
+    this.atlasPanel = document.createElement('div');
+    this.atlasPanel.className = 'note logpanel';
+    this.science.appendChild(atlasBtn);
+    this.science.appendChild(this.atlasPanel);
+    atlasBtn.onclick = () => this.toggleAtlas();
+
+    // the controls, all of them, one card
+    const ctrlBtn = document.createElement('button');
+    ctrlBtn.textContent = '⌨';
+    ctrlBtn.title = 'controls (?)';
+    this.ctrlPanel = document.createElement('div');
+    this.ctrlPanel.className = 'note logpanel controlscard';
+    this.ctrlPanel.innerHTML = CONTROLS_HTML;
+    this.science.appendChild(ctrlBtn);
+    this.science.appendChild(this.ctrlPanel);
+    ctrlBtn.onclick = () => this.toggleControls();
+
     this.warpEl = document.getElementById('warp');
     this.veilEl = document.createElement('div');
     this.veilEl.id = 'veil';
@@ -82,6 +122,7 @@ export class HUD {
         <button id="tb-boost" title="boost">≫</button>
         <button id="tb-shuttle" title="shuttle">⇋</button>
         <button id="tb-go" title="fly me there">⛯</button>
+        <button id="tb-atlas" title="atlas">✦</button>
         <button id="tb-help" title="controls">?</button>
       </div>
       <div id="touchhelp">
@@ -92,6 +133,7 @@ export class HUD {
         ▲ ▼ — climb &amp; dive · ≫ — boost<br>
         ⇋ — shuttle: up from the ground, home from the sky<br>
         ⛯ — fly me down · back to orbit<br>
+        ✦ — atlas: anywhere, one step<br>
         tap a world — approach it<br>
         double-tap — dive deeper</div>`;
     document.body.appendChild(ui);
@@ -167,6 +209,7 @@ export class HUD {
     ui.querySelector('#tb-help').addEventListener('click', () => {
       ui.querySelector('#touchhelp').classList.toggle('open');
     });
+    ui.querySelector('#tb-atlas').addEventListener('click', () => this.toggleAtlas());
     // the shuttle: B by another name, shown only where shuttles fly
     this._shBtn = ui.querySelector('#tb-shuttle');
     this._shBtn.addEventListener('click', () => {
@@ -209,6 +252,76 @@ export class HUD {
   toggleLog() {
     this.logPanel.classList.toggle('open');
     this.refreshLog();
+  }
+
+  toggleControls() {
+    this.atlasPanel.classList.remove('open');
+    this.logPanel.classList.remove('open');
+    this.ctrlPanel.classList.toggle('open');
+  }
+
+  toggleAtlas() {
+    this.ctrlPanel.classList.remove('open');
+    this.logPanel.classList.remove('open');
+    this.atlasPanel.classList.toggle('open');
+    this.refreshAtlas();
+  }
+
+  /** the atlas: this system's worlds, marked places, and a wondrous roll */
+  refreshAtlas() {
+    if (!this.atlasPanel.classList.contains('open')) return;
+    const app = this.app;
+    let g = null, sysP = null;
+    for (const sc of app.stack) {
+      if (sc.kind === 'galaxy') g = sc.ctx.galaxySeed;
+      if (sc.kind === 'system') sysP = sc.params;
+      if (!sysP && (sc.kind === 'planet' || sc.kind === 'surface' || sc.kind === 'clouds')) sysP = sc.ctx.system;
+    }
+    let html = '<button class="lb-mark" id="at-rand">✦ somewhere wondrous</button>';
+    if (sysP && g) {
+      html += `<div class="at-sec">${sysP.name}</div>`;
+      sysP.planets.forEach((p, i) => {
+        const badge = p.inhabited ? '⌂ ' : '';
+        const mood = p.res?.line ? ` · <i>${p.res.line}</i>` : '';
+        html += `<div class="lb-row"><button class="lb-go" data-pl="${i}">${badge}${p.name} · ${p.type}${mood}</button></div>`;
+      });
+    }
+    const marks = app.log.filter(e => e.seed === app.seed);
+    if (marks.length) {
+      html += '<div class="at-sec">marked places</div>';
+      marks.forEach((e) => {
+        const i = app.log.indexOf(e);
+        html += `<div class="lb-row"><button class="lb-go" data-i="${i}">${e.label}</button></div>`;
+      });
+    }
+    this.atlasPanel.innerHTML = html;
+    this.atlasPanel.querySelector('#at-rand').onclick = () => this._wondrous();
+    this.atlasPanel.querySelectorAll('[data-pl]').forEach(b => {
+      b.onclick = () => {
+        const i = +b.dataset.pl;
+        const p = sysP.planets[i];
+        this.atlasPanel.classList.remove('open');
+        app.teleport(p.typeId <= 4 ? { g, s: sysP.seed, pl: i } : { g, s: sysP.seed, p: i, cl: 1 });
+      };
+    });
+    this.atlasPanel.querySelectorAll('[data-i]').forEach(b => {
+      b.onclick = () => { this.atlasPanel.classList.remove('open'); app.travelTo(+b.dataset.i); };
+    });
+  }
+
+  /** roll the dice at the universe: land in orbit of a living world */
+  _wondrous() {
+    const app = this.app;
+    for (let t = 0; t < 80; t++) {
+      const g = ((Math.random() * 2 ** 31) | 0) || 1;
+      const s = ((Math.random() * 2 ** 31) | 0) || 1;
+      const i = systemParams(s).planets.findIndex(p => p.inhabited);
+      if (i >= 0) {
+        this.atlasPanel.classList.remove('open');
+        app.teleport({ g, s, pl: i });
+        return;
+      }
+    }
   }
 
   refreshLog() {

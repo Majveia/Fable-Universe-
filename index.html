@@ -159,6 +159,19 @@
     #hints{ display:none; }
   }
 
+  /* ------- atlas & controls cards ------- */
+  .at-sec{
+    margin:10px 0 4px; padding-top:8px; border-top:1px solid var(--hairline);
+    font-size:10px; letter-spacing:.3em; text-transform:uppercase; color:var(--ink-faint);
+  }
+  .logpanel .lb-go i{ color:var(--ink-faint); font-style:italic; }
+  .controlscard{ line-height:2.05; }
+  .controlscard b{
+    display:block; margin:10px 0 2px; font-size:10px; letter-spacing:.3em;
+    text-transform:uppercase; color:var(--ink-faint); font-weight:400;
+  }
+  .controlscard b:first-child{ margin-top:0; }
+
   /* ------- touch controls (built by hud.js on coarse pointers) ------- */
   #app canvas{ touch-action:none; }
   #touch{ position:fixed; inset:0; pointer-events:none; display:none; z-index:22; }

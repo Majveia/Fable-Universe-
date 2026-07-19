@@ -21,6 +21,7 @@ import { hash, RNG } from './rng.js';
 import { snoise } from './terrain.js';
 import { addLife } from './life.js';
 import { addSettlement } from './settlement.js';
+import { addWonders } from './strange.js';
 import { buildScatterLUTs } from './scatterlut.js';
 import { addOrbitals } from './orbital.js';
 import { solveWatershed } from './hydrology.js';
@@ -1429,6 +1430,8 @@ export class PlanetScale {
     this.anchor = {
       a, aR, mpu, group, east, north, pos: anchorPos, eco: host.eco,
       life: addLife(host),
+      // worlds without a biosphere get their wonders instead
+      wonders: addWonders(host),
       // any spot the night-lights shader would glow gets its towers —
       // unless a true metropolis already owns this ground
       settlement: this._cityMask(a) > 0.02 && !host.urban ? addSettlement(host) : null,
@@ -1564,6 +1567,7 @@ export class PlanetScale {
     if (this.anchor) {
       const sunY = this.uSunDir.value.dot(this.anchor.a);
       this.anchor.life?.update(dt, sunY);
+      this.anchor.wonders?.update(dt, sunY);
       this.anchor.settlement?.update(dt, sunY);
     }
     if (this._scareT > 0) this._scareT -= dt;
