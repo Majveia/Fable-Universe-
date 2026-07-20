@@ -281,6 +281,11 @@ export class QuadtreePlanet {
     const camDir = _v1.copy(camPos).multiplyScalar(1 / (camR || 1));
     // everything past the horizon (plus a node's own angular radius) is skippable
     const horizon = Math.acos(Math.min(this.R * 0.995 / Math.max(camR, this.R), 1));
+    // split distances are measured to the LOCAL TERRAIN SHELL, not the datum
+    // sphere: on a high plateau the boots are on the dirt but far from the
+    // R-sphere, and measuring to the datum stopped the splits early — coarse
+    // ground under a standing walker. One analytic height per frame fixes it.
+    const shellK = this.heightAt(camDir) / this.R;
 
     const show = _showSet; show.clear();
     const sticky = this._sticky; sticky.clear();
@@ -297,8 +302,8 @@ export class QuadtreePlanet {
 
       // split by whichever is nearer: the camera, or the descent director's
       // focus — the ground you are falling toward streams in ahead of you
-      let near = _v4.copy(c).sub(camPos).length();
-      if (focus) near = Math.min(near, _v5.copy(c).sub(focus).length());
+      let near = _v4.copy(c).multiplyScalar(shellK).sub(camPos).length();
+      if (focus) near = Math.min(near, _v5.copy(c).multiplyScalar(shellK).sub(focus).length());
       const dist = Math.max(near - this.R * ang, 0.002);
       const chord = this.R * ang * 2;
       const key = face + ':' + depth + ':' + i + ':' + j;
@@ -311,7 +316,8 @@ export class QuadtreePlanet {
         for (let q = 0; q < 4; q++) {
           const ci = i * 2 + (q & 1), cj = j * 2 + (q >> 1);
           const ck = face + ':' + (depth + 1) + ':' + ci + ':' + cj;
-          if (!this.tiles.has(ck)) {
+          const child = this.tiles.get(ck);
+          if (!child) {
             ready = false;
             if (!this.pending.has(ck)) {
               this._misses.push({
@@ -319,6 +325,12 @@ export class QuadtreePlanet {
                 prio: chord / dist,
               });
             }
+          } else {
+            // a child a shown parent is waiting on must never be evicted,
+            // or the four siblings can chase each other out of the cache
+            // forever and the split never happens — the ground stays
+            // coarse under your boots while the stream churns at the cap
+            sticky.add(ck);
           }
         }
         if (ready) {
@@ -364,11 +376,12 @@ export class QuadtreePlanet {
       wk.postMessage({ ...this.job, key: m.key, face: m.face, depth: m.depth, i: m.i, j: m.j });
     }
 
-    // the cache must at least hold what the frame draws plus what is in
-    // flight (else build-against-evict thrash), but no more than a modest
-    // margin over it — headroom without the memory balloon
-    this.cap = Math.min(this._coarse ? 1100 : 1500,
-      Math.max(this._baseCap, Math.ceil((S.drawn + this.pending.size) * 1.25)));
+    // the cache must hold the true working set — everything drawn, every
+    // ancestor touched on the way down, every awaited child, everything in
+    // flight — plus a modest margin. Less than this and the LRU eats the
+    // very tiles the next frame needs; much more is just a memory balloon.
+    this.cap = Math.min(this._coarse ? 1200 : 1600,
+      Math.max(this._baseCap, Math.ceil((sticky.size + this.pending.size) * 1.3)));
 
     // evict cold tiles (never one that is drawn or was touched this frame)
     if (this.tiles.size > this.cap) {
