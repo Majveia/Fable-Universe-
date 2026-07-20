@@ -58,7 +58,8 @@ export class QuadtreePlanet {
     this.tiles = new Map();      // key → { mesh, geo }
     this.pending = new Set();    // keys in flight to a worker
     this.results = [];           // built tiles awaiting GPU upload
-    this.cap = 900;              // LRU tile budget
+    this._baseCap = 900;         // LRU floor; grows to fit the working set
+    this.cap = 900;
     this.stats = { drawn: 0, cached: 0, pending: 0, built: 6, maxDepth: 0, tris: 0 };
 
     // worker pool
@@ -119,11 +120,14 @@ export class QuadtreePlanet {
       if (this.R * ang * 2 / (this.res - 1) > radUnits * 3) continue;
       this._center(f, d, i, j, _v2).multiplyScalar(1 / this.R);
       if (_v2.distanceTo(site) > reach + ang * 1.7) continue;
+      // visible tiles refresh in place (the update sweep re-requests them);
+      // only hidden ones evict now, so the impact never opens a hole
+      if (t.mesh.visible) continue;
       t.geo.dispose(); t.mesh.material.dispose();
       this.group.remove(t.mesh);
       this.tiles.delete(key);
       this._shown.delete(key);
-      if (++evicted > 160) break;
+      evicted++;
     }
     return evicted;
   }
@@ -148,11 +152,14 @@ export class QuadtreePlanet {
       if (this.R * ang * 2 / (this.res - 1) > radUnits * 3) continue;
       this._center(f, d, i, j, _v2).multiplyScalar(1 / this.R);
       if (_v2.distanceTo(site) > reach + ang * 1.7) continue;
+      // hidden tiles evict now; visible ones stay and refresh seamlessly in
+      // the update loop (evicting a drawn tile here would punch a hole)
+      if (t.mesh.visible) continue;
       t.geo.dispose(); t.mesh.material.dispose();
       this.group.remove(t.mesh);
       this.tiles.delete(key);
       this._shown.delete(key);
-      if (++evicted > 160) break;
+      evicted++;
     }
     return evicted;
   }
@@ -172,7 +179,9 @@ export class QuadtreePlanet {
     mesh.position.copy(center);
     mesh.visible = false;
     this.group.add(mesh);
-    this.tiles.set(data.key, { mesh, geo });
+    // remember which field generation built this tile: when a pad or crater
+    // later changes the ground, a stale tile refreshes itself in place
+    this.tiles.set(data.key, { mesh, geo, gen: data.gen ?? this.job.gen });
   }
 
   /** does this tile overlap any crater or pad added since it was queued?
@@ -239,14 +248,27 @@ export class QuadtreePlanet {
 
     // upload a few finished tiles per frame — streaming, not stuttering
     let uploads = 0;
-    while (this.results.length && uploads < 4) {
+    while (this.results.length && uploads < 6) {
       const data = this.results.shift();
       this.pending.delete(data.key);
       // stale generation: built before the field last changed. Only the
       // tiles whose ground actually changed are stale — dropping the whole
       // in-flight pipeline for one distant pad holes the planet mid-descent
       if (data.gen !== this.job.gen && this._touchesChangedGround(data.key)) continue;
-      if (!this.tiles.has(data.key)) { this._adopt(data); S.built++; }
+      const have = this.tiles.get(data.key);
+      if (!have) { this._adopt(data); S.built++; }
+      else if ((have.gen ?? 0) < data.gen) {
+        // seamless refresh: the graded replacement inherits the old tile's
+        // visibility, so the ground rises under a city with no hole
+        const wasVisible = have.mesh.visible;
+        have.geo.dispose(); have.mesh.material.dispose();
+        this.group.remove(have.mesh);
+        this.tiles.delete(data.key);
+        this._adopt(data);
+        const nt = this.tiles.get(data.key);
+        nt.mesh.visible = wasVisible;
+        if (wasVisible) this._shown.add(data.key);
+      }
       uploads++;
     }
 
@@ -303,6 +325,17 @@ export class QuadtreePlanet {
         show.add(key);
         S.drawn++;
         if (depth > S.maxDepth) S.maxDepth = depth;
+        // a drawn tile built before the last field change refreshes itself:
+        // top-priority re-request, keeping the stale one visible until the
+        // graded replacement lands (see the adopt loop). Tiles that turn out
+        // to sit clear of every pad/crater are marked current, once.
+        if ((tile.gen ?? this.job.gen) !== this.job.gen && !this.pending.has(key)) {
+          if (this._touchesChangedGround(key)) {
+            this._misses.push({ key, face, depth, i, j, prio: 1e9 });
+          } else {
+            tile.gen = this.job.gen;
+          }
+        }
       }
     };
     for (let f = 0; f < 6; f++) visit(f, 0, 0, 0);
@@ -325,6 +358,11 @@ export class QuadtreePlanet {
       wk._job = m.key;
       wk.postMessage({ ...this.job, key: m.key, face: m.face, depth: m.depth, i: m.i, j: m.j });
     }
+
+    // the cache holds the whole working set plus the tiles in flight, so a
+    // dense scene (a city, low over the deck) never thrashes build-against-
+    // evict — the old fixed 900 was smaller than what a metropolis draws
+    this.cap = Math.min(2000, Math.max(this._baseCap, Math.ceil((S.drawn + this.pending.size) * 1.7)));
 
     // evict cold tiles (never one that is drawn or was touched this frame)
     if (this.tiles.size > this.cap) {

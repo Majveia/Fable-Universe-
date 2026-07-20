@@ -168,7 +168,15 @@ verbatim with the collision code. A parent tile keeps drawing until all
 four children have streamed in, and **geomorphing** lerps every vertex
 (and its normal) toward its parent-grid shape by view distance, so a
 child spawns wearing its parent's exact geometry and refines as you
-close: LOD transitions carry zero pop, no cuts, no fades.
+close: LOD transitions carry zero pop, no cuts, no fades. The tile cache
+**grows to hold whatever a scene draws** (a metropolis low over the deck
+wants far more than the old fixed budget), so a dense city never thrashes
+build-against-evict — that was the lag. And when a city grades its plot
+flat into the shared height field, the drawn ground under it **refreshes
+in place**: every tile remembers its build generation, an outdated one
+re-requests itself at top priority, and the graded replacement swaps in
+while the stale one stays visible — the ground rises to meet the towers
+with no hole, so buildings never hover over un-graded terrain.
 
 You don't have to fly it yourself: from the moment you arrive, **the
 autopilot has the ship**. A descent director picks a landing site —
