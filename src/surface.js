@@ -12,6 +12,7 @@ import { NOISE_GLSL, makeSurfaceMaterial, makeRingMaterial, makeAtmosphereMateri
 import { softDotTexture } from './nebula.js';
 import { addLife, isBiosphere } from './life.js';
 import { addSettlement } from './settlement.js';
+import { addTraveler } from './traveler.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 
 const EXT = 1400;            // terrain extent, ~metres
@@ -230,6 +231,11 @@ export class SurfaceScale {
     this.atmo = atmoStrength;
     this.horizonColor = pp.atmoColor.clone().multiplyScalar(0.5).add(new THREE.Color(0.04, 0.04, 0.05));
     this.zenithColor = pp.atmoColor.clone().multiplyScalar(0.26);
+    // the magic hour needs somewhere to return from
+    this._horizonBase = this.horizonColor.clone();
+    this._zenithBase = this.zenithColor.clone();
+    this._gold = new THREE.Color(1.0, 0.52, 0.22);
+    this._duskZenith = new THREE.Color(0.16, 0.1, 0.22);
 
     this._buildTerrain();
     this._buildSky();
@@ -245,6 +251,9 @@ export class SurfaceScale {
     // spawn on land, eyes toward the sunrise
     const spawn = this.spawn;
     this.camera.position.set(spawn.x, spawn.y + EYE, spawn.z);
+    // the body walks; the camera is only sometimes in its head
+    this.body = this.camera.position.clone();
+    this.traveler = addTraveler(this);
     this.controls = { // duck-typed for the hyperzoom
       enabled: false,
       target: new THREE.Vector3(spawn.x + 60, spawn.y + 4, spawn.z - 40),
@@ -254,6 +263,8 @@ export class SurfaceScale {
     this._syncAngles();
 
     this.bloomSettings = { strength: 0.5, radius: 0.6, threshold: 0.35 };
+    // the world's resonance grades the frame here too — same mood, same light
+    this.gradeSettings = pp.res?.grade;
     this._bindInput();
   }
 
@@ -436,6 +447,127 @@ export class SurfaceScale {
       }));
     this.sky.frustumCulled = false;
     this.scene.add(this.sky);
+    this._buildClouds();
+    this._buildNightSky();
+  }
+
+  /** painterly cumulus, drifting the way clouds actually spend a day */
+  _buildClouds() {
+    const pp = this.pp;
+    if (this.atmo < 0.5 || (pp.clouds ?? 0) < 0.22 || pp.typeId > 2) return;
+    const r = new RNG(hash(pp.seed, 0xc1a0d5));
+    const layers = [
+      { size: 520, count: 9, o: 0.5 },
+      { size: 300, count: 14, o: 0.38 },
+    ];
+    this.clouds = [];
+    this._cloudWind = r.float(2.5, 5.5) * (r.chance(0.5) ? 1 : -1);
+    for (const L of layers) {
+      const pts = [];
+      for (let c = 0; c < L.count; c++) {
+        const cx = r.float(-4200, 4200), cz = r.float(-4200, 4200);
+        const cy = r.float(300, 520), puffs = r.int(4, 8);
+        for (let p = 0; p < puffs; p++) {
+          pts.push(cx + r.gauss() * 130, cy + r.gauss() * 26, cz + r.gauss() * 90);
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts), 3));
+      const mat = new THREE.PointsMaterial({
+        map: softDotTexture(64), size: L.size, transparent: true,
+        opacity: L.o, depthWrite: false, sizeAttenuation: true,
+        color: 0xffffff,
+      });
+      const cloud = new THREE.Points(geo, mat);
+      cloud.renderOrder = 2;
+      cloud.frustumCulled = false;
+      this.scene.add(cloud);
+      this.clouds.push(cloud);
+    }
+  }
+
+  /** the night is not a wall: colored stars, the galaxy's milk, meteors */
+  _buildNightSky() {
+    const r = new RNG(hash(this.pp.seed, 0x57a88));
+    const N = 2400, NB = 700;
+    const pos = new Float32Array((N + NB) * 3);
+    const col = new Float32Array((N + NB) * 3);
+    const size = new Float32Array(N + NB);
+    const ph = new Float32Array(N + NB);
+    // a great circle for the galaxy to lie along
+    const bandN = new THREE.Vector3(r.gauss(), r.gauss() * 0.4 + 0.8, r.gauss()).normalize();
+    const v = new THREE.Vector3();
+    for (let i = 0; i < N + NB; i++) {
+      const band = i >= N;
+      do {
+        v.set(r.gauss(), r.gauss(), r.gauss()).normalize();
+        if (band) v.addScaledVector(bandN, -v.dot(bandN) * r.float(0.86, 0.97)).normalize();
+      } while (v.y < -0.12);
+      v.multiplyScalar(16000);
+      pos.set([v.x, v.y, v.z], i * 3);
+      // stellar colors: most white, the rest gold, ember, blue
+      const roll = r.next();
+      const c = band ? new THREE.Color(0.55, 0.55, 0.75).offsetHSL(r.float(-0.06, 0.06), 0, r.float(-0.1, 0.1))
+        : roll < 0.62 ? new THREE.Color(0.9, 0.9, 1.0)
+        : roll < 0.78 ? new THREE.Color(1.0, 0.82, 0.55)
+        : roll < 0.9 ? new THREE.Color(0.65, 0.75, 1.0)
+        : new THREE.Color(1.0, 0.5, 0.35);
+      c.multiplyScalar(band ? 0.2 : r.float(0.55, 1));
+      col.set([c.r, c.g, c.b], i * 3);
+      size[i] = band ? r.float(7, 16) : r.power(2.2, 7.5, 2.4);
+      ph[i] = r.float(0, 1);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('aCol', new THREE.BufferAttribute(col, 3));
+    geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+    geo.setAttribute('aPh', new THREE.BufferAttribute(ph, 1));
+    this._starDark = { value: 0 };
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { uTime: this.uTime, uDark: this._starDark },
+      vertexShader: /* glsl */`
+        attribute vec3 aCol;
+        attribute float aSize;
+        attribute float aPh;
+        uniform float uTime;
+        uniform float uDark;
+        varying vec3 vCol;
+        varying float vA;
+        void main() {
+          vCol = aCol;
+          float tw = 0.74 + 0.26 * sin(uTime * (0.5 + aPh * 2.2) + aPh * 41.0);
+          vA = uDark * tw;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = aSize * (900.0 / -mv.z) * 20.0;
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: /* glsl */`
+        precision highp float;
+        varying vec3 vCol;
+        varying float vA;
+        void main() {
+          float d = length(gl_PointCoord - 0.5);
+          float a = smoothstep(0.5, 0.1, d) * vA;
+          gl_FragColor = vec4(vCol * a, a);
+        }`,
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    this.nightStars = new THREE.Points(geo, mat);
+    this.nightStars.renderOrder = 1;
+    this.nightStars.frustumCulled = false;
+    this.scene.add(this.nightStars);
+
+    // a meteor sprite waits offstage for its half-second
+    this._shoot = {
+      sp: new THREE.Sprite(new THREE.SpriteMaterial({
+        map: softDotTexture(32), color: new THREE.Color(1.6, 1.5, 1.2),
+        transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
+      })),
+      t: -1, next: 5,
+      from: new THREE.Vector3(), dirV: new THREE.Vector3(),
+    };
+    this._shoot.sp.scale.set(160, 7, 1);
+    this.scene.add(this._shoot.sp);
   }
 
   _buildOcean() {
@@ -805,6 +937,20 @@ export class SurfaceScale {
   onKey(code) {
     if (code === 'KeyF') { this.fly = !this.fly; return true; }
     if (code === 'KeyX') { this.strikeMeteor(true); return true; }
+    if (code === 'KeyC') {
+      const third = this.traveler.toggleView();
+      this.app.hud.setHint(third
+        ? 'third person · the traveler walks · c returns to their eyes'
+        : 'first person · c steps back outside');
+      return true;
+    }
+    if (code === 'KeyE') {
+      const res = this.traveler.tryMount();
+      if (res === 'mounted') this.app.hud.setHint('the skiff has you · wasd flies it · shift opens it up · e steps off');
+      else if (res === 'dismounted') this.app.hud.setHint('on foot · e reboards the skiff · c for first person');
+      else this.app.hud.setHint('the skiff waits near the plaza — walk to it and press e');
+      return true;
+    }
     return false;
   }
 
@@ -867,6 +1013,49 @@ export class SurfaceScale {
       const night = 1 - Math.min(Math.max((this.uSunDir.value.y + 0.15) * 4, 0), 1);
       for (const g of this.cityGlows) g.material.opacity = night * 0.5;
     }
+
+    // the sky lives: magic hour bleeding into the fog, cumulus on the wind,
+    // and when the dark comes, the stars come out in color
+    const elev = this.uSunDir.value.y;
+    const dusk = Math.max(1 - Math.abs(elev - 0.02) * 5.5, 0) * this.atmo;
+    this.horizonColor.copy(this._horizonBase).lerp(this._gold, dusk * 0.75);
+    this.zenithColor.copy(this._zenithBase).lerp(this._duskZenith, dusk * 0.55);
+    if (this.clouds) {
+      const day = Math.min(Math.max((elev + 0.15) * 3.2, 0), 1);
+      for (let ci = 0; ci < this.clouds.length; ci++) {
+        const c = this.clouds[ci];
+        c.position.x += this._cloudWind * dt;
+        if (c.position.x > 4600) c.position.x -= 9200;
+        if (c.position.x < -4600) c.position.x += 9200;
+        c.material.color.setRGB(0.2 + day * 0.85, 0.2 + day * 0.85, 0.24 + day * 0.88)
+          .lerp(this._gold, dusk * 0.55);
+        c.material.opacity = (ci === 0 ? 0.5 : 0.38) * (0.35 + 0.65 * Math.max(day, 0.15));
+      }
+    }
+    if (this.nightStars) {
+      this._starDark.value = Math.max(1 - Math.max(elev + 0.08, 0) * 4 * this.atmo, 0);
+      const sh = this._shoot;
+      if (sh.t < 0) {
+        sh.next -= dt;
+        if (sh.next <= 0 && this._starDark.value > 0.5) {
+          sh.t = 0;
+          const az = Math.random() * Math.PI * 2, el = 0.35 + Math.random() * 0.75;
+          sh.from.setFromSphericalCoords(9000, Math.PI / 2 - el, az);
+          sh.dirV.set(Math.random() - 0.5, -0.25 - Math.random() * 0.3, Math.random() - 0.5)
+            .normalize().multiplyScalar(6500);
+          sh.sp.material.rotation = Math.atan2(-sh.dirV.y, Math.hypot(sh.dirV.x, sh.dirV.z));
+          sh.next = 5 + Math.random() * 14;
+        }
+      } else {
+        sh.t += dt;
+        const u = sh.t / 0.8;
+        if (u >= 1) { sh.t = -1; sh.sp.material.opacity = 0; }
+        else {
+          sh.sp.position.copy(sh.from).addScaledVector(sh.dirV, u);
+          sh.sp.material.opacity = Math.sin(u * Math.PI) * this._starDark.value;
+        }
+      }
+    }
     if (this.life) this.life.update(dt, this.uSunDir.value.y);
     if (this.settlement) this.settlement.update(dt, this.uSunDir.value.y);
     this._updateMeteor(dt);
@@ -880,28 +1069,39 @@ export class SurfaceScale {
 
     // movement (skip while the hyperzoom still owns the camera)
     if (this.controls.enabled) {
-      this.camera.quaternion.setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'));
-      const speed = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 60 : 16) * (this.fly ? 3 : 1);
-      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-      if (!this.fly) { fwd.y = 0; fwd.normalize(); }
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
-      const acc = new THREE.Vector3();
-      if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) acc.add(fwd);
-      if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) acc.sub(fwd);
-      if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) acc.add(right);
-      if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) acc.sub(right);
-      if (acc.lengthSq() > 0) acc.normalize().multiplyScalar(speed);
-      this.vel.lerp(acc, 1 - Math.exp(-6 * dt));
-      this.camera.position.addScaledVector(this.vel, dt);
+      if (!this._hadCtl) {
+        // the zoom just handed us the camera: the body picks up where it landed
+        this._hadCtl = true;
+        if (!this.traveler?.third) this.body.copy(this.camera.position);
+        if (this.traveler) this.traveler._camSet = false;
+      }
+      if (this.traveler?.riding) {
+        this.traveler.drive(dt);
+      } else {
+        const view = new THREE.Quaternion().setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'));
+        const speed = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 60 : 16) * (this.fly ? 3 : 1);
+        const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(view);
+        if (!this.fly) { fwd.y = 0; fwd.normalize(); }
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(view);
+        const acc = new THREE.Vector3();
+        if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) acc.add(fwd);
+        if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) acc.sub(fwd);
+        if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) acc.add(right);
+        if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) acc.sub(right);
+        if (acc.lengthSq() > 0) acc.normalize().multiplyScalar(speed);
+        this.vel.lerp(acc, 1 - Math.exp(-6 * dt));
+        this.body.addScaledVector(this.vel, dt);
+        const ground = Math.max(this.heightAt(this.body.x, this.body.z),
+          this.seaLevel === null ? -1e9 : this.seaLevel) + EYE;
+        if (this.fly) this.body.y = Math.max(this.body.y, ground);
+        else this.body.y += (ground - this.body.y) * (1 - Math.exp(-12 * dt));
+      }
 
-      // stay inside the tile, feet on the ground
-      const p = this.camera.position;
-      p.x = Math.min(Math.max(p.x, -EXT * 0.48), EXT * 0.48);
-      p.z = Math.min(Math.max(p.z, -EXT * 0.48), EXT * 0.48);
-      const ground = Math.max(this.heightAt(p.x, p.z), this.seaLevel === null ? -1e9 : this.seaLevel) + EYE;
-      if (this.fly) p.y = Math.max(p.y, ground);
-      else p.y += (ground - p.y) * (1 - Math.exp(-12 * dt));
-    }
+      // stay inside the tile
+      this.body.x = Math.min(Math.max(this.body.x, -EXT * 0.48), EXT * 0.48);
+      this.body.z = Math.min(Math.max(this.body.z, -EXT * 0.48), EXT * 0.48);
+      this.traveler.place(dt, this.camera);
+    } else this._hadCtl = false;
   }
 
   togglePlay() { this.playing = !this.playing; }
@@ -918,11 +1118,15 @@ export class SurfaceScale {
     return [
       ['world', pp.name],
       ['class', pp.type + (pp.inhabited ? ' · inhabited' : '')],
+      ...(this.settlement ? [['settlement', this.settlement.name]] : []),
       ['biosphere', this.life ? 'flora + fauna' : '—'],
+      ...(pp.res?.line ? [['mood', pp.res.line]] : []),
       ['craters', this.impacts.length ? String(this.impacts.length) : '—'],
       ['surface gravity', g.toFixed(2) + ' g'],
       ['equilibrium temp', pp.Teq + ' K'],
-      ['mode', this.fly ? 'flight (f to walk)' : 'on foot (f to fly)'],
+      ['mode', this.traveler?.riding ? 'hover-skiff (e steps off)'
+        : this.fly ? 'flight (f to walk)' : 'on foot (f to fly)'],
+      ['view', this.traveler?.third ? 'third person (c)' : 'first person (c)'],
     ];
   }
 

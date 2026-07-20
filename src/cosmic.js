@@ -20,6 +20,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { COSMO } from './cosmology.js';
 import { hash, RNG } from './rng.js';
 import { NBodySim, NBODY_LAYOUT } from './nbody.js';
+import { softDotTexture } from './nebula.js';
 
 const BOX = 900;           // comoving box, display units (≙ ~500 Mpc)
 const N_MODES = 64;        // plane waves in the displacement field
@@ -37,6 +38,7 @@ const vert = /* glsl */`
   varying float vEdge;
   varying float vHash;
   varying float vNova;
+  varying vec3 vQ;
 
   void main() {
     vec3 q = position;
@@ -60,6 +62,7 @@ const vert = /* glsl */`
       div  += amp * kl * cos(ph);
     }
     vec3 x = (q + uD * disp) * uAScale;
+    vQ = x;
 
     // linear-theory overdensity δ = -D ∇·ψ, boosted toward the Zel'dovich
     // nonlinear estimate 1/(1 - Dδ_l) where collapse is underway
@@ -85,6 +88,7 @@ const frag = /* glsl */`
   varying float vEdge;
   varying float vHash;
   varying float vNova;
+  varying vec3 vQ;
 
   void main() {
     vec2 c = gl_PointCoord - 0.5;
@@ -93,10 +97,13 @@ const frag = /* glsl */`
     float fall = exp(-r2 * 11.0);
 
     // voids: near-black indigo · filaments: cold blue-violet · nodes: hot white-gold
+    // — and none of it holds one color: the palette breathes across the box
     float t = clamp(vDelta * 0.75, -1.0, 2.5);
+    float hueT = 0.5 + 0.5 * sin(uTime * 0.045 + vQ.y * 0.003);
+    float warmT = 0.5 + 0.5 * sin(uTime * 0.03 + vQ.x * 0.002);
     vec3 voidC = vec3(0.055, 0.06, 0.16);
-    vec3 filC  = vec3(0.30, 0.38, 1.00);
-    vec3 nodeC = vec3(1.35, 1.12, 0.78);
+    vec3 filC  = mix(vec3(0.30, 0.38, 1.00), vec3(0.52, 0.28, 0.98), hueT);
+    vec3 nodeC = mix(vec3(1.35, 1.12, 0.78), vec3(1.42, 0.92, 0.86), warmT);
     vec3 col = t < 0.35
       ? mix(voidC, filC, smoothstep(-1.0, 0.35, t))
       : mix(filC, nodeC, smoothstep(0.35, 2.2, t));
@@ -104,6 +111,9 @@ const frag = /* glsl */`
     col *= vec3(1.0 + 0.10 * sin(vHash * 6.283), 1.0 + 0.07 * sin(vHash * 12.6 + 2.0), 1.0 + 0.12 * cos(vHash * 6.283));
     float lum = 0.035 + 0.11 * smoothstep(-0.9, 0.1, t) + 0.38 * smoothstep(0.35, 2.6, t);
     lum *= 0.86 + 0.14 * sin(uTime * (0.4 + vHash * 1.8) + vHash * 40.0);
+    // slow waves of brightness roll along the filaments like weather
+    lum *= 0.82 + 0.18 * sin(dot(vQ, vec3(0.011, 0.007, 0.009)) - uTime * 0.55)
+               + 0.12 * sin(dot(vQ, vec3(-0.006, 0.012, -0.008)) + uTime * 0.31);
     // a supernova blooms white and dies ember-red
     col += mix(vec3(1.4, 0.55, 0.32), vec3(1.9, 1.8, 1.55), vNova) * vNova * 2.4;
 
@@ -123,6 +133,7 @@ const NB_VERT = /* glsl */`
   out float vEdge;
   out float vHash;
   out float vNova;
+  out vec3 vQ;
   ${NBODY_LAYOUT.LAYOUT}
 
   void main() {
@@ -143,6 +154,7 @@ const NB_VERT = /* glsl */`
     }
 
     vec3 disp = (x - 0.5) * ${BOX.toFixed(1)} * uAScale;
+    vQ = disp;
     vec3 ax = abs(x - 0.5) * 2.0;
     vEdge = 1.0 - smoothstep(0.86, 1.0, max(ax.x, max(ax.y, ax.z)));
 
@@ -160,6 +172,7 @@ const NB_FRAG = /* glsl */`
   in float vEdge;
   in float vHash;
   in float vNova;
+  in vec3 vQ;
   out vec4 fragColor;
 
   void main() {
@@ -168,15 +181,19 @@ const NB_FRAG = /* glsl */`
     if (r2 > 0.25) discard;
     float fall = exp(-r2 * 11.0);
     float t = vDelta;
+    float hueT = 0.5 + 0.5 * sin(uTime * 0.045 + vQ.y * 0.003);
+    float warmT = 0.5 + 0.5 * sin(uTime * 0.03 + vQ.x * 0.002);
     vec3 voidC = vec3(0.055, 0.06, 0.16);
-    vec3 filC  = vec3(0.30, 0.38, 1.00);
-    vec3 nodeC = vec3(1.35, 1.12, 0.78);
+    vec3 filC  = mix(vec3(0.30, 0.38, 1.00), vec3(0.52, 0.28, 0.98), hueT);
+    vec3 nodeC = mix(vec3(1.35, 1.12, 0.78), vec3(1.42, 0.92, 0.86), warmT);
     vec3 col = t < 0.35
       ? mix(voidC, filC, smoothstep(-1.0, 0.35, t))
       : mix(filC, nodeC, smoothstep(0.35, 2.2, t));
     col *= vec3(1.0 + 0.10 * sin(vHash * 6.283), 1.0 + 0.07 * sin(vHash * 12.6 + 2.0), 1.0 + 0.12 * cos(vHash * 6.283));
     float lum = 0.035 + 0.1 * smoothstep(-0.9, 0.1, t) + 0.3 * smoothstep(0.35, 2.4, t);
     lum *= 0.86 + 0.14 * sin(uTime * (0.4 + vHash * 1.8) + vHash * 40.0);
+    lum *= 0.82 + 0.18 * sin(dot(vQ, vec3(0.011, 0.007, 0.009)) - uTime * 0.55)
+               + 0.12 * sin(dot(vQ, vec3(-0.006, 0.012, -0.008)) + uTime * 0.31);
     col += mix(vec3(1.4, 0.55, 0.32), vec3(1.9, 1.8, 1.55), vNova) * vNova * 2.4;
     fragColor = vec4(col * (lum + vNova) * fall * vEdge, 1.0);
   }
@@ -198,6 +215,7 @@ export class CosmicScale {
     this._buildField(app.seed);
     this._buildParticles();
     this._buildNBody();
+    this._buildComets();
 
     this.controls = new OrbitControls(this.camera, app.renderer.domElement);
     this.controls.enableDamping = true;
@@ -346,6 +364,35 @@ export class CosmicScale {
     this.points.visible = false;
   }
 
+  /** three wanderers arc through the box trailing light — the web has weather */
+  _buildComets() {
+    const r = new RNG(hash(this.app.seed, 0xc0ae7));
+    const tex = softDotTexture(48);
+    this.comets = [];
+    const tints = [
+      new THREE.Color(0.8, 1.2, 1.6),
+      new THREE.Color(1.5, 1.1, 0.6),
+      new THREE.Color(1.1, 0.8, 1.5),
+    ];
+    for (let i = 0; i < 3; i++) {
+      // a random ellipse threading the box
+      const A = new THREE.Vector3(r.gauss(), r.gauss(), r.gauss()).normalize().multiplyScalar(BOX * r.float(0.34, 0.55));
+      const B = new THREE.Vector3(r.gauss(), r.gauss(), r.gauss());
+      B.addScaledVector(A, -B.dot(A) / A.lengthSq()).normalize().multiplyScalar(BOX * r.float(0.28, 0.5));
+      const ghosts = [];
+      for (let g = 0; g < 6; g++) {
+        const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: tex, color: tints[i], transparent: true, depthWrite: false, depthTest: false,
+          blending: THREE.AdditiveBlending, opacity: g === 0 ? 0.9 : 0.5 / (g + 0.6),
+        }));
+        sp.scale.setScalar(g === 0 ? 17 : 13 - g * 1.7);
+        this.scene.add(sp);
+        ghosts.push(sp);
+      }
+      this.comets.push({ A, B, w: r.float(0.05, 0.11) * r.sign(), ph: r.float(0, 6.28), ghosts });
+    }
+  }
+
   toggleMode() {
     if (!this.sim) return;
     this.mode = this.mode === 'nbody' ? 'linear' : 'nbody';
@@ -378,6 +425,17 @@ export class CosmicScale {
     }
     this.uniforms.uD.value = COSMO.growth(this.a);
     this.uniforms.uAScale.value = this.physicalView ? this.a : 1;
+    if (this.comets) {
+      const t = this.uTime.value;
+      for (const c of this.comets) {
+        for (let g = 0; g < c.ghosts.length; g++) {
+          const tg = t - g * 0.55; // each ghost rides a moment behind
+          c.ghosts[g].position
+            .copy(c.A).multiplyScalar(Math.cos(c.w * tg + c.ph))
+            .addScaledVector(c.B, Math.sin(c.w * tg + c.ph));
+        }
+      }
+    }
     this.controls.update();
   }
 
