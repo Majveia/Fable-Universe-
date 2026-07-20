@@ -15,6 +15,7 @@ const CONTROLS_HTML = `
   <b>on a planet</b><br>
   w a s d — move · f — toggle flight<br>
   shift — boost · x — call a meteor<br>
+  c — step outside yourself · e — board the skiff<br>
   <b>on the streaming globe (?quad=1)</b><br>
   r f — climb &amp; dive · b — shuttle<br>
   esc — the climb-out flies you to orbit<br>

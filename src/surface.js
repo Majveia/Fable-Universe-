@@ -12,6 +12,7 @@ import { NOISE_GLSL, makeSurfaceMaterial, makeRingMaterial, makeAtmosphereMateri
 import { softDotTexture } from './nebula.js';
 import { addLife, isBiosphere } from './life.js';
 import { addSettlement } from './settlement.js';
+import { addTraveler } from './traveler.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 
 const EXT = 1400;            // terrain extent, ~metres
@@ -245,6 +246,9 @@ export class SurfaceScale {
     // spawn on land, eyes toward the sunrise
     const spawn = this.spawn;
     this.camera.position.set(spawn.x, spawn.y + EYE, spawn.z);
+    // the body walks; the camera is only sometimes in its head
+    this.body = this.camera.position.clone();
+    this.traveler = addTraveler(this);
     this.controls = { // duck-typed for the hyperzoom
       enabled: false,
       target: new THREE.Vector3(spawn.x + 60, spawn.y + 4, spawn.z - 40),
@@ -807,6 +811,20 @@ export class SurfaceScale {
   onKey(code) {
     if (code === 'KeyF') { this.fly = !this.fly; return true; }
     if (code === 'KeyX') { this.strikeMeteor(true); return true; }
+    if (code === 'KeyC') {
+      const third = this.traveler.toggleView();
+      this.app.hud.setHint(third
+        ? 'third person · the traveler walks · c returns to their eyes'
+        : 'first person · c steps back outside');
+      return true;
+    }
+    if (code === 'KeyE') {
+      const res = this.traveler.tryMount();
+      if (res === 'mounted') this.app.hud.setHint('the skiff has you · wasd flies it · shift opens it up · e steps off');
+      else if (res === 'dismounted') this.app.hud.setHint('on foot · e reboards the skiff · c for first person');
+      else this.app.hud.setHint('the skiff waits near the plaza — walk to it and press e');
+      return true;
+    }
     return false;
   }
 
@@ -882,28 +900,39 @@ export class SurfaceScale {
 
     // movement (skip while the hyperzoom still owns the camera)
     if (this.controls.enabled) {
-      this.camera.quaternion.setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'));
-      const speed = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 60 : 16) * (this.fly ? 3 : 1);
-      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-      if (!this.fly) { fwd.y = 0; fwd.normalize(); }
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
-      const acc = new THREE.Vector3();
-      if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) acc.add(fwd);
-      if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) acc.sub(fwd);
-      if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) acc.add(right);
-      if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) acc.sub(right);
-      if (acc.lengthSq() > 0) acc.normalize().multiplyScalar(speed);
-      this.vel.lerp(acc, 1 - Math.exp(-6 * dt));
-      this.camera.position.addScaledVector(this.vel, dt);
+      if (!this._hadCtl) {
+        // the zoom just handed us the camera: the body picks up where it landed
+        this._hadCtl = true;
+        if (!this.traveler?.third) this.body.copy(this.camera.position);
+        if (this.traveler) this.traveler._camSet = false;
+      }
+      if (this.traveler?.riding) {
+        this.traveler.drive(dt);
+      } else {
+        const view = new THREE.Quaternion().setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'));
+        const speed = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 60 : 16) * (this.fly ? 3 : 1);
+        const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(view);
+        if (!this.fly) { fwd.y = 0; fwd.normalize(); }
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(view);
+        const acc = new THREE.Vector3();
+        if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) acc.add(fwd);
+        if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) acc.sub(fwd);
+        if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) acc.add(right);
+        if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) acc.sub(right);
+        if (acc.lengthSq() > 0) acc.normalize().multiplyScalar(speed);
+        this.vel.lerp(acc, 1 - Math.exp(-6 * dt));
+        this.body.addScaledVector(this.vel, dt);
+        const ground = Math.max(this.heightAt(this.body.x, this.body.z),
+          this.seaLevel === null ? -1e9 : this.seaLevel) + EYE;
+        if (this.fly) this.body.y = Math.max(this.body.y, ground);
+        else this.body.y += (ground - this.body.y) * (1 - Math.exp(-12 * dt));
+      }
 
-      // stay inside the tile, feet on the ground
-      const p = this.camera.position;
-      p.x = Math.min(Math.max(p.x, -EXT * 0.48), EXT * 0.48);
-      p.z = Math.min(Math.max(p.z, -EXT * 0.48), EXT * 0.48);
-      const ground = Math.max(this.heightAt(p.x, p.z), this.seaLevel === null ? -1e9 : this.seaLevel) + EYE;
-      if (this.fly) p.y = Math.max(p.y, ground);
-      else p.y += (ground - p.y) * (1 - Math.exp(-12 * dt));
-    }
+      // stay inside the tile
+      this.body.x = Math.min(Math.max(this.body.x, -EXT * 0.48), EXT * 0.48);
+      this.body.z = Math.min(Math.max(this.body.z, -EXT * 0.48), EXT * 0.48);
+      this.traveler.place(dt, this.camera);
+    } else this._hadCtl = false;
   }
 
   togglePlay() { this.playing = !this.playing; }
@@ -926,7 +955,9 @@ export class SurfaceScale {
       ['craters', this.impacts.length ? String(this.impacts.length) : '—'],
       ['surface gravity', g.toFixed(2) + ' g'],
       ['equilibrium temp', pp.Teq + ' K'],
-      ['mode', this.fly ? 'flight (f to walk)' : 'on foot (f to fly)'],
+      ['mode', this.traveler?.riding ? 'hover-skiff (e steps off)'
+        : this.fly ? 'flight (f to walk)' : 'on foot (f to fly)'],
+      ['view', this.traveler?.third ? 'third person (c)' : 'first person (c)'],
     ];
   }
 
