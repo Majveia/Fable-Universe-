@@ -428,7 +428,10 @@ class App {
           () => s.starPosAt(hit.index));
       }
     } else if (s.kind === 'system' && hit.type === 'planet') {
-      s.focusPlanet(hit.index);
+      // double-click means take me there — all the way to the world itself
+      const p = s.params.planets[hit.index];
+      if (p.typeId <= 4) { this.quadOn ? this.approach(s, p) : this.landOn(s, p); }
+      else this.cruise(s, p);
     }
   }
 

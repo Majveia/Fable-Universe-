@@ -6,7 +6,7 @@ import { faunaNames } from './rng.js';
 
 const CONTROLS_HTML = `
   <b>everywhere</b><br>
-  click — select · double-click — dive<br>
+  click — select · double-click — dive, planets all the way down<br>
   esc — ascend · scroll / pinch — altitude<br>
   space — pause time · + − — bend it · [ ] — scrub<br>
   t — tour · g — atlas · n — bestiary · ? — this card<br>
