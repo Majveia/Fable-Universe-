@@ -13,6 +13,8 @@ import { softDotTexture } from './nebula.js';
 import { addLife, isBiosphere } from './life.js';
 import { addSettlement } from './settlement.js';
 import { addTraveler } from './traveler.js';
+import { addShips } from './ships.js';
+import { addFlare } from './flare.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 
 const EXT = 1400;            // terrain extent, ~metres
@@ -244,8 +246,10 @@ export class SurfaceScale {
     if (pp.inhabited) this._buildCityGlow();
     if (ctx.parentGiant) this._buildParentGiant(ctx.parentGiant);
     this._buildSiblings();
-    this.life = addLife(this);
     this.settlement = addSettlement(this);
+    this.life = addLife(this);   // after the town, so the woods keep off its doorstep
+    this.ships = addShips(this);
+    this.flare = addFlare(this);
     this._initImpacts();
 
     // spawn on land, eyes toward the sunrise
@@ -1058,6 +1062,7 @@ export class SurfaceScale {
     }
     if (this.life) this.life.update(dt, this.uSunDir.value.y);
     if (this.settlement) this.settlement.update(dt, this.uSunDir.value.y);
+    if (this.ships) this.ships.update(dt, this.uSunDir.value.y);
     this._updateMeteor(dt);
     if (this._flash) {
       this._flash.t += dt;
@@ -1102,6 +1107,7 @@ export class SurfaceScale {
       this.body.z = Math.min(Math.max(this.body.z, -EXT * 0.48), EXT * 0.48);
       this.traveler.place(dt, this.camera);
     } else this._hadCtl = false;
+    if (this.flare) this.flare.update(this.camera);
   }
 
   togglePlay() { this.playing = !this.playing; }

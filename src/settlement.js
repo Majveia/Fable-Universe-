@@ -306,10 +306,12 @@ export function addSettlement(s) {
   const postGeo = new THREE.CylinderGeometry(0.09, 0.13, 2.8, 5);
   const targets = [{ x: s.spawn.x, z: s.spawn.z }, ...hamlets];
   const postXf = [];
+  const routes = []; // the walkable polylines, for whoever walks them
   for (const t of targets) {
     const dx = t.x - site.x, dz = t.z - site.z;
     const len = Math.hypot(dx, dz);
     const steps = Math.floor(len / 26);
+    const route = [{ x: site.x, z: site.z }];
     for (let i = 1; i < steps; i++) {
       const wob = Math.sin(i * 1.7) * 6; // paths wander a little
       const px = site.x + dx * (i / steps) - dz / len * wob;
@@ -318,7 +320,9 @@ export function addSettlement(s) {
       const h = s.heightAt(px, pz);
       postXf.push({ x: px, h, z: pz });
       lampPts.push(px, h + 3.05, pz);
+      route.push({ x: px, z: pz });
     }
+    if (route.length > 3) routes.push(route);
   }
   if (postXf.length) {
     const posts = new THREE.InstancedMesh(postGeo,
@@ -363,6 +367,112 @@ export function addSettlement(s) {
     gate.rotation.y = r.float(0, 6.28);
     group.add(gate);
     gate.userData.glow = glow;
+  }
+
+  // -------------------------------------------------- the market square ----
+  // stalls under canvas awnings, crates stacked where crates get stacked:
+  // many small honest pieces, which is what makes a town look worked-in
+  {
+    const crateN = COARSE ? 14 : 24;
+    const crates = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: 0x6b5233, roughness: 0.95 }), crateN);
+    for (let i = 0; i < crateN; i++) {
+      const hm = homes[r.int(0, Math.min(homes.length - 1, NT - 1))];
+      const x = hm.x + r.gauss() * 7, z = hm.z + r.gauss() * 7;
+      const sc = r.float(0.6, 1.2);
+      d.position.set(x, s.heightAt(x, z) + sc / 2, z);
+      d.rotation.set(0, r.float(0, 6.28), 0);
+      d.scale.setScalar(sc);
+      d.updateMatrix();
+      crates.setMatrixAt(i, d.matrix);
+    }
+    group.add(crates);
+
+    const awnMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setHSL(r.float(0, 1), 0.55, 0.5),
+      roughness: 0.85, side: THREE.DoubleSide,
+    });
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x4a3d2c, roughness: 0.95 });
+    for (let i = 0; i < (COARSE ? 2 : 4); i++) {
+      const ang = r.float(0, 6.28), rad = r.float(9, 15);
+      const x = site.x + Math.cos(ang) * rad, z = site.z + Math.sin(ang) * rad;
+      const h = s.heightAt(x, z);
+      const stall = new THREE.Group();
+      for (const [ox, oz] of [[-1.4, -1], [1.4, -1], [-1.4, 1], [1.4, 1]]) {
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 2.3, 5), poleMat);
+        pole.position.set(ox, 1.15, oz);
+        stall.add(pole);
+      }
+      const awning = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 2.6),
+        i % 2 ? awnMat : awnMat.clone());
+      if (i % 2 === 0) awning.material.color.setHSL(r.float(0, 1), 0.5, 0.52);
+      awning.rotation.x = -Math.PI / 2 + 0.12;
+      awning.position.y = 2.35;
+      const counter = new THREE.Mesh(new THREE.BoxGeometry(3, 0.8, 1.6),
+        new THREE.MeshStandardMaterial({ color: 0x7a6242, roughness: 0.9 }));
+      counter.position.y = 0.4;
+      stall.add(awning, counter);
+      stall.position.set(x, h, z);
+      stall.rotation.y = -ang;
+      group.add(stall);
+    }
+  }
+
+  // --------------------------------------------------------- townsfolk ----
+  // people walk the lantern paths — to the hamlets in the morning, home
+  // at dusk, lanterns swinging after dark. the town breathes
+  const folk = [];
+  const folkN = routes.length ? (COARSE ? 6 : 12) : 0;
+  let folkMesh = null, folkLampPts = null, folkLamps = null;
+  if (folkN) {
+    // one little body: a cone of coat and a head, merged by scene graph
+    const fGeo = (() => {
+      const cone = new THREE.ConeGeometry(0.32, 1.15, 7);
+      cone.translate(0, 0.58, 0);
+      const headG = new THREE.SphereGeometry(0.13, 8, 6);
+      headG.translate(0, 1.3, 0);
+      const pos = new Float32Array((cone.attributes.position.count + headG.attributes.position.count) * 3);
+      pos.set(cone.attributes.position.array, 0);
+      pos.set(headG.attributes.position.array, cone.attributes.position.count * 3);
+      const nrm = new Float32Array(pos.length);
+      nrm.set(cone.attributes.normal.array, 0);
+      nrm.set(headG.attributes.normal.array, cone.attributes.normal.count * 3);
+      const idx = [];
+      for (let i = 0; i < cone.index.count; i++) idx.push(cone.index.array[i]);
+      const base = cone.attributes.position.count;
+      for (let i = 0; i < headG.index.count; i++) idx.push(headG.index.array[i] + base);
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+      g.setIndex(idx);
+      return g;
+    })();
+    folkMesh = new THREE.InstancedMesh(fGeo,
+      new THREE.MeshStandardMaterial({ roughness: 0.9 }), folkN);
+    const fColor = new THREE.Color();
+    folkLampPts = new Float32Array(folkN * 3);
+    for (let i = 0; i < folkN; i++) {
+      const route = routes[i % routes.length];
+      folk.push({
+        route,
+        u: r.float(0, route.length - 1.01),
+        dir: r.sign(),
+        pace: r.float(1.7, 3.1),
+        sway: r.float(0, 6.28),
+      });
+      fColor.setHSL(r.float(0, 1), r.float(0.25, 0.5), r.float(0.28, 0.5));
+      folkMesh.setColorAt(i, fColor);
+    }
+    group.add(folkMesh);
+    const flGeo = new THREE.BufferGeometry();
+    flGeo.setAttribute('position', new THREE.BufferAttribute(folkLampPts, 3));
+    folkLamps = new THREE.Points(flGeo, new THREE.PointsMaterial({
+      map: softDotTexture(32), color: new THREE.Color(1.3, 0.8, 0.4),
+      size: 1.6, transparent: true, opacity: 0, depthWrite: false,
+      blending: THREE.AdditiveBlending, sizeAttenuation: true,
+    }));
+    group.add(folkLamps);
   }
 
   // ---------------------------------------------------- chimney smoke ----
@@ -422,6 +532,29 @@ export function addSettlement(s) {
       const night = 1 - Math.min(Math.max((sunY + 0.12) * 3.5, 0), 1);
       houseMat.uniforms.uNight.value = night;
       lamps.material.opacity = night * 0.85;
+      if (folkMesh) {
+        const dm = new THREE.Object3D();
+        for (let i = 0; i < folk.length; i++) {
+          const f = folk[i];
+          f.u += f.dir * f.pace * dt / 26; // route points sit ~26 m apart
+          if (f.u <= 0 || f.u >= f.route.length - 1.01) { f.dir *= -1; f.u = Math.min(Math.max(f.u, 0), f.route.length - 1.01); }
+          const i0 = Math.floor(f.u), frac = f.u - i0;
+          const a = f.route[i0], b = f.route[Math.min(i0 + 1, f.route.length - 1)];
+          const x = a.x + (b.x - a.x) * frac, z = a.z + (b.z - a.z) * frac;
+          const h = s.heightAt(x, z);
+          dm.position.set(x, h + Math.abs(Math.sin(time * f.pace * 2.2 + f.sway)) * 0.06, z);
+          dm.rotation.y = Math.atan2((b.x - a.x) * f.dir, (b.z - a.z) * f.dir);
+          dm.updateMatrix();
+          folkMesh.setMatrixAt(i, dm.matrix);
+          // a hand-lantern leads each walker through the dark
+          folkLampPts[i * 3] = x + Math.sin(dm.rotation.y) * 0.4;
+          folkLampPts[i * 3 + 1] = h + 0.85;
+          folkLampPts[i * 3 + 2] = z + Math.cos(dm.rotation.y) * 0.4;
+        }
+        folkMesh.instanceMatrix.needsUpdate = true;
+        folkLamps.geometry.attributes.position.needsUpdate = true;
+        folkLamps.material.opacity = night * 0.9;
+      }
       if (mill) mill.rotor.rotateOnAxis(_axisZ, dt * mill.speed);
       // the gate hums brightest in the blue hour
       const dusk = Math.max(1 - Math.abs(sunY + 0.06) * 7, 0);

@@ -539,6 +539,27 @@ the surface frame the same way it grades orbit.
 
 ![a starry night over the lanterns of Caluna](docs/screenshots/52-starry-night.png)
 
+And the worlds are *full* now. The lone trees got the woods they were
+scouting for: clustered **groves** — triple-crown broadleaves in the warm
+bands, spired **conifers** where the year runs cold — with **flower
+meadows** spilling down the hillsides in two bright species per world.
+**Townsfolk** walk the lantern paths (to the hamlets by day, home at
+dusk, hand-lanterns swinging after dark), **market stalls** stand under
+canvas by the plaza, and crates stack where crates get stacked. Off the
+coast, wooden **ships ride at anchor under sail**, slow circles with a
+masthead lantern — weather with a crew. When the star crosses the frame,
+a hand-built **anamorphic lens flare** — streak, halo, and a chain of
+colored ghosts — slides along the sun-to-center axis the way real glass
+scatters light.
+
+![Caluna in the blue hour: windows, stalls, walkers, the gate alight](docs/screenshots/54-caluna-blue-hour.png)
+
+![the sun through the conifers, the lens admitting it's a lens](docs/screenshots/55-conifer-flare.png)
+
+![a ship at anchor in the late gold](docs/screenshots/56-ship-at-anchor.png)
+
+![the settled valley at noon](docs/screenshots/57-caluna-noon.png)
+
 ![biosphere](docs/screenshots/15-biosphere.png)
 
 Gas and ice giants have no surface to land on — so **dive the cloud deck**
