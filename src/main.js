@@ -65,7 +65,10 @@ class App {
     window.addEventListener('pointerdown', unlock, { once: true });
     window.addEventListener('keydown', unlock, { once: true });
     this.raycaster = new THREE.Raycaster();
-    this.raycaster.params.Points.threshold = 2;
+    // fat fingers deserve fat rays: touch picks with a wider threshold, so
+    // a double-tap dives as readily as a desktop double-click
+    this.raycaster.params.Points.threshold =
+      window.matchMedia && matchMedia('(pointer: coarse)').matches ? 6 : 2;
     this.pointer = new THREE.Vector2();
 
     this.log = JSON.parse(localStorage.getItem('aeon-log-v1') || '[]');
@@ -370,6 +373,7 @@ class App {
         case 'KeyB': if (!s.onKey?.('KeyB')) this.hud.toggleLog(); break;
         case 'KeyU': this.freshUniverse(); break;
         case 'KeyG': this.hud.toggleAtlas(); break;
+        case 'KeyN': this.hud.toggleBestiary(); break;
         case 'Slash': this.hud.toggleControls(); break;
         default: s.onKey?.(e.code);
       }

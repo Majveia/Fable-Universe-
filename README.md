@@ -25,16 +25,18 @@ python3 -m http.server 8080
 Best experienced full-screen, in the dark, on an OLED display. The background
 is true `#000` black.
 
-**It works on a phone.** On any touch screen the universe grows thumbs: a
-stick that walks and flies (it speaks the same WASD the keyboard does,
-through synthetic key events — same systems, same depth), hold-buttons
-for climb, dive and boost, **pinch for altitude** at every scale,
-**double-tap to dive deeper** (synthesized — `touch-action: none`
-silences the native one), a shuttle button on inhabited worlds, and one
-context button that always does the thing you want most — **fly me
-down** from orbit, **back to orbit** from the ground, conduct the tour
-everywhere else. A `?` button explains the gestures. Nothing was
-simplified away; the keyboard just stopped being required.
+**It works on a phone — cleanly.** On any touch screen the universe
+grows thumbs: a stick that walks and flies (**push it to the rim and you
+are boosting** — no boost button), a **spring slider** on the right edge
+for climb and dive, **pinch for altitude** at every scale, **double-tap
+to dive** with a touch-fattened pick ray so taps land as surely as
+clicks, a shuttle button on inhabited worlds, and one big context button
+that always does the thing you want most — **fly me down** from orbit,
+**back to orbit** from the ground, the tour everywhere else. The whole
+interface **dims away after a few idle seconds** and wakes at a touch:
+glass over the void, not chrome over the glass. A `?` button explains
+the gestures. Nothing was simplified away; the keyboard just stopped
+being required.
 
 Optional URL parameters: `?seed=42` (pin a universe — omit it and every
 visit rolls a new one), `?n=96` (cosmic-web tracer resolution per axis,
@@ -168,15 +170,17 @@ verbatim with the collision code. A parent tile keeps drawing until all
 four children have streamed in, and **geomorphing** lerps every vertex
 (and its normal) toward its parent-grid shape by view distance, so a
 child spawns wearing its parent's exact geometry and refines as you
-close: LOD transitions carry zero pop, no cuts, no fades. The tile cache
-**grows to hold whatever a scene draws** (a metropolis low over the deck
-wants far more than the old fixed budget), so a dense city never thrashes
-build-against-evict — that was the lag. And when a city grades its plot
-flat into the shared height field, the drawn ground under it **refreshes
-in place**: every tile remembers its build generation, an outdated one
-re-requests itself at top priority, and the graded replacement swaps in
-while the stale one stays visible — the ground rises to meet the towers
-with no hole, so buildings never hover over un-graded terrain.
+close: LOD transitions carry zero pop, no cuts, no fades. The stream is
+**deliberately conservative**: the tile cache holds just what the frame
+draws plus a modest margin (smaller budgets, later splits and fewer
+uploads per frame on glass), so weak GPUs never drown — and when a city
+grades its plot flat into the shared height field, the drawn ground
+under it **refreshes in place**: every tile remembers its build
+generation, an outdated one re-requests itself at top priority, and the
+graded replacement swaps in while the stale one stays visible — the
+ground rises to meet the towers with no hole, so buildings never hover
+over un-graded terrain. If a device still struggles, `?quad=0` lands on
+the classic surface instead.
 
 You don't have to fly it yourself: from the moment you arrive, **the
 autopilot has the ship**. A descent director picks a landing site —
@@ -377,7 +381,9 @@ berth, and a meteor strike scatters everything. The HUD shows the
 regional census.
 
 Overhead, on inhabited worlds, there is a **second civilization of
-scale**: stations on inclined orbits (truss, habitat ring, panel wings)
+scale**: stations on inclined orbits (truss, habitat ring, panel wings —
+and on the busiest worlds a **shipyard**: an open truss cage with a hull
+half-born inside it, welders sparking along the seam in bursts)
 and ships flying errands between stations, launch corridors, and deep
 space — and the ports keep daylight hours, concentrating launches on the
 lit side of the world. Every hull's sprite follows the true sunlit test
