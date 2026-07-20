@@ -13,9 +13,10 @@ const CONTROLS_HTML = `
   h — hide the interface · m — sound<br>
   b — logbook · u — a new universe<br>
   <b>on a planet</b><br>
-  w a s d — fly &amp; walk · r f — climb &amp; dive<br>
+  w a s d — move · f — toggle flight<br>
   shift — boost · x — call a meteor<br>
-  b — shuttle: up from the ground, home from the sky<br>
+  <b>on the streaming globe (?quad=1)</b><br>
+  r f — climb &amp; dive · b — shuttle<br>
   esc — the climb-out flies you to orbit<br>
   <b>on glass</b><br>
   drag — look · pinch — altitude · stick — move<br>

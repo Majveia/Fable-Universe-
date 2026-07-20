@@ -40,9 +40,10 @@ being required.
 
 Optional URL parameters: `?seed=42` (pin a universe — omit it and every
 visit rolls a new one), `?n=96` (cosmic-web tracer resolution per axis,
-default 68 → 314k particles), `?qk=4` (planet-quadtree quality: tile budget
-vs fidelity, default 6.5), `?quad=0` (skip the streaming-planet scale, land
-directly), `?ap=0` (arrive in orbit with the helm instead of the autopilot).
+default 68 → 314k particles), `?quad=1` (opt into the experimental
+streaming globe — the classic surface is the default), `?qk=4`
+(streaming-globe quality: tile budget vs fidelity, default 6.5), `?ap=0`
+(arrive in orbit with the helm instead of the autopilot).
 
 Your location is reflected into the URL as you travel (`?g=…&s=…`, `&bh=1`
 at the nucleus, `&pl=…` on approach, `&p=…` on the ground), so any place
@@ -160,8 +161,11 @@ forgives, though the universe would not.
 
 ![supernova aftermath](docs/screenshots/21-supernova-remnant.png)
 
-### 4 · The planet, whole — orbit to boots, one continuous scale
-Choose **descend from orbit** and the planet stops being a textured ball.
+### 4 · The planet, whole — orbit to boots, one continuous scale (`?quad=1`)
+**Descend to surface** lands you on the classic hand-tuned surface by
+default — instant, light, and the way the worlds were always explored.
+Add `?quad=1` to the URL and descent becomes the experimental streaming
+globe instead: the planet stops being a textured ball.
 It becomes a **chunked-LOD quadtree** on a tangent-warped cube sphere: six
 root tiles that split in four wherever the view demands more, meshed in a
 **Web Worker pool** from one height field — the exact macro continents the
@@ -179,8 +183,8 @@ under it **refreshes in place**: every tile remembers its build
 generation, an outdated one re-requests itself at top priority, and the
 graded replacement swaps in while the stale one stays visible — the
 ground rises to meet the towers with no hole, so buildings never hover
-over un-graded terrain. If a device still struggles, `?quad=0` lands on
-the classic surface instead.
+over un-graded terrain. Everything in this section rides behind
+`?quad=1`; without it, landings use the classic surface.
 
 You don't have to fly it yourself: from the moment you arrive, **the
 autopilot has the ship**. A descent director picks a landing site —
@@ -424,9 +428,9 @@ camera never leaves the scene origin, and the planet carries the negative
 camera position in JavaScript doubles — the GPU only ever sees the small
 difference. Standing on the rocks, nothing jitters.
 
-`?pl=<index>` deep-links an approach; `?quad=0` restores the direct
-landing; `?qk=` trades tile budget for fidelity; `?atm=0`, `?gm=0` toggle
-the sky and the morphing.
+`?pl=<index>` deep-links a world (classic surface by default, streaming
+approach with `?quad=1`); `?qk=` trades tile budget for fidelity;
+`?atm=0`, `?gm=0` toggle the sky and the morphing.
 
 ![the streaming globe from low orbit](docs/screenshots/25-quadtree-orbit.png)
 
