@@ -281,6 +281,11 @@ export class QuadtreePlanet {
     const camDir = _v1.copy(camPos).multiplyScalar(1 / (camR || 1));
     // everything past the horizon (plus a node's own angular radius) is skippable
     const horizon = Math.acos(Math.min(this.R * 0.995 / Math.max(camR, this.R), 1));
+    // split distances are measured to the LOCAL TERRAIN SHELL, not the datum
+    // sphere: on a high plateau the boots are on the dirt but far from the
+    // R-sphere, and measuring to the datum stopped the splits early — coarse
+    // ground under a standing walker. One analytic height per frame fixes it.
+    const shellK = this.heightAt(camDir) / this.R;
 
     const show = _showSet; show.clear();
     const sticky = this._sticky; sticky.clear();
@@ -297,8 +302,8 @@ export class QuadtreePlanet {
 
       // split by whichever is nearer: the camera, or the descent director's
       // focus — the ground you are falling toward streams in ahead of you
-      let near = _v4.copy(c).sub(camPos).length();
-      if (focus) near = Math.min(near, _v5.copy(c).sub(focus).length());
+      let near = _v4.copy(c).multiplyScalar(shellK).sub(camPos).length();
+      if (focus) near = Math.min(near, _v5.copy(c).multiplyScalar(shellK).sub(focus).length());
       const dist = Math.max(near - this.R * ang, 0.002);
       const chord = this.R * ang * 2;
       const key = face + ':' + depth + ':' + i + ':' + j;
