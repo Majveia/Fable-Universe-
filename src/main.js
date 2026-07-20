@@ -41,7 +41,8 @@ class App {
     const pinned = parseInt(url.searchParams.get('seed'));
     this.seed = Number.isInteger(pinned) && pinned > 0 ? pinned
       : (crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff) || 1138;
-    this.quadOn = url.searchParams.get('quad') !== '0';
+    // the classic surface is the default; the streaming globe is opt-in
+    this.quadOn = url.searchParams.get('quad') === '1';
 
     this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: 'high-performance' });
     this.renderer.setClearColor(0x000000, 1);
@@ -131,9 +132,11 @@ class App {
         this.active().enter();
         return;
       }
-      const node = pNode;
+      // streaming off: a ?pl= globe link lands on the classic surface instead
+      const node = pNode ?? plNode;
+      const idx = pNode ? pIdx : plIdx;
       if (node) {
-        const base = { system: sys.params, sunColor: sys.starColor, hostIndex: pIdx };
+        const base = { system: sys.params, sunColor: sys.starColor, hostIndex: idx };
         if (url.searchParams.get('cl') && node.pp.typeId >= 5) {
           sys.exit();
           this.stack.push(new CloudsScale(this, { ...base, planet: node.pp }));
