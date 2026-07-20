@@ -552,6 +552,32 @@ a hand-built **anamorphic lens flare** — streak, halo, and a chain of
 colored ghosts — slides along the sun-to-center axis the way real glass
 scatters light.
 
+The ground itself learned to move. **The wind is made visible**: a field
+of thousands of grass blades follows your boots on a wrap-around grid,
+gust fronts rolling through it as real traveling waves — each blade bows
+when the front arrives and stands back up as it passes — with petals
+streaming downwind through the air. The same wind heaves the **sea**:
+long swells displace the mesh itself, three bands of chop drift over
+them, crests fleck white, and a glitter lane of broken suns stretches
+toward the star when it rides low. The terrain wears real skin now —
+detail normals for raking light, a shore-sand band, meadow patchwork
+running green to gold, and sand and snow that catch the sun in tiny
+sparkling mirrors. Nothing falls from the sky on you anymore; the wind
+is the only weather that touches you.
+
+![the wind meadow at noon, the traveler wading through](docs/screenshots/58-wind-meadow.png)
+
+![silvergrass in the last light](docs/screenshots/59-silvergrass-dusk.png)
+
+![the dusk sea, silk to the horizon](docs/screenshots/60-dusk-sea.png)
+
+On glass, the controls got out of the way: the desktop hints never share
+the bottom edge with your thumbs, the stick and buttons shrank to
+whispers, and the ground scenes carry a micro-row of their own — fly,
+third person, skiff — that vanishes everywhere else.
+
+![the traveler at dusk, on a phone](docs/screenshots/61-mobile-traveler.png)
+
 ![Caluna in the blue hour: windows, stalls, walkers, the gate alight](docs/screenshots/54-caluna-blue-hour.png)
 
 ![the sun through the conifers, the lens admitting it's a lens](docs/screenshots/55-conifer-flare.png)
