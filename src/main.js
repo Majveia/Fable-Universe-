@@ -267,7 +267,7 @@ class App {
       const s = this.stack[i];
       const label = s.kind === 'galaxy' ? s.params.name
         : s.kind === 'system' ? s.params.name
-        : s.kind === 'planet' ? s.pp.name + ' · orbit'
+        : s.kind === 'planet' ? s.pp.name + (s.walk ? ' · surface' : ' · orbit')
         : s.kind === 'surface' ? s.pp.name + ' · surface'
         : s.kind === 'clouds' ? s.pp.name + ' · cloud deck'
         : 'nucleus';
@@ -764,6 +764,9 @@ class App {
       this._statT = 0.25;
       this.hud.setStats(s.hudStats());
       this.hud.setTime(s.timeReadout?.() ?? '', s.playing ?? true);
+      // the crumb names a place, and touchdown changes the place
+      const walking = s.kind === 'planet' ? !!s.walk : null;
+      if (walking !== this._crumbWalk) { this._crumbWalk = walking; this._crumbs(); }
     }
 
     // adaptive resolution: hold 60ish, never look potato unless we must —

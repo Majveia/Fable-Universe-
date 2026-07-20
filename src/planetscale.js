@@ -914,21 +914,26 @@ export class PlanetScale {
     if (this.walk || this.ride || this.auto) return;
     const sun = this.uSunDir.value;
     const from = this.camPos.clone().normalize();
-    // the site: sunlit, dry, scenic — and on inhabited worlds, the lights
+    // the site: sunlit, dry, scenic — and on inhabited worlds, the lights.
+    // three passes, each more forgiving: sunlit and near, then any twilight,
+    // then any dry land on the globe — only a true water-world ever gets
+    // the straight-down fallback, which would put your boots on the sea
     let best = null, bs = -1e9;
-    for (let i = 0; i < 380; i++) {
-      const z = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
-      const q = Math.sqrt(1 - z * z);
-      _t5.set(q * Math.cos(th), z, q * Math.sin(th));
-      const day = _t5.dot(sun);
-      if (day < 0.15) continue;                  // touch down in daylight
-      const arc = from.angleTo(_t5);
-      if (arc > 1.35) continue;                  // stay on this face
-      const h = this.quad.heightAt(_t5);
-      if (this.seaR > 0 && h < this.seaR + 0.02) continue;   // dry ground
-      let score = day * 1.5 + (h - this.R) / this.amp - Math.abs(_t5.y) * 0.7 - arc * 0.4;
-      if (this.pp.inhabited) score += this._cityMask(_t5) * 4;
-      if (score > bs) { bs = score; best = _t5.clone(); }
+    for (let relax = 0; relax < 3 && !best; relax++) {
+      for (let i = 0; i < 380; i++) {
+        const z = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
+        const q = Math.sqrt(1 - z * z);
+        _t5.set(q * Math.cos(th), z, q * Math.sin(th));
+        const day = _t5.dot(sun);
+        if (day < (relax === 0 ? 0.15 : relax === 1 ? -0.05 : -1)) continue;
+        const arc = from.angleTo(_t5);
+        if (relax < 2 && arc > 1.35) continue;   // stay on this face
+        const h = this.quad.heightAt(_t5);
+        if (this.seaR > 0 && h < this.seaR + 0.02) continue;   // dry ground
+        let score = day * 1.5 + (h - this.R) / this.amp - Math.abs(_t5.y) * 0.7 - arc * 0.4;
+        if (this.pp.inhabited) score += this._cityMask(_t5) * 4;
+        if (score > bs) { bs = score; best = _t5.clone(); }
+      }
     }
     // on inhabited worlds the lights won: put the wheels down on the
     // metropolis plaza itself, not merely near the glow — and grade its
@@ -1776,7 +1781,9 @@ export class PlanetScale {
         : this.ride ? 'shuttle · corridor'
         : this.asc ? 'autopilot · ascent'
         : this.auto ? 'autopilot · descent'
-        : this.walk ? 'on foot' : 'flight'],
+        : this.walk ? (this.seaR > 0
+          && this.quad.heightAt(_up.copy(this.camPos).normalize()) < this.seaR - 1.5 / (this.unitKm * 1000)
+          ? 'afloat · the sea bears you' : 'on foot') : 'flight'],
       ['altitude', this._fmtKm(Math.max(this.altUnits ?? 0, 0) * this.unitKm)],
       ['speed', this._spd > 0 ? this._fmtKm(this._spd * this.unitKm) + '/s' : '—'],
       ['terrain tiles', `${S.drawn} drawn · ${S.cached} cached${S.pending ? ` · ${S.pending} streaming` : ''}`],
