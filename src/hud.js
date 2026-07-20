@@ -2,13 +2,14 @@
 // Everything fades; the universe is the UI.
 
 import { systemParams } from './system.js';
+import { faunaNames } from './rng.js';
 
 const CONTROLS_HTML = `
   <b>everywhere</b><br>
   click — select · double-click — dive<br>
   esc — ascend · scroll / pinch — altitude<br>
   space — pause time · + − — bend it · [ ] — scrub<br>
-  t — tour · g — atlas · ? — this card<br>
+  t — tour · g — atlas · n — bestiary · ? — this card<br>
   h — hide the interface · m — sound<br>
   b — logbook · u — a new universe<br>
   <b>on a planet</b><br>
@@ -78,6 +79,16 @@ export class HUD {
     this.science.appendChild(this.atlasPanel);
     atlasBtn.onclick = () => this.toggleAtlas();
 
+    // the bestiary: every creature and wonder you have met, remembered
+    const beastBtn = document.createElement('button');
+    beastBtn.textContent = '⁂';
+    beastBtn.title = 'bestiary (n)';
+    this.beastPanel = document.createElement('div');
+    this.beastPanel.className = 'note logpanel';
+    this.science.appendChild(beastBtn);
+    this.science.appendChild(this.beastPanel);
+    beastBtn.onclick = () => this.toggleBestiary();
+
     // the controls, all of them, one card
     const ctrlBtn = document.createElement('button');
     ctrlBtn.textContent = '⌨';
@@ -116,42 +127,62 @@ export class HUD {
     ui.id = 'touch';
     ui.innerHTML = `
       <div id="stick"><div id="knob"></div></div>
+      <div id="vslide"><div id="vknob"></div></div>
       <div id="tbtns">
-        <button id="tb-up" title="climb">▲</button>
-        <button id="tb-down" title="dive">▼</button>
-        <button id="tb-boost" title="boost">≫</button>
-        <button id="tb-shuttle" title="shuttle">⇋</button>
-        <button id="tb-go" title="fly me there">⛯</button>
-        <button id="tb-atlas" title="atlas">✦</button>
-        <button id="tb-help" title="controls">?</button>
+        <button id="tb-go" class="big" title="fly me there">⛯</button>
+        <div id="tbrow">
+          <button id="tb-shuttle" title="shuttle">⇋</button>
+          <button id="tb-atlas" title="atlas">✦</button>
+          <button id="tb-help" title="controls">?</button>
+        </div>
       </div>
       <div id="touchhelp">
-        <b>touch controls</b><br>
-        drag — look around<br>
-        pinch — altitude &amp; zoom<br>
-        stick — walk &amp; fly<br>
-        ▲ ▼ — climb &amp; dive · ≫ — boost<br>
-        ⇋ — shuttle: up from the ground, home from the sky<br>
+        <b>touch</b><br>
+        drag — look · pinch — altitude<br>
+        stick — move · push to the rim — boost<br>
+        right slider — climb &amp; dive<br>
         ⛯ — fly me down · back to orbit<br>
-        ✦ — atlas: anywhere, one step<br>
-        tap a world — approach it<br>
-        double-tap — dive deeper</div>`;
+        ⇋ — shuttle · ✦ — atlas: anywhere, one step<br>
+        tap — select · double-tap — dive</div>`;
     document.body.appendChild(ui);
 
     const key = (code, on) =>
       window.dispatchEvent(new KeyboardEvent(on ? 'keydown' : 'keyup', { code }));
 
-    // hold-buttons: press is keydown, release is keyup
-    const hold = (id, code) => {
-      const b = ui.querySelector(id);
-      b.addEventListener('pointerdown', (e) => { e.preventDefault(); key(code, true); });
-      for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) {
-        b.addEventListener(ev, () => key(code, false));
-      }
+    // the right-edge spring slider: drag up to climb, down to dive, let go
+    // and it re-centers — one thumb, both directions
+    const vs = ui.querySelector('#vslide');
+    const vk = ui.querySelector('#vknob');
+    let vid = null, vHeld = null;
+    const vset = (code) => {
+      if (vHeld === code) return;
+      if (vHeld) key(vHeld, false);
+      vHeld = code;
+      if (code) key(code, true);
     };
-    hold('#tb-up', 'KeyR');
-    hold('#tb-down', 'KeyF');
-    hold('#tb-boost', 'ShiftLeft');
+    const vmove = (e) => {
+      const r = vs.getBoundingClientRect();
+      let dy = e.clientY - (r.top + r.height / 2);
+      dy = Math.max(-r.height / 2 + 20, Math.min(r.height / 2 - 20, dy));
+      vk.style.transform = `translateY(${dy}px)`;
+      const t = dy / (r.height / 2 - 20);
+      vset(t < -0.2 ? 'KeyR' : t > 0.2 ? 'KeyF' : null);
+    };
+    vs.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      vid = e.pointerId;
+      try { vs.setPointerCapture(vid); } catch { /* synthetic pointers */ }
+      vmove(e);
+    });
+    vs.addEventListener('pointermove', (e) => { if (e.pointerId === vid) vmove(e); });
+    const vend = (e) => {
+      if (e.pointerId !== vid) return;
+      vid = null;
+      vk.style.transform = '';
+      vset(null);
+    };
+    vs.addEventListener('pointerup', vend);
+    vs.addEventListener('pointercancel', vend);
 
     // the stick: WASD by displacement, with a dead zone
     const stick = ui.querySelector('#stick');
@@ -175,6 +206,8 @@ export class HUD {
       if (dy > dead) want.add('KeyS');
       if (dx < -dead) want.add('KeyA');
       if (dx > dead) want.add('KeyD');
+      // the rim is the throttle: push to the edge and you are boosting
+      if (m >= max * 0.94) want.add('ShiftLeft');
       setCodes(want);
     };
     stick.addEventListener('pointerdown', (e) => {
@@ -215,6 +248,13 @@ export class HUD {
     this._shBtn.addEventListener('click', () => {
       const s = app.active();
       s.onKey?.('KeyB');
+    });
+    // immersion: the controls dim after a few idle seconds, wake on touch
+    this._touchUi = ui;
+    this._touchIdle = 0;
+    window.addEventListener('pointerdown', () => {
+      this._touchIdle = 0;
+      ui.classList.remove('dim');
     });
     this._touchApp = app;
     this._goT = 0;
@@ -309,6 +349,41 @@ export class HUD {
     });
   }
 
+  /** record an encounter: called by the planet scale when an anchor stands */
+  recordFauna(pp, eco, res, wonder) {
+    let db = {};
+    try { db = JSON.parse(localStorage.getItem('aeon-bestiary-v1') || '{}'); } catch { /* fresh */ }
+    const names = faunaNames(pp.seed);
+    db[pp.name] = {
+      t: pp.type, m: res?.line ?? null, w: wonder ?? null,
+      s: eco?.striders ?? 0, k: eco?.skimmers ?? 0,
+      sn: names.strider, kn: names.skimmer,
+    };
+    const keys = Object.keys(db);
+    if (keys.length > 200) delete db[keys[0]];
+    try { localStorage.setItem('aeon-bestiary-v1', JSON.stringify(db)); } catch { /* full */ }
+  }
+
+  toggleBestiary() {
+    this.atlasPanel.classList.remove('open');
+    this.ctrlPanel.classList.remove('open');
+    this.logPanel.classList.remove('open');
+    this.beastPanel.classList.toggle('open');
+    if (!this.beastPanel.classList.contains('open')) return;
+    let db = {};
+    try { db = JSON.parse(localStorage.getItem('aeon-bestiary-v1') || '{}'); } catch { /* fresh */ }
+    const rows = Object.entries(db);
+    let html = '<div class="at-sec">the bestiary</div>';
+    if (!rows.length) html += '<div class="lb-empty">nothing met yet — go stand on a world.</div>';
+    for (const [world, e] of rows.reverse()) {
+      const life = e.s || e.k
+        ? `${e.s} ${e.sn} · ${e.k} ${e.kn}`
+        : (e.w ?? 'silence');
+      html += `<div class="lb-row"><button class="lb-go" disabled>${world} — ${life}${e.m ? ` · <i>${e.m}</i>` : ''}</button></div>`;
+    }
+    this.beastPanel.innerHTML = html;
+  }
+
   /** roll the dice at the universe: land in orbit of a living world */
   _wondrous() {
     const app = this.app;
@@ -390,6 +465,7 @@ export class HUD {
   tick(dt) {
     this._idleT += dt;
     if (this._idleT > 6) this.hints.classList.add('faded');
+    if (this._touchUi && (this._touchIdle += dt) > 4) this._touchUi.classList.add('dim');
     // the context button wears its current meaning
     if (this._goBtn && (this._goT += dt) > 0.4) {
       this._goT = 0;

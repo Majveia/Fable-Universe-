@@ -93,6 +93,17 @@ export function cityName(seed, ci, cj, ck) {
   return n;
 }
 
+// the bestiary needs names: every world calls its creatures something
+const FAUNA_ADJ = ['pale', 'reed', 'dusk', 'glass', 'long-legged', 'moss', 'silver', 'ember', 'quiet', 'six-eyed', 'lantern', 'salt'];
+
+export function faunaNames(seed) {
+  const r = new RNG(hash(seed, 0xbea57));
+  return {
+    strider: r.pick(FAUNA_ADJ) + ' strider',
+    skimmer: r.pick(FAUNA_ADJ) + ' skimmer',
+  };
+}
+
 // every universe opens on its own line — the fable frame
 const EPIGRAPHS = [
   'every light you see is an address',

@@ -58,8 +58,12 @@ export class QuadtreePlanet {
     this.tiles = new Map();      // key → { mesh, geo }
     this.pending = new Set();    // keys in flight to a worker
     this.results = [];           // built tiles awaiting GPU upload
-    this._baseCap = 900;         // LRU floor; grows to fit the working set
-    this.cap = 900;
+    // conservative streaming: a fixed modest budget (smaller still on
+    // glass), only ever exceeded by exactly what the frame already draws —
+    // the cache never balloons, weak GPUs never drown
+    this._coarse = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
+    this._baseCap = this._coarse ? 600 : 900;
+    this.cap = this._baseCap;
     this.stats = { drawn: 0, cached: 0, pending: 0, built: 6, maxDepth: 0, tris: 0 };
 
     // worker pool
@@ -248,7 +252,8 @@ export class QuadtreePlanet {
 
     // upload a few finished tiles per frame — streaming, not stuttering
     let uploads = 0;
-    while (this.results.length && uploads < 6) {
+    const maxUploads = this._coarse ? 3 : 6;
+    while (this.results.length && uploads < maxUploads) {
       const data = this.results.shift();
       this.pending.delete(data.key);
       // stale generation: built before the field last changed. Only the
@@ -359,10 +364,11 @@ export class QuadtreePlanet {
       wk.postMessage({ ...this.job, key: m.key, face: m.face, depth: m.depth, i: m.i, j: m.j });
     }
 
-    // the cache holds the whole working set plus the tiles in flight, so a
-    // dense scene (a city, low over the deck) never thrashes build-against-
-    // evict — the old fixed 900 was smaller than what a metropolis draws
-    this.cap = Math.min(2000, Math.max(this._baseCap, Math.ceil((S.drawn + this.pending.size) * 1.7)));
+    // the cache must at least hold what the frame draws plus what is in
+    // flight (else build-against-evict thrash), but no more than a modest
+    // margin over it — headroom without the memory balloon
+    this.cap = Math.min(this._coarse ? 1100 : 1500,
+      Math.max(this._baseCap, Math.ceil((S.drawn + this.pending.size) * 1.25)));
 
     // evict cold tiles (never one that is drawn or was touched this frame)
     if (this.tiles.size > this.cap) {

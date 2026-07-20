@@ -601,7 +601,10 @@ export class PlanetScale {
     const hasSea = (pp.typeId === 1 || pp.typeId === 2) && pp.oceanLevel > -0.5;
     const qres = parseInt(url.searchParams.get('qr')) || 33;
     const qdepth = parseInt(url.searchParams.get('qd')) || 18;
-    const qsplit = parseFloat(url.searchParams.get('qk')) || 0;
+    // glass streams lighter: later splits mean fewer tiles in the working
+    // set — the same world, a gentler stream (override with ?qk=)
+    const qsplit = parseFloat(url.searchParams.get('qk'))
+      || (window.matchMedia && matchMedia('(pointer: coarse)').matches ? 5.2 : 0);
 
     // ancient scars: airless worlds carry their bombardment in the field
     // itself, so every LOD and the collision agree about every crater
@@ -1427,6 +1430,9 @@ export class PlanetScale {
       },
       scared: () => this._scareT > 0,
     };
+    // the bestiary remembers this ground
+    const wonderLabel = { 0: 'dust devils', 3: 'a crystal garden', 4: 'ember vents' }[this.pp.typeId] ?? null;
+    this.app.hud?.recordFauna?.(this.pp, host.eco, this.res, wonderLabel);
     this.anchor = {
       a, aR, mpu, group, east, north, pos: anchorPos, eco: host.eco,
       life: addLife(host),

@@ -45,6 +45,38 @@ export function addOrbitals(s) {
       st.add(p);
     }
     st.scale.setScalar(r.float(0.25, 0.5));
+
+    // the second station of a busy world is a shipyard: an open truss
+    // cage with a hull half-born inside it, welders sparking on the seam
+    let yard = null;
+    if (i === 1 || (nSt === 1 && r.chance(0.3))) {
+      const cageMat = new THREE.MeshStandardMaterial({ color: 0x6a7482, roughness: 0.6, metalness: 0.7 });
+      for (const [px, py] of [[-0.11, -0.11], [-0.11, 0.11], [0.11, -0.11], [0.11, 0.11]]) {
+        const beam = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.012, 0.012), cageMat);
+        beam.position.set(0.42, py, px);
+        st.add(beam);
+      }
+      for (const bx of [0.18, 0.42, 0.66]) {
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.008, 6, 12), cageMat);
+        ring.rotation.z = Math.PI / 2;
+        ring.position.x = bx;
+        st.add(ring);
+      }
+      const hull = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.055, 0.075, 0.3, 8, 1, true),
+        new THREE.MeshStandardMaterial({ color: 0x8a929e, roughness: 0.5, metalness: 0.8, side: THREE.DoubleSide }));
+      hull.rotation.z = Math.PI / 2;
+      hull.position.x = 0.34;
+      st.add(hull);
+      const sparks = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: tex, color: new THREE.Color(2.2, 1.7, 0.9),
+        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+      }));
+      sparks.scale.setScalar(1.6);
+      st.add(sparks);
+      yard = { sparks, phase: r.float(0, 6.28) };
+    }
+
     const spr = new THREE.Sprite(new THREE.SpriteMaterial({
       map: tex, color: new THREE.Color(1.5, 1.45, 1.3),
       blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
@@ -60,7 +92,7 @@ export function addOrbitals(s) {
     e1.normalize();
     const e2 = new THREE.Vector3().crossVectors(axis, e1);
     stations.push({
-      obj: st, spr, e1, e2,
+      obj: st, spr, e1, e2, yard,
       orbR: R * r.float(1.12, 1.5),
       phase: r.float(0, Math.PI * 2),
       w: r.float(0.008, 0.02) * (r.chance(0.5) ? 1 : -1),
@@ -153,6 +185,13 @@ export function addOrbitals(s) {
         const lit = sunlit(st.obj.position, sun);
         st.spr.material.opacity = lit ? 1 : 0.1;
         st.spr.material.color.setRGB(lit ? 1.5 : 0.5, lit ? 1.45 : 0.12, lit ? 1.3 : 0.1);
+        // the welders work in bursts, walking the seam of the unborn hull
+        if (st.yard) {
+          const y = st.yard;
+          const burst = Math.sin(time * 7.3 + y.phase) > 0.55 ? 1 : 0;
+          y.sparks.material.opacity = burst * (0.5 + 0.5 * Math.random());
+          y.sparks.position.set(0.22 + ((time * 0.05 + y.phase) % 0.4), 0.05 * Math.sin(time * 1.3 + y.phase), 0);
+        }
       }
       for (const sh of ships) {
         if (sh.state === 'idle') {
