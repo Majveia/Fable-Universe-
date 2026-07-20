@@ -15,6 +15,7 @@ import { addSettlement } from './settlement.js';
 import { addTraveler } from './traveler.js';
 import { addShips } from './ships.js';
 import { addFlare } from './flare.js';
+import { addGrass } from './grass.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 
 const EXT = 1400;            // terrain extent, ~metres
@@ -72,24 +73,54 @@ const TERRAIN_FRAG = /* glsl */`
   varying vec3 vN;
   ${NOISE_GLSL}
 
+  uniform float uSea;    // sea level in world y, or -1e9 for a dry world
+
   void main() {
     vec3 n = normalize(vN);
     float hgt = vW.y / uAmp;
     float slope = 1.0 - n.y;
-    vec3 sd = vec3(uSeed * 3.7, uSeed * 1.3, uSeed * 9.2);
 
     float detail = fbm(vec3(vW.xz * 0.02, uSeed)) * 0.5 + 0.5;
     float micro  = fbm3(vec3(vW.xz * 0.35, uSeed * 2.0)) * 0.5 + 0.5;
+    float grain  = fbm3(vec3(vW.xz * 1.7, uSeed * 5.0)) * 0.5 + 0.5;
 
-    vec3 col = mix(uColC, uColA, smoothstep(0.02, 0.45, hgt + detail * 0.25));
+    // detail normals: the ground is not a billboard — two noise octaves
+    // tilt the surface so raking light finds texture everywhere
+    float bumpF = 1.0 - smoothstep(60.0, 420.0, length(vW - uCam));
+    vec3 nb = n;
+    nb.xz += vec2(snoise(vec3(vW.xz * 0.23, uSeed + 3.0)),
+                  snoise(vec3(vW.xz * 0.23 + 19.0, uSeed + 7.0))) * 0.22 * bumpF;
+    nb.xz += vec2(snoise(vec3(vW.xz * 1.4, uSeed + 11.0)),
+                  snoise(vec3(vW.xz * 1.4 + 6.0, uSeed + 13.0))) * 0.1 * bumpF;
+    nb = normalize(nb);
+
+    // material bands, low to high: shore sand · meadow · soil · rock · snow
+    float shore = 1.0 - smoothstep(uSea + 1.2, uSea + 7.0, vW.y);
+    vec3 sand = mix(uColB, vec3(0.86, 0.76, 0.58), 0.6) * (0.9 + grain * 0.2);
+    // the meadow is a patchwork: green running gold in field-sized swells
+    float pw = fbm(vec3(vW.xz * 0.006 + 31.0, uSeed)) * 0.5 + 0.5;
+    vec3 meadow = mix(uColC, uColC * vec3(1.35, 1.12, 0.55), smoothstep(0.42, 0.75, pw) * 0.65);
+    vec3 col = mix(meadow, uColA, smoothstep(0.02, 0.45, hgt + detail * 0.25));
     col = mix(col, uColB, smoothstep(0.35, 0.85, hgt) * 0.8);
-    col = mix(col, uColB * 0.85, smoothstep(0.25, 0.6, slope));
-    col = mix(col, vec3(0.92, 0.95, 1.0), uSnow * smoothstep(0.55, 0.8, hgt + micro * 0.1));
-    col *= 0.82 + 0.36 * detail * micro;
+    col = mix(col, uColB * 0.85, smoothstep(0.22, 0.55, slope));
+    col = mix(col, sand, shore * (1.0 - smoothstep(0.18, 0.4, slope)));
+    float snowLine = smoothstep(0.55, 0.8, hgt + micro * 0.1);
+    col = mix(col, vec3(0.92, 0.95, 1.0), uSnow * snowLine);
+    col *= 0.8 + 0.3 * detail * micro + 0.12 * grain;
 
-    float diff = max(dot(n, uSunDir), 0.0);
+    // light: wrapped diffuse so dusk rakes long and soft, like film
+    float diff = clamp((dot(nb, uSunDir) + 0.3) / 1.3, 0.0, 1.0);
     float dusk = smoothstep(-0.12, 0.12, uSunDir.y);
-    vec3 lit = col * (uSunColor * diff * 1.15 + vec3(0.012, 0.014, 0.02) + uHorizon * 0.22 * dusk);
+    vec3 lit = col * (uSunColor * diff * diff * 1.35 + vec3(0.012, 0.014, 0.02) + uHorizon * 0.26 * dusk);
+
+    // sand and snow catch the sun in tiny mirrors
+    float glintM = max(shore * (1.0 - smoothstep(0.18, 0.4, slope)), uSnow * snowLine);
+    if (glintM > 0.02) {
+      vec3 view = normalize(uCam - vW);
+      float spec = pow(max(dot(reflect(-uSunDir, nb), view), 0.0), 60.0);
+      float sparkle = step(0.93, fbm3(vec3(vW.xz * 6.0, uSeed))) * 3.0;
+      lit += uSunColor * spec * (0.5 + sparkle) * glintM * dusk;
+    }
 
     if (uLava > 0.5) {
       float crack = 0.0;
@@ -168,6 +199,31 @@ const SKY_FRAG = /* glsl */`
   }
 `;
 
+const OCEAN_VERT = /* glsl */`
+  uniform float uTime;
+  uniform vec2 uWind;
+  varying vec3 vW;
+  varying vec3 vN;
+
+  // two long swells travel with the wind; the mesh actually heaves
+  float swell(vec2 p, float t) {
+    return sin(dot(p, uWind) * 0.015 - t * 0.7) * 0.55
+         + sin(dot(p, vec2(-uWind.y, uWind.x)) * 0.021 + t * 0.53) * 0.34;
+  }
+
+  void main() {
+    vec3 w = (modelMatrix * vec4(position, 1.0)).xyz;
+    float h = swell(w.xz, uTime);
+    w.y += h;
+    float e = 2.0;
+    float hx = swell(w.xz + vec2(e, 0.0), uTime) - h;
+    float hz = swell(w.xz + vec2(0.0, e), uTime) - h;
+    vN = normalize(vec3(-hx / e, 1.0, -hz / e));
+    vW = w;
+    gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+  }
+`;
+
 const OCEAN_FRAG = /* glsl */`
   precision highp float;
   uniform vec3 uSunDir;
@@ -177,23 +233,38 @@ const OCEAN_FRAG = /* glsl */`
   uniform vec3 uCam;
   uniform float uTime;
   uniform float uSeed;
+  uniform vec2 uWind;
   varying vec3 vW;
   varying vec3 vN;
   ${NOISE_GLSL}
 
   void main() {
+    // three bands of chop riding the swell, all drifting downwind
+    vec2 drift = uWind * uTime;
     vec2 p = vW.xz * 0.06;
-    vec3 n = normalize(vec3(
-      snoise(vec3(p, uTime * 0.14 + uSeed)) * 0.06 +
-      snoise(vec3(p * 3.7, uTime * 0.3)) * 0.025,
-      1.0,
-      snoise(vec3(p + 40.0, uTime * 0.17)) * 0.06));
+    vec3 n = normalize(vN + vec3(
+      snoise(vec3(p - drift * 0.012, uTime * 0.14 + uSeed)) * 0.1 +
+      snoise(vec3(p * 3.7 - drift * 0.03, uTime * 0.3)) * 0.05 +
+      snoise(vec3(p * 11.0, uTime * 0.55)) * 0.022,
+      0.0,
+      snoise(vec3(p + 40.0 - drift * 0.017, uTime * 0.17)) * 0.1 +
+      snoise(vec3(p * 5.1 + 9.0, uTime * 0.4)) * 0.04));
     vec3 view = normalize(uCam - vW);
     float fres = pow(1.0 - max(dot(view, n), 0.0), 3.0);
     float day = smoothstep(-0.15, 0.25, uSunDir.y);
     vec3 col = mix(uDeep * (0.25 + 0.75 * day), uHorizon * day, fres * 0.85);
-    float spec = pow(max(dot(reflect(-uSunDir, n), view), 0.0), 240.0);
-    col += uSunColor * spec * 2.2 * day;
+
+    // the glitter path: a lane of broken suns stretched toward the star
+    vec3 r = reflect(-uSunDir, n);
+    float spec = pow(max(dot(r, view), 0.0), 240.0);
+    float lane = pow(max(dot(reflect(-uSunDir, normalize(vec3(n.x * 2.2, n.y, n.z * 2.2))), view), 0.0), 36.0);
+    col += uSunColor * (spec * 2.2 + lane * 0.35 * smoothstep(0.35, -0.02, abs(uSunDir.y))) * day;
+
+    // crests fleck white where the chop stands up
+    float crest = smoothstep(0.985, 0.955, n.y) * smoothstep(0.4, 0.9,
+      snoise(vec3(vW.xz * 0.4 - drift * 0.05, uTime * 0.6)) * 0.5 + 0.5);
+    col += vec3(0.9, 0.95, 1.0) * crest * 0.18 * (0.25 + 0.75 * day);
+
     float dist = length(vW - uCam);
     col = mix(col, uHorizon * max(day, 0.08), 1.0 - exp(-dist * 0.0007));
     gl_FragColor = vec4(col, 1.0);
@@ -231,6 +302,9 @@ export class SurfaceScale {
 
     const atmoStrength = pp.typeId === 0 ? 0.25 : pp.typeId === 4 ? 0.4 : 1.0;
     this.atmo = atmoStrength;
+    // one wind owns this whole world: the sea, the grass, the petals
+    const windAng = new RNG(hash(pp.seed, 0x817d)).float(0, 6.28);
+    this.wind = new THREE.Vector2(Math.cos(windAng), Math.sin(windAng));
     this.horizonColor = pp.atmoColor.clone().multiplyScalar(0.5).add(new THREE.Color(0.04, 0.04, 0.05));
     this.zenithColor = pp.atmoColor.clone().multiplyScalar(0.26);
     // the magic hour needs somewhere to return from
@@ -258,6 +332,7 @@ export class SurfaceScale {
     // the body walks; the camera is only sometimes in its head
     this.body = this.camera.position.clone();
     this.traveler = addTraveler(this);
+    this.grassField = addGrass(this);
     this.controls = { // duck-typed for the hyperzoom
       enabled: false,
       target: new THREE.Vector3(spawn.x + 60, spawn.y + 4, spawn.z - 40),
@@ -347,6 +422,7 @@ export class SurfaceScale {
         uSnow: { value: snow },
         uLava: { value: type === 4 ? 1 : 0 },
         uTime: this.uTime,
+        uSea: { value: this.seaLevel ?? -1e9 },
       },
       vertexShader: TERRAIN_VERT,
       fragmentShader: TERRAIN_FRAG,
@@ -575,7 +651,8 @@ export class SurfaceScale {
   }
 
   _buildOcean() {
-    const geo = new THREE.PlaneGeometry(EXT * 24, EXT * 24, 1, 1);
+    // enough vertices that the swell can actually lift them
+    const geo = new THREE.PlaneGeometry(EXT * 24, EXT * 24, 140, 140);
     geo.rotateX(-Math.PI / 2);
     this.ocean = new THREE.Mesh(geo, new THREE.ShaderMaterial({
       uniforms: {
@@ -585,8 +662,9 @@ export class SurfaceScale {
         uCam: this.uCam,
         uTime: this.uTime,
         uSeed: { value: this.pp.noiseSeed },
+        uWind: { value: this.wind },
       },
-      vertexShader: TERRAIN_VERT,
+      vertexShader: OCEAN_VERT,
       fragmentShader: OCEAN_FRAG,
     }));
     this.ocean.position.y = this.seaLevel;
@@ -796,11 +874,8 @@ export class SurfaceScale {
   // ------------------------------------------------------- impacts -------
   _initImpacts() {
     const pp = this.pp;
-    // airless/barren worlds are cratered; those near a belt or comet get hits
+    // airless/barren worlds arrive already cratered — history, not weather
     const airless = pp.typeId === 0 || pp.typeId === 3;
-    this.impactRate = airless ? 9 : 26; // mean seconds between falls
-    this._nextImpact = 3 + Math.random() * this.impactRate;
-    this.meteor = null;
     this.craterGroup = new THREE.Group();
     this.scene.add(this.craterGroup);
 
@@ -853,67 +928,6 @@ export class SurfaceScale {
     }
   }
 
-  strikeMeteor(now = false) {
-    if (this.meteor) return;
-    const th = Math.random() * 6.28;
-    const reach = now ? 300 : 700;
-    const tx = this.camera.position.x + Math.cos(th) * (120 + Math.random() * reach);
-    const tz = this.camera.position.z + Math.sin(th) * (120 + Math.random() * reach);
-    const from = new THREE.Vector3(tx - 260, 900 + Math.random() * 400, tz + 340);
-    const head = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: softDotTexture(), color: new THREE.Color(1.6, 1.2, 0.7),
-      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-    }));
-    head.scale.setScalar(10);
-    head.position.copy(from);
-    this.scene.add(head);
-    // a short trail
-    const N = 40;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
-    const trail = new THREE.Points(geo, new THREE.PointsMaterial({
-      color: new THREE.Color(1.0, 0.6, 0.3), size: 5, map: softDotTexture(),
-      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.7,
-    }));
-    this.scene.add(trail);
-    const target = new THREE.Vector3(tx, this.heightAt(tx, tz), tz);
-    this.meteor = { head, trail, from: from.clone(), target, t: 0, dur: now ? 1.2 : 2.0, size: 24 + Math.random() * 70 };
-  }
-
-  _updateMeteor(dt) {
-    this._nextImpact -= dt;
-    if (this._nextImpact <= 0) { this._nextImpact = this.impactRate * (0.6 + Math.random()); this.strikeMeteor(); }
-    const m = this.meteor;
-    if (!m) return;
-    m.t += dt;
-    const f = Math.min(m.t / m.dur, 1);
-    m.head.position.lerpVectors(m.from, m.target, f * f);
-    m.head.scale.setScalar(10 + 26 * f);
-    const N = m.trail.geometry.attributes.position;
-    for (let i = 0; i < N.count; i++) {
-      const tf = f - (i / N.count) * 0.12;
-      const p = m.from.clone().lerp(m.target, Math.max(tf, 0) ** 2);
-      N.setXYZ(i, p.x, p.y, p.z);
-    }
-    N.needsUpdate = true;
-    if (f >= 1) {
-      // impact: carve, flash, throw ejecta
-      this._carveCrater(m.target.x, m.target.z, m.size, 1, true);
-      const flash = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: softDotTexture(), color: new THREE.Color(2.4, 1.9, 1.2),
-        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-      }));
-      flash.position.copy(m.target).setY(this.heightAt(m.target.x, m.target.z) + m.size * 0.4);
-      flash.scale.setScalar(m.size * 4);
-      this.scene.add(flash);
-      this._flash = { sp: flash, t: 0 };
-      this.scene.remove(m.head); this.scene.remove(m.trail);
-      m.head.material.dispose(); m.trail.geometry.dispose(); m.trail.material.dispose();
-      this.meteor = null;
-      if (this.app.audio) this.app.audio.warp('dive'); // a concussion
-    }
-  }
-
   // ------------------------------------------------------------ input ----
   _bindInput() {
     this._onKeyDown = (e) => this.keys.add(e.code);
@@ -940,7 +954,6 @@ export class SurfaceScale {
 
   onKey(code) {
     if (code === 'KeyF') { this.fly = !this.fly; return true; }
-    if (code === 'KeyX') { this.strikeMeteor(true); return true; }
     if (code === 'KeyC') {
       const third = this.traveler.toggleView();
       this.app.hud.setHint(third
@@ -1063,14 +1076,7 @@ export class SurfaceScale {
     if (this.life) this.life.update(dt, this.uSunDir.value.y);
     if (this.settlement) this.settlement.update(dt, this.uSunDir.value.y);
     if (this.ships) this.ships.update(dt, this.uSunDir.value.y);
-    this._updateMeteor(dt);
-    if (this._flash) {
-      this._flash.t += dt;
-      const g = 1 - this._flash.t / 0.8;
-      this._flash.sp.material.opacity = Math.max(g, 0);
-      this._flash.sp.scale.multiplyScalar(1 + dt * 1.5);
-      if (g <= 0) { this.scene.remove(this._flash.sp); this._flash.sp.material.dispose(); this._flash = null; }
-    }
+    if (this.grassField) this.grassField.update(dt, this.uSunDir.value.y);
 
     // movement (skip while the hyperzoom still owns the camera)
     if (this.controls.enabled) {
@@ -1156,4 +1162,4 @@ export class SurfaceScale {
   }
 }
 
-export const SURFACE_NOTE = `Boots on regolith. The terrain is the same noise field that painted this world from orbit; the sun overhead is the system's actual star — its color is its blackbody temperature and its apparent size follows from this orbit's true semi-major axis. Surface gravity in the readout is GM/R² from the world's real mass and radius. Walk with <em>WASD</em>, drag to look, <em>F</em> to fly, and let the day run: on inhabited worlds, the cities rise with the dark.`;
+export const SURFACE_NOTE = `Boots on regolith. The terrain is the same noise field that painted this world from orbit; the sun overhead is the system's actual star — its color is its blackbody temperature and its apparent size follows from this orbit's true semi-major axis. Surface gravity in the readout is GM/R² from the world's real mass and radius. Walk with <em>WASD</em>, drag to look, <em>F</em> to fly, <em>C</em> to step outside yourself, and let the day run: on inhabited worlds, the lanterns rise with the dark.`;

@@ -28,9 +28,9 @@ const HINTS = {
   galaxy: 'drag to look · scroll to zoom · click a star to visit its system · click the core to meet the nucleus · esc to ascend',
   system: 'click a world · land from its card · j to cruise (steer into a star to travel there) · hold ] to age the star · esc to ascend',
   blackhole: 'drag to orbit the horizon · scroll to lean closer · esc to ascend',
-  surface: 'drag to look · wasd walk · shift runs · f flies · x calls down a meteor · space pauses the day · esc to orbit',
+  surface: 'drag to look · wasd walk · shift runs · f flies · c steps outside · e boards the skiff · esc to orbit',
   clouds: 'drag to steer · you fly where you look · w dives faster, s eases off · + − trims the cruise · esc to climb out',
-  planet: 'autopilot is flying you down · drag to look around · any key takes the helm · b boards a shuttle · x calls a meteor · esc flies you back to orbit',
+  planet: 'autopilot is flying you down · drag to look around · any key takes the helm · b boards a shuttle · esc flies you back to orbit',
 };
 
 class App {

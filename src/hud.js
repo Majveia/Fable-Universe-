@@ -13,15 +13,15 @@ const CONTROLS_HTML = `
   h — hide the interface · m — sound<br>
   b — logbook · u — a new universe<br>
   <b>on a planet</b><br>
-  w a s d — move · f — toggle flight<br>
-  shift — boost · x — call a meteor<br>
+  w a s d — move · f — toggle flight · shift — boost<br>
   c — step outside yourself · e — board the skiff<br>
   <b>on the streaming globe (?quad=1)</b><br>
   r f — climb &amp; dive · b — shuttle<br>
   esc — the climb-out flies you to orbit<br>
   <b>on glass</b><br>
   drag — look · pinch — altitude · stick — move<br>
-  ⛯ — fly me · ⇋ — shuttle · double-tap — dive`;
+  ⛯ — fly me · ✈ ◉ ⛵ — fly · third person · skiff<br>
+  double-tap — go there`;
 
 export class HUD {
   constructor(app) {
@@ -134,6 +134,9 @@ export class HUD {
         <button id="tb-go" class="big" title="fly me there">⛯</button>
         <div id="tbrow">
           <button id="tb-shuttle" title="shuttle">⇋</button>
+          <button id="tb-fly" title="toggle flight">✈</button>
+          <button id="tb-view" title="third person">◉</button>
+          <button id="tb-act" title="board the skiff">⛵</button>
           <button id="tb-atlas" title="atlas">✦</button>
           <button id="tb-help" title="controls">?</button>
         </div>
@@ -142,10 +145,9 @@ export class HUD {
         <b>touch</b><br>
         drag — look · pinch — altitude<br>
         stick — move · push to the rim — boost<br>
-        right slider — climb &amp; dive<br>
-        ⛯ — fly me down · back to orbit<br>
-        ⇋ — shuttle · ✦ — atlas: anywhere, one step<br>
-        tap — select · double-tap — dive</div>`;
+        tap — select · double-tap — go there<br>
+        ✈ — fly · ◉ — third person · ⛵ — the skiff<br>
+        ✦ — atlas: anywhere, one step</div>`;
     document.body.appendChild(ui);
 
     const key = (code, on) =>
@@ -251,6 +253,14 @@ export class HUD {
       const s = app.active();
       s.onKey?.('KeyB');
     });
+    // the surface trio: F, C, and E by friendlier names, shown on the ground
+    this._flyBtn = ui.querySelector('#tb-fly');
+    this._flyBtn.addEventListener('click', () => app.active().onKey?.('KeyF'));
+    this._viewBtn = ui.querySelector('#tb-view');
+    this._viewBtn.addEventListener('click', () => app.active().onKey?.('KeyC'));
+    this._actBtn = ui.querySelector('#tb-act');
+    this._actBtn.addEventListener('click', () => app.active().onKey?.('KeyE'));
+    this._vsEl = ui.querySelector('#vslide');
     // immersion: the controls dim after a few idle seconds, wake on touch
     this._touchUi = ui;
     this._touchIdle = 0;
@@ -482,6 +492,13 @@ export class HUD {
       this._shBtn.textContent = s.ride ? '✕' : s.inside ? '⌂' : (s.altUnits ?? 9e9) < 6 ? '⇴' : '⌂';
       this._shBtn.title = s.ride ? 'bail out' : s.inside ? 'shuttle home'
         : (s.altUnits ?? 9e9) < 6 ? 'shuttle to the station' : 'shuttle home';
+      // the ground gets its trio; the climb slider belongs to the sky scenes
+      const surf = s.kind === 'surface';
+      this._flyBtn.style.display = surf ? '' : 'none';
+      this._viewBtn.style.display = surf ? '' : 'none';
+      this._actBtn.style.display = surf ? '' : 'none';
+      if (surf) this._actBtn.textContent = s.traveler?.riding ? '✕' : '⛵';
+      this._vsEl.style.display = surf ? 'none' : '';
     }
   }
 }

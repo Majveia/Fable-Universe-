@@ -178,36 +178,38 @@
     opacity:1; transition:opacity .6s ease; }
   #touch.dim{ opacity:.22; }
   body.coarse #touch{ display:block; }
-  #stick{ position:absolute; left:22px; bottom:calc(30px + env(safe-area-inset-bottom));
-    width:128px; height:128px; border-radius:50%;
-    border:1px solid var(--hairline); background:rgba(12,16,22,.34);
+  /* the keyboard's hints and the thumb's controls never share a bottom edge */
+  body.coarse #hints{ display:none; }
+  #stick{ position:absolute; left:18px; bottom:calc(24px + env(safe-area-inset-bottom));
+    width:92px; height:92px; border-radius:50%;
+    border:1px solid var(--hairline); background:rgba(12,16,22,.28);
     backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
     pointer-events:auto; touch-action:none; }
-  #knob{ position:absolute; left:50%; top:50%; width:50px; height:50px; margin:-25px 0 0 -25px;
+  #knob{ position:absolute; left:50%; top:50%; width:38px; height:38px; margin:-19px 0 0 -19px;
     border-radius:50%; background:rgba(255,255,255,.15); border:1px solid var(--ink-faint);
     transition:background .2s; }
   #stick:active #knob{ background:rgba(158,203,255,.3); }
-  #vslide{ position:absolute; right:18px; bottom:calc(120px + env(safe-area-inset-bottom));
-    width:44px; height:170px; border-radius:24px;
-    border:1px solid var(--hairline); background:rgba(12,16,22,.34);
+  #vslide{ position:absolute; right:14px; bottom:calc(96px + env(safe-area-inset-bottom));
+    width:36px; height:128px; border-radius:20px;
+    border:1px solid var(--hairline); background:rgba(12,16,22,.28);
     backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
     pointer-events:auto; touch-action:none; }
-  #vknob{ position:absolute; left:50%; top:50%; width:34px; height:34px; margin:-17px 0 0 -17px;
+  #vknob{ position:absolute; left:50%; top:50%; width:28px; height:28px; margin:-14px 0 0 -14px;
     border-radius:50%; background:rgba(255,255,255,.15); border:1px solid var(--ink-faint); }
   #vslide::before, #vslide::after{
     position:absolute; left:50%; transform:translateX(-50%);
     font-size:10px; color:var(--ink-faint); pointer-events:none; }
   #vslide::before{ content:'▲'; top:7px; }
   #vslide::after{ content:'▼'; bottom:7px; }
-  #tbtns{ position:absolute; right:16px; bottom:calc(26px + env(safe-area-inset-bottom));
-    display:flex; flex-direction:column; align-items:flex-end; gap:10px; pointer-events:auto; }
+  #tbtns{ position:absolute; right:12px; bottom:calc(20px + env(safe-area-inset-bottom));
+    display:flex; flex-direction:column; align-items:flex-end; gap:8px; pointer-events:auto; }
   #tbtns button{ border-radius:50%; border:1px solid var(--hairline);
-    background:rgba(12,16,22,.4); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+    background:rgba(12,16,22,.32); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
     color:var(--ink); font:inherit; touch-action:none; }
-  #tbtns button.big{ width:62px; height:62px; font-size:24px;
-    border-color:var(--ink-faint); background:rgba(20,30,44,.5); align-self:flex-end; }
-  #tbrow{ display:flex; gap:8px; }
-  #tbrow button{ width:44px; height:44px; font-size:16px; }
+  #tbtns button.big{ width:46px; height:46px; font-size:19px;
+    border-color:var(--ink-faint); background:rgba(20,30,44,.42); align-self:flex-end; }
+  #tbrow{ display:flex; gap:6px; }
+  #tbrow button{ width:36px; height:36px; font-size:13px; }
   #tbtns button:active{ background:rgba(158,203,255,.28); }
   #touchhelp{ position:absolute; right:82px; bottom:calc(30px + env(safe-area-inset-bottom));
     max-width:260px; padding:12px 15px;
