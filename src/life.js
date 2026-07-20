@@ -123,6 +123,106 @@ export function addLife(s) {
   trunks.count = t; canopies.count = t;
   s.scene.add(trunks); s.scene.add(canopies);
 
+  // ---------------------------------------------------------- groves ----
+  // the lone trees were scouts; these are the woods they were scouting
+  // for. clustered stands with real crowns — puffy triple-canopy
+  // broadleaves in the warm bands, spired conifers where the year is cold
+  const conifer = pp.Teq < 268;
+  const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
+  const nGrove = Math.round((COARSE ? 260 : 520) * vegF);
+  if (nGrove > 24) {
+    const gTrunks = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.12, 0.26, 1, 5), trunkMat, nGrove);
+    const crownGeo = conifer ? new THREE.ConeGeometry(1, 2.6, 7) : new THREE.IcosahedronGeometry(1, 1);
+    const gCrowns = new THREE.InstancedMesh(crownGeo, canopyMat, nGrove * (conifer ? 1 : 3));
+    let gt = 0, gc = 0;
+    const centers = [];
+    for (let i = 0; i < 90 && centers.length < 9; i++) {
+      const x = r.float(-EXT / 2, EXT / 2), z = r.float(-EXT / 2, EXT / 2);
+      if (dryland(x, z) === null) continue;
+      // groves keep off the town's doorstep
+      if (s.settlement && Math.hypot(x - s.settlement.site.x, z - s.settlement.site.z) < 160) continue;
+      centers.push({ x, z, spread: r.float(55, 120), hue: r.float(-0.045, 0.045) });
+    }
+    for (let i = 0; i < nGrove * 3 && gt < nGrove; i++) {
+      const c = centers[i % Math.max(centers.length, 1)];
+      if (!c) break;
+      const x = c.x + r.gauss() * c.spread, z = c.z + r.gauss() * c.spread;
+      const h = dryland(x, z);
+      if (h === null) continue;
+      const height = conifer ? r.float(8, 16) : r.float(6, 12);
+      d.position.set(x, h + height / 2, z);
+      d.rotation.set(0, r.float(0, 6.28), r.float(-0.05, 0.05));
+      d.scale.set(1, height, 1);
+      d.updateMatrix();
+      gTrunks.setMatrixAt(gt, d.matrix);
+      if (conifer) {
+        d.position.y = h + height * 0.62;
+        const cw = r.float(1.6, 2.6);
+        d.scale.set(cw, height * 0.55, cw);
+        d.rotation.set(0, r.float(0, 6.28), 0);
+        d.updateMatrix();
+        gCrowns.setMatrixAt(gc++, d.matrix);
+      } else {
+        // three overlapping crowns make a real head of foliage
+        for (let k = 0; k < 3; k++) {
+          const cw = r.float(1.8, 3.4);
+          d.position.set(
+            x + r.gauss() * cw * 0.5,
+            h + height * r.float(0.8, 1.05) + r.gauss() * cw * 0.24,
+            z + r.gauss() * cw * 0.5);
+          d.scale.set(cw, cw * r.float(0.55, 0.95), cw);
+          d.rotation.set(0, r.float(0, 6.28), 0);
+          d.updateMatrix();
+          gCrowns.setMatrixAt(gc++, d.matrix);
+        }
+      }
+      gt++;
+    }
+    gTrunks.count = gt;
+    gCrowns.count = gc;
+    s.scene.add(gTrunks, gCrowns);
+  }
+
+  // --------------------------------------------------------- flowers ----
+  // meadow patches: small bright crosses in two species colors, the kind
+  // of color Ghibli scatters an entire hillside with
+  const nFlow = Math.round((COARSE ? 240 : 460) * vegF);
+  if (nFlow > 30) {
+    const fGeo = new THREE.PlaneGeometry(0.55, 0.55);
+    const fMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.95,
+    });
+    const flowers = new THREE.InstancedMesh(fGeo, fMat, nFlow);
+    flowers.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(nFlow * 3), 3);
+    const speciesA = new THREE.Color().setHSL(r.float(0, 1), 0.75, 0.62);
+    const speciesB = new THREE.Color().setHSL(r.float(0, 1), 0.7, 0.66);
+    const fc = new THREE.Color();
+    let pf = 0;
+    const patches = [];
+    for (let i = 0; i < 40 && patches.length < 7; i++) {
+      const x = r.float(-EXT / 2, EXT / 2), z = r.float(-EXT / 2, EXT / 2);
+      if (dryland(x, z) !== null) patches.push({ x, z, spread: r.float(20, 55) });
+    }
+    for (let i = 0; i < nFlow * 3 && pf < nFlow; i++) {
+      const c = patches[i % Math.max(patches.length, 1)];
+      if (!c) break;
+      const x = c.x + r.gauss() * c.spread, z = c.z + r.gauss() * c.spread;
+      const h = dryland(x, z);
+      if (h === null) continue;
+      d.position.set(x, h + 0.32, z);
+      d.rotation.set(r.float(-0.4, 0.4), r.float(0, 6.28), 0);
+      d.scale.setScalar(r.float(0.6, 1.4));
+      d.updateMatrix();
+      flowers.setMatrixAt(pf, d.matrix);
+      fc.copy(r.chance(0.6) ? speciesA : speciesB).offsetHSL(r.float(-0.03, 0.03), 0, r.float(-0.06, 0.06));
+      flowers.setColorAt(pf, fc);
+      pf++;
+    }
+    flowers.count = pf;
+    s.scene.add(flowers);
+  }
+
   // -------------------------------------------------------- skimmers ----
   // real bodies now: a fuselage and two wings that beat in the vertex
   // shader, banking into their turns
