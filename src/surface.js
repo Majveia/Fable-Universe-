@@ -16,6 +16,8 @@ import { addTraveler } from './traveler.js';
 import { addShips } from './ships.js';
 import { addFlare } from './flare.js';
 import { addGrass } from './grass.js';
+import { addRuins } from './ruins.js';
+import { addWildlife } from './wildlife.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 
 const EXT = 1400;            // terrain extent, ~metres
@@ -333,6 +335,8 @@ export class SurfaceScale {
     this.body = this.camera.position.clone();
     this.traveler = addTraveler(this);
     this.grassField = addGrass(this);
+    this.ruins = addRuins(this);
+    this.wildlife = addWildlife(this);
     this.controls = { // duck-typed for the hyperzoom
       enabled: false,
       target: new THREE.Vector3(spawn.x + 60, spawn.y + 4, spawn.z - 40),
@@ -1077,6 +1081,8 @@ export class SurfaceScale {
     if (this.settlement) this.settlement.update(dt, this.uSunDir.value.y);
     if (this.ships) this.ships.update(dt, this.uSunDir.value.y);
     if (this.grassField) this.grassField.update(dt, this.uSunDir.value.y);
+    if (this.ruins) this.ruins.update(dt, this.uSunDir.value.y);
+    if (this.wildlife) this.wildlife.update(dt, this.uSunDir.value.y);
 
     // movement (skip while the hyperzoom still owns the camera)
     if (this.controls.enabled) {
@@ -1149,10 +1155,11 @@ export class SurfaceScale {
 
   pick() { return null; }
   enter() { this.controls.enabled = true; }
-  exit() { this.controls.enabled = false; }
+  exit() { this.controls.enabled = false; this.app.hud.showDiscovery(null); }
   resume() { this.controls.enabled = true; }
 
   dispose() {
+    this.ruins?.dispose?.();
     window.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('keyup', this._onKeyUp);
     this.scene.traverse(o => {

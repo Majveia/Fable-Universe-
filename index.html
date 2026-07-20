@@ -69,6 +69,25 @@
   }
   #hints.faded{ opacity:0; }
 
+  /* the land offering up its story — a caption that breathes in near a ruin */
+  #discovery{
+    top:22%; left:50%; transform:translate(-50%, 8px);
+    text-align:center; max-width:min(560px, 80vw);
+    opacity:0; transition:opacity 1.6s ease, transform 1.6s ease;
+    pointer-events:none;
+  }
+  #discovery.on{ opacity:1; transform:translate(-50%, 0); }
+  #discovery .dsc-name{
+    font-size:17px; letter-spacing:.42em; text-indent:.42em; text-transform:uppercase;
+    color:var(--ink); font-weight:400;
+    text-shadow:0 2px 24px rgba(0,0,0,.7);
+  }
+  #discovery .dsc-lore{
+    margin-top:12px; font-size:12px; letter-spacing:.14em; line-height:1.7;
+    color:var(--ink-dim); font-style:italic;
+    text-shadow:0 1px 18px rgba(0,0,0,.8);
+  }
+
   #timectl{
     right:26px; bottom:22px; display:flex; align-items:center; gap:14px;
     font-size:11px; letter-spacing:.2em; color:var(--ink-dim);
