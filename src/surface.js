@@ -254,6 +254,8 @@ export class SurfaceScale {
     this._syncAngles();
 
     this.bloomSettings = { strength: 0.5, radius: 0.6, threshold: 0.35 };
+    // the world's resonance grades the frame here too — same mood, same light
+    this.gradeSettings = pp.res?.grade;
     this._bindInput();
   }
 
@@ -918,7 +920,9 @@ export class SurfaceScale {
     return [
       ['world', pp.name],
       ['class', pp.type + (pp.inhabited ? ' · inhabited' : '')],
+      ...(this.settlement ? [['settlement', this.settlement.name]] : []),
       ['biosphere', this.life ? 'flora + fauna' : '—'],
+      ...(pp.res?.line ? [['mood', pp.res.line]] : []),
       ['craters', this.impacts.length ? String(this.impacts.length) : '—'],
       ['surface gravity', g.toFixed(2) + ' g'],
       ['equilibrium temp', pp.Teq + ' K'],
