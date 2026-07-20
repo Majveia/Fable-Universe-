@@ -84,6 +84,17 @@ switches comoving ↔ physical coordinates; the HUD reads out true redshift
 and cosmic age. (No float-render support? It falls back to the analytic
 Zel'dovich field automatically.)
 
+The physics is honest; the light on top of it dances. The filament
+palette breathes between cold blue and violet across the box, node gold
+leans rose and back on its own slow clock, and **waves of brightness roll
+through the structure** like weather crossing a continent. One tracer in
+two thousand goes **supernova** on schedule — a white bloom dying
+ember-red — and three **comets** thread the volume on ellipses, trailing
+strings of fading light. OLED black stays black; everything above it
+moves.
+
+![the web mid-dance, comets crossing](docs/screenshots/53-web-dance.png)
+
 ### 2 · Galaxy
 About one disk galaxy in six is caught **mid-collision**: the two cores
 move as an exact two-body problem while 262,144 disk stars ride along as
@@ -489,12 +500,44 @@ Worlds in the liquid-water band grow a **biosphere**: alien flora in a
 palette seeded by the world itself, winged skimmers that beat and bank
 through boid flocks (flap computed in the vertex shader), tall two-legged
 striders grazing the hills with a true antiphase gait, and — after dark on
-inhabited worlds — drifting bioluminescent spores. Inhabited worlds keep a
-**settlement** near the landing site: towers whose procedurally-drawn
-windows light one by one with the dusk, beacon masts blinking at the edge
-of town. Your own moons cross the sky with true phases.
+inhabited worlds — drifting bioluminescent spores. Your own moons cross
+the sky with true phases.
 
-![settlement at dusk](docs/screenshots/19-settlement-night.png)
+Inhabited worlds keep a **named town** near the landing site now — the
+HUD introduces it. Pitched terracotta roofs ring a plaza; procedurally
+drawn windows light one by one with the dusk; chimney smoke leans with a
+per-world wind; terraced crop fields stripe the gentle slopes; a windmill
+turns on the rise and a belltower keeps the hours. Lantern-lit paths walk
+out to smaller hamlets, and at the plaza's heart stands a **ring-gate**
+older than the town, humming with its own light in the blue hour. Beacon
+masts still blink their slow red warning: the town has radios.
+
+![the town of Caluna in the long afternoon](docs/screenshots/48-town-caluna.png)
+
+And you're *in* it now: press **C** and the camera steps back to reveal
+**the traveler** — a cloaked figure under a straw hat, scarf leaning with
+its speed, a lantern warming its hand after dark. The camera follows on a
+spring, WASD stays camera-relative, the figure turns to face where it's
+going. Near the plaza a **hover-skiff** waits: **E** boards it, banking
+turns and a bobbing keel carry you over land and sea alike — dust kicked
+up over the fields, spray over the water — and E steps off wherever the
+journey pauses.
+
+![the traveler on the meadow](docs/screenshots/49-traveler.png)
+
+![the skiff banking over the lake country](docs/screenshots/50-skiff.png)
+
+The sky keeps its own hours. The horizon color is shared by sky, terrain
+and sea, so the **magic hour** bleeds through the entire frame; painterly
+cumulus drift on the wind, going rose-gold at dusk and grey after dark;
+and the night is no wall — twenty-four hundred stars in real stellar
+colors, a **galactic band** lying along its own great circle, meteors
+streaking when the dark is deep enough. Every world's resonance grades
+the surface frame the same way it grades orbit.
+
+![the golden hour, Malick-wide](docs/screenshots/51-golden-hour.png)
+
+![a starry night over the lanterns of Caluna](docs/screenshots/52-starry-night.png)
 
 ![biosphere](docs/screenshots/15-biosphere.png)
 
