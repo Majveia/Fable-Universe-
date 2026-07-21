@@ -20,6 +20,7 @@ import { addRuins } from './ruins.js';
 import { addWildlife } from './wildlife.js';
 import { addConstellations } from './constellations.js';
 import { addCaravan } from './caravan.js';
+import { addWeather } from './weather.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 
 const EXT = 1400;            // terrain extent, ~metres
@@ -73,6 +74,7 @@ const TERRAIN_FRAG = /* glsl */`
   uniform float uSnow;
   uniform float uLava;
   uniform float uTime;
+  uniform float uWet;    // 0 dry … 1 rain-soaked
   varying vec3 vW;
   varying vec3 vN;
   ${NOISE_GLSL}
@@ -112,10 +114,20 @@ const TERRAIN_FRAG = /* glsl */`
     col = mix(col, vec3(0.92, 0.95, 1.0), uSnow * snowLine);
     col *= 0.8 + 0.3 * detail * micro + 0.12 * grain;
 
+    // rain darkens and deepens the ground, pooling colour into the low spots
+    col *= mix(1.0, 0.66, uWet);
+
     // light: wrapped diffuse so dusk rakes long and soft, like film
     float diff = clamp((dot(nb, uSunDir) + 0.3) / 1.3, 0.0, 1.0);
     float dusk = smoothstep(-0.12, 0.12, uSunDir.y);
     vec3 lit = col * (uSunColor * diff * diff * 1.35 + vec3(0.012, 0.014, 0.02) + uHorizon * 0.26 * dusk);
+
+    // wet earth holds a broad sheen of the sky and the sun
+    if (uWet > 0.02) {
+      vec3 view = normalize(uCam - vW);
+      float wetSpec = pow(max(dot(reflect(-uSunDir, nb), view), 0.0), 24.0);
+      lit += (uSunColor * wetSpec * 0.5 + uHorizon * 0.12) * uWet * (0.3 + dusk);
+    }
 
     // sand and snow catch the sun in tiny mirrors
     float glintM = max(shore * (1.0 - smoothstep(0.18, 0.4, slope)), uSnow * snowLine);
@@ -303,6 +315,7 @@ export class SurfaceScale {
     this.uSunColor = { value: ctx.sunColor.clone() };
     this.uTime = { value: 0 };
     this.uCam = { value: this.camera.position };
+    this.uWet = { value: 0 };   // the weather wets the ground
 
     const atmoStrength = pp.typeId === 0 ? 0.25 : pp.typeId === 4 ? 0.4 : 1.0;
     this.atmo = atmoStrength;
@@ -341,6 +354,7 @@ export class SurfaceScale {
     this.wildlife = addWildlife(this);
     this.constellations = addConstellations(this);
     this.caravan = addCaravan(this);
+    this.weather = addWeather(this);
     // a living score for the ground: it swells with the golden hour and
     // hushes at the ruins — tuned to this world's own resonance root
     this._scoreRoot = 130.8 * Math.pow(2, ((hash(pp.seed, 0x5c0e) % 5)) / 12);
@@ -435,6 +449,7 @@ export class SurfaceScale {
         uLava: { value: type === 4 ? 1 : 0 },
         uTime: this.uTime,
         uSea: { value: this.seaLevel ?? -1e9 },
+        uWet: this.uWet,
       },
       vertexShader: TERRAIN_VERT,
       fragmentShader: TERRAIN_FRAG,
@@ -1093,6 +1108,7 @@ export class SurfaceScale {
     if (this.wildlife) this.wildlife.update(dt, this.uSunDir.value.y);
     if (this.constellations) this.constellations.update(dt, this.uSunDir.value.y);
     if (this.caravan) this.caravan.update(dt, this.uSunDir.value.y);
+    if (this.weather) this.weather.update(dt, this.uSunDir.value.y);
     // the score breathes with the light: it peaks as the sun rides low and
     // gold, thins at high noon and deep night, and hushes near a monument
     if (this.app.audio?.surfaceScore) {
