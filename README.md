@@ -591,6 +591,26 @@ wander.
 
 ![fireflies over the night meadow](docs/screenshots/63-fireflies-dusk.png)
 
+And the night has **names**. Each world's sky carries a handful of
+**named constellations** — bright stars joined by hairline strokes with a
+label that kindles beneath the figure ("The Drowned Reaper", "The
+Lantern-Bearer") — drawn from the seed, wheeling as the world turns,
+fading in only when the sky goes dark. Look up at dusk and the sky means
+something.
+
+![the night's constellations over Velune](docs/screenshots/64-constellations.png)
+
+The ground carries a **living score** now, synthesized from nothing like
+every other sound here: a warm add-nine chord tuned to each world's own
+root that **swells as the sun rides low and gold** — the golden hour made
+audible — thins to silence at high noon and deep night, and **hushes to a
+held breath** when you stand within a monument's memory. And the **roads
+are travelled**: a caravan paces the longest lantern-lit road out of
+town — a canopied cart, a swaying lantern, a train of pack-beasts strung
+behind — walking to the far hamlet and back, forever.
+
+![a caravan on the road to town, at dusk](docs/screenshots/65-caravan-dusk.png)
+
 On glass, the controls got out of the way: the desktop hints never share
 the bottom edge with your thumbs, the stick and buttons shrank to
 whispers, and the ground scenes carry a micro-row of their own — fly,
