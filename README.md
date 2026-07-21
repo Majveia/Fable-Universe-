@@ -636,6 +636,34 @@ afraid of you.
 
 ![a herd grazing the far hills in the low gold](docs/screenshots/69-herd-grazing.png)
 
+And no two worlds are the same country any more. Each grows its own
+**bones** — a landform chosen from its seed and mood: **alpine** massifs
+that break the sky in snow-lit ridges, terraced **canyonlands** cut by
+hard-walled gorges, high **plateaus** that end in sheer cliffs, seas of
+wind-aligned **dune**, or the old rolling meadow. The terrain bares dark
+strata on the steep faces and snow settles on the heights but slides off
+the cliffs, and you always land on flat, walkable ground.
+
+![an alpine massif at winter twilight](docs/screenshots/73-alpine-massif.png)
+
+![canyon mesas rising from the sea at dawn](docs/screenshots/74-canyon-mesas.png)
+
+And not every world is a village. The resonance and seed choose a
+**civilization**, layered over the same lived-in town: the *chrome and
+rain* worlds raise a **neon port-city** — a skyline whose windows and
+holo-signage blaze against the night; the desert's *counsel* raises a
+**monumental capital** of stone, a stepped ziggurat and a colonnade
+avenue and a great obelisk; and some worlds are **spacefaring**, with
+landing pads ringed in edge-lights, prefab domes, antenna masts, and a
+ship that climbs off the pad on a plume. The HUD names the place and its
+kind.
+
+![the neon port-city of Cape Tirgard at night](docs/screenshots/70-neon-port-city.png)
+
+![the monumental capital of Grand Malolis](docs/screenshots/71-monument-capital.png)
+
+![a spacefaring outpost, its pad ringed in light](docs/screenshots/72-spaceport.png)
+
 On glass, the controls got out of the way: the desktop hints never share
 the bottom edge with your thumbs, the stick and buttons shrank to
 whispers, and the ground scenes carry a micro-row of their own — fly,
