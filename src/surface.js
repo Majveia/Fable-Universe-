@@ -23,6 +23,7 @@ import { addCaravan } from './caravan.js';
 import { addWeather } from './weather.js';
 import { addFestival } from './festival.js';
 import { addHerds } from './herds.js';
+import { addMegafauna } from './megafauna.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 import { pickLandform } from './landform.js';
 
@@ -362,6 +363,7 @@ export class SurfaceScale {
     this.wildlife = addWildlife(this);
     this.constellations = addConstellations(this);
     this.caravan = addCaravan(this);
+    this.megafauna = addMegafauna(this);
     this.weather = addWeather(this);
     this.festival = addFestival(this);
     this.herds = addHerds(this);
@@ -1134,6 +1136,7 @@ export class SurfaceScale {
     if (this.constellations) this.constellations.update(dt, this.uSunDir.value.y);
     if (this.caravan) this.caravan.update(dt, this.uSunDir.value.y);
     if (this.weather) this.weather.update(dt, this.uSunDir.value.y);
+    if (this.megafauna) this.megafauna.update(dt, this.uSunDir.value.y);
     if (this.festival) this.festival.update(dt, this.uSunDir.value.y);
     if (this.herds) this.herds.update(dt, this.uSunDir.value.y);
     // the score breathes with the light: it peaks as the sun rides low and
