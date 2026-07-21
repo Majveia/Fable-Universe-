@@ -25,6 +25,7 @@ import { addFestival } from './festival.js';
 import { addHerds } from './herds.js';
 import { addMegafauna } from './megafauna.js';
 import { addGodRays } from './godrays.js';
+import { addRivers } from './rivers.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 import { pickLandform } from './landform.js';
 
@@ -365,6 +366,7 @@ export class SurfaceScale {
     this.constellations = addConstellations(this);
     this.caravan = addCaravan(this);
     this.megafauna = addMegafauna(this);
+    this.rivers = addRivers(this);
     this.godrays = addGodRays(this);
     this.weather = addWeather(this);
     this.festival = addFestival(this);
@@ -1142,6 +1144,7 @@ export class SurfaceScale {
     if (this.weather) this.weather.update(dt, this.uSunDir.value.y);
     if (this.megafauna) this.megafauna.update(dt, this.uSunDir.value.y);
     if (this.godrays) this.godrays.update(dt);
+    if (this.rivers) this.rivers.update(dt);
     if (this.festival) this.festival.update(dt, this.uSunDir.value.y);
     if (this.herds) this.herds.update(dt, this.uSunDir.value.y);
     // the score breathes with the light: it peaks as the sun rides low and
