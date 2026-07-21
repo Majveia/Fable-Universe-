@@ -21,6 +21,8 @@ import { addWildlife } from './wildlife.js';
 import { addConstellations } from './constellations.js';
 import { addCaravan } from './caravan.js';
 import { addWeather } from './weather.js';
+import { addFestival } from './festival.js';
+import { addHerds } from './herds.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 
 const EXT = 1400;            // terrain extent, ~metres
@@ -355,6 +357,8 @@ export class SurfaceScale {
     this.constellations = addConstellations(this);
     this.caravan = addCaravan(this);
     this.weather = addWeather(this);
+    this.festival = addFestival(this);
+    this.herds = addHerds(this);
     // a living score for the ground: it swells with the golden hour and
     // hushes at the ruins — tuned to this world's own resonance root
     this._scoreRoot = 130.8 * Math.pow(2, ((hash(pp.seed, 0x5c0e) % 5)) / 12);
@@ -1109,6 +1113,8 @@ export class SurfaceScale {
     if (this.constellations) this.constellations.update(dt, this.uSunDir.value.y);
     if (this.caravan) this.caravan.update(dt, this.uSunDir.value.y);
     if (this.weather) this.weather.update(dt, this.uSunDir.value.y);
+    if (this.festival) this.festival.update(dt, this.uSunDir.value.y);
+    if (this.herds) this.herds.update(dt, this.uSunDir.value.y);
     // the score breathes with the light: it peaks as the sun rides low and
     // gold, thins at high noon and deep night, and hushes near a monument
     if (this.app.audio?.surfaceScore) {
