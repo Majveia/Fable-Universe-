@@ -24,6 +24,7 @@ import { addWeather } from './weather.js';
 import { addFestival } from './festival.js';
 import { addHerds } from './herds.js';
 import { addMegafauna } from './megafauna.js';
+import { addGodRays } from './godrays.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 import { pickLandform } from './landform.js';
 
@@ -364,6 +365,7 @@ export class SurfaceScale {
     this.constellations = addConstellations(this);
     this.caravan = addCaravan(this);
     this.megafauna = addMegafauna(this);
+    this.godrays = addGodRays(this);
     this.weather = addWeather(this);
     this.festival = addFestival(this);
     this.herds = addHerds(this);
@@ -379,7 +381,9 @@ export class SurfaceScale {
     this.camera.lookAt(this.controls.target);
     this._syncAngles();
 
-    this.bloomSettings = { strength: 0.5, radius: 0.6, threshold: 0.35 };
+    // a touch more bloom so the sun, water-glitter, the colossus's jewel and
+    // the corona crown the frame — the spectacle a grand vista wants
+    this.bloomSettings = { strength: 0.68, radius: 0.72, threshold: 0.3 };
     // the world's resonance grades the frame here too — same mood, same light
     this.gradeSettings = pp.res?.grade;
     this._bindInput();
@@ -1137,6 +1141,7 @@ export class SurfaceScale {
     if (this.caravan) this.caravan.update(dt, this.uSunDir.value.y);
     if (this.weather) this.weather.update(dt, this.uSunDir.value.y);
     if (this.megafauna) this.megafauna.update(dt, this.uSunDir.value.y);
+    if (this.godrays) this.godrays.update(dt);
     if (this.festival) this.festival.update(dt, this.uSunDir.value.y);
     if (this.herds) this.herds.update(dt, this.uSunDir.value.y);
     // the score breathes with the light: it peaks as the sun rides low and
