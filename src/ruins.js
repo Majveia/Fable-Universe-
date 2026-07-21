@@ -169,8 +169,9 @@ export function addRuins(s) {
   });
 
   let near = null;
-  return {
+  const ret = {
     monuments,
+    hush: 0,   // 0 in the open, → 1 at a monument's heart (the score hushes)
     update(dt, sunY) {
       const night = 1 - Math.min(Math.max((sunY + 0.12) * 3.5, 0), 1);
       for (const g of glowSprites) {
@@ -182,6 +183,7 @@ export function addRuins(s) {
         const dd = Math.hypot(s.body.x - m.x, s.body.z - m.z);
         if (dd < m.radius && dd < bestD) { bestD = dd; found = m; }
       }
+      ret.hush = found ? 1 - Math.min(bestD / found.radius, 1) : 0;
       if (found !== near) {
         near = found;
         s.app.hud.showDiscovery(found?.name ?? null, found?.lore ?? null);
@@ -189,4 +191,5 @@ export function addRuins(s) {
     },
     dispose() { s.app.hud.showDiscovery(null); },
   };
+  return ret;
 }
