@@ -283,6 +283,22 @@ export class Ambience {
     }, 1400);
   }
 
+  /** a festival bell: a soft struck tone from a pentatonic scale, ringing out */
+  festivalBell(root = 261.6) {
+    if (!this.ctx || this.muted) return;
+    const c = this.ctx, t = c.currentTime;
+    const scale = [1, 1.125, 1.25, 1.5, 1.667, 2];
+    const f = root * scale[(Math.random() * scale.length) | 0];
+    const o = this._osc('sine', f);
+    const o2 = this._osc('sine', f * 2.01);
+    const g = this._gain(0);
+    o.connect(g); o2.connect(g); g.connect(this.master);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.08, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 2.4);
+    setTimeout(() => { o.stop(); o2.stop(); o.disconnect(); o2.disconnect(); g.disconnect(); }, 2600);
+  }
+
   /** soft ping when something is selected */
   blip() {
     if (!this.ctx) return;

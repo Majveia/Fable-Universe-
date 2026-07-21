@@ -611,6 +611,59 @@ behind — walking to the far hamlet and back, forever.
 
 ![a caravan on the road to town, at dusk](docs/screenshots/65-caravan-dusk.png)
 
+And the worlds have **weather** now. Squalls cross the country on their own
+schedule — the light dims, a grey curtain sweeps in on the world's wind,
+rain streaks past, and the ground darkens and holds a broad wet sheen long
+after the cloud has gone. In the low-sun hours, **mist pools in the
+valleys** and along the water's edge, thinning as the sun climbs. Rainy
+worlds storm often; dry ones rarely.
+
+![a rain squall sweeping the meadow](docs/screenshots/66-rain-squall.png)
+
+![mist in the valley at first light](docs/screenshots/67-valley-mist.png)
+
+Some nights the town **lets go of its lights**. On a festival night (fixed
+per world and per day, so the calendar is real — come back on the right
+night and the sky fills) the plaza releases **sky-lanterns** in clutches:
+warm paper flames that rise, catch the wind, and drift up into the dark
+among the stars, while a soft pentatonic **bell** rings out across the
+fields. And the far hills are **grazed** — herds of slender animals move
+over the high ground, heads down in the grass, and **startle as one**,
+bounding over the ridge, when you wander too close. They remember to be
+afraid of you.
+
+![the festival of lanterns over Caluna](docs/screenshots/68-festival-lanterns.png)
+
+![a herd grazing the far hills in the low gold](docs/screenshots/69-herd-grazing.png)
+
+And no two worlds are the same country any more. Each grows its own
+**bones** — a landform chosen from its seed and mood: **alpine** massifs
+that break the sky in snow-lit ridges, terraced **canyonlands** cut by
+hard-walled gorges, high **plateaus** that end in sheer cliffs, seas of
+wind-aligned **dune**, or the old rolling meadow. The terrain bares dark
+strata on the steep faces and snow settles on the heights but slides off
+the cliffs, and you always land on flat, walkable ground.
+
+![an alpine massif at winter twilight](docs/screenshots/73-alpine-massif.png)
+
+![canyon mesas rising from the sea at dawn](docs/screenshots/74-canyon-mesas.png)
+
+And not every world is a village. The resonance and seed choose a
+**civilization**, layered over the same lived-in town: the *chrome and
+rain* worlds raise a **neon port-city** — a skyline whose windows and
+holo-signage blaze against the night; the desert's *counsel* raises a
+**monumental capital** of stone, a stepped ziggurat and a colonnade
+avenue and a great obelisk; and some worlds are **spacefaring**, with
+landing pads ringed in edge-lights, prefab domes, antenna masts, and a
+ship that climbs off the pad on a plume. The HUD names the place and its
+kind.
+
+![the neon port-city of Cape Tirgard at night](docs/screenshots/70-neon-port-city.png)
+
+![the monumental capital of Grand Malolis](docs/screenshots/71-monument-capital.png)
+
+![a spacefaring outpost, its pad ringed in light](docs/screenshots/72-spaceport.png)
+
 On glass, the controls got out of the way: the desktop hints never share
 the bottom edge with your thumbs, the stick and buttons shrank to
 whispers, and the ground scenes carry a micro-row of their own — fly,

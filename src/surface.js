@@ -11,7 +11,7 @@ import { hash, RNG } from './rng.js';
 import { NOISE_GLSL, makeSurfaceMaterial, makeRingMaterial, makeAtmosphereMaterial } from './planet.js';
 import { softDotTexture } from './nebula.js';
 import { addLife, isBiosphere } from './life.js';
-import { addSettlement } from './settlement.js';
+import { addCivilization } from './civilization.js';
 import { addTraveler } from './traveler.js';
 import { addShips } from './ships.js';
 import { addFlare } from './flare.js';
@@ -20,7 +20,11 @@ import { addRuins } from './ruins.js';
 import { addWildlife } from './wildlife.js';
 import { addConstellations } from './constellations.js';
 import { addCaravan } from './caravan.js';
+import { addWeather } from './weather.js';
+import { addFestival } from './festival.js';
+import { addHerds } from './herds.js';
 import { planetHeight, findLandingSite } from './terrain.js';
+import { pickLandform } from './landform.js';
 
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
@@ -73,6 +77,7 @@ const TERRAIN_FRAG = /* glsl */`
   uniform float uSnow;
   uniform float uLava;
   uniform float uTime;
+  uniform float uWet;    // 0 dry … 1 rain-soaked
   varying vec3 vW;
   varying vec3 vN;
   ${NOISE_GLSL}
@@ -107,15 +112,30 @@ const TERRAIN_FRAG = /* glsl */`
     vec3 col = mix(meadow, uColA, smoothstep(0.02, 0.45, hgt + detail * 0.25));
     col = mix(col, uColB, smoothstep(0.35, 0.85, hgt) * 0.8);
     col = mix(col, uColB * 0.85, smoothstep(0.22, 0.55, slope));
+    // sheer faces bare their rock: dark strata streaked down the cliff
+    float cliff = smoothstep(0.5, 0.78, slope);
+    vec3 strata = uColB * (0.32 + 0.3 * (fbm3(vec3(vW.y * 0.06, vW.xz * 0.01)) * 0.5 + 0.5));
+    col = mix(col, strata, cliff);
     col = mix(col, sand, shore * (1.0 - smoothstep(0.18, 0.4, slope)));
-    float snowLine = smoothstep(0.55, 0.8, hgt + micro * 0.1);
-    col = mix(col, vec3(0.92, 0.95, 1.0), uSnow * snowLine);
+    // snow blankets the high ground but slides off the sheer faces
+    float snowLine = smoothstep(0.45, 0.72, hgt + micro * 0.1) * (1.0 - cliff * 0.85);
+    col = mix(col, vec3(0.92, 0.95, 1.0), max(uSnow, smoothstep(0.62, 0.85, hgt) * 0.9) * snowLine);
     col *= 0.8 + 0.3 * detail * micro + 0.12 * grain;
+
+    // rain darkens and deepens the ground, pooling colour into the low spots
+    col *= mix(1.0, 0.66, uWet);
 
     // light: wrapped diffuse so dusk rakes long and soft, like film
     float diff = clamp((dot(nb, uSunDir) + 0.3) / 1.3, 0.0, 1.0);
     float dusk = smoothstep(-0.12, 0.12, uSunDir.y);
     vec3 lit = col * (uSunColor * diff * diff * 1.35 + vec3(0.012, 0.014, 0.02) + uHorizon * 0.26 * dusk);
+
+    // wet earth holds a broad sheen of the sky and the sun
+    if (uWet > 0.02) {
+      vec3 view = normalize(uCam - vW);
+      float wetSpec = pow(max(dot(reflect(-uSunDir, nb), view), 0.0), 24.0);
+      lit += (uSunColor * wetSpec * 0.5 + uHorizon * 0.12) * uWet * (0.3 + dusk);
+    }
 
     // sand and snow catch the sun in tiny mirrors
     float glintM = max(shore * (1.0 - smoothstep(0.18, 0.4, slope)), uSnow * snowLine);
@@ -303,6 +323,7 @@ export class SurfaceScale {
     this.uSunColor = { value: ctx.sunColor.clone() };
     this.uTime = { value: 0 };
     this.uCam = { value: this.camera.position };
+    this.uWet = { value: 0 };   // the weather wets the ground
 
     const atmoStrength = pp.typeId === 0 ? 0.25 : pp.typeId === 4 ? 0.4 : 1.0;
     this.atmo = atmoStrength;
@@ -324,7 +345,7 @@ export class SurfaceScale {
     if (pp.inhabited) this._buildCityGlow();
     if (ctx.parentGiant) this._buildParentGiant(ctx.parentGiant);
     this._buildSiblings();
-    this.settlement = addSettlement(this);
+    this.settlement = addCivilization(this);
     this.life = addLife(this);   // after the town, so the woods keep off its doorstep
     this.ships = addShips(this);
     this.flare = addFlare(this);
@@ -341,6 +362,9 @@ export class SurfaceScale {
     this.wildlife = addWildlife(this);
     this.constellations = addConstellations(this);
     this.caravan = addCaravan(this);
+    this.weather = addWeather(this);
+    this.festival = addFestival(this);
+    this.herds = addHerds(this);
     // a living score for the ground: it swells with the golden hour and
     // hushes at the ruins — tuned to this world's own resonance root
     this._scoreRoot = 130.8 * Math.pow(2, ((hash(pp.seed, 0x5c0e) % 5)) / 12);
@@ -377,7 +401,9 @@ export class SurfaceScale {
     };
 
     const type = pp.typeId;
-    this.amp = 280;
+    // the world's bones: alpine, canyon, plateau, dune, or the old rolling
+    this.landform = pickLandform(pp, this.wind);
+    this.amp = this.landform.amp;
     this.seaLevel = (type === 1 && pp.oceanLevel > -0.5) || type === 2 ? 0 : null;
     const ocean = pp.oceanLevel > -0.5 ? pp.oceanLevel : 0.0;
 
@@ -404,6 +430,10 @@ export class SurfaceScale {
       let h = macro * S_MACRO
         + fbm2(x * 0.0011 + 7.3, z * 0.0011 - 2.1, 5) * relief * 1.7
         + fbm2(x * 0.009 + 31.7, z * 0.009 + 11.3, 3) * 6;
+      // the landform raises this world's bones — full inland, fading to the
+      // shore so mountains never rise straight out of the sea
+      const land = Math.min(Math.max(macro * 9 + 0.15, 0), 1);
+      h += this.landform.contribute(x, z, noise, land);
       // the horizon truly curves with this world's radius
       h -= (x * x + z * z) / (2 * Rworld * 0.34);
       h += this.liftY;
@@ -435,6 +465,7 @@ export class SurfaceScale {
         uLava: { value: type === 4 ? 1 : 0 },
         uTime: this.uTime,
         uSea: { value: this.seaLevel ?? -1e9 },
+        uWet: this.uWet,
       },
       vertexShader: TERRAIN_VERT,
       fragmentShader: TERRAIN_FRAG,
@@ -491,16 +522,25 @@ export class SurfaceScale {
   heightAt(x, z) { return this._heightFn(x, z); }
 
   _findSpawn() {
-    // walk outward until we stand on dry, gentle ground
-    for (let rad = 0; rad < EXT * 0.4; rad += 17) {
-      for (let th = 0; th < 6.28; th += 0.9) {
+    // score candidates: dry, flat, and not up a mountain — so dramatic
+    // landforms never strand you on a spire or a sheer face
+    const slopeAt = (x, z, h) => Math.max(
+      Math.abs(this._heightFn(x + 24, z) - h), Math.abs(this._heightFn(x - 24, z) - h),
+      Math.abs(this._heightFn(x, z + 24) - h), Math.abs(this._heightFn(x, z - 24) - h));
+    let best = null, bestScore = -1e9;
+    for (let rad = 0; rad < EXT * 0.42; rad += 15) {
+      for (let th = 0; th < 6.28; th += 0.55) {
         const x = Math.cos(th) * rad, z = Math.sin(th) * rad;
         const h = this._heightFn(x, z);
-        if ((this.seaLevel === null || h > this.seaLevel + 3) && h < 190) {
-          return new THREE.Vector3(x, h, z);
-        }
+        if (this.seaLevel !== null && h < this.seaLevel + 3) continue;   // dry only
+        const slope = slopeAt(x, z, h);
+        // flat is good, low is good, near the landing is good
+        const score = -slope * 2.5 - Math.max(0, h - 200) * 0.02 - rad * 0.01;
+        if (score > bestScore) { bestScore = score; best = new THREE.Vector3(x, h, z); }
       }
     }
+    if (best) return best;
+
     // waterlocked: raise the crust until the highest nearby point is a shore
     let bx = 0, bz = 0, bh = -1e9;
     for (let rad = 0; rad < EXT * 0.45; rad += 23) {
@@ -1093,6 +1133,9 @@ export class SurfaceScale {
     if (this.wildlife) this.wildlife.update(dt, this.uSunDir.value.y);
     if (this.constellations) this.constellations.update(dt, this.uSunDir.value.y);
     if (this.caravan) this.caravan.update(dt, this.uSunDir.value.y);
+    if (this.weather) this.weather.update(dt, this.uSunDir.value.y);
+    if (this.festival) this.festival.update(dt, this.uSunDir.value.y);
+    if (this.herds) this.herds.update(dt, this.uSunDir.value.y);
     // the score breathes with the light: it peaks as the sun rides low and
     // gold, thins at high noon and deep night, and hushes near a monument
     if (this.app.audio?.surfaceScore) {
@@ -1153,7 +1196,9 @@ export class SurfaceScale {
     return [
       ['world', pp.name],
       ['class', pp.type + (pp.inhabited ? ' · inhabited' : '')],
-      ...(this.settlement ? [['settlement', this.settlement.name]] : []),
+      ...(this.settlement ? [['settlement', this.settlement.name + ({
+        port: ' · port city', monument: ' · old capital', spaceport: ' · spaceport',
+      }[this.settlement.archetype] ?? '')]] : []),
       ['biosphere', this.life ? 'flora + fauna' : '—'],
       ...(pp.res?.line ? [['mood', pp.res.line]] : []),
       ['craters', this.impacts.length ? String(this.impacts.length) : '—'],
