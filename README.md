@@ -611,6 +611,31 @@ behind — walking to the far hamlet and back, forever.
 
 ![a caravan on the road to town, at dusk](docs/screenshots/65-caravan-dusk.png)
 
+And the worlds have **weather** now. Squalls cross the country on their own
+schedule — the light dims, a grey curtain sweeps in on the world's wind,
+rain streaks past, and the ground darkens and holds a broad wet sheen long
+after the cloud has gone. In the low-sun hours, **mist pools in the
+valleys** and along the water's edge, thinning as the sun climbs. Rainy
+worlds storm often; dry ones rarely.
+
+![a rain squall sweeping the meadow](docs/screenshots/66-rain-squall.png)
+
+![mist in the valley at first light](docs/screenshots/67-valley-mist.png)
+
+Some nights the town **lets go of its lights**. On a festival night (fixed
+per world and per day, so the calendar is real — come back on the right
+night and the sky fills) the plaza releases **sky-lanterns** in clutches:
+warm paper flames that rise, catch the wind, and drift up into the dark
+among the stars, while a soft pentatonic **bell** rings out across the
+fields. And the far hills are **grazed** — herds of slender animals move
+over the high ground, heads down in the grass, and **startle as one**,
+bounding over the ridge, when you wander too close. They remember to be
+afraid of you.
+
+![the festival of lanterns over Caluna](docs/screenshots/68-festival-lanterns.png)
+
+![a herd grazing the far hills in the low gold](docs/screenshots/69-herd-grazing.png)
+
 On glass, the controls got out of the way: the desktop hints never share
 the bottom edge with your thumbs, the stick and buttons shrank to
 whispers, and the ground scenes carry a micro-row of their own — fly,
