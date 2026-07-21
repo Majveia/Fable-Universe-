@@ -122,3 +122,41 @@ export function universeEpigraph(seed) {
   const r = new RNG(hash(seed, 0xfab1e));
   return r.pick(EPIGRAPHS);
 }
+
+// ------------------------------------------------------------- the ruins ---
+// the wild lands remember. every monument gets a name and a fragment of a
+// story nobody finished telling — assembled so no two worlds read alike.
+const RUIN_THE = ['The Weeping', 'The Sunken', 'The Hollow', 'The Broken', 'The Last',
+  'The Silent', 'The Drowned', 'The Ninefold', 'The Patient', 'The Waiting', 'The Ashen', 'The Kind'];
+const RUIN_NOUN = ['Arch', 'Gate', 'Vault', 'Spire', 'Ring', 'Throne', 'Beacon', 'Sundial',
+  'Observatory', 'Reliquary', 'Watchstone', 'Causeway', 'Lantern', 'Choir'];
+const RUIN_OF = ['of Vel', 'of the First Kings', 'of the Tide-Wardens', 'of Nine Winters',
+  'of the Star-Menders', 'of the Long Afternoon', 'of the Salt Covenant', 'of the Hushed',
+  'of the Cartographers', 'of the Unremembered', 'of the Green Dawn', 'of the Sky-Wrights'];
+
+export function ruinName(seed, i) {
+  const r = new RNG(hash(seed, i, 0x2b1c));
+  const kind = r.next();
+  if (kind < 0.4) return r.pick(RUIN_THE) + ' ' + r.pick(RUIN_NOUN);
+  if (kind < 0.75) return r.pick(RUIN_NOUN) + ' ' + r.pick(RUIN_OF);
+  return r.pick(RUIN_THE) + ' ' + r.pick(RUIN_NOUN) + ' ' + r.pick(RUIN_OF);
+}
+
+const LORE_A = [
+  'They raised it to watch a star that has since gone out.',
+  'A people slept here once, and dreamed the same dream.',
+  'The stones were carried from a coast no map still names.',
+  'It was old before the first town below took a name.',
+  'Pilgrims came for a thousand years, then simply stopped.',
+  'They say the wind here still answers, if you ask it right.',
+  'Every equinox its shadow finds the same forgotten door.',
+  'Whoever built it left in a hurry, and left the lamps lit.',
+  'It marked a border between two things nobody remembers.',
+  'The last keeper carved her name, then wore it smooth again.',
+  'Sailors set their course by it before there were sailors.',
+  'It has outlasted three seas and will outlast this one.',
+];
+
+export function ruinLore(seed, i) {
+  return new RNG(hash(seed, i, 0x10e7)).pick(LORE_A);
+}

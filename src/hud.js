@@ -36,6 +36,13 @@ export class HUD {
     this.hints = el('div', 'hints');
     this.card = el('aside', 'card');
 
+    // a caption that fades in when you come upon something the land remembers
+    this.discovery = el('div', 'discovery');
+    this.discovery.innerHTML = '<div class="dsc-name"></div><div class="dsc-lore"></div>';
+    this._dscName = this.discovery.querySelector('.dsc-name');
+    this._dscLore = this.discovery.querySelector('.dsc-lore');
+    this._dscShown = null;
+
     this.timectl = el('div', 'timectl');
     this.timectl.innerHTML = `
       <span class="readout" id="time-readout"></span>
@@ -296,6 +303,16 @@ export class HUD {
 
   setHint(text) { this.hints.textContent = text; }
   setNote(html) { this.note.innerHTML = html; }
+
+  /** the land offers up a name and a fragment of its story, or takes it back */
+  showDiscovery(name, lore) {
+    if (this._dscShown === name) return;
+    this._dscShown = name;
+    if (!name) { this.discovery.classList.remove('on'); return; }
+    this._dscName.textContent = name;
+    this._dscLore.textContent = lore ?? '';
+    this.discovery.classList.add('on');
+  }
   setTime(str, playing) {
     this.readout.textContent = str;
     this.playBtn.textContent = playing ? '⏸' : '▶';

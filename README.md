@@ -571,6 +571,26 @@ is the only weather that touches you.
 
 ![the dusk sea, silk to the horizon](docs/screenshots/60-dusk-sea.png)
 
+And the wild lands **remember**. Scattered across every living world,
+away from its town, stand monuments older than anyone living — rings of
+leaning menhirs, a fallen arch, a glyph-lit watchstone, a broken throne
+on a stepped dais. Come near one and the land offers up its **name and a
+fragment of a story nobody finished** ("The Weeping Lantern — *sailors
+set their course by it before there were sailors*"): a caption that
+breathes in over the horizon, then lets you go. Every name and line is
+assembled from the world's seed, so no two read alike and the same
+stones wait in the same fields each time you return.
+
+The air is alive too: a **flock wheels over the meadow** as a real boid
+swarm, each bird a wing-beating chevron banking into its turn, and when
+the sun goes down the low ground breathes light — **fireflies rise out
+of the grass** and hang glowing in the dark, drifting with you as you
+wander.
+
+![The Weeping Lantern, and its story, at dusk](docs/screenshots/62-weeping-lantern.png)
+
+![fireflies over the night meadow](docs/screenshots/63-fireflies-dusk.png)
+
 On glass, the controls got out of the way: the desktop hints never share
 the bottom edge with your thumbs, the stick and buttons shrank to
 whispers, and the ground scenes carry a micro-row of their own — fly,
