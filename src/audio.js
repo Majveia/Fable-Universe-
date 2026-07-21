@@ -47,6 +47,7 @@ export class Ambience {
       comp.connect(this.ctx.destination);
       this._noiseBuf = this._makeNoise();
       if (this._pendingScale) this.setScale(...this._pendingScale);
+      if (this._pendingScore != null) { const r = this._pendingScore; this._pendingScore = null; this.surfaceScore(r); }
     } catch (e) {
       console.warn('AEON: audio unavailable —', e.message);
       this.ctx = null;
@@ -225,6 +226,61 @@ export class Ambience {
     g.gain.linearRampToValueAtTime(0.5, t + 0.45);
     g.gain.linearRampToValueAtTime(0, t + 1.35);
     setTimeout(() => { n.stop(); n.disconnect(); bp.disconnect(); g.disconnect(); }, 1600);
+  }
+
+  /**
+   * The living surface score: a warm chord that lives above the wind and
+   * breathes with the light — swelling as the sun rides the horizon (the
+   * golden hour), falling to a hush when you stand within a ruin's memory.
+   * Built once per world root, driven each frame by surfaceSwell().
+   */
+  surfaceScore(root = 146.8) {
+    if (!this.ctx) { this._pendingScore = root; return; }
+    if (this._score) this.surfaceScoreOff();
+    const out = this._gain(0);
+    out.connect(this.master);
+    const nodes = [];
+    // a gentle add-9 chord: root, fifth, octave, ninth — detuned to shimmer
+    const ratios = [1, 1.5, 2, 2.25, 3];
+    const amps = [0.06, 0.045, 0.03, 0.02, 0.012];
+    ratios.forEach((rt, i) => {
+      for (const det of [-0.4, 0.4]) {
+        const o = this._osc(i < 2 ? 'triangle' : 'sine', root * rt + det);
+        const g = this._gain(amps[i] * 0.5);
+        o.connect(g); g.connect(out);
+        nodes.push(o, g);
+        const [lo, lg] = this._lfo(0.03 + i * 0.011, amps[i] * 0.3, g.gain, amps[i] * 0.5);
+        nodes.push(lo, lg);
+      }
+    });
+    // a far, high bell shimmer for the top of the swell
+    const bell = this._osc('sine', root * 6);
+    const bellF = this._filter('lowpass', root * 8, 1.2);
+    const bellG = this._gain(0);
+    bell.connect(bellF); bellF.connect(bellG); bellG.connect(out);
+    nodes.push(bell, bellF, bellG);
+    const [blo, blg] = this._lfo(0.07, 0.006, bellG.gain, 0.007);
+    nodes.push(blo, blg);
+    this._score = { out, nodes };
+  }
+
+  /** drive the score: swell 0..1 (golden-hour intensity), hush 0..1 (ruin) */
+  surfaceSwell(swell, hush) {
+    if (!this._score) return;
+    const t = this.ctx.currentTime;
+    const target = Math.max(0, swell * (1 - hush * 0.82));
+    this._score.out.gain.setTargetAtTime(target, t, 0.7);
+  }
+
+  surfaceScoreOff() {
+    if (!this._score) { this._pendingScore = null; return; }
+    const s = this._score; this._score = null;
+    const t = this.ctx.currentTime;
+    s.out.gain.setTargetAtTime(0, t, 0.5);
+    setTimeout(() => {
+      for (const n of s.nodes) { try { n.stop?.(); } catch { /* gains */ } try { n.disconnect(); } catch { /* done */ } }
+      try { s.out.disconnect(); } catch { /* done */ }
+    }, 1400);
   }
 
   /** soft ping when something is selected */

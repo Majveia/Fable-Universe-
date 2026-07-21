@@ -160,3 +160,15 @@ const LORE_A = [
 export function ruinLore(seed, i) {
   return new RNG(hash(seed, i, 0x10e7)).pick(LORE_A);
 }
+
+// ----------------------------------------------------- the constellations ---
+// every world's people looked up and drew their own figures in the dark
+const CONS_THE = ['The', 'The Old', 'The Far', 'The Winter', 'The Drowned', 'The Kindled'];
+const CONS_FIG = ['Ferryman', 'Long Net', 'Sleeping Hound', 'Broken Crown', 'Two Sisters',
+  'Lantern-Bearer', 'Serpent', 'Weaver', 'Watchman', 'Great Elk', 'Kite', 'Reaper',
+  'Anchor', 'Hunter', 'Empty Throne', 'Wanderer', 'Scholar', 'Nine Coins', 'Owl', 'Bridge'];
+
+export function constellationName(seed, i) {
+  const r = new RNG(hash(seed, i, 0xc0a5));
+  return (r.chance(0.55) ? r.pick(CONS_THE) + ' ' : 'The ') + r.pick(CONS_FIG);
+}
