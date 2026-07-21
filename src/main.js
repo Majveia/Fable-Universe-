@@ -361,6 +361,7 @@ class App {
         case 'Escape':
         case 'Backspace':
           if (this._transfer) { this._transfer = null; this.hud.setHint(''); }
+          else if (s.kind === 'surface' && s.exitInterior?.()) { /* left the shrine, not the world */ }
           else if (s.kind === 'planet' && s.beginAscent?.()) { /* the climb-out flies you */ }
           else if (s.kind === 'system' && s.focusIndex >= 0) { s.focusPlanet(-1); this.hud.hideCard(); }
           else this.popTo(this.stack.length - 2);

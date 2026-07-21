@@ -26,6 +26,7 @@ import { addHerds } from './herds.js';
 import { addMegafauna } from './megafauna.js';
 import { addGodRays } from './godrays.js';
 import { addRivers } from './rivers.js';
+import { addInterior } from './interior.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 import { pickLandform } from './landform.js';
 
@@ -367,6 +368,9 @@ export class SurfaceScale {
     this.caravan = addCaravan(this);
     this.megafauna = addMegafauna(this);
     this.rivers = addRivers(this);
+    this.interior = addInterior(this);
+    this.inside = false;
+    this._doorCool = 0;
     this.godrays = addGodRays(this);
     this.weather = addWeather(this);
     this.festival = addFestival(this);
@@ -1179,18 +1183,61 @@ export class SurfaceScale {
         if (acc.lengthSq() > 0) acc.normalize().multiplyScalar(speed);
         this.vel.lerp(acc, 1 - Math.exp(-6 * dt));
         this.body.addScaledVector(this.vel, dt);
-        const ground = Math.max(this.heightAt(this.body.x, this.body.z),
-          this.seaLevel === null ? -1e9 : this.seaLevel) + EYE;
-        if (this.fly) this.body.y = Math.max(this.body.y, ground);
-        else this.body.y += (ground - this.body.y) * (1 - Math.exp(-12 * dt));
+        if (this.inside) {
+          // stone walls hold you; the floor is the shrine's, not the land's
+          const c = this.interior.bounds.clamp(this.body.x, this.body.z);
+          this.body.x = c.x; this.body.z = c.z;
+          this.body.y += (this.interior.floorY + EYE - this.body.y) * (1 - Math.exp(-12 * dt));
+        } else {
+          const ground = Math.max(this.heightAt(this.body.x, this.body.z),
+            this.seaLevel === null ? -1e9 : this.seaLevel) + EYE;
+          if (this.fly) this.body.y = Math.max(this.body.y, ground);
+          else this.body.y += (ground - this.body.y) * (1 - Math.exp(-12 * dt));
+        }
       }
 
-      // stay inside the tile
-      this.body.x = Math.min(Math.max(this.body.x, -EXT * 0.48), EXT * 0.48);
-      this.body.z = Math.min(Math.max(this.body.z, -EXT * 0.48), EXT * 0.48);
+      // stay inside the tile (the interior keeps its own bounds)
+      if (!this.inside) {
+        this.body.x = Math.min(Math.max(this.body.x, -EXT * 0.48), EXT * 0.48);
+        this.body.z = Math.min(Math.max(this.body.z, -EXT * 0.48), EXT * 0.48);
+      }
+      this._doorCheck(dt);
       this.traveler.place(dt, this.camera);
     } else this._hadCtl = false;
     if (this.flare) this.flare.update(this.camera);
+    if (this.interior) this.interior.update(dt, this.uSunDir.value.y, this.inside);
+  }
+
+  /** cross the threshold: walk into the shrine's door, or back out of it */
+  _doorCheck(dt) {
+    if (!this.interior) return;
+    this._doorCool = Math.max(0, this._doorCool - dt);
+    if (this._doorCool > 0 || this.fly || this.traveler?.riding) { this._nearDoor = false; return; }
+    const atDoor = Math.hypot(this.body.x - this.interior.doorThresh.x, this.body.z - this.interior.doorThresh.z) < 4.5;
+    this._nearDoor = atDoor && !this.inside;
+    if (atDoor && !this._warping2) this._crossThreshold(!this.inside);
+  }
+
+  _crossThreshold(entering) {
+    this._warping2 = true;
+    this.app.hud.warp(() => {
+      this.inside = entering;
+      const to = entering ? this.interior.inPlace : this.interior.outPlace;
+      this.body.set(to.x, (entering ? this.interior.floorY : this.heightAt(to.x, to.z)) + EYE, to.z);
+      this.vel.set(0, 0, 0);
+      this._doorCool = 1.6;
+      this._warping2 = false;
+      this.app.hud.setHint(entering
+        ? 'inside the shrine · walk to the door or press esc to leave'
+        : 'the country again · the shrine keeps its flame');
+    });
+  }
+
+  /** Escape while inside leaves the shrine instead of the world */
+  exitInterior() {
+    if (!this.inside || this._warping2) return false;
+    this._crossThreshold(false);
+    return true;
   }
 
   togglePlay() { this.playing = !this.playing; }
