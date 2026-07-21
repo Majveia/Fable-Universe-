@@ -11,7 +11,7 @@ import { hash, RNG } from './rng.js';
 import { NOISE_GLSL, makeSurfaceMaterial, makeRingMaterial, makeAtmosphereMaterial } from './planet.js';
 import { softDotTexture } from './nebula.js';
 import { addLife, isBiosphere } from './life.js';
-import { addSettlement } from './settlement.js';
+import { addCivilization } from './civilization.js';
 import { addTraveler } from './traveler.js';
 import { addShips } from './ships.js';
 import { addFlare } from './flare.js';
@@ -345,7 +345,7 @@ export class SurfaceScale {
     if (pp.inhabited) this._buildCityGlow();
     if (ctx.parentGiant) this._buildParentGiant(ctx.parentGiant);
     this._buildSiblings();
-    this.settlement = addSettlement(this);
+    this.settlement = addCivilization(this);
     this.life = addLife(this);   // after the town, so the woods keep off its doorstep
     this.ships = addShips(this);
     this.flare = addFlare(this);
@@ -1196,7 +1196,9 @@ export class SurfaceScale {
     return [
       ['world', pp.name],
       ['class', pp.type + (pp.inhabited ? ' · inhabited' : '')],
-      ...(this.settlement ? [['settlement', this.settlement.name]] : []),
+      ...(this.settlement ? [['settlement', this.settlement.name + ({
+        port: ' · port city', monument: ' · old capital', spaceport: ' · spaceport',
+      }[this.settlement.archetype] ?? '')]] : []),
       ['biosphere', this.life ? 'flora + fauna' : '—'],
       ...(pp.res?.line ? [['mood', pp.res.line]] : []),
       ['craters', this.impacts.length ? String(this.impacts.length) : '—'],
