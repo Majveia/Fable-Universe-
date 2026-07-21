@@ -526,7 +526,7 @@ export function addSettlement(s) {
 
   let time = 0;
   return {
-    site, name, dock,
+    site, name, dock, routes,
     update(dt, sunY) {
       time += dt;
       const night = 1 - Math.min(Math.max((sunY + 0.12) * 3.5, 0), 1);
