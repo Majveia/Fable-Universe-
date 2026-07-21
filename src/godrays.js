@@ -53,7 +53,7 @@ export function addGodRays(s) {
       // the corona sits along the sun ray, far out
       corona.position.copy(s.camera.position).addScaledVector(sun, 6000);
       corona.scale.setScalar(1400);
-      corona.material.opacity = low * day * 0.38 * s.atmo;
+      corona.material.opacity = low * day * 0.26 * s.atmo;
 
       // motes: brighten when you face the sun (backlit air), drift on the wind
       s.camera.getWorldDirection(fwd);

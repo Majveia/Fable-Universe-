@@ -664,6 +664,26 @@ kind.
 
 ![a spacefaring outpost, its pad ringed in light](docs/screenshots/72-spaceport.png)
 
+And every world raises a **monumental centrepiece**. A **COLOSSUS** stands
+somewhere on the land — a weathered bronze titan on a stepped pedestal,
+taller than any tower, built from scores of parts (greaved legs, layered
+chest-plates, a gorget, a raised staff, a radiate crown), patinaed green
+in its recesses and taking a light in its eyes after dark. **SKY-WHALES**
+drift the high air on slow currents, fins beating, lit from below at
+dusk; and the ocean worlds carry a **LEVIATHAN** whose humped back
+breaches across the far water. When the sun rides low, the air itself
+glows — dust hangs in the beams and a great corona crowns the star, drawn
+into shafts by the bloom — so every golden hour has the luminous,
+god-rayed grandeur of a held breath. And a **river** runs from the
+highland springs, cascading over the new cliffs in **waterfalls** of
+spray and mist, down to the sea.
+
+![the colossus, the sky-whales, and the god-rayed golden hour](docs/screenshots/75-colossus-hero.png)
+
+![god rays through the drifting leviathans of the air](docs/screenshots/76-god-rays.png)
+
+![the bronze titan crowned against the dusk](docs/screenshots/77-colossus-whales.png)
+
 On glass, the controls got out of the way: the desktop hints never share
 the bottom edge with your thumbs, the stick and buttons shrank to
 whispers, and the ground scenes carry a micro-row of their own — fly,

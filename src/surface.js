@@ -384,8 +384,8 @@ export class SurfaceScale {
     this._syncAngles();
 
     // a touch more bloom so the sun, water-glitter, the colossus's jewel and
-    // the corona crown the frame — the spectacle a grand vista wants
-    this.bloomSettings = { strength: 0.68, radius: 0.72, threshold: 0.3 };
+    // the corona crown the frame — enough to glow, not to swallow detail
+    this.bloomSettings = { strength: 0.58, radius: 0.72, threshold: 0.34 };
     // the world's resonance grades the frame here too — same mood, same light
     this.gradeSettings = pp.res?.grade;
     this._bindInput();
