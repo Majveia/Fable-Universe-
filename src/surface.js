@@ -24,6 +24,7 @@ import { addWeather } from './weather.js';
 import { addFestival } from './festival.js';
 import { addHerds } from './herds.js';
 import { planetHeight, findLandingSite } from './terrain.js';
+import { pickLandform } from './landform.js';
 
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
@@ -111,9 +112,14 @@ const TERRAIN_FRAG = /* glsl */`
     vec3 col = mix(meadow, uColA, smoothstep(0.02, 0.45, hgt + detail * 0.25));
     col = mix(col, uColB, smoothstep(0.35, 0.85, hgt) * 0.8);
     col = mix(col, uColB * 0.85, smoothstep(0.22, 0.55, slope));
+    // sheer faces bare their rock: dark strata streaked down the cliff
+    float cliff = smoothstep(0.5, 0.78, slope);
+    vec3 strata = uColB * (0.32 + 0.3 * (fbm3(vec3(vW.y * 0.06, vW.xz * 0.01)) * 0.5 + 0.5));
+    col = mix(col, strata, cliff);
     col = mix(col, sand, shore * (1.0 - smoothstep(0.18, 0.4, slope)));
-    float snowLine = smoothstep(0.55, 0.8, hgt + micro * 0.1);
-    col = mix(col, vec3(0.92, 0.95, 1.0), uSnow * snowLine);
+    // snow blankets the high ground but slides off the sheer faces
+    float snowLine = smoothstep(0.45, 0.72, hgt + micro * 0.1) * (1.0 - cliff * 0.85);
+    col = mix(col, vec3(0.92, 0.95, 1.0), max(uSnow, smoothstep(0.62, 0.85, hgt) * 0.9) * snowLine);
     col *= 0.8 + 0.3 * detail * micro + 0.12 * grain;
 
     // rain darkens and deepens the ground, pooling colour into the low spots
@@ -395,7 +401,9 @@ export class SurfaceScale {
     };
 
     const type = pp.typeId;
-    this.amp = 280;
+    // the world's bones: alpine, canyon, plateau, dune, or the old rolling
+    this.landform = pickLandform(pp, this.wind);
+    this.amp = this.landform.amp;
     this.seaLevel = (type === 1 && pp.oceanLevel > -0.5) || type === 2 ? 0 : null;
     const ocean = pp.oceanLevel > -0.5 ? pp.oceanLevel : 0.0;
 
@@ -422,6 +430,10 @@ export class SurfaceScale {
       let h = macro * S_MACRO
         + fbm2(x * 0.0011 + 7.3, z * 0.0011 - 2.1, 5) * relief * 1.7
         + fbm2(x * 0.009 + 31.7, z * 0.009 + 11.3, 3) * 6;
+      // the landform raises this world's bones — full inland, fading to the
+      // shore so mountains never rise straight out of the sea
+      const land = Math.min(Math.max(macro * 9 + 0.15, 0), 1);
+      h += this.landform.contribute(x, z, noise, land);
       // the horizon truly curves with this world's radius
       h -= (x * x + z * z) / (2 * Rworld * 0.34);
       h += this.liftY;
@@ -510,16 +522,25 @@ export class SurfaceScale {
   heightAt(x, z) { return this._heightFn(x, z); }
 
   _findSpawn() {
-    // walk outward until we stand on dry, gentle ground
-    for (let rad = 0; rad < EXT * 0.4; rad += 17) {
-      for (let th = 0; th < 6.28; th += 0.9) {
+    // score candidates: dry, flat, and not up a mountain — so dramatic
+    // landforms never strand you on a spire or a sheer face
+    const slopeAt = (x, z, h) => Math.max(
+      Math.abs(this._heightFn(x + 24, z) - h), Math.abs(this._heightFn(x - 24, z) - h),
+      Math.abs(this._heightFn(x, z + 24) - h), Math.abs(this._heightFn(x, z - 24) - h));
+    let best = null, bestScore = -1e9;
+    for (let rad = 0; rad < EXT * 0.42; rad += 15) {
+      for (let th = 0; th < 6.28; th += 0.55) {
         const x = Math.cos(th) * rad, z = Math.sin(th) * rad;
         const h = this._heightFn(x, z);
-        if ((this.seaLevel === null || h > this.seaLevel + 3) && h < 190) {
-          return new THREE.Vector3(x, h, z);
-        }
+        if (this.seaLevel !== null && h < this.seaLevel + 3) continue;   // dry only
+        const slope = slopeAt(x, z, h);
+        // flat is good, low is good, near the landing is good
+        const score = -slope * 2.5 - Math.max(0, h - 200) * 0.02 - rad * 0.01;
+        if (score > bestScore) { bestScore = score; best = new THREE.Vector3(x, h, z); }
       }
     }
+    if (best) return best;
+
     // waterlocked: raise the crust until the highest nearby point is a shore
     let bx = 0, bz = 0, bh = -1e9;
     for (let rad = 0; rad < EXT * 0.45; rad += 23) {
