@@ -684,6 +684,17 @@ spray and mist, down to the sea.
 
 ![the bronze titan crowned against the dusk](docs/screenshots/77-colossus-whales.png)
 
+And near where you land stands a **shrine you can enter**. Walk into its
+doorway and — through a fade — you're *inside*: an enclosed hall where
+rows of fluted columns (with bases and capitals) hold a coffered
+ceiling, shafts of daylight fall from high clerestory windows, and at the
+far end an **altar-flame** burns, a warm light filling the stone with an
+idol watching behind it. The floor is the shrine's and its walls hold
+you; walk back to the door, or press **esc**, and it opens onto the
+country again. The one true interior a great exterior needs.
+
+![inside the shrine: the altar-flame and the coffered hall](docs/screenshots/78-shrine-interior.png)
+
 On glass, the controls got out of the way: the desktop hints never share
 the bottom edge with your thumbs, the stick and buttons shrank to
 whispers, and the ground scenes carry a micro-row of their own — fly,
