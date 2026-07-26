@@ -91,6 +91,25 @@ GPU memory is **accounted, not queried** — WebGL exposes no memory query, so
 renderbuffers) and subtracts deletes. It is an estimate, and the JSON says so
 in a `method` field rather than in a comment nobody reads.
 
+## Running the art reference
+
+`serve()` makes one documented substitution on the way out: the art
+reference's importmap points at a jsdelivr URL, and the server rewrites it to
+the r180 vendored beside it in `docs/reference/vendor/`.
+
+§8 requires the reference to *run* — its blind side-by-side is the rubric's
+only executable comparison — and on a machine with no route to the CDN it
+renders nothing. The rewrite lives here rather than in the file because
+`docs/reference/hoshi-no-tani.html` is kept byte-exact with the export: §9
+gives it the last word, so there has to be exactly one unambiguous thing to
+read, and its SHA-256 in `docs/reference/README.md` is the check that nobody
+quietly edited it. Six visible lines in a dev server beat an invisible edit to
+the source of truth.
+
+Capture the reference on **its own r180**, never on AEON's r170 — §10's
+warning about colour management and renderer defaults moving across that range
+is exactly why the version is pinned and vendored rather than shared.
+
 ## What a tier means today
 
 `TIERS` in `lib.js` maps the three rows of §5 onto the only knobs that exist

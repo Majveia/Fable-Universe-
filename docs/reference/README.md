@@ -1,47 +1,69 @@
-# The art reference
+# The art reference — provenance
 
-`CLAUDE.md` names `docs/reference/hoshi-no-tani.html` as the art north star.
-Section 9 defers to it outright: *"When this section and the reference
-disagree, the reference wins — read it."*
+`CLAUDE.md` §9 names this the art north star and defers to it outright:
+*"When this section and the reference disagree, the reference wins — read it."*
 
-**The file is not in this repo yet.** It was not included with the
-constitution, and it cannot be recovered from anywhere an agent can reach.
-
-## Why nobody can just go and get it
-
-Per §10, the reference arrived as a CodePen export and the original URL is an
-`/editor/` link. Those require the author's browser session. No agent — not
-this one, not a subagent, not a fetch tool — can open one. Any claim to have
-read the pen from its URL is a hallucination, and §10 says so in those words.
-
-So the file has to be handed over. Two ways, either is fine:
-
-1. Drop the exported `index.html` at `docs/reference/hoshi-no-tani.html`.
-2. Publish the pen and paste the public `codepen.io/<user>/pen/<id>` URL, which
-   *is* fetchable, and it gets vendored to that path.
-
-## What is blocked until then
-
-| Blocked | Why |
+| | |
 |---|---|
-| §M0's vendoring item | Nothing to vendor. |
-| §8's blind side-by-side | The rubric's one executable comparison is *"capture the reference on the same route and score both blind."* Without the file the critic has no counterpart and every atmospheric score is unanchored. |
-| §9.2 `paint()` | Band edges, wrap constants and the shadow tint are transcribed in §9.2, but §9 defers to the file on disagreement. Porting from the summary alone means porting the parts that were written down and silently dropping the parts that were not. |
-| §9.4 the print | Same. The tonemap coefficients are quoted; the ordering, the clamps and the NaN firewalls are described but not given. |
-| M2 and M3 gates | Both are defined against the reference's behaviour. |
+| **File** | `hoshi-no-tani.html` |
+| **Title** | *Hoshi-no-Tani — The Valley of Stars* |
+| **Lines** | 6,133 — as §10 records |
+| **Bytes** | 286,812 |
+| **SHA-256** | `b6522eafaac66bb5bb2ab3ec6a088bb29ded9ad421c828097338831716f1b07c` |
+| **Source** | CodePen export, supplied by the human on 2026-07-26 |
+| **Vendored** | 2026-07-26, **byte-exact** with the export |
 
-Everything upstream of the atmosphere is unaffected: M0's instruments, M1's
-vacuum-scale work, and every §2 invariant stand on their own.
+The file on disk is unmodified. That is deliberate: §9 gives it the last word,
+so there must be exactly one unambiguous thing to read, and any local edit
+would be a place for drift to hide. The SHA above is the check — if it moves,
+someone edited the source of truth, and that should be visible as an edit.
 
-## When it lands, record it here
+§10 stands: the original `/editor/` URL is session-gated and unreadable by any
+agent. It is not a source of truth and must not be cited as one. This file is.
 
-§M0 asks for provenance, and §10 fixes what that means: the vendored file is
-the source of truth, the `/editor/` URL is not a citation. Record, at minimum:
+## Verified against the constitution
 
-- where the file came from and when it was taken;
-- its line count and SHA-256, so a later edit is visible as an edit;
-- the three-r185-vs-r170 gap (§10): colour management and renderer defaults
-  moved across that range, so anything touching `convertSRGBToLinear`, output
-  colour space or render-target formats is re-verified rather than copied.
+Not taken on trust — §9 quotes specific constants, and they are all here:
+
+| §9 claims | In the file |
+|---|---|
+| §9.4 lift `(0.017, 0.021, 0.036)` | `vec3 lift = vec3(0.017, 0.021, 0.036)*uPaint;` — line 4436 |
+| §9.7 sun elevation 13.5° | `13.5, // degrees above horizon` — line 181 |
+| §9.2's rationale for the half-Lambert wrap | *"13.5° sun grazes flat ground at ndl≈0.23"* — line 642, the sentence §9.2 paraphrases |
+| §M1 ordered dither | `fract(dot(gl_FragCoord.xy, vec2(0.7548776662, 0.5698402909)))` — line 4459 |
+| §M3's density exponent | *"x·x·inversesqrt(x): three cheap instructions instead of a pow"* — line 1978 |
+
+## The one thing that is not self-contained
+
+§10 says *"the pen is self-contained and zero-asset."* Nearly. It carries no
+images, fonts or audio — but its importmap pulls three from a CDN:
+
+```
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js" } }
+```
+
+That matters because §8 requires the reference to **run**: its blind
+side-by-side is the rubric's only executable comparison, and on a machine with
+no route to jsdelivr it renders nothing at all.
+
+So three r180 is vendored beside it, and the substitution is made **in the dev
+server on the way out** (`tools/lib.js`) rather than in the file on disk:
+
+| | |
+|---|---|
+| `vendor/three-0.180.0.module.js` | 603,113 B · `c8211c69345d2e9949dc7a8ac969380497aa0600a5a8ac6a459c8cd02dd9cb8a` |
+| `vendor/three.core.js` | 1,403,455 B · r180's build splits the module across two files, and `three.module.js` imports this one |
+
+Serve the repo with `tools/lib.js` (which every instrument in `tools/` does)
+and the reference runs offline. Open it through a plain `python3 -m
+http.server` and it still works — provided the machine can reach jsdelivr.
+
+**Version note (§10).** §10 records the pen's `package.json` as pinning
+`three ^0.185.1`; this export's importmap actually pins `0.180.0`, and that is
+what is vendored — the file it was authored against beats the manifest beside
+it. AEON vendors r170. Colour management and renderer defaults moved across
+that range, so **capture the reference on its own r180**, never on AEON's r170.
+Anything ported that touches `convertSRGBToLinear`, output colour space or
+render-target formats is re-verified rather than copied.
 
 Port techniques and constants. Never files.
