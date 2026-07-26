@@ -93,9 +93,13 @@ in a `method` field rather than in a comment nobody reads.
 
 ## Running the art reference
 
+```bash
+node tools/serve.js          # prints URLs for the universe and the reference
+```
+
 `serve()` makes one documented substitution on the way out: the art
 reference's importmap points at a jsdelivr URL, and the server rewrites it to
-the r180 vendored beside it in `docs/reference/vendor/`.
+the r180 vendored beside it in `docs/reference/vendor/three-0.180.0/`.
 
 §8 requires the reference to *run* — its blind side-by-side is the rubric's
 only executable comparison — and on a machine with no route to the CDN it
