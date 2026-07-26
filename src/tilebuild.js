@@ -136,7 +136,8 @@ export function surfaceRadius(dx, dy, dz, job) {
   // way every real city grades its ground — packed as [siteX, siteY,
   // siteZ, angularRadius, targetRadius]. The same shared-field trick as
   // the craters below, so streets, boots and tiles stand on one level
-  // city. Applied before the craters: a meteor can still scar downtown.
+  // city. Applied before the craters: an ancient scar still outranks a
+  // late civilisation that built inside it.
   const D = job.pads;
   if (D) {
     for (let i = 0; i < D.length; i += 5) {

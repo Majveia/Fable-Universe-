@@ -233,11 +233,10 @@ and the tufts, alien trees, boid skimmers, antiphase striders, and night
 spores spawn onto the globe itself. Settlements rise **exactly where the
 night-lights shader glows from orbit** (the same fbm mask gates both):
 land on a glow, find the towers. Airless worlds carry their bombardment
-in the height field — dozens of ancient bowl-and-rim scars at every LOD —
-and **X** calls down a live meteor whose crater joins the shared field on
-impact (verified: the ground at the strike point drops 45 m and six
-tiles restream). The classic surface scale is retired for planets; old
-`?p=` links follow you onto the globe.
+in the height field — dozens of ancient bowl-and-rim scars, stamped into
+the field before the first tile is queued and resolved at every LOD, so
+the rim you see from orbit is the rim you walk. The classic surface scale
+is retired for planets; old `?p=` links follow you onto the globe.
 
 And where the glow burns hardest, the towers become a **metropolis with
 a name**. Every inhabited world quantizes its sphere into cells, and any
@@ -249,10 +248,11 @@ eighty-odd metres, one diagonal boulevard cutting the whole plan — with
 through warm masonry midrise to brick sprawl at the frayed edge, a
 central park mid-island, pocket parks dotting the grid, and a plaza kept
 clear near downtown. The ground itself cooperates: each city **grades
-its terrain into the shared height field** (the crater mechanism's civil
-twin — workers, collision, paint and streets all read the same graded
-crust, and a meteor can still scar downtown because scars apply after
-grading). Where an avenue meets water it can cross, it crosses: a decked
+its terrain into the shared height field** (the same shared-field trick
+the ancient craters use — workers, collision, paint and streets all read
+the same graded crust, and a scar still outranks a late civilisation that
+built inside it, because craters apply after grading). Where an avenue
+meets water it can cross, it crosses: a decked
 span with towers, catenary main cables, and a **necklace of lights after
 dark**; where it can't, it ends in a pier — and the piers put **ferries
 on the harbor**, dragging wakes between the marks. Traffic works the
@@ -391,9 +391,8 @@ And the fauna is an **ecology** now: the sphere is quantized into
 regions, each with a persisted population (localStorage) that grows
 logistically between your visits; flora density follows regional
 richness, striders bolt when you close within 55 m — sliding along
-shores instead of aiming into the sea — skimmer flocks give you a wide
-berth, and a meteor strike scatters everything. The HUD shows the
-regional census.
+shores instead of aiming into the sea — and skimmer flocks give you a
+wide berth. The HUD shows the regional census.
 
 Overhead, on inhabited worlds, there is a **second civilization of
 scale**: stations on inclined orbits (truss, habitat ring, panel wings —
@@ -486,11 +485,10 @@ light through fissures at night. Stand on the moon of a ringed giant and
 the parent world hangs vast and tidally fixed overhead, rendered by its
 real orbital shader and lit by the local sun — it runs through true phases
 as the day passes. The sibling planets wander the sun's arc at their true
-elongations. The HUD reports true surface gravity, GM/R². And the sky is not always
-kind — press **X** (or just wait) and a meteor streaks down, flashes on
-impact, and leaves a bowl-and-rim **crater** baked permanently into the
-terrain's height field, ringed with scorched ejecta. Airless worlds arrive
-already pockmarked with ancient ones.
+elongations. The HUD reports true surface gravity, GM/R². And airless
+worlds arrive already pockmarked: bowl-and-rim **craters** carved into the
+terrain's own height field and ringed with scorched ejecta, the record of a
+bombardment that ended long before you got here.
 
 ![giant in the sky](docs/screenshots/12-moon-giant.png)
 
@@ -800,6 +798,22 @@ src/starfield.js    galaxy-from-within sky, relativistic star shading
 src/post.js         HDR bloom pipeline
 src/hud.js          the interface
 src/rng.js          deterministic hashing, RNG, name synthesis
+src/bench.js        the ?bench=1 harness: a measured 600-frame flight
+
+tools/capture.js    headless capture: numbered PNGs + perf JSON per tier
+tools/shadercheck.js  compiles every shader as the driver actually sees it
+tools/lib.js        dependency-free static server, tier table, browser launch
+```
+
+Everything under `tools/` is dev-only — nothing there is imported by `src/`,
+and `python3 -m http.server` remains sufficient to run the universe. It needs
+Playwright, installed globally on purpose so the repo never grows a build
+step: `npm i -g playwright && npx playwright install chromium`. See
+[`tools/README.md`](tools/README.md).
+
+```bash
+node tools/capture.js --milestone M0      # the numbered set + the numbers
+node tools/shadercheck.js                 # every shader, post-assembly
 ```
 
 ## Gallery

@@ -842,9 +842,6 @@ export class PlanetScale {
 
     this.anchor = null;                // the local pocket of life underfoot
     this._anchorT = 0;
-    this.meteor = null;
-    this._flash = null;
-    this._scareT = 0;
 
     // weather: driven by the SAME cloud field the volumetric deck renders
     this.wx = { wet: 0, raining: false, storm: false, snow: pp.Teq < 265 };
@@ -1433,7 +1430,6 @@ export class PlanetScale {
         _hc.copy(this.camPos).sub(anchorPos);
         return { x: _hc.dot(east) * mpu, y: _hc.dot(a) * mpu, z: _hc.dot(north) * mpu };
       },
-      scared: () => this._scareT > 0,
     };
     // the bestiary remembers this ground
     const wonderLabel = { 0: 'dust devils', 3: 'a crystal garden', 4: 'ember vents' }[this.pp.typeId] ?? null;
@@ -1581,7 +1577,6 @@ export class PlanetScale {
       this.anchor.wonders?.update(dt, sunY);
       this.anchor.settlement?.update(dt, sunY);
     }
-    if (this._scareT > 0) this._scareT -= dt;
     this.orbitals?.update(dt);
     this.cities?.update(dt);
     // aboard: the camera rides the live ring, after the station has moved
@@ -1605,23 +1600,6 @@ export class PlanetScale {
       this._spawnBolt(up);
     }
     if (this._bolt) this._updateBolt(dt);
-
-    // meteors: on demand (X) — and, on airless worlds, the sky's own idea
-    this._updateMeteor(dt);
-    if (this._flash) {
-      this._flash.t += dt;
-      const g = 1 - this._flash.t / 0.8;
-      this._flash.sp.material.opacity = Math.max(g, 0);
-      this._flash.sp.scale.multiplyScalar(1 + dt * 1.4);
-      if (g <= 0) {
-        this.planetGroup.remove(this._flash.sp);
-        this._flash.sp.material.dispose();
-        this._flash = null;
-      }
-    }
-    if ((this.pp.typeId === 0 || this.pp.typeId === 3) && alt < 6 && !this.meteor && Math.random() < dt / 28) {
-      this.strikeMeteor(true);
-    }
 
     // -- environment
     this.uTime.value += dt;
@@ -1663,64 +1641,6 @@ export class PlanetScale {
 
   }
 
-  // ---------------------------------------------------------- meteors ----
-  strikeMeteor(auto) {
-    if (this.meteor) return;
-    let dirT;
-    if (auto) {
-      const up = this.camPos.clone().normalize();
-      dirT = up.addScaledVector(new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5), 0.0012).normalize();
-    } else {
-      const look = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-      dirT = this.camPos.clone()
-        .addScaledVector(look, Math.max(this.altUnits ?? 1, 0.2) * 2 + 0.7).normalize();
-    }
-    const target = dirT.clone().multiplyScalar(this.quad.heightAt(dirT));
-    const from = target.clone()
-      .addScaledVector(dirT, 22)
-      .addScaledVector(new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize(), 11);
-    const head = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: softDotTexture(), color: new THREE.Color(2.0, 1.5, 0.9),
-      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-    }));
-    head.scale.setScalar(0.35);
-    this.planetGroup.add(head);
-    const trailGeo = new THREE.BufferGeometry().setFromPoints([from, from]);
-    const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
-      color: 0xffd9a0, transparent: true, opacity: 0.8,
-    }));
-    this.planetGroup.add(trail);
-    this.meteor = { t: 0, dur: 1.15, from, target, dirT, head, trail };
-  }
-
-  _updateMeteor(dt) {
-    const m = this.meteor;
-    if (!m) return;
-    m.t += dt;
-    const f = Math.min(m.t / m.dur, 1);
-    m.head.position.lerpVectors(m.from, m.target, f * f);
-    const tail = m.head.position.clone().lerp(m.from, 0.16);
-    m.trail.geometry.setFromPoints([tail, m.head.position]);
-    if (f >= 1) {
-      this.planetGroup.remove(m.head); this.planetGroup.remove(m.trail);
-      m.head.material.dispose(); m.trail.geometry.dispose(); m.trail.material.dispose();
-      const rad = 0.02 + Math.random() * 0.06;
-      const evicted = this.quad.addCrater(m.dirT.x, m.dirT.y, m.dirT.z, rad, rad * 0.28);
-      this._scareT = 9;   // everything nearby bolts
-      const flash = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: softDotTexture(), color: new THREE.Color(2.4, 1.9, 1.2),
-        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-      }));
-      flash.position.copy(m.target).addScaledVector(m.dirT, rad);
-      flash.scale.setScalar(rad * 7);
-      this.planetGroup.add(flash);
-      this._flash = { sp: flash, t: 0 };
-      this._lastStrike = { evicted, rad };
-      this.meteor = null;
-      if (this.app.audio) this.app.audio.warp('dive');
-    }
-  }
-
   // ------------------------------------------------------------ input ----
   onWheel(e) {
     // scroll = altitude, multiplicative — the Google-Earth feel
@@ -1744,7 +1664,6 @@ export class PlanetScale {
     if (this.asc) this.asc.look = 3;
   }
   onKey(code) {
-    if (code === 'KeyX') { this.strikeMeteor(false); return true; }
     if (code === 'KeyB') {
       if (this.inside) this.boardShuttle();       // homeward, from the deck
       else if (this.ride) this._endRide(false);
@@ -1850,4 +1769,4 @@ const _north = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
 
-export const PLANET_NOTE = `One continuous scale, orbit to boots. The planet is a <b>chunked-LOD quadtree</b> on a tangent-warped cube sphere: six root tiles splitting wherever the view demands, meshed in a <b>Web Worker pool</b> from one height field — macro continents plus kilometre and metre relief bands — shared verbatim with the collision code, so what streams in is exactly what you stand on. <b>Geomorphing</b> lerps every vertex toward its parent-grid shape by view distance, so LOD transitions carry zero pop. Seas are a second quadtree wearing <b>Fresnel water</b> with analytic wave trains over true bathymetry; the sky is a <b>single-scattering raymarch</b> (Rayleigh + Mie), so noon is blue, the terminator burns red, and stars fade up through the real transmittance at dusk. The camera never leaves the origin — the planet carries the negative camera position in double precision, and the near plane follows your altitude from centimetres to orbit. Touch down and you are walking among the creatures and towers that live here — settlements rise exactly where the night-lights mask glows from orbit, craters are stamped into the field itself, and <em>X</em> calls a new one down. <em>R</em> lifts off.`;
+export const PLANET_NOTE = `One continuous scale, orbit to boots. The planet is a <b>chunked-LOD quadtree</b> on a tangent-warped cube sphere: six root tiles splitting wherever the view demands, meshed in a <b>Web Worker pool</b> from one height field — macro continents plus kilometre and metre relief bands — shared verbatim with the collision code, so what streams in is exactly what you stand on. <b>Geomorphing</b> lerps every vertex toward its parent-grid shape by view distance, so LOD transitions carry zero pop. Seas are a second quadtree wearing <b>Fresnel water</b> with analytic wave trains over true bathymetry; the sky is a <b>single-scattering raymarch</b> (Rayleigh + Mie), so noon is blue, the terminator burns red, and stars fade up through the real transmittance at dusk. The camera never leaves the origin — the planet carries the negative camera position in double precision, and the near plane follows your altitude from centimetres to orbit. Touch down and you are walking among the creatures and towers that live here — settlements rise exactly where the night-lights mask glows from orbit, and the craters of airless worlds are stamped into the field itself — history the ground remembers, not weather. <em>R</em> lifts off.`;
