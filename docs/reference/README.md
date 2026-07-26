@@ -55,8 +55,17 @@ server on the way out** (`tools/lib.js`) rather than in the file on disk:
 | `vendor/three.core.js` | 1,403,455 B · r180's build splits the module across two files, and `three.module.js` imports this one |
 
 Serve the repo with `tools/lib.js` (which every instrument in `tools/` does)
-and the reference runs offline. Open it through a plain `python3 -m
-http.server` and it still works — provided the machine can reach jsdelivr.
+and the reference resolves entirely from this repo — **verified**: the module
+graph loads with zero offsite requests and zero 404s, and the vendored build
+reports `REVISION '180'` with `WebGLRenderer` present. Open it through a plain
+`python3 -m http.server` and it still works, provided the machine can reach
+jsdelivr.
+
+**Capturing it needs a GPU.** Resolving is not rendering. On ANGLE-over-
+SwiftShader the reference did not finish building its first frame in over six
+minutes — unsurprising for a twelve-million-vertex wind-driven meadow, and the
+same reason §M0 insists on real silicon for AEON's own captures. §8's blind
+side-by-side is executable, but not on a software rasteriser.
 
 **Version note (§10).** §10 records the pen's `package.json` as pinning
 `three ^0.185.1`; this export's importmap actually pins `0.180.0`, and that is
