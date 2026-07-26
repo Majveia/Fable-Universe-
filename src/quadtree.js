@@ -105,38 +105,6 @@ export class QuadtreePlanet {
   }
 
   /**
-   * Punch a new crater into the field at runtime: every consumer (workers,
-   * collision, future tiles) reads the same job, so consistency is free —
-   * only the already-built tiles under the scar need eviction and restream.
-   */
-  addCrater(dx, dy, dz, radUnits, depthUnits) {
-    const arr = this.job.craters ?? (this.job.craters = []);
-    const rc = radUnits / this.R;
-    arr.push(dx, dy, dz, rc, depthUnits);
-    this.job.gen++;
-    const reach = rc * 2.4;
-    const site = _v1.set(dx, dy, dz);
-    let evicted = 0;
-    for (const [key, t] of this.tiles) {
-      const [f, d, i, j] = key.split(':').map(Number);
-      const ang = HALF_ANG / (1 << d);
-      // coarse tiles can't resolve the scar anyway — leave them be
-      if (this.R * ang * 2 / (this.res - 1) > radUnits * 3) continue;
-      this._center(f, d, i, j, _v2).multiplyScalar(1 / this.R);
-      if (_v2.distanceTo(site) > reach + ang * 1.7) continue;
-      // visible tiles refresh in place (the update sweep re-requests them);
-      // only hidden ones evict now, so the impact never opens a hole
-      if (t.mesh.visible) continue;
-      t.geo.dispose(); t.mesh.material.dispose();
-      this.group.remove(t.mesh);
-      this.tiles.delete(key);
-      this._shown.delete(key);
-      evicted++;
-    }
-    return evicted;
-  }
-
-  /**
    * Grade a city pad into the field at runtime — the crater's civil twin.
    * Same contract: every consumer reads the same job, so only the built
    * tiles under the new ground need eviction and restream.
@@ -183,26 +151,20 @@ export class QuadtreePlanet {
     mesh.position.copy(center);
     mesh.visible = false;
     this.group.add(mesh);
-    // remember which field generation built this tile: when a pad or crater
-    // later changes the ground, a stale tile refreshes itself in place
+    // remember which field generation built this tile: when a pad later
+    // changes the ground, a stale tile refreshes itself in place
     this.tiles.set(data.key, { mesh, geo, gen: data.gen ?? this.job.gen });
   }
 
-  /** does this tile overlap any crater or pad added since it was queued?
+  /** does this tile overlap any pad graded since it was queued?
    *  (conservative: any overlap at all counts — reach math mirrors the
-   *  eviction tests in addCrater/addPad) */
+   *  eviction test in addPad). Craters are generation, not mechanics: they
+   *  are stamped into the job before the first tile is queued and never
+   *  move, so no tile can go stale against one. */
   _touchesChangedGround(key) {
     const [f, d, i, j] = key.split(':').map(Number);
     const ang = HALF_ANG / (1 << d);
     this._center(f, d, i, j, _v2).multiplyScalar(1 / this.R);
-    const C = this.job.craters;
-    if (C) {
-      for (let k = 0; k < C.length; k += 5) {
-        const dx = _v2.x - C[k], dy = _v2.y - C[k + 1], dz = _v2.z - C[k + 2];
-        const reach = C[k + 3] * 2.4 + ang * 1.7;
-        if (dx * dx + dy * dy + dz * dz < reach * reach) return true;
-      }
-    }
     const D = this.job.pads;
     if (D) {
       for (let k = 0; k < D.length; k += 5) {
