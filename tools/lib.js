@@ -25,7 +25,23 @@ const MIME = {
   '.svg': 'image/svg+xml',
 };
 
-/** the repo, served exactly as `python3 -m http.server` would serve it */
+// The art reference ships with a CDN importmap — the one thing in it that is
+// not self-contained. §8 requires that the reference *runs*, because its blind
+// side-by-side is the rubric's only executable comparison, and a machine with
+// no route to jsdelivr renders nothing at all.
+//
+// The fix is applied here, in the bytes on the way out, rather than in the
+// file on disk. docs/reference/hoshi-no-tani.html stays byte-exact with the
+// export, so its SHA-256 in docs/reference/README.md means something and §9's
+// "the reference wins — read it" has one unambiguous thing to read. A local
+// edit would be a place for drift to hide; six lines of visible rewrite in the
+// dev server are not.
+const REFERENCE = 'hoshi-no-tani.html';
+const REFERENCE_CDN = 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
+const REFERENCE_LOCAL = '/docs/reference/vendor/three-0.180.0.module.js';
+
+/** the repo, served exactly as `python3 -m http.server` would serve it —
+ *  save for the one documented rewrite above */
 export async function serve(root = REPO) {
   const server = createServer(async (req, res) => {
     try {
@@ -33,7 +49,10 @@ export async function serve(root = REPO) {
       const rel = normalize(path === '/' ? '/index.html' : path).replace(/^(\.\.[/\\])+/, '');
       const file = join(root, rel);
       if (!file.startsWith(root)) { res.writeHead(403).end(); return; }
-      const body = await readFile(file);
+      let body = await readFile(file);
+      if (file.endsWith(REFERENCE)) {
+        body = Buffer.from(String(body).replace(REFERENCE_CDN, REFERENCE_LOCAL));
+      }
       res.writeHead(200, {
         'content-type': MIME[extname(file)] || 'application/octet-stream',
         'cache-control': 'no-store',
