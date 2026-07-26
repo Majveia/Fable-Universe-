@@ -21,6 +21,7 @@ import { SurfaceScale, SURFACE_NOTE } from './surface.js';
 import { CloudsScale, CLOUDS_NOTE } from './clouds.js';
 import { PlanetScale, PLANET_NOTE } from './planetscale.js';
 import { starName, universeEpigraph } from './rng.js';
+import { Bench, BENCH_ON, BENCH_SEED } from './bench.js';
 
 const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE, planet: PLANET_NOTE };
 const HINTS = {
@@ -40,6 +41,9 @@ class App {
     // dice roll — this visit's universe exists for the first time right now
     const pinned = parseInt(url.searchParams.get('seed'));
     this.seed = Number.isInteger(pinned) && pinned > 0 ? pinned
+      // a measured flight is not a fresh arrival: an unpinned ?bench=1 still
+      // has to fly the same universe on every machine
+      : BENCH_ON ? BENCH_SEED
       : (crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff) || 1138;
     // the classic surface is the default; the streaming globe is opt-in
     this.quadOn = url.searchParams.get('quad') === '1';
@@ -91,10 +95,16 @@ class App {
     const spl = document.querySelector('#splash p');
     if (spl) spl.textContent = `universe ${this.seed} · ${universeEpigraph(this.seed)}`;
     setTimeout(() => {
+      // the splash may already be gone — a measured run tears it down on
+      // frame zero rather than fade it over the first 1.4 s of the flight
       const s = document.getElementById('splash');
+      if (!s) return;
       s.classList.add('gone');
       setTimeout(() => s.remove(), 1600);
     }, 1400);
+
+    // the instrument, if this run is a measurement (§5) — null otherwise
+    this.bench = Bench.maybe(this);
 
     this.renderer.setAnimationLoop(() => this._frame());
 
@@ -752,6 +762,7 @@ class App {
 
   // ------------------------------------------------------------- frame ----
   _frame() {
+    this.bench?.frameStart();
     const dt = Math.min(this.clock.getDelta(), 0.1);
     this.zoom.update(dt);
     if (this._warping && !this.zoom.busy && !this.hud.warpEl.classList.contains('on')) {
@@ -781,7 +792,7 @@ class App {
     // look like cinema: the descent keeps a floor under the resolution
     const p = this._perf;
     p.acc += dt; p.n++;
-    if (p.n >= 70) {
+    if (p.n >= 70 && !this._benchPinned) {
       const avg = p.acc / p.n;
       const s = this.active();
       const floor = (s?.auto || s?.asc || s?.ride) ? 1.25 : 1;
@@ -789,6 +800,8 @@ class App {
       else if (avg < 0.015 && this.dpr < Math.min(window.devicePixelRatio || 1, 2)) this._setDpr(this.dpr + 0.25);
       p.acc = 0; p.n = 0;
     }
+
+    this.bench?.frameEnd(dt);
   }
 
   _setDpr(v) {
