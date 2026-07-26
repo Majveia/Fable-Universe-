@@ -62,10 +62,18 @@ reports `REVISION '180'` with `WebGLRenderer` present. Open it through a plain
 jsdelivr.
 
 **Capturing it needs a GPU.** Resolving is not rendering. On ANGLE-over-
-SwiftShader the reference did not finish building its first frame in over six
-minutes — unsurprising for a twelve-million-vertex wind-driven meadow, and the
-same reason §M0 insists on real silicon for AEON's own captures. §8's blind
-side-by-side is executable, but not on a software rasteriser.
+SwiftShader, measured twice:
+
+- the document loads in **0.2 s** and its canvas element is created;
+- setup then holds the main thread past **six minutes** without lifting the
+  loading veil, so no frame is ever presented and a screenshot times out;
+- **no error is thrown** and the error banner never appears.
+
+Which is to say: a machine that looks hung here is not hung, it is computing —
+a twelve-million-vertex wind-driven meadow costs what it costs without a GPU.
+Do not debug this; run it on real silicon. It is the same reason §M0 insists on
+a real GPU for AEON's own captures. §8's blind side-by-side is executable, and
+not on a software rasteriser.
 
 **Version note (§10).** §10 records the pen's `package.json` as pinning
 `three ^0.185.1`; this export's importmap actually pins `0.180.0`, and that is
