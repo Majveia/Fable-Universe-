@@ -54,6 +54,12 @@ nothing. Link status is checked too — that is where a varying mismatch shows.
 Coverage comes from flying the bench route, so all six scales assemble. A run
 that fails to reach every scale reports **incomplete**, never *pass*.
 
+One limit worth knowing: a shader compiles against *a* driver, not against all
+of them. Green here means green on the machine that ran it — ANGLE over
+SwiftShader is more permissive than some real drivers and stricter than
+others, so this gate catches assembly defects, not vendor-specific rejections.
+Run it once on real silicon before believing a milestone.
+
 ## `?bench=1` — the harness itself
 
 Lives in `src/bench.js`, because it has to run inside the frame loop. Default

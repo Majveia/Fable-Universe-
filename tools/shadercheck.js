@@ -99,6 +99,14 @@ const visited = await page.evaluate(() =>
   (window.AEON_BENCH?.scales || []).map(s => s.kind)
     .concat(window.AEON ? [window.AEON.active().kind] : []));
 
+// a shader compiles against *a* driver, not against all of them — so the
+// report names the one that judged it
+const renderer = await page.evaluate(() => {
+  const gl = document.createElement('canvas').getContext('webgl2');
+  const d = gl && gl.getExtension('WEBGL_debug_renderer_info');
+  return gl ? String(gl.getParameter(d ? d.UNMASKED_RENDERER_WEBGL : gl.RENDERER)) : 'none';
+});
+
 await browser.close();
 await site.close();
 
@@ -120,6 +128,8 @@ const report = {
   failures: failures.length,
   warnings: warnings.length,
   scalesVisited: scales,
+  renderer,
+  softwareRasterizer: /swiftshader|llvmpipe|software|basic render/i.test(renderer),
   pageErrors,
   detail: failures.map(f => ({ kind: f.kind, info: f.info })),
 };
