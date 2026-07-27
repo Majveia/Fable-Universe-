@@ -16,6 +16,7 @@ On a Mac with Apple silicon, or any machine with a discrete GPU:
 ```bash
 git clone https://github.com/Majveia/Fable-Universe-.git
 cd Fable-Universe-
+git pull                       # or: git checkout <default branch> && git pull
 
 npm i -g playwright && npx playwright install chromium
 
@@ -143,3 +144,34 @@ than the universe, and none visible on a software rasteriser:
 
 Which is the argument for this page. A software rasteriser will run every
 instrument in `tools/` to completion and tell you almost nothing true.
+
+
+---
+
+## The second run — same hardware, stale checkout
+
+Run two came back with `draws p95 1 · tris p95 0.00M` and `fps 60.2/55.6` —
+identical to run one, and identical to the two defects run one had already
+found. The reason was not that the fixes failed. It was that the run was taken
+from the `gpu-run-M1` branch, which predated them.
+
+Nothing in the output said so. The only clue was a missing word: this project's
+gate prints `· quality desktop ·` in its header since the tier table landed, and
+run two's header did not have it.
+
+`tools/check.js` now prints the commit it measured, whether the tree is dirty,
+and whether the checkout is behind its upstream — and says outright that the
+numbers describe code that has moved on. Same discipline as `gateValid`: an
+artefact that cannot be trusted should say why, in its own output, without
+anybody having to notice a missing word.
+
+**What run two did establish**, and neither this container nor run one could:
+
+- **98 shaders compile on a real NVIDIA D3D11 driver**, all six scales. The
+  shader gate's own caveat is that it checks against *a* driver; ANGLE over
+  SwiftShader is not the same compiler as ANGLE over D3D11, and now both agree.
+- **Frames are bit-identical on hardware where dt genuinely varies** — 100.00%,
+  worst channel delta 0/255. That is the determinism fix proven where it
+  actually needed proving. On a software rasteriser every frame exceeds the
+  0.1 s dt clamp, so the timestep is fixed by accident and the test cannot
+  discriminate. Here it can, and it passes.

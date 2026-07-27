@@ -13,10 +13,37 @@
 // The verdict is honest about hardware. Everything here runs anywhere; only
 // some of it *means* anything without a GPU, and the summary says which.
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { arg, REPO } from './lib.js';
+
+/**
+ * Which commit is being measured, and is it the current one?
+ *
+ * A run of stale code produces perfectly valid numbers about the wrong thing,
+ * and nothing in the output would say so — the first two real-GPU runs of this
+ * project were both taken from a branch that predated the fixes they were
+ * meant to test, and the only clue was a missing word in a header. Same
+ * discipline as `gateValid`: if the artefact cannot be trusted, the artefact
+ * should say why.
+ */
+function provenance() {
+  const git = (...a) => execFileSync('git', a, { cwd: REPO, encoding: 'utf8' }).trim();
+  try {
+    const head = git('rev-parse', '--short', 'HEAD');
+    const subject = git('log', '-1', '--format=%s');
+    const dirty = git('status', '--porcelain').length > 0;
+    let behind = null;
+    try {
+      const upstream = git('rev-parse', '--abbrev-ref', '@{upstream}');
+      behind = Number(git('rev-list', '--count', `HEAD..${upstream}`));
+    } catch { /* no upstream configured */ }
+    return { head, subject, dirty, behind };
+  } catch {
+    return null;
+  }
+}
 
 const milestone = String(arg('milestone', 'M1'));
 const extra = arg('extra', '') === true ? '' : String(arg('extra', ''));
@@ -60,6 +87,17 @@ for (const f of [`docs/captures/${milestone}/perf-desktop.json`, 'docs/captures/
     const name = j.device?.renderer ?? j.renderer;
     if (name) { gpu = { name, software: j.device?.softwareRasterizer ?? j.softwareRasterizer }; break; }
   } catch { /* not written this run */ }
+}
+
+const src = provenance();
+if (src) {
+  console.log(`\n  commit  : ${src.head}${src.dirty ? ' + uncommitted changes' : ''}`);
+  console.log(`            ${src.subject}`);
+  if (src.behind > 0) {
+    console.log(`  ⚠ this checkout is ${src.behind} commit${src.behind === 1 ? '' : 's'} behind its upstream.`);
+    console.log('    The numbers below are real and describe code that has moved on.');
+    console.log('    git pull, then run this again.');
+  }
 }
 
 console.log();
