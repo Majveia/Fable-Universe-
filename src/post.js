@@ -82,6 +82,15 @@ const BLOOM_FLOOR = Number(PARAM('bfloor') ?? 0);
 // 1/255 and the deep field stops being black. So the amplitude is gated by
 // luma: true black stays exactly black, and the first step above it — which is
 // where banding actually lives — is dithered at full strength. Both hold.
+//
+// The gate's lower edge is half a display step, not zero, and that is a
+// correction the RTX 3060 asked for. A gate opening at zero still hands a small
+// dither to a pixel sitting at 0.4/255 — which quantises to black — and half of
+// those round up. The measurement: 42.2% of the cosmic frame reached true #000
+// with the dither off and 39.0% with it on, against a clause that allows 0.5%.
+// The pedestal under the deep field (M2 act 1, docs/plans/M2.md §7) is what
+// puts so many pixels in that band; the dither is what tips them. Below half a
+// step there is nothing to dither *between*, so the gate now opens there.
 const DitherShader = {
   uniforms: { tDiffuse: { value: null } },
   vertexShader: /* glsl */`
@@ -101,7 +110,7 @@ const DitherShader = {
       vec3 col = mix(vec3(0.0), c.rgb, vec3(equal(c.rgb, c.rgb)));
       float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
       float d = fract(dot(gl_FragCoord.xy, vec2(0.7548776662, 0.5698402909))) - 0.5;
-      col += (d / 255.0) * smoothstep(0.0, 1.5 / 255.0, luma);
+      col += (d / 255.0) * smoothstep(0.5 / 255.0, 2.0 / 255.0, luma);
       gl_FragColor = vec4(clamp(col, 0.0, 1.0), c.a);
     }
   `,
