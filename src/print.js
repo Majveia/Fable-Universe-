@@ -52,6 +52,8 @@ import * as THREE from 'three';
 export const PRINT_SHADER = {
   uniforms: {
     tDiffuse: { value: null },
+    uBloom: { value: null },    // §9.4's step order: the bloom composites here
+    uBloomAmt: { value: 0 },
     uPaint: { value: 0 },       // 0 vacuum · 1 atmosphere (§2.8, §3 row 1)
     uExposure: { value: 1 },
     uGrain: { value: 1 },
@@ -68,6 +70,8 @@ export const PRINT_SHADER = {
   fragmentShader: /* glsl */`
     precision highp float;
     uniform sampler2D tDiffuse;
+    uniform sampler2D uBloom;
+    uniform float uBloomAmt;
     uniform float uPaint, uExposure, uGrain, uVignette;
     uniform vec2 uRes;
     varying vec2 vUv;
@@ -134,6 +138,15 @@ export const PRINT_SHADER = {
       // the bloom downsample chain will have smeared it over a neighbourhood
       // first. NaN is the only value that fails to equal itself.
       vec3 c = mix(vec3(0.0), src.rgb, vec3(equal(src.rgb, src.rgb)));
+
+      // The bloom composites here, not as a pass of its own — §9.4's step order
+      // puts it before the tonemap, and bloom.js explains why it must not be an
+      // additive pass at all (it would overwrite the alpha §9.3 needs).
+      // §11's second firewall, since the chain that produced this has been
+      // downsampled four times and one bad texel would now be a neighbourhood.
+      vec3 bl = texture2D(uBloom, vUv).rgb;
+      bl = mix(vec3(0.0), bl, vec3(equal(bl, bl)));
+      c += max(bl, vec3(0.0)) * uBloomAmt;
 
       c = tonemap(c * uExposure, uPaint);
 

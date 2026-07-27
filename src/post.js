@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { BloomChain } from './bloom.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { PRINT_SHADER } from './print.js';
@@ -67,11 +68,11 @@ const M1 = PARAM('m1') === '1';
 const M2 = PARAM('m2') === '1';
 
 /**
- * The bloom floor, in linear light. Default 0 — the halo is unchanged in act 1.
- * `?bfloor=` drives the sweep recorded in docs/plans/M2.md §7; see firewallBloom
- * for why no value of it is the answer.
+ * How deep the M2 bloom chain goes, and therefore how far light travels. Each
+ * level doubles the reach, so four levels is roughly 64 source pixels against a
+ * 2560-pixel frame — bounded, which is the whole point (src/bloom.js).
  */
-const BLOOM_FLOOR = Number(PARAM('bfloor') ?? 0);
+const BLOOM_LEVELS = Number(PARAM('blevels') ?? 4);
 
 // §M1 adopts the reference's ordered dither, ±0.5/255, *after* sRGB — because
 // a smooth gradient must never band, and the cosmic web is the worst banding
@@ -116,59 +117,6 @@ const DitherShader = {
   `,
 };
 
-/**
- * §11 asks for a NaN firewall "at the bright pass *and* again before the print."
- * `print.js` is the second one. This is the first — and it does a second job
- * that §2.8 turns out to need.
- *
- * `UnrealBloomPass` composites five mip levels, the coarsest at 1/32 resolution
- * with a kernel that spans the frame, so every bright pixel contributes a small
- * amount to *every* pixel. In an atmosphere that is veiling glare and it is
- * welcome. In vacuum it is a pedestal under a field §2.8 requires to reach
- * zero: at the cosmic scale 76% of the frame reaches #000 with the bloom pass
- * disabled and 0% with it on.
- *
- * The floor below is the obvious answer — scattered light beneath one display
- * step is not light, subtracted from the bloom alone so a pixel that received
- * photons keeps them. Measurement says the obvious answer is not enough. The
- * pedestal is not flat; it tracks the web, so a constant subtraction that
- * clears the far corner has already eaten the near glow. The full sweep is in
- * docs/plans/M2.md §7, and its conclusion is that *no* parameterisation of this
- * pass satisfies §2.8 — the frame-wide support of the mip pyramid is structural.
- * The fix is the reference's own bloom chain, composited inside the print, and
- * that is act 2's work, not a constant.
- *
- * So the floor ships at 0 and act 1 leaves the halo exactly as it was. What
- * ships here is the firewall §11 asked for and the knob that measured the
- * problem.
- *
- * Patching the material rather than `/vendor` is deliberate — §10 says port
- * techniques, not files, and the vendored three has to stay byte-verifiable.
- * Each replacement is checked, because a patch that silently fails to apply is
- * the exact defect §M0's shader gate exists to catch.
- */
-function firewallBloom(bloom, floor) {
-  const m = bloom.compositeMaterial;
-  const apply = (find, put) => {
-    if (!m.fragmentShader.includes(find)) {
-      throw new Error(`post.js: bloom composite shader has moved on — "${find}" not found. `
-        + 'Re-read UnrealBloomPass before trusting §2.8 or §11 here.');
-    }
-    m.fragmentShader = m.fragmentShader.replace(find, put);
-  };
-  m.uniforms.uBloomFloor = { value: floor };
-  apply('uniform float bloomRadius;',
-    'uniform float bloomRadius;\n\t\t\t\tuniform float uBloomFloor;');
-  apply('gl_FragColor = bloomStrength * (', 'vec4 bloomSum = bloomStrength * (');
-  apply('texture2D(blurTexture5, vUv) );',
-    'texture2D(blurTexture5, vUv) );\n'
-    + '\t\t\t\t\t// NaN is the only value that fails to equal itself\n'
-    + '\t\t\t\t\tbloomSum = mix(vec4(0.0), bloomSum, vec4(equal(bloomSum, bloomSum)));\n'
-    + '\t\t\t\t\tbloomSum.rgb = max(bloomSum.rgb - uBloomFloor, vec3(0.0));\n'
-    + '\t\t\t\t\tgl_FragColor = bloomSum;');
-  m.needsUpdate = true;
-}
-
 export class Post {
   constructor(renderer) {
     this.renderer = renderer;
@@ -177,18 +125,26 @@ export class Post {
     this.composer.renderTarget2.texture.type = THREE.HalfFloatType;
 
     this.renderPass = new RenderPass(null, null);
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.85, 0.75, 0.0);
-    if (M2) firewallBloom(this.bloom, BLOOM_FLOOR);
+    // M2 replaces the pass entirely — see src/bloom.js for the measurement that
+    // says no setting of UnrealBloomPass can satisfy §2.8 in vacuum
+    this.bloom = M2 ? new BloomChain({ levels: BLOOM_LEVELS })
+      : new UnrealBloomPass(new THREE.Vector2(1, 1), 0.85, 0.75, 0.0);
     this.gradePass = new ShaderPass(GradeShader);
     this.output = new OutputPass();
 
     this.composer.addPass(this.renderPass);
-    this.composer.addPass(this.bloom);
-    this.composer.addPass(this.gradePass);
 
     const ditherOff = PARAM('dither') === '0';
 
     if (M2) {
+      // Order changes under M2, and the change is the point. The bloom no
+      // longer adds itself to the frame; it renders to its own texture, which
+      // the print samples. So it runs *after* the grade — a world's resonance
+      // should colour what glows — and it swaps nothing, leaving the alpha
+      // channel §9.3 needs untouched all the way from the scene to the print.
+      this.composer.addPass(this.gradePass);
+      this.composer.addPass(this.bloom);
+
       // The print does its own tonemap and its own sRGB encode, so OutputPass
       // has nothing left to do and three's renderer-level tonemapping has to
       // stand down — otherwise the frame is graded twice, once through the
@@ -196,8 +152,11 @@ export class Post {
       renderer.toneMapping = THREE.NoToneMapping;
       this.printPass = new ShaderPass(PRINT_SHADER);
       this.printPass.uniforms.uGrain.value = ditherOff ? 0 : 1;
+      this.printPass.uniforms.uBloom.value = this.bloom.texture;
       this.composer.addPass(this.printPass);
     } else {
+      this.composer.addPass(this.bloom);
+      this.composer.addPass(this.gradePass);
       this.composer.addPass(this.output);
       // last, and after OutputPass, because §M1 says post-sRGB: dithering in
       // linear light would put the noise in the wrong place on the curve.
@@ -213,7 +172,14 @@ export class Post {
   }
 
   /** per-scale bloom personality */
-  tune({ strength = 0.85, radius = 0.75, threshold = 0.0 } = {}) {
+  tune(s = {}) {
+    const { strength = 0.85, radius = 0.75, threshold = 0.0 } = s;
+    if (M2) {
+      this.bloom.tune({ strength, radius, threshold });
+      // the print does the compositing, so the strength lives on its uniform
+      if (this.printPass) this.printPass.uniforms.uBloomAmt.value = strength;
+      return;
+    }
     this.bloom.strength = strength;
     this.bloom.radius = radius;
     this.bloom.threshold = threshold;
@@ -250,7 +216,12 @@ export class Post {
 
   setSize(w, h) {
     this.composer.setSize(w, h);
-    if (this.printPass) this.printPass.uniforms.uRes.value.set(w, h);
+    if (this.printPass) {
+      this.printPass.uniforms.uRes.value.set(w, h);
+      // setSize reallocates the chain's targets, so the sampler has to be
+      // re-pointed or the print keeps reading a disposed texture
+      this.printPass.uniforms.uBloom.value = this.bloom.texture;
+    }
   }
   render(dt) {
     this.gradePass.uniforms.uTime.value += dt;
