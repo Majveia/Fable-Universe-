@@ -19,7 +19,8 @@ import {
   spectrumToXYZ, toGamut, xyzToLinearSRGB,
 } from '../src/starlight.js';
 import {
-  buildModes, deformation, deltaLinear, displacement, invariants, trace,
+  buildModes, deformation, deltaLinear, displacement, eigenvalues, invariants,
+  trace, webClass,
 } from '../src/zeldovich.js';
 
 let failures = 0;
@@ -141,29 +142,6 @@ function suiteCosmology() {
 // differencing of ψ itself — if M_ij really is ∂ψ_i/∂q_j, central differences
 // of the displacement must reproduce it.
 
-/**
- * Eigenvalues of a symmetric 3×3 packed as [xx, yy, zz, xy, xz, yz], by the
- * closed-form trigonometric method (Smith 1961). Used only here, as an
- * independent route to the invariants — the shader never needs it.
- */
-function symEigenvalues(M) {
-  const [a, b, c, d, e, f] = M;
-  const p1 = d * d + e * e + f * f;
-  const q = (a + b + c) / 3;
-  if (p1 < 1e-30) return [a, b, c].sort((x, y) => y - x);
-  const p2 = (a - q) ** 2 + (b - q) ** 2 + (c - q) ** 2 + 2 * p1;
-  const p = Math.sqrt(p2 / 6);
-  // B = (M − qI)/p has det in [−1, 1]; its determinant fixes the angle
-  const b0 = (a - q) / p, b1 = (b - q) / p, b2 = (c - q) / p;
-  const b3 = d / p, b4 = e / p, b5 = f / p;
-  const det = b0 * (b1 * b2 - b5 * b5) - b3 * (b3 * b2 - b5 * b4) + b4 * (b3 * b5 - b1 * b4);
-  const r = Math.min(1, Math.max(-1, det / 2));
-  const phi = Math.acos(r) / 3;
-  const e1 = q + 2 * p * Math.cos(phi);
-  const e3 = q + 2 * p * Math.cos(phi + (2 * Math.PI / 3));
-  return [e1, 3 * q - e1 - e3, e3];
-}
-
 function suiteZeldovich() {
   console.log('\nzeldovich — analytic deformation tensor vs finite differences');
 
@@ -255,7 +233,7 @@ function suiteZeldovich() {
     const q = [(rand() - 0.5) * BOX, (rand() - 0.5) * BOX, (rand() - 0.5) * BOX];
     const M = deformation(modes, q);
     const D = 0.5;
-    const [l0, l1, l2] = symEigenvalues(M);
+    const [l0, l1, l2] = eigenvalues(M);
     const b = [1 + D * l0, 1 + D * l1, 1 + D * l2];
     const inv = invariants(M, D, Infinity);
     const detE = b[0] * b[1] * b[2];
@@ -323,6 +301,187 @@ function suiteZeldovich() {
     `${(f10 * 100).toFixed(1)}%`);
 }
 
+
+// ---------------------------------------------------------------------------
+// suite: webclass
+//
+// The second physical channel in the palette (M1 §12, option B). Two things
+// have to hold: the closed-form eigen-solver must agree with an independent
+// numerical one, and the classification it feeds must behave like a cosmic web
+// — voids emptying, knots condensing, and a *multimodal* distribution, which is
+// the entire reason this channel exists.
+
+/** Jacobi eigenvalue iteration — the independent reference, slow and obvious */
+function jacobiEigen(M) {
+  const A = [[M[0], M[3], M[4]], [M[3], M[1], M[5]], [M[4], M[5], M[2]]];
+  for (let sweep = 0; sweep < 100; sweep++) {
+    let off = 0;
+    for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) off += A[i][j] ** 2;
+    if (off < 1e-30) break;
+    for (let p = 0; p < 3; p++) {
+      for (let q = p + 1; q < 3; q++) {
+        if (Math.abs(A[p][q]) < 1e-300) continue;
+        const theta = (A[q][q] - A[p][p]) / (2 * A[p][q]);
+        const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+        const c = 1 / Math.sqrt(t * t + 1), s = t * c;
+        for (let k = 0; k < 3; k++) {
+          const akp = A[k][p], akq = A[k][q];
+          A[k][p] = c * akp - s * akq;
+          A[k][q] = s * akp + c * akq;
+        }
+        for (let k = 0; k < 3; k++) {
+          const apk = A[p][k], aqk = A[q][k];
+          A[p][k] = c * apk - s * aqk;
+          A[q][k] = s * apk + c * aqk;
+        }
+      }
+    }
+  }
+  return [A[0][0], A[1][1], A[2][2]].sort((x, y) => y - x);
+}
+
+function suiteWebclass() {
+  console.log('\nwebclass — the second channel in the palette (M1 §12 option B)');
+
+  const modes = buildModes(20250601, 240);
+  const BOX = 240;
+  const rand = (() => {
+    let s = 424242; return () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  })();
+  const sample = () => [(rand() - 0.5) * BOX, (rand() - 0.5) * BOX, (rand() - 0.5) * BOX];
+
+  // --- the solver, against Jacobi ------------------------------------------
+  {
+    let worst = 0, scale = 0;
+    for (let i = 0; i < 3000; i++) {
+      const M = deformation(modes, sample());
+      const a = eigenvalues(M), b = jacobiEigen(M);
+      for (let k = 0; k < 3; k++) worst = Math.max(worst, Math.abs(a[k] - b[k]));
+      scale = Math.max(scale, Math.abs(b[0]), Math.abs(b[2]));
+    }
+    ok('closed-form eigenvalues match Jacobi', worst / scale < 1e-9,
+      `worst |Δ| ${worst.toExponential(2)} against a tensor scale of ${scale.toFixed(3)}`);
+  }
+  {
+    // the two invariants the render path already trusts, rebuilt from the roots
+    let wTr = 0, wDet = 0;
+    for (let i = 0; i < 2000; i++) {
+      const M = deformation(modes, sample());
+      const e = eigenvalues(M);
+      wTr = Math.max(wTr, Math.abs(e[0] + e[1] + e[2] - trace(M)));
+      const det = M[0] * (M[1] * M[2] - M[5] * M[5]) - M[3] * (M[3] * M[2] - M[5] * M[4])
+        + M[4] * (M[3] * M[5] - M[1] * M[4]);
+      wDet = Math.max(wDet, Math.abs(e[0] * e[1] * e[2] - det));
+    }
+    ok('Σλ = tr(M) and Πλ = det(M)', wTr < 1e-12 && wDet < 1e-12,
+      `worst |Δtr| ${wTr.toExponential(2)} · |Δdet| ${wDet.toExponential(2)}`);
+  }
+  ok('the roots come back descending', (() => {
+    for (let i = 0; i < 2000; i++) {
+      const e = eigenvalues(deformation(modes, sample()));
+      if (!(e[0] >= e[1] && e[1] >= e[2])) return false;
+    }
+    return true;
+  })());
+  {
+    // a diagonal tensor is the degenerate branch, and it is easy to get wrong
+    const e = eigenvalues([2, -1, 0.5, 0, 0, 0]);
+    ok('a diagonal tensor takes the p1 = 0 branch correctly',
+      e[0] === 2 && e[1] === 0.5 && e[2] === -1, `[${e.join(', ')}]`);
+    const iso = eigenvalues([0.7, 0.7, 0.7, 0, 0, 0]);
+    ok('and an isotropic one gives a triple root', iso.every((v) => v === 0.7));
+  }
+
+  // --- the classification, as a cosmic web ---------------------------------
+  const census = (D) => {
+    const bins = [0, 0, 0, 0];
+    let n = 0;
+    for (let i = 0; i < 6000; i++) {
+      const c = webClass(deformation(modes, sample()), D);
+      bins[Math.min(3, Math.round(c))]++; n++;
+    }
+    return bins.map((b) => b / n);
+  };
+  const early = census(0.25), late = census(1.4);
+  ok('voids give way to collapsed structure as D grows',
+    early[0] > late[0] && late[3] > early[3],
+    `void ${(early[0] * 100).toFixed(1)}%→${(late[0] * 100).toFixed(1)}%`
+    + ` · knot ${(early[3] * 100).toFixed(1)}%→${(late[3] * 100).toFixed(1)}%`);
+  ok('all four classes are occupied at an intermediate epoch', (() => {
+    const c = census(0.7);
+    console.log(`       D = 0.7 census — void ${(c[0] * 100).toFixed(1)}%`
+      + ` sheet ${(c[1] * 100).toFixed(1)}% filament ${(c[2] * 100).toFixed(1)}%`
+      + ` knot ${(c[3] * 100).toFixed(1)}%`);
+    return c.every((v) => v > 0.02);
+  })(), 'each above 2% — a class nobody occupies is not a hue family');
+
+  {
+    // The claim the clause turns on: the continuous count is *multimodal*,
+    // which is what a monotone readout of the unimodal divergence field could
+    // never produce. Measured at D = 1, where the web is formed — asserting
+    // four peaks at D = 0.25 would be asserting that clusters exist before they
+    // do, and the census above shows knots at 0.1% there. The physics decides
+    // when the fourth family arrives; this checks that it does.
+    const peaksAt = (D) => {
+      const BINS = 60;
+      const hist = new Array(BINS).fill(0);
+      let nearInt = 0, n = 0;
+      for (let i = 0; i < 20000; i++) {
+        const c = webClass(deformation(modes, sample()), D);
+        hist[Math.min(BINS - 1, Math.floor((c / 3) * BINS))]++;
+        if (Math.abs(c - Math.round(c)) < 0.15) nearInt++;
+        n++;
+      }
+      // a peak is a local maximum that is actually occupied — same shape as
+      // gate.js's hue-mode count, at the same 0.5% floor
+      let peaks = 0;
+      for (let i = 1; i < BINS - 1; i++) {
+        if (hist[i] >= hist[i - 1] && hist[i] > hist[i + 1] && hist[i] / n > 0.005) peaks++;
+      }
+      return { peaks, nearInt: nearInt / n };
+    };
+
+    const late = peaksAt(1.0);
+    ok('the count is near-integer almost everywhere', late.nearInt > 0.75,
+      `${(late.nearInt * 100).toFixed(1)}% within 0.15 of a class at D = 1`);
+    ok('and by D = 1 its distribution has four modes', late.peaks >= 4,
+      `${late.peaks} occupied local maxima — the divergence field has one, at every D`);
+  }
+
+  ok('the classification is monotone in D for a fixed element', (() => {
+    for (let i = 0; i < 400; i++) {
+      const M = deformation(modes, sample());
+      let prev = -1;
+      for (let D = 0.05; D <= 2.0; D += 0.05) {
+        const c = webClass(M, D);
+        if (c < prev - 1e-9) return false;
+        prev = c;
+      }
+    }
+    return true;
+  })(), 'structure collapses; it does not un-collapse under Zel\'dovich');
+
+  {
+    // and it must be a *different* number from the one the palette already has
+    let same = 0, n = 0;
+    for (let i = 0; i < 4000; i++) {
+      const M = deformation(modes, sample());
+      const c = webClass(M, 0.7);
+      const th = invariants(M, 0.7).thetaNorm;
+      // rank-correlate crudely: does class order match divergence order?
+      const M2 = deformation(modes, sample());
+      const c2 = webClass(M2, 0.7);
+      const th2 = invariants(M2, 0.7).thetaNorm;
+      if ((c - c2) * (th2 - th) > 0) same++;
+      n++;
+    }
+    const agree = same / n;
+    ok('it correlates with divergence without duplicating it',
+      agree > 0.55 && agree < 0.95,
+      `${(agree * 100).toFixed(1)}% of pairs order the same way — correlated,`
+      + ' as collapse and infall must be, but not the same channel');
+  }
+}
 
 // ---------------------------------------------------------------------------
 // suite: print
@@ -859,8 +1018,8 @@ function suiteStarlight() {
 
 const only = process.argv[2];
 const suites = {
-  cosmology: suiteCosmology, zeldovich: suiteZeldovich, print: suitePrint,
-  aerial: suiteAerial, starlight: suiteStarlight,
+  cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
+  print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
 };
 
 for (const [name, fn] of Object.entries(suites)) {
