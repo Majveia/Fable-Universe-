@@ -23,6 +23,18 @@ npm i -g playwright && npx playwright install chromium
 node tools/check.js --milestone M1 --extra "slab=1"
 ```
 
+**On Windows PowerShell, `&&` is not a statement separator** — use `;`, or run
+the two commands on separate lines:
+
+```powershell
+git checkout <default branch>
+git pull
+git status                     # must be clean, or the run cannot score a gate
+```
+
+That `git status` is not a formality. A run taken from a tree with local edits
+under `src/` or `tools/` measures those edits, not the branch — see run three.
+
 Nothing is installed into the repo — Playwright is global on purpose, so the
 project never grows a build step (§2.2). If `node` is missing, any 18+ will do.
 
@@ -175,3 +187,77 @@ anybody having to notice a missing word.
   actually needed proving. On a software rasteriser every frame exceeds the
   0.1 s dt clamp, so the timestep is fixed by accident and the test cannot
   discriminate. Here it can, and it passes.
+
+---
+
+## The third run — same hardware, a mixed tree
+
+The banner did its job and the run still could not be scored, because the tree
+it measured was **incoherent**: `HEAD` read `cf1cb65`, but the code that ran was
+older than `d29bd9b`, two commits before it. Two independent proofs, neither
+requiring access to the machine:
+
+- the gate printed `a reached 0.852 (z = 0.173), still advancing`. That string
+  was **deleted** in `d29bd9b`, which replaced the wall-clock deep-time clause
+  with one driven from `a = 0.985`. No committed version at or after `cf1cb65`
+  can print it.
+- the bench reported `draws p95 1 · tris p95 0.00M` — the exact pre-`d29bd9b`
+  signature. Re-measured here after the fix, one frame of the cosmic scale
+  reports **83 draw calls and 133 triangles**; with `autoReset` left alone it
+  reports **1 and 1**. The fix works, so the code that ran did not have it.
+
+`git status` would have shown it in one line. The verdict block would not: it
+printed `⚠ 3 commits behind` and `✓ real GPU — these numbers count against §5
+and the milestone gates` in the same breath, which is a contradiction the tool
+should never have been able to utter.
+
+**Fixed.** `tools/check.js` now names the specific files under `src/` or
+`tools/` that differ from the commit, and the hardware verdict is gated on
+provenance: a real GPU with a dirty or behind tree reports *"real GPU, but not
+this commit — fine for iterating; it cannot score §5 or a milestone gate."*
+Editing and re-running is the normal loop, so a dirty tree is not a failure; it
+just is not a gate score.
+
+### The `repeat` failure, and why it was uninterpretable
+
+Run three reported 11.90% bit-identical, worst channel delta 49/255 — against
+run two's 100.00% on the same hardware. That is not a regression report,
+because the test could not say **which frame** it photographed.
+
+`repeat.js` settled 90 `requestAnimationFrame` ticks *after `window.AEON`
+appeared*. But the render loop starts when `App` constructs, and how many frames
+it completes before an external observer attaches is a property of the machine.
+Measured in this container: the observer consistently attaches at app frame 5,
+so both runs land on frame 186 and the test passes at 100%. On hardware where
+that race is live, the two runs photograph different moments and the test
+reports the difference as nondeterminism.
+
+A determinism test that cannot name its own frame cannot distinguish a
+nondeterministic universe from a fast one. So `App` now counts frames, and
+`repeat.js` waits for **app frame N** rather than for a number of ticks — and if
+the two runs somehow still land on different frames, it says so and refuses to
+print a percentage, because a percentage would be believed.
+
+This does not prove run three's failure was the race. It makes the next run's
+answer mean something either way: pass, or a failure with both photographs
+provably at the same frame — which would be a real §2.3 violation worth hunting.
+
+### One genuine determinism leak, found and not fixed
+
+Grepping every wall-clock read in `src/` turned up exactly one inside a
+generation path: `city.js`'s `step(budgetMs = 4)` pumps its build generator
+`while (performance.now() - t0 < budgetMs)`. The finished city is deterministic —
+the generator is seeded — but *how much of it exists at frame N* is a property
+of the machine, so a capture taken mid-build differs between machines. §7.7 asks
+every previous milestone to be re-shot; this is a way for that to quietly fail.
+
+`clock.js` already considered this and gave it a pass: *"a frame budget that
+ignored the frame would not be a budget."* That is right for interactive play
+and wrong under `?dt=`, where the frame loop has already stopped being a
+real-time thing. The fix is to pump a fixed iteration count when a fixed
+timestep is in force, with the count living in §5's quality table — but the
+count has to be *measured*, not guessed, or capture gains a hitch that poisons
+the p99 it exists to record. Left for M6, where `city.js` becomes
+`civilization.js`, with the reasoning recorded so it is a one-session job.
+
+Not their bug: cities are unreachable from the cosmic scale that `repeat` uses.

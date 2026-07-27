@@ -33,13 +33,22 @@ function provenance() {
   try {
     const head = git('rev-parse', '--short', 'HEAD');
     const subject = git('log', '-1', '--format=%s');
-    const dirty = git('status', '--porcelain').length > 0;
+    // Which files differ matters more than whether any do. A dirty docs/ tree
+    // changes nothing about a frame; a dirty src/ or tools/ tree means the
+    // commit named above did not produce these numbers, and the first real-GPU
+    // run of this project lost most of its value to exactly that — it reported
+    // a §M1 clause failing with a message that had been deleted two commits
+    // earlier, and a draw count the harness had already been fixed to get right.
+    const status = git('status', '--porcelain');
+    const touched = status.split('\n').filter(Boolean)
+      .map((l) => l.slice(3).trim())
+      .filter((p) => p.startsWith('src/') || p.startsWith('tools/'));
     let behind = null;
     try {
       const upstream = git('rev-parse', '--abbrev-ref', '@{upstream}');
       behind = Number(git('rev-list', '--count', `HEAD..${upstream}`));
     } catch { /* no upstream configured */ }
-    return { head, subject, dirty, behind };
+    return { head, subject, dirty: status.length > 0, touched, behind };
   } catch {
     return null;
   }
@@ -94,9 +103,21 @@ for (const f of [`docs/captures/${milestone}/perf-desktop.json`, 'docs/captures/
 }
 
 const src = provenance();
+// A run is *attributable* when the numbers can be pinned to a commit. Editing
+// and re-running is the normal loop, so a dirty tree is not a failure — but it
+// does mean this run cannot score a gate, and saying so is the whole point.
+const attributable = !src || (!src.touched.length && !(src.behind > 0));
+
 if (src) {
   console.log(`\n  commit  : ${src.head}${src.dirty ? ' + uncommitted changes' : ''}`);
   console.log(`            ${src.subject}`);
+  if (src.touched.length) {
+    const show = src.touched.slice(0, 6).join(' · ');
+    console.log(`  ⚠ ${src.touched.length} file${src.touched.length === 1 ? '' : 's'}`
+      + ' under src/ or tools/ differ from that commit:');
+    console.log(`      ${show}${src.touched.length > 6 ? ` · +${src.touched.length - 6} more` : ''}`);
+    console.log('    Every number below describes those files, not the commit.');
+  }
   if (src.behind > 0) {
     console.log(`  ⚠ this checkout is ${src.behind} commit${src.behind === 1 ? '' : 's'} behind its upstream.`);
     console.log('    The numbers below are real and describe code that has moved on.');
@@ -112,9 +133,14 @@ if (!gpu) {
   console.log('  ⚠ software rasteriser. Shapes are real, numbers are not.');
   console.log('    §M0 asks for a real GPU, and every artefact from this run is');
   console.log('    stamped gateValid:false. Do not quote it against §5.');
+} else if (!attributable) {
+  console.log(`  hardware: ${gpu.name}`);
+  console.log('  ⚠ real GPU, but not this commit. The numbers are honest about the');
+  console.log('    working tree that produced them and say nothing about the branch.');
+  console.log('    Fine for iterating; it cannot score §5 or a milestone gate.');
 } else {
   console.log(`  hardware: ${gpu.name}`);
-  console.log('  ✓ real GPU — these numbers count against §5 and the milestone gates.');
+  console.log('  ✓ real GPU, clean tree — these numbers count against §5 and the gates.');
 }
 
 const failed = results.filter(r => r.code !== 0);
