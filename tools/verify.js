@@ -468,9 +468,181 @@ function suitePrint() {
 }
 
 // ---------------------------------------------------------------------------
+// suite: aerial
+//
+// §9.3's aerial perspective, ported from the reference's `aerial()` (lines
+// 686–700) and checked before any of it enters a shader — M2 act 2, §7.3.
+//
+// What is being validated here is *not* the numbers. It is the six properties
+// that make this a depth cue rather than a grey wash, each of which can be
+// broken by a plausible-looking edit: monotone in distance, transparent inside
+// the near plane, saturating at the far one, thinning with altitude, warm
+// toward the sun and cool away from it, and pooling mist only where a valley
+// floor is. Plus §9.3's NaN guard, which is the one line in the function that
+// exists because of a bug rather than because of an effect.
+
+/** sRGB hex → linear, the same conversion §9.1 asks for at load */
+function hexLinear(h) {
+  const v = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  return v.map((c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)));
+}
+
+const AIR = {
+  haze: hexLinear('#A9BCC7'),
+  mist: hexLinear('#D6DDD4'),
+  horizonSun: hexLinear('#FBE2AE'),
+  anti: hexLinear('#C8D4D6'),
+};
+
+/**
+ * §9.3, exactly as the reference computes it. `V` points from the surface
+ * *toward the camera* — `normalize(uCamPos - P)`, the reference's convention at
+ * every one of its ten call sites — and `sun` points at the sun, both unit. Get
+ * that backwards and the Mie term inverts: fog goes cold toward the sun and
+ * warm away from it, which still looks like fog and is the wrong image.
+ * Returns the composited colour and the fog fraction §9.3 wants in alpha —
+ * the reference smuggles it out through a mutable global, which is a GLSL
+ * convenience rather than a design, so this returns it.
+ */
+function aerial(col, dist, V, sun, worldY, {
+  fogNear = 70, fogFar = 1700, fogMul = 1,
+} = {}) {
+  const ss = (e0, e1, x) => {
+    const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
+    return t * t * (3 - 2 * t);
+  };
+  const mix3 = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+
+  // a poisoned depth must not poison the colour
+  dist = dist === dist ? Math.min(dist, 1e6) : 1e6;
+
+  const d = Math.max(dist - fogNear, 0);
+  const hf = 1 + (Math.exp(-Math.max(worldY - 6, 0) / 260) - 1) * 0.72;
+  let f = 1 - Math.exp(-Math.pow(d / fogFar, 1.28) * 3.1 * hf * fogMul);
+
+  const vs = -(V[0] * sun[0] + V[1] * sun[1] + V[2] * sun[2]);
+  const mie = Math.pow(Math.min(Math.max(vs, 0), 1), 3.4);
+  let fc = mix3(AIR.haze, AIR.horizonSun, mie * 0.88);
+  fc = mix3(fc, AIR.anti, Math.min(Math.max(vs, -1), 0) * -0.32);
+
+  const pool = ss(46, 8, worldY) * ss(120, 420, dist);
+  fc = mix3(fc, AIR.mist, pool * 0.45);
+  f = Math.min(Math.max(f + pool * 0.16, 0), 1);
+
+  return { col: mix3(col, fc, f), fog: f, fc };
+}
+
+function suiteAerial() {
+  console.log('\naerial — §9.3, before it enters a shader (M2 act 2)');
+
+  const GREY = [0.18, 0.18, 0.18];
+  const SUN = (() => {
+    // §9.7 forces spawn sun into 8–18°; 13.5° is the reference's own
+    const e = (13.5 * Math.PI) / 180;
+    return [Math.cos(e), Math.sin(e), 0];
+  })();
+  // V points surface → camera, so looking *at* the sun means V = −sun
+  const toward = SUN.map((v) => -v);
+  const away = SUN.slice();
+  const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const at = (dist, y = 100, V = toward, o) => aerial(GREY, dist, V, SUN, y, o);
+
+  ok('inside the near plane there is no fog at all',
+    at(0).fog === 0 && at(70).fog === 0,
+    'fogNear 70 m — a depth cue that starts at the camera is a wash');
+
+  ok('fog is monotone in distance', (() => {
+    let prev = -1;
+    for (let i = 0; i <= 4000; i++) {
+      const f = at(i * 2).fog;
+      if (f < prev - 1e-12) return false;
+      prev = f;
+    }
+    return true;
+  })());
+
+  {
+    const f1700 = at(1700).fog, f8000 = at(8000).fog;
+    ok('it saturates by the far distance without ever exceeding 1',
+      f8000 > 0.99 && f8000 <= 1 && f1700 > 0.5 && f1700 < 0.99,
+      `f(fogFar) = ${f1700.toFixed(3)} · f(8 km) = ${f8000.toFixed(5)}`);
+  }
+
+  // the height term is what stops a valley and a mountaintop reading the same
+  {
+    const low = at(900, 6).fog, high = at(900, 900).fog;
+    ok('air thins with altitude', high < low * 0.75,
+      `at 900 m out: ${low.toFixed(3)} at eye height → ${high.toFixed(3)} at 900 m up`
+      + ` (${(high / low).toFixed(2)}×)`);
+    ok('the height falloff floors at the 0.72 mix rather than vanishing',
+      at(900, 1e6).fog > 0.05,
+      'above the haze layer the air is thin, not absent — hf → 1 − 0.72 = 0.28');
+  }
+
+  // §9.3: the fog colour is *not* one colour. If it were, this pair would match
+  {
+    const t = at(1500).col, a = at(1500, 100, away).col;
+    const warmth = (c) => c[0] - c[2];
+    ok('fog toward the sun is warmer than fog away from it',
+      warmth(t) > warmth(a) + 0.02,
+      `r−b: ${warmth(t).toFixed(4)} toward · ${warmth(a).toFixed(4)} away`);
+    ok('and it is a hue shift, not just a brightness one',
+      Math.abs(lum(t) - lum(a)) < 0.5 * Math.abs(warmth(t) - warmth(a)) + 0.1,
+      `luma ${lum(t).toFixed(4)} vs ${lum(a).toFixed(4)}`);
+  }
+
+  // mist pools in the valley floor — low *and* far, never one without the other
+  {
+    const floorFar = at(600, 10).fog;
+    const floorNear = at(90, 10).fog;
+    const ridgeFar = at(600, 200).fog;
+    ok('mist needs both height and distance to pool',
+      floorFar > ridgeFar && floorNear < 0.2,
+      `valley floor at 600 m ${floorFar.toFixed(3)} · same height at 90 m ${floorNear.toFixed(3)}`
+      + ` · ridge at 600 m ${ridgeFar.toFixed(3)}`);
+
+    // Compared at one distance and one view direction, so the only thing that
+    // differs is the pool term — and the claim is directional, that the colour
+    // moves *toward* K_MIST. Asserting an absolute channel order here would be
+    // asserting the Mie term instead, which at 13.5° dominates anything the
+    // pool does.
+    const d2 = (c) => c.reduce((s, v, i) => s + (v - AIR.mist[i]) ** 2, 0);
+    const pooled = at(600, 10).fc, dry = at(600, 60).fc;
+    ok('pooling moves the fog colour toward mist',
+      d2(pooled) < d2(dry),
+      `‖fc − mist‖² ${d2(dry).toFixed(4)} at 60 m → ${d2(pooled).toFixed(4)} on the valley floor`);
+  }
+
+  // §9.3's one defensive line, and the reason it is there
+  {
+    const bad = aerial(GREY, NaN, toward, SUN, 100);
+    ok('§9.3 · a NaN depth does not poison the colour',
+      bad.col.every((v) => v === v) && bad.fog === bad.fog && bad.fog <= 1,
+      `NaN depth → fog ${bad.fog} · colour [${bad.col.map((v) => v.toFixed(3)).join(', ')}]`);
+    const inf = aerial(GREY, Infinity, toward, SUN, 100);
+    ok('an infinite depth saturates rather than overflowing',
+      inf.col.every(Number.isFinite) && inf.fog === 1);
+  }
+
+  // the whole point of §9.3's alpha trick: fog must be a usable distance proxy
+  {
+    let worst = 0;
+    for (let i = 1; i <= 400; i++) {
+      const a = at(i * 10).fog, b = at((i + 1) * 10).fog;
+      worst = Math.max(worst, b - a);
+    }
+    ok('the fog fraction is smooth enough to serve as the post chain\'s depth',
+      worst < 0.02, `largest step over a 10 m increment: ${worst.toFixed(4)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 const only = process.argv[2];
-const suites = { cosmology: suiteCosmology, zeldovich: suiteZeldovich, print: suitePrint };
+const suites = {
+  cosmology: suiteCosmology, zeldovich: suiteZeldovich, print: suitePrint,
+  aerial: suiteAerial,
+};
 
 for (const [name, fn] of Object.entries(suites)) {
   if (only && only !== name) continue;
