@@ -272,6 +272,15 @@ export class Bench {
   }
 
   frameStart() {
+    // renderer.info resets itself on every render() call, and the post chain
+    // makes four or five of those per frame — so reading it at the tail of the
+    // frame reported the *last pass only*: one draw call and two triangles for
+    // the final fullscreen quad. §5 budgets 900 draws and 2.2 M triangles, and
+    // the harness was answering 1 and 0.00 M on every machine it had ever run
+    // on. Take ownership of the counter and reset it once, here.
+    const info = this.app.renderer.info;
+    info.autoReset = false;
+    info.reset();
     const t = performance.now();
     // the interval between successive frame starts is the real frame time —
     // which is not the simulation's dt, and under a fixed timestep is not even

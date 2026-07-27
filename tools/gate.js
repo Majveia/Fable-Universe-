@@ -199,7 +199,16 @@ const legacyToggle = hueDistance(ref.nbody, ref.linear);
 await ref.page.close();
 
 const m1 = await pair(q(`seed=${seed}&m1=1`));
+// The dither control has to be the *same instant*, not a second page load that
+// settles wherever it settles. Advancing to a target `a` overshoots by however
+// far one frame carries, which on a fast GPU is a different distance than on a
+// slow one — so the two frames were a different universe apart, and the clause
+// blamed the dither for the difference. Pin the control to the epoch the
+// measured frame actually reached.
+const reachedA = await m1.page.evaluate(() => window.AEON.active().a);
 const ctl = await openCosmic(q(`seed=${seed}&m1=1&dither=0`), EPOCH);
+await ctl.evaluate((target) => { const s = window.AEON.active(); s.playing = false; s.a = target; }, reachedA);
+await ctl.evaluate(settle, 10);
 const noDither = analyse(await shot(ctl));
 await ctl.close();
 const page = m1.page;
@@ -248,6 +257,28 @@ clause('2.8', 'vacuum reaches true #000, and the dither does not lift it',
   `${((A.pureBlack / A.n) * 100).toFixed(1)}% exactly #000`
   + ` (${((noDither.pureBlack / A.n) * 100).toFixed(1)}% with the dither off)`);
 
+// -- (a) does deep time run past the present day, or stop there?
+//
+// This has to be driven, not waited for. Letting the clock carry `a` past 1.0
+// makes the answer a function of how many seconds N frames take — which passed
+// on a software rasteriser precisely because it was slow, and failed on an RTX
+// 3060 for the same reason. Put the scale just short of the present day and
+// ask whether it crosses.
+await page.evaluate(async () => {
+  const s = window.AEON.active();
+  if (s.mode === 'nbody') s.toggleMode();      // linear theory is reversible
+  s.a = 0.985; s.playing = true; s.rate = 0.6;
+  await new Promise((done) => {
+    let n = 0;
+    const tick = () => (++n >= 90 ? done() : requestAnimationFrame(tick));
+    requestAnimationFrame(tick);
+  });
+});
+const aPast = await page.evaluate(() => window.AEON.active().a);
+clause('a', 'deep time runs past the present day rather than freezing', aPast > 1.0,
+  `driven from a = 0.985, reached ${aPast.toFixed(4)}`
+  + `${aPast > 1 ? ` (z = ${(1 / aPast - 1).toFixed(3)})` : ' — stopped at the present day'}`);
+
 // -- (a) motion, across an interval of deep time
 await page.evaluate(() => { const s = window.AEON.active(); s.playing = true; s.rate = 0.35; });
 await page.evaluate(settle, 45);
@@ -257,13 +288,10 @@ const after = await shot(page);
 const d1 = pixelsChanged(before, mid);
 const d2 = pixelsChanged(mid, after);
 const loop = pixelsChanged(before, after);
-const aEnd = await page.evaluate(() => window.AEON.active().a);
 clause('a', 'continuous motion, and it does not return to where it started',
   d1 > 0.02 && d2 > 0.02 && loop > Math.max(d1, d2) * 0.6,
   `${(d1 * 100).toFixed(1)}% then ${(d2 * 100).toFixed(1)}% of pixels changed;`
   + ` start-vs-end differs by ${(loop * 100).toFixed(1)}% — a loop would collapse this`);
-clause('a', 'deep time runs past the present day rather than freezing', aEnd > 1.0,
-  `a reached ${aEnd.toFixed(3)} (z = ${(1 / aEnd - 1).toFixed(3)}), still advancing`);
 await page.close();
 
 console.log(`\n${pass}/${pass + fail} measurable clauses pass`);

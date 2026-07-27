@@ -51,6 +51,24 @@ const M1 = PARAM('m1') === '1';
  * It only means anything with ?m1=1, because it is the M1 shaders that put a
  * physical field in the hue channel at all.
  */
+/**
+ * `?comp=1` — depth-reject the tracers instead of summing all of them.
+ *
+ * M1's blocked clause is four hue families, and eight iterations established
+ * that the colour is right and the *compositing* is not: 262k additively
+ * blended points integrated along a ray means every pixel carries a
+ * mass-weighted mean hue, and a mean has no families. Depth-testing lets the
+ * nearest tracer at a pixel keep it and rejects what is behind, which is the
+ * one thing in that path that can restore a local field to the frame.
+ *
+ * Order is the geometry buffer's, which is fixed, so the result is stable —
+ * but it is *arbitrary* with respect to depth, and that is the honest caveat:
+ * this rejects a lot of contamination without being a correct back-to-front
+ * resolve. Whether the trade reads as structure or as speckle is a question
+ * for the frame, not for the argument, which is why it is behind a flag.
+ */
+const COMPOSITE_DEPTH = PARAM('comp') === '1';
+
 const SLAB = (() => {
   const v = PARAM('slab');
   if (v === null) return 0;
@@ -746,14 +764,15 @@ export class CosmicScale {
       uPx: { value: Math.min(window.devicePixelRatio, 2) },
       uTime: this.uTime,
     };
+    const depthComposite = M1 && COMPOSITE_DEPTH;
     const mat = new THREE.ShaderMaterial({
       ...(M1 ? { glslVersion: THREE.GLSL3 } : {}),
       uniforms: this.uniforms,
       vertexShader: M1 ? M1_VERT : vert,
       fragmentShader: M1 ? M1_FRAG : frag,
       blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      depthTest: false,
+      depthWrite: depthComposite,
+      depthTest: depthComposite,
       transparent: true,
     });
     this.points = new THREE.Points(geo, mat);
@@ -802,7 +821,8 @@ export class CosmicScale {
       vertexShader: M1 ? M1_NB_VERT : NB_VERT,
       fragmentShader: M1 ? M1_NB_FRAG : NB_FRAG,
       blending: THREE.AdditiveBlending,
-      depthWrite: false, depthTest: false, transparent: true,
+      depthWrite: M1 && COMPOSITE_DEPTH, depthTest: M1 && COMPOSITE_DEPTH,
+      transparent: true,
     }));
     this.scene.add(this.nbPoints);
     this.mode = 'nbody';

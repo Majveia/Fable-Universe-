@@ -103,6 +103,12 @@ export async function launch(pw) {
       '--use-gl=angle', '--use-angle=default', '--enable-unsafe-swiftshader',
       '--no-sandbox', '--disable-dev-shm-usage', '--enable-gpu-rasterization',
       '--ignore-gpu-blocklist',
+      // Unclip the frame rate. §5's desktop row asks for p95 ≥ 60 fps, and a
+      // vsync-capped run cannot report better than 60 — the first real-GPU run
+      // came back p50 60.2 / p95 55.6, which reads as "missed the budget" and
+      // actually means "held vsync except for a few hitches". A budget you
+      // cannot exceed is a budget you cannot measure against.
+      '--disable-gpu-vsync', '--disable-frame-rate-limit',
     ],
   });
 }

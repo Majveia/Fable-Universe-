@@ -102,3 +102,44 @@ calls for the reference's **four-row quality table** — every knob in one row,
 one row reconfiguring the whole renderer — and that is unbuilt. Until it is, a
 tier here is a *device*, not a *configuration*, and the perf JSON should be read
 that way.
+
+---
+
+## The first real run — 2026-07-27, RTX 3060 Laptop
+
+`ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Laptop GPU, Direct3D11)` · `gateValid: true`
+· desktop tier · 2560×1440 · fixed 16.667 ms timestep.
+
+| | measured | §5 budget | |
+|---|---|---|---|
+| CPU main thread, p95 | **5.9 ms** (planet 7.4) | ≤ 12 ms | ✓ |
+| GPU memory, peak | **196.7 MB** | ≤ 400 MB | ✓ |
+| fps p50 / p95 / p99 | **60.2 / 55.6 / 54.1** | ≥ 60 p95 / ≥ 50 p99 | see below |
+| draw calls, triangles | *instrumentation was broken* | ≤ 900 / ≤ 2.2 M | — |
+
+**The frame rate was clipped by vsync.** A p50 of 60.2 against a p95 of 55.6 is
+the signature: the renderer holds the refresh rate and misses it occasionally.
+§5 asks for p95 ≥ 60, which a vsync-capped run cannot report however fast it
+is — a budget you cannot exceed is a budget you cannot measure against.
+`tools/lib.js` now launches with `--disable-gpu-vsync --disable-frame-rate-limit`
+so the next run measures the renderer instead of the display.
+
+**Draw calls and triangles were wrong on every machine.** `renderer.info` resets
+itself on each `render()` call and the post chain makes four or five per frame,
+so reading it at the tail of the frame reported the last pass only: one draw
+call, two triangles. Fixed — the harness owns the counter now and resets it once
+per frame.
+
+Three other things this run found, all of them defects in the harness rather
+than the universe, and none visible on a software rasteriser:
+
+- the deep-time clause let wall time carry `a` past 1.0, so it passed on a slow
+  machine *because* it was slow and failed on a fast one. It is driven now.
+- the dither control frame was a second page load settling wherever it landed;
+  a fast GPU overshoots the target epoch by a different distance, so the clause
+  was comparing two different universes and blaming the dither.
+- the gate did not pin a quality row, so it graded whichever tier the runner
+  auto-selected.
+
+Which is the argument for this page. A software rasteriser will run every
+instrument in `tools/` to completion and tell you almost nothing true.
