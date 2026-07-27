@@ -63,6 +63,9 @@ class App {
     this.fixedDt = Number.isFinite(fixedMs) && fixedMs > 0 ? fixedMs / 1000
       : BENCH_ON ? 1 / 60 : 0;
 
+    /** frames drawn since construction; a harness's only honest clock (§_frame) */
+    this.frames = 0;
+
     // the classic surface is the default; the streaming globe is opt-in
     this.quadOn = url.searchParams.get('quad') === '1';
 
@@ -780,6 +783,15 @@ class App {
 
   // ------------------------------------------------------------- frame ----
   _frame() {
+    // How many frames this universe has drawn. Not used by the universe — it
+    // exists so a harness can photograph *frame N* rather than "90 frames after
+    // I noticed the page was up". Those are different questions, and the second
+    // one races page load: the loop starts when App constructs, and how far it
+    // gets before an external observer attaches is a property of the machine.
+    // Under a fixed timestep frame N is a well-defined state; "90 frames after
+    // I looked" is not, and a determinism test that asks the second question
+    // cannot tell a nondeterministic universe from a slow one. See tools/repeat.js.
+    this.frames++;
     this.bench?.frameStart();
     const real = Math.min(this.clock.getDelta(), 0.1);
     const dt = this.fixedDt || real;

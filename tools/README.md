@@ -91,8 +91,19 @@ It does not score silhouette, materials, or whether the thing is beautiful.
 node tools/repeat.js --url "seed=20250601&m1=1" --frames 90
 ```
 
-Loads one URL twice from cold, settles the same number of frames, and compares
-the two frames at the tolerance §7.3 names (≥97% of pixels within 2/255).
+Loads one URL twice from cold, waits for each to reach **app frame N**, and
+compares the two frames at the tolerance §7.3 names (≥97% of pixels within
+2/255). If the two runs somehow land on different frames it says so and refuses
+to print a percentage — a percentage would be believed.
+
+App frame N, rather than N `requestAnimationFrame` ticks after the page
+appeared, because those are different questions. The render loop starts when
+`App` constructs; how many frames it completes before an external observer
+attaches is a property of the machine. In this container the observer reliably
+attaches at frame 5 and both runs land on frame 186, so the old form passed at
+100% — on hardware where that race is live it compares two different moments and
+reports the difference as nondeterminism. A determinism test that cannot name
+its own frame cannot tell a nondeterministic universe from a fast one.
 
 This was unrunnable until recently. The universe was deterministic but the
 *frame* was not: transient motion drew from `Math.random()` and a few
