@@ -78,6 +78,14 @@ const M1 = PARAM('m1') === '1';
  */
 const COMPOSITE_DEPTH = PARAM('comp') === '1';
 
+/**
+ * The second hue channel (`?web=1`) — structure class from the tensor's
+ * eigenvalue signature, on top of the divergence ramp. M1 §12 option B.
+ * Default-off (§7.4), so the ramp is still what `?m1=1` alone renders and the
+ * two can be scored against each other on one machine.
+ */
+const WEB_CLASS = PARAM('web') === '1';
+
 const SLAB = (() => {
   const v = PARAM('slab');
   if (v === null) return 0;
@@ -234,6 +242,48 @@ const M1_TENSOR = /* glsl */`
     return clamp(sign(x) * log(1.0 + abs(x)) * 0.3899, -1.0, 1.0);
   }
 
+  // The eigenvalues of the symmetric 3×3, descending. Closed form (Smith 1961)
+  // — the exact arithmetic of zeldovich.js's eigenvalues(), which is checked
+  // against a Jacobi iteration in tools/verify.js. §2.7's discipline: one
+  // definition, ported rather than re-derived, because a drift between the two
+  // would look like a rendering bug.
+  vec3 eig3(float m0, float m1, float m2, float m3, float m4, float m5) {
+    float p1 = m3*m3 + m4*m4 + m5*m5;
+    float q = (m0 + m1 + m2) / 3.0;
+    if (p1 < 1e-20) {
+      vec3 d = vec3(m0, m1, m2);
+      float hi = max(d.x, max(d.y, d.z));
+      float lo = min(d.x, min(d.y, d.z));
+      return vec3(hi, d.x + d.y + d.z - hi - lo, lo);
+    }
+    float p2 = (m0-q)*(m0-q) + (m1-q)*(m1-q) + (m2-q)*(m2-q) + 2.0*p1;
+    float p  = sqrt(p2 / 6.0);
+    float ip = 1.0 / p;
+    float b0 = (m0-q)*ip, b1 = (m1-q)*ip, b2 = (m2-q)*ip;
+    float b3 = m3*ip,     b4 = m4*ip,     b5 = m5*ip;
+    float det = b0*(b1*b2 - b5*b5) - b3*(b3*b2 - b5*b4) + b4*(b3*b5 - b1*b4);
+    float phi = acos(clamp(det * 0.5, -1.0, 1.0)) / 3.0;
+    float e0 = q + 2.0*p*cos(phi);
+    float e2 = q + 2.0*p*cos(phi + 2.0943951);
+    return vec3(e0, 3.0*q - e0 - e2, e2);
+  }
+
+  // How many principal axes have collapsed — the T-web classification, as a
+  // continuous count in [0, 3]. See zeldovich.js for why the threshold has to
+  // be nonzero (with λ_th = 0 the class never changes, because D scales the
+  // eigenvalues but cannot flip their sign) and why the count is smoothed (a
+  // hard count puts a hue discontinuity between neighbouring tracers, and the
+  // web reads as four flat stencils).
+  float webCount(vec3 lam, float D) {
+    const float LTH = 0.2, W = 0.12;
+    vec3 stretch = vec3(1.0) + D * lam;
+    // written out rather than smoothstep(hi, lo, x): GLSL leaves a reversed-edge
+    // smoothstep undefined, and this has to match zeldovich.js exactly
+    vec3 t = clamp((vec3(1.0 - LTH + W) - stretch) / (2.0 * W), 0.0, 1.0);
+    vec3 c = t * t * (3.0 - 2.0 * t);
+    return c.x + c.y + c.z;
+  }
+
   vec3 threadAxis(float a, float b, float c) {
     float mean = 0.5*(a + c);
     float diff = 0.5*(a - c);
@@ -283,6 +333,58 @@ const M1_PALETTE = /* glsl */`
   // The cream stop only ever appears under gravity: linear theory cannot
   // virialize, so pressing N genuinely changes what the halo cores are made
   // of, which is what §M1's gate (c) asks the toggle to demonstrate.
+  // ---------------------------------------------------------------------
+  // The second channel (?web=1) — hue by structure class, value by flow.
+  //
+  // M1 §12 established that the divergence field cannot supply four hue
+  // families: it is unimodal, and a monotone readout of a unimodal scalar has
+  // one peak. The tensor's *signature* is an independent channel, and it is
+  // the one every published image of the cosmic web is drawn in.
+  //
+  // The four families are the same four colours the divergence ramp already
+  // sweeps, which is not a coincidence and is the reason this reads as the
+  // same universe rather than a repaint: voids expand, so the ramp's warm
+  // end already lived there; knots collapse hardest, so the violet end
+  // already lived there. What changes is that the assignment is now discrete
+  // and driven by *how many axes have collapsed* rather than by how fast the
+  // element is moving. Divergence keeps a job — it modulates within a family,
+  // so the flow is still legible along a filament.
+  vec3 webColorClass(float dens, float th, float nClass, float hash) {
+    // The transitions are narrow on purpose. The count is within 0.15 of an
+    // integer for 85% of Lagrangian space (tools/verify.js), so a wide ramp
+    // spends its width on a region that barely exists while blending the
+    // families that do — measured, 0.15→0.85 edges put 80% of the mass into one
+    // 40° hue band between sheet and filament, and the histogram read two
+    // families. A class that holds its colour across its own range is what
+    // makes it a family.
+    vec3 col = vec3(1.00, 0.56, 0.14);                                    // void
+    col = mix(col, vec3(0.20, 0.90, 0.62), smoothstep(0.40, 0.62, nClass)); // sheet
+    col = mix(col, vec3(0.16, 0.40, 1.00), smoothstep(1.40, 1.62, nClass)); // filament
+    col = mix(col, vec3(0.74, 0.22, 0.98), smoothstep(2.40, 2.62, nClass)); // knot
+
+    // Divergence still speaks inside the family, but through *saturation*, not
+    // hue. Leaning the colour toward the next channel along rotated hue by
+    // enough to smear one family into its neighbour, which is the one thing
+    // this channel exists to prevent.
+    float flow = clamp(-th, 0.0, 1.0);
+    col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, 0.78 + 0.30 * flow);
+
+    // Dense, fully collapsed and no longer flowing: it has stopped. Kept far
+    // narrower than the divergence ramp's version, because there it was the
+    // fifth stop of a monotone sweep and here it competes with a family. At the
+    // old width it turned most of the knot class achromatic — 28.9% of the
+    // frame — and a family that reads as cream is not a hue.
+    float vir = smoothstep(1.60, 2.40, dens)
+              * smoothstep(2.70, 2.94, nClass)
+              * (1.0 - smoothstep(0.02, 0.18, abs(th)));
+    col = mix(col, vec3(1.00, 0.95, 0.86), vir);
+
+    col *= vec3(1.0 + 0.09*sin(hash*6.283),
+                1.0 + 0.06*sin(hash*12.6 + 2.0),
+                1.0 + 0.10*cos(hash*6.283));
+    return col / max(dot(col, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+  }
+
   vec3 webColor(float dens, float th, float crossed, float hash) {
     // The edges sit on the compressed distribution's own quantiles at D ≈ 0.52
     // — p05 −1.01, p20 −0.66, p50 −0.25, p80 +0.18, p95 +0.36 — rather than on
@@ -376,6 +478,7 @@ const M1_VERT = /* glsl */`
   out float vNova;
   out float vStretch;
   out float vEdge;
+  out float vClass;
   out vec2  vAxis;
   out vec3  vQ;
   ${M1_TENSOR}
@@ -399,6 +502,11 @@ const M1_VERT = /* glsl */`
     }
     vec3 x = (q + uD * disp) * uAScale;
     vQ = x;
+
+    // The structure class — how many principal axes have collapsed. The same
+    // tensor, read by its signature rather than its trace, which is the second
+    // independent channel §M1's hue clause needs (docs/plans/M1.md §12).
+    vClass = webCount(eig3(m0, m1, m2, m3, m4, m5), uD);
 
     // B = I + D·M. Density is 1/det B; divergence is 3 − I₂/det B, with the
     // growth factor cancelling out of the ratio (docs/plans/M1.md §2).
@@ -467,6 +575,7 @@ const M1_FRAG = /* glsl */`
   in float vNova;
   in float vStretch;
   in float vEdge;
+  in float vClass;
   in vec2  vAxis;
   in vec3  vQ;
   out vec4 fragColor;
@@ -476,7 +585,7 @@ const M1_FRAG = /* glsl */`
     float fall = webKernel(gl_PointCoord, vAxis, vStretch);
     if (fall < 0.0) discard;
 
-    vec3 col = webColor(vDens, vTheta, vCrossed, vHash);
+    vec3 col = ${WEB_CLASS ? 'webColorClass(vDens, vTheta, vClass, vHash)' : 'webColor(vDens, vTheta, vCrossed, vHash)'};
     float lum = webLum(vDens) * webShimmer(uLnD, uLnA, uF, vHash, vQ);
     col += mix(vec3(1.4, 0.55, 0.32), vec3(1.9, 1.8, 1.55), vNova) * vNova * 2.4;
 

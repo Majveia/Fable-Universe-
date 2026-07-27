@@ -139,3 +139,94 @@ export function gradDeltaLinear(modes, q, D, out = [0, 0, 0]) {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// The cosmic-web classification (T-web), and why it earns a place here
+//
+// §M1 asks the palette for "≥4 distinguishable hue families". `docs/plans/M1.md`
+// §12 established, from four directions, that the divergence field cannot
+// supply them: it is unimodal, and any strictly monotone readout of a unimodal
+// scalar produces one peak with tails. Four modes need a second independent
+// physical channel, and the tensor already computed above carries one.
+//
+// The eigenvalues of B = I + D·M are the stretch factors of the three principal
+// axes of a Lagrangian volume element. An axis with 1 + Dλ < 1 is contracting;
+// counting how many have contracted past a threshold is the standard
+// classification of cosmic structure (Hahn et al. 2007; Forero-Romero et al.
+// 2009):
+//
+//   0 collapsing axes → void        expanding in every direction
+//   1                 → sheet/wall  collapsed to a plane
+//   2                 → filament    collapsed to a line
+//   3                 → knot        collapsed to a point — a cluster
+//
+// This is not a recolouring of the same number. Divergence is the *trace* of
+// the flow; the classification is its *signature*. Two elements can share a
+// divergence and be a sheet and a filament, and every image of the cosmic web
+// ever published is drawn in these four classes.
+//
+// The threshold is why the classification evolves. With λ_th = 0 the sign of λ
+// never changes — D scales the eigenvalues but cannot flip them — so every
+// point would carry the same class forever, which is not a cosmic web, it is a
+// stencil. Requiring an axis to have contracted by a measurable fraction makes
+// the class a function of D, so voids empty and knots condense as they should.
+
+/**
+ * Eigenvalues of the symmetric 3×3 packed as (xx, yy, zz, xy, xz, yz),
+ * descending. Closed form (Smith 1961) — no iteration, no branching beyond the
+ * diagonal case, and the same arithmetic the shader runs.
+ */
+export function eigenvalues(M, out = [0, 0, 0]) {
+  const [a, b, c, d, e, f] = M;
+  const p1 = d * d + e * e + f * f;
+  if (p1 === 0) {
+    const s = [a, b, c].sort((x, y) => y - x);
+    out[0] = s[0]; out[1] = s[1]; out[2] = s[2];
+    return out;
+  }
+  const q = (a + b + c) / 3;
+  const p2 = (a - q) ** 2 + (b - q) ** 2 + (c - q) ** 2 + 2 * p1;
+  const p = Math.sqrt(p2 / 6);
+  const ip = 1 / p;
+  // B = (A − qI)/p has det(B)/2 = cos(3φ), which inverts to the three roots
+  const b0 = (a - q) * ip, b1 = (b - q) * ip, b2 = (c - q) * ip;
+  const b3 = d * ip, b4 = e * ip, b5 = f * ip;
+  const det = b0 * (b1 * b2 - b5 * b5) - b3 * (b3 * b2 - b5 * b4)
+            + b4 * (b3 * b5 - b1 * b4);
+  const r = Math.min(Math.max(det / 2, -1), 1);
+  const phi = Math.acos(r) / 3;
+  const e0 = q + 2 * p * Math.cos(phi);
+  const e2 = q + 2 * p * Math.cos(phi + (2 * Math.PI) / 3);
+  out[0] = e0;
+  out[2] = e2;
+  out[1] = 3 * q - e0 - e2;   // the trace is exact, so the middle root is free
+  return out;
+}
+
+/** how much an axis counts as collapsed — one smooth step, shared with GLSL */
+const collapsed = (stretch, lth, width) => {
+  const t = Math.min(Math.max((lth + width - stretch) / (2 * width), 0), 1);
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * The classification, as a *continuous* count in [0, 3].
+ *
+ * A hard count would put a hue discontinuity between neighbouring tracers and
+ * the web would read as four flat stencils laid over each other. Each axis
+ * instead contributes a smoothstep of how far past the threshold it has
+ * contracted, so the field is spatially smooth — and still lands near integers
+ * almost everywhere, because an axis is normally either well collapsed or well
+ * expanded and only a thin shell of Lagrangian space sits between. Smooth to
+ * look at, multimodal to measure, which is exactly what the clause needs.
+ *
+ * `lth` is in units of axis stretch: 0.2 means "this axis has contracted by
+ * 20%", which is the Forero-Romero band expressed in the quantity that has a
+ * physical meaning here.
+ */
+export function webClass(M, D, { lth = 0.2, width = 0.12, ev = [0, 0, 0] } = {}) {
+  eigenvalues(M, ev);
+  let n = 0;
+  for (let i = 0; i < 3; i++) n += collapsed(1 + D * ev[i], 1 - lth, width);
+  return n;
+}
