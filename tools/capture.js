@@ -118,6 +118,37 @@ for (const tier of tiers) {
   console.log(`route · galaxy ${route.galaxySeed} · star ${route.starSeed} · world #${route.rocky}`);
 
   // ---- the numbered set
+  //
+  // The screenshot is retried, because on real hardware it can fail where
+  // nothing is wrong with the frame. The first RTX run to reach the surface
+  // scale at 1440p came back with
+  //
+  //   05-desktop-surface.png  FAILED — Protocol error (Page.captureScreenshot):
+  //                                    Unable to capture screenshot
+  //
+  // between two stations that shot cleanly on either side of it. A capture set
+  // with a hole in it fails §M0's gate — "one command produces a *complete*
+  // numbered capture set" — so one transient compositor hiccup costs the whole
+  // run. Retry, settle a little between attempts, and record in the manifest
+  // that a frame needed more than one: a retried frame should never be filed
+  // silently next to a clean one.
+  async function shoot(page, path, tries = 3) {
+    for (let i = 1; ; i++) {
+      try {
+        await page.screenshot({ path, timeout: 60000 });
+        return i;
+      } catch (e) {
+        if (i >= tries) throw e;
+        console.error(`    screenshot attempt ${i} failed (${e.message || e}) — retrying`);
+        await page.evaluate((n) => new Promise((d) => {
+          let k = 0;
+          const t = () => (++k >= n ? d() : requestAnimationFrame(t));
+          requestAnimationFrame(t);
+        }), 20);
+      }
+    }
+  }
+
   const shots = [];
   let n = 0;
   for (const [name, query] of stations(route)) {
@@ -132,13 +163,15 @@ for (const tier of tiers) {
         .forEach(el => { el.style.visibility = 'hidden'; }));
       const settled = await page.evaluate(SETTLE, [settle, settleCapMs]);
       const kind = await page.evaluate(() => window.AEON.active().kind);
-      await page.screenshot({ path: join(outDir, file) });
+      const attempts = await shoot(page, join(outDir, file));
       shots.push({
         file, name, kind, url: url.replace(site.origin, ''),
         settleFrames: settled.frames, settleTarget: settle, settledBy: settled.by,
+        ...(attempts > 1 ? { screenshotAttempts: attempts } : {}),
       });
       console.log(`  ${file}  (${kind}, ${settled.frames} frames`
-        + `${settled.by === 'timeout' ? ' — CAPPED, frame may be unsettled' : ''})`);
+        + `${settled.by === 'timeout' ? ' — CAPPED, frame may be unsettled' : ''}`
+        + `${attempts > 1 ? ` — ${attempts} screenshot attempts` : ''})`);
     } catch (e) {
       shots.push({ file, name, error: String(e.message || e) });
       console.error(`  ${file}  FAILED — ${e.message || e}`);

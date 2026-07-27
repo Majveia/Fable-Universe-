@@ -15,6 +15,10 @@
 
 import { COSMO } from '../src/cosmology.js';
 import {
+  FIXTURE, STOPS, airColours, airmass, hexToLinear, linearToHex, planck,
+  spectrumToXYZ, toGamut, xyzToLinearSRGB,
+} from '../src/starlight.js';
+import {
   buildModes, deformation, deltaLinear, displacement, invariants, trace,
 } from '../src/zeldovich.js';
 
@@ -637,11 +641,226 @@ function suiteAerial() {
 }
 
 // ---------------------------------------------------------------------------
+// suite: starlight
+//
+// §9.6's transfer (M2 act 2 step 2). Two things have to be true at once and
+// they pull in opposite directions: the fixture must come out *exactly* as
+// §9.1 paints it, and every other star must move by what the physics says.
+// A transfer that only did the first is a lookup table; one that only did the
+// second is the scattering integral §9.6 already rejected.
+//
+// The machinery underneath gets checked against a constant nobody in this repo
+// chose — the Planckian locus — so the spectral pipeline is validated against
+// colour science rather than against itself.
+
+function suiteStarlight() {
+  console.log('\nstarlight — §9.6, the transfer that produced §9.1 (M2 act 2)');
+
+  // --- the machinery, against published values -----------------------------
+
+  // A 6504 K blackbody is D65 by definition of the standard illuminant's
+  // correlated colour temperature; its CIE 1931 chromaticity is the Planckian
+  // locus point (0.3135, 0.3236). Nothing in this repo can influence that.
+  {
+    const xyz = spectrumToXYZ((l) => planck(l, 6504));
+    const s = xyz[0] + xyz[1] + xyz[2];
+    const x = xyz[0] / s, y = xyz[1] / s;
+    ok('a 6504 K blackbody lands on the Planckian locus',
+      Math.abs(x - 0.3135) < 0.006 && Math.abs(y - 0.3236) < 0.006,
+      `x ${x.toFixed(4)} y ${y.toFixed(4)} · published (0.3135, 0.3236)`);
+  }
+  {
+    // Wien: the peak of a 5778 K blackbody sits at 2.898e6/T ≈ 502 nm
+    let peak = 0, at = 0;
+    for (let l = 300; l <= 900; l += 0.5) {
+      const v = planck(l, 5778);
+      if (v > peak) { peak = v; at = l; }
+    }
+    near('Wien displacement for a 5778 K star', at, 2.8977719e6 / 5778, 0.002);
+  }
+  ok('air mass is 1 at the zenith and grows toward the horizon',
+    Math.abs(airmass(90) - 1) < 0.001 && airmass(13.5) > 4 && airmass(0) > 30,
+    `X(90°) ${airmass(90).toFixed(3)} · X(13.5°) ${airmass(13.5).toFixed(2)}`
+    + ` · X(0°) ${airmass(0).toFixed(1)}`);
+  {
+    // the sRGB round trip has to be exact enough to compare hexes at all
+    let worst = 0;
+    for (const s of Object.values(STOPS)) {
+      const back = linearToHex(hexToLinear(s.hex));
+      if (back !== s.hex) worst++;
+    }
+    ok('every §9.1 stop survives a linear round trip unchanged', worst === 0,
+      `${Object.keys(STOPS).length} stops`);
+  }
+  ok('XYZ → linear sRGB sends D65 white to equal channels', (() => {
+    const rgb = xyzToLinearSRGB([0.95047, 1, 1.08883]);
+    return rgb.every((v) => Math.abs(v - 1) < 0.002);
+  })(), 'the matrix is the sRGB one, not a lookalike');
+
+  // --- the fixture, which §9.6 makes a requirement --------------------------
+
+  {
+    const got = airColours(FIXTURE.T, FIXTURE.elev);
+    let worst = 0, worstName = '';
+    for (const [name, stop] of Object.entries(STOPS)) {
+      const want = hexToLinear(stop.hex);
+      const d = Math.max(...got[name].map((v, i) => Math.abs(v - want[i])));
+      if (d > worst) { worst = d; worstName = name; }
+    }
+    ok('§9.6 · the transfer reproduces §9.1 exactly for a G-type star at 13.5°',
+      worst < 1 / 255 / 12.92,
+      `worst channel error ${worst.toExponential(2)} (${worstName}), against`
+      + ` a display step of ${(1 / 255 / 12.92).toExponential(2)} in linear light`);
+    ok('and it reproduces them as the same hex strings',
+      Object.entries(STOPS).every(([n, s]) => linearToHex(got[n]) === s.hex),
+      Object.keys(STOPS).map((n) => linearToHex(got[n])).join(' '));
+  }
+
+  // --- and every other star moves by what the physics says ------------------
+
+  const warmth = (rgb) => Math.log((rgb[0] + 1e-6) / (rgb[2] + 1e-6));
+
+  {
+    // an A-type star is hotter and bluer; an M dwarf cooler and redder. The
+    // claim is directional and monotone, which a lookup table cannot fake.
+    const T = [3200, 4200, 5778, 7500, 9500];
+    const w = T.map((t) => warmth(airColours(t, FIXTURE.elev).skyZenith));
+    let mono = true;
+    for (let i = 1; i < w.length; i++) if (w[i] >= w[i - 1]) mono = false;
+    ok('a hotter star makes a bluer zenith, monotonically', mono,
+      T.map((t, i) => `${t}K ${w[i].toFixed(2)}`).join(' · '));
+  }
+  {
+    let mono = true;
+    const T = [3200, 4200, 5778, 7500, 9500];
+    for (const name of Object.keys(STOPS)) {
+      const w = T.map((t) => warmth(airColours(t, FIXTURE.elev)[name]));
+      for (let i = 1; i < w.length; i++) if (w[i] >= w[i - 1]) mono = false;
+    }
+    ok('every stop moves the same way, so the palette stays a palette', mono,
+      `${Object.keys(STOPS).length} stops, 5 temperatures`);
+  }
+  {
+    // a star climbing the sky crosses less air, so its beam reddens less
+    const low = warmth(airColours(FIXTURE.T, 4).sunDisc);
+    const high = warmth(airColours(FIXTURE.T, 60).sunDisc);
+    ok('a higher sun has a less reddened disc', high < low,
+      `4° ${low.toFixed(3)} → 60° ${high.toFixed(3)}`);
+  }
+  {
+    // §9.1's painted brightness is a strong preference, not an invariant — the
+    // gamut takes some of it back at the bright end. What must survive is the
+    // *ordering*: the four-stop wash runs dark at the zenith to bright at the
+    // horizon, and that is composition, not colour science.
+    const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let held = true, drift = 0, at = '';
+    const seen = [];
+    for (const T of [2800, 3200, 5778, 9500, 12000]) {
+      const a = airColours(T, FIXTURE.elev);
+      const asc = lum(a.skyZenith) < lum(a.skyUpper)
+        && lum(a.skyUpper) < lum(a.skyMid) && lum(a.skyMid) < lum(a.skyHorizon);
+      if (!asc) { held = false; seen.push(`${T}K INVERTED`); }
+      for (const [n, s] of Object.entries(STOPS)) {
+        if (s.beam !== undefined) continue;
+        const d = Math.abs(lum(a[n]) - lum(hexToLinear(s.hex)));
+        if (d > drift) { drift = d; at = `${T}K/${n}`; }
+      }
+    }
+    ok('the four-stop wash keeps its order under every star', held,
+      seen.length ? seen.join(' · ') : '2800–12000 K'
+      + ` · worst luminance drift ${drift.toFixed(3)} (${at})`);
+  }
+  {
+    // haze and mist are aerosol, so they must stay greyer than the Rayleigh sky
+    const sat = (c) => (Math.max(...c) - Math.min(...c)) / Math.max(...c, 1e-6);
+    const a = airColours(FIXTURE.T, FIXTURE.elev);
+    ok('haze and mist stay less saturated than the sky they hang in',
+      sat(a.haze) < sat(a.skyZenith) && sat(a.mist) < sat(a.skyZenith),
+      `zenith ${sat(a.skyZenith).toFixed(3)} · haze ${sat(a.haze).toFixed(3)}`
+      + ` · mist ${sat(a.mist).toFixed(3)}`);
+  }
+  // The gamut mapper, tested as itself rather than through the transfer. An
+  // end-to-end saturation check cannot separate "the mapper desaturated this"
+  // from "an 8000 K horizon is genuinely near-neutral on its way from warm to
+  // cool" — and the second is the transfer working, not failing.
+  {
+    const inGamut = [0.2, 0.5, 0.9];
+    ok('a colour already inside the gamut passes through untouched',
+      toGamut(inGamut).every((v, i) => v === inGamut[i]));
+
+    const tooBright = [2.0, 1.6, 1.2];
+    const mapped = toGamut(tooBright);
+    const ratio = mapped.map((v, i) => v / tooBright[i]);
+    ok('too bright is answered by dimming, at exactly constant hue',
+      Math.max(...mapped) === 1
+      && Math.abs(ratio[0] - ratio[1]) < 1e-12 && Math.abs(ratio[1] - ratio[2]) < 1e-12,
+      `[${tooBright.join(', ')}] → [${mapped.map((v) => v.toFixed(3)).join(', ')}]`);
+
+    const outOfHue = [0.9, 0.4, -0.35];
+    const fixed = toGamut(outOfHue);
+    const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    ok('a hue outside the gamut gives up chroma at constant luminance',
+      fixed.every((v) => v >= 0 && v <= 1)
+      && Math.abs(lum(fixed) - lum(outOfHue)) < 1e-9,
+      `[${outOfHue.join(', ')}] → [${fixed.map((v) => v.toFixed(3)).join(', ')}]`);
+
+    let s = 987654321;
+    const rnd = () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    let bad = 0;
+    for (let i = 0; i < 4000; i++) {
+      const c = [rnd() * 3 - 0.6, rnd() * 3 - 0.6, rnd() * 3 - 0.6];
+      if (!toGamut(c).every((v) => v >= 0 && v <= 1)) bad++;
+    }
+    ok('and it always lands in gamut', bad === 0, '4000 colours, seeded');
+  }
+  {
+    // The beam stops are a different case, and asserting they never clip would
+    // be asserting something §9.1 already violates: `sunDisc` is #FFFAEA, which
+    // is 255 in red before this file touches it, and §9.6 paints the disc
+    // "3× oversize and never blown out" on purpose. Any star warmer than the
+    // fixture must therefore clip, and clamping is the right answer — it takes
+    // blue down rather than red up, which is what a red dwarf's disc does.
+    //
+    // What has to survive that is the ordering. Two stars whose discs clipped
+    // to the same colour would mean the transfer had stopped saying anything.
+    const beams = Object.entries(STOPS).filter(([, s]) => s.beam !== undefined);
+    const T = [2800, 3500, 5778, 8000, 12000];
+    let held = true;
+    const shown = [];
+    for (const [n] of beams) {
+      const w = T.map((t) => warmth(airColours(t, FIXTURE.elev)[n]));
+      for (let i = 1; i < w.length; i++) if (w[i] >= w[i - 1]) held = false;
+      shown.push(`${n} ${linearToHex(airColours(2800, FIXTURE.elev)[n])}`
+        + `→${linearToHex(airColours(12000, FIXTURE.elev)[n])}`);
+    }
+    ok('the beam stops stay ordered and distinct through the clamp', held,
+      shown.join(' · '));
+  }
+  {
+    // §2.3: same inputs, same sky, forever
+    const a = JSON.stringify(airColours(4100, 9.2));
+    const b = JSON.stringify(airColours(4100, 9.2));
+    ok('the transfer is pure — same star, same sky', a === b);
+  }
+
+  // What an M dwarf actually looks like, reported rather than asserted. This is
+  // the line to read when deciding whether §9.6's port did something worth
+  // having, and it is the first non-solar sky this project has ever computed.
+  {
+    const m = airColours(3200, 13.5), a = airColours(9500, 13.5);
+    console.log(`       M dwarf 3200 K · zenith ${linearToHex(m.skyZenith)}`
+      + ` horizon ${linearToHex(m.skyHorizon)} disc ${linearToHex(m.sunDisc)}`);
+    console.log(`       A-type 9500 K  · zenith ${linearToHex(a.skyZenith)}`
+      + ` horizon ${linearToHex(a.skyHorizon)} disc ${linearToHex(a.sunDisc)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 const only = process.argv[2];
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, print: suitePrint,
-  aerial: suiteAerial,
+  aerial: suiteAerial, starlight: suiteStarlight,
 };
 
 for (const [name, fn] of Object.entries(suites)) {
