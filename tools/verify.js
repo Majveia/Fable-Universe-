@@ -22,6 +22,7 @@ import {
   buildModes, deformation, deltaLinear, displacement, eigenvalues, invariants,
   trace, webClass,
 } from '../src/zeldovich.js';
+import { PAINT_GLSL, REFERENCE_LIGHT, lightFor, paint, ramp3 } from '../src/paint.js';
 
 let failures = 0;
 let checks = 0;
@@ -480,6 +481,199 @@ function suiteWebclass() {
       agree > 0.55 && agree < 0.95,
       `${(agree * 100).toFixed(1)}% of pairs order the same way — correlated,`
       + ' as collapse and infall must be, but not the same channel');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// suite: paint
+//
+// §9.2, before it lights anything (M2 act 3). The checks that matter are not
+// "does it return a colour" — they are the five properties §9.2 argues for and
+// §11 warns will be optimised away by a physically-based reflex. Two of them
+// would look like *improvements* to someone who did not read the section: the
+// band edges look like quantisation, and the shadow floor looks like a missing
+// ambient occlusion term.
+
+function suitePaint() {
+  console.log('\npaint — §9.2, the light model (M2 act 3)');
+
+  const L = REFERENCE_LIGHT;
+  const UP = [0, 1, 0];
+  // §9.7 forces spawn sun into 8–18 degrees; 13.5 is the reference's own
+  const SUN_ELEV = (13.5 * Math.PI) / 180;
+  const SUN = [Math.cos(SUN_ELEV), Math.sin(SUN_ELEV), 0];
+
+  const surf = (o = {}) => ({
+    N: UP, V: [0, 0, 1], L: SUN,
+    shade: [0.10, 0.13, 0.18], mid: [0.28, 0.34, 0.22], lit: [0.62, 0.68, 0.40],
+    soft: 0.10, jit: 0, shadow: 1, trans: 0, transCol: [0.5, 0.7, 0.3],
+    rim: 0, ao: 1, ambient: 1, ...o,
+  });
+  const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const sat = (c) => (Math.max(...c) - Math.min(...c)) / Math.max(Math.max(...c), 1e-6);
+
+  // --- 1. the half-Lambert wrap, which is the whole argument at low sun ----
+  {
+    const ndl = Math.sin(SUN_ELEV);        // flat ground, sun at 13.5 degrees
+    const wrap = ndl * 0.62 + 0.46;
+    ok('a 13.5° sun grazes flat ground at ndl ≈ 0.23',
+      Math.abs(ndl - 0.2334) < 0.001, `ndl ${ndl.toFixed(4)}`);
+    ok('plain Lambert would put that in the shade band, the wrap does not',
+      ndl < 0.17 + 0.10 && wrap > 0.58 - 0.10,
+      `Lambert ${ndl.toFixed(3)} — below the first band edge at 0.17;`
+      + ` wrapped ${wrap.toFixed(3)} — past the second at 0.58`);
+  }
+
+  // --- 2. the ramp is BANDED, and this test exists to fail if it stops ----
+  {
+    // A three-stop ramp with soft edges has two peaks in |d col/dt|. A smooth
+    // interpolation has one broad plateau. §11 lists deleting the band edges as
+    // the archetypal PBR reflex, so the property gets asserted rather than
+    // trusted.
+    const N = 2000, d = [];
+    for (let i = 1; i < N; i++) {
+      const a = ramp3((i - 1) / N, [0, 0, 0], [0.5, 0.5, 0.5], [1, 1, 1], 0.10, 0);
+      const b = ramp3(i / N, [0, 0, 0], [0.5, 0.5, 0.5], [1, 1, 1], 0.10, 0);
+      d.push(Math.abs(lum(b) - lum(a)) * N);
+    }
+    // Contiguous runs above a threshold, not local maxima: a smoothstep edge
+    // has a flat top, and peak-picking counts a plateau twice.
+    const bands = [];
+    for (let i = 0; i < d.length; i++) {
+      if (d[i] > 0.5) {
+        if (bands.length && bands[bands.length - 1].end === i - 1) bands[bands.length - 1].end = i;
+        else bands.push({ start: i, end: i });
+      }
+    }
+    const flat = d.filter((v) => v < 0.02).length / d.length;
+    ok('§9.2 · the ramp has two visible band edges, not one smooth sweep',
+      bands.length === 2 && flat > 0.3,
+      `${bands.length} contiguous edges in the luminance derivative ·`
+      + ` ${(flat * 100).toFixed(0)}% of the range is flat between them`);
+    ok('and the edges sit where §9.2 puts them',
+      bands.length === 2
+      && Math.abs((bands[0].start + bands[0].end) / 2 / N - 0.17) < 0.02
+      && Math.abs((bands[1].start + bands[1].end) / 2 / N - 0.58) < 0.02,
+      bands.map((b) => ((b.start + b.end) / 2 / N).toFixed(3)).join(' · '));
+    ok('jit slides both edges together, so a surface can wobble its own bands',
+      (() => {
+        const a = ramp3(0.17, [0, 0, 0], [1, 1, 1], [1, 1, 1], 0.10, 0);
+        const b = ramp3(0.17, [0, 0, 0], [1, 1, 1], [1, 1, 1], 0.10, 0.06);
+        return lum(b) < lum(a);
+      })());
+  }
+
+  // --- 3. shadows change hue, they do not go black ------------------------
+  {
+    const lit = paint(surf({ shadow: 1 }), L);
+    const dark = paint(surf({ shadow: 0 }), L);
+    ok('§M2 · a shadowed surface never goes achromatic-dark',
+      dark.every((v) => v > 0.01) && sat(dark) > 0.05,
+      `shadowed [${dark.map((v) => v.toFixed(3)).join(', ')}]`
+      + ` · saturation ${sat(dark).toFixed(3)}`);
+    // the violet shift is the point: shadow is not "lit, but less"
+    const hueShift = (dark[2] / Math.max(dark[0], 1e-6)) - (lit[2] / Math.max(lit[0], 1e-6));
+    ok('and it shifts toward violet rather than merely darkening',
+      hueShift > 0.02,
+      `blue:red ${(lit[2] / lit[0]).toFixed(3)} lit → ${(dark[2] / dark[0]).toFixed(3)} shadowed`);
+  }
+
+  // --- 4. ambient rotates hue without bleaching ---------------------------
+  {
+    const withAmb = paint(surf({ ambient: 1, shadow: 0.2 }), L);
+    const noAmb = paint(surf({ ambient: 0, shadow: 0.2 }), L);
+    const dl = Math.abs(lum(withAmb) - lum(noAmb)) / Math.max(lum(noAmb), 1e-6);
+    ok('§9.2 · hemispheric ambient tints rather than washes',
+      sat(withAmb) > 0.04 && dl < 0.65,
+      `saturation held at ${sat(withAmb).toFixed(3)};`
+      + ` luminance moved ${(dl * 100).toFixed(0)}%`);
+    // a surface facing down takes the warm ground bounce, one facing up the sky
+    const up = paint(surf({ N: [0, 1, 0], ambient: 1, shadow: 0 }), L);
+    const down = paint(surf({ N: [0, -1, 0], ambient: 1, shadow: 0 }), L);
+    ok('and it rotates: sky above is cooler than ground bounce below',
+      up[2] / Math.max(up[0], 1e-6) > down[2] / Math.max(down[0], 1e-6),
+      `blue:red ${(up[2] / up[0]).toFixed(3)} facing sky · ${(down[2] / down[0]).toFixed(3)} facing ground`);
+  }
+
+  // --- 5. the rim, gated on both view and shadow --------------------------
+  {
+    const toward = paint(surf({ V: SUN.map((v) => -v), N: [0, 0, 1], rim: 1 }), L);
+    const away = paint(surf({ V: SUN.slice(), N: [0, 0, 1], rim: 1 }), L);
+    ok('§9.2 · the rim only fires when looking toward the sun',
+      lum(toward) > lum(away) * 1.15,
+      `luma ${lum(toward).toFixed(4)} toward · ${lum(away).toFixed(4)} away`);
+    const shadowed = paint(surf({ V: SUN.map((v) => -v), N: [0, 0, 1], rim: 1, shadow: 0 }), L);
+    const noRim = paint(surf({ V: SUN.map((v) => -v), N: [0, 0, 1], rim: 0, shadow: 0 }), L);
+    ok('and it is gated on shadow — a rim in shadow is a light leak',
+      Math.abs(lum(shadowed) - lum(noRim)) < 1e-9);
+  }
+
+  // --- 6. transmission is light coming through, not bouncing off ----------
+  {
+    // The *increment* transmission adds, at fixed orientation — comparing two
+    // orientations would confound it with the ramp, which is much larger.
+    const gain = (N) => {
+      const on = lum(paint(surf({ N, V: SUN.map((v) => -v), trans: 1 }), L));
+      const off = lum(paint(surf({ N, V: SUN.map((v) => -v), trans: 0 }), L));
+      return on - off;
+    };
+    const edgeOn = gain([0, 0, 1]);          // N perpendicular to the sun
+    const faceOn = gain(SUN.slice());        // N straight at the sun
+    ok('§9.2 · only surfaces nearly edge-on to the sun transmit',
+      edgeOn > 0.05 && faceOn < edgeOn * 0.02,
+      `transmission adds ${edgeOn.toFixed(4)} edge-on · ${faceOn.toFixed(6)} facing the sun`);
+  }
+
+  // --- 7. the whole thing stays sane --------------------------------------
+  {
+    let mono = true, prev = -1;
+    for (let i = 0; i <= 400; i++) {
+      const a = -1 + (2 * i) / 400;
+      const n = [0, a, Math.sqrt(Math.max(1 - a * a, 0))];
+      const v = lum(paint(surf({ N: n, ambient: 0, rim: 0 }), L));
+      if (v < prev - 1e-9) mono = false;
+      prev = v;
+    }
+    ok('luminance never falls as a surface turns toward the sun', mono,
+      '401 orientations, ambient and rim off so only the ramp speaks');
+    let bad = 0;
+    for (let i = 0; i < 3000; i++) {
+      const r = () => Math.sin(i * 12.9898 + 78.233) * 0.5 + 0.5;
+      const c = paint(surf({
+        shadow: r(), ao: r(), ambient: r(), trans: r(), rim: r(),
+        N: [0, Math.cos(i), Math.sin(i)],
+      }), L);
+      if (!c.every((v) => Number.isFinite(v) && v >= 0)) bad++;
+    }
+    ok('and it is finite and non-negative across the parameter space', bad === 0,
+      '3000 surfaces');
+  }
+
+  // --- 8. the lights follow the star --------------------------------------
+  {
+    const g = lightFor(5778, 13.5), m = lightFor(3200, 13.5);
+    const warmth = (c) => Math.log((c[0] + 1e-6) / (c[2] + 1e-6));
+    ok('§9.6 · a cooler star gives a warmer sun and a warmer shadow',
+      warmth(m.sun) > warmth(g.sun) && warmth(m.shadowTint) > warmth(g.shadowTint),
+      `sun ${warmth(g.sun).toFixed(2)}→${warmth(m.sun).toFixed(2)}`
+      + ` · shadow ${warmth(g.shadowTint).toFixed(2)}→${warmth(m.shadowTint).toFixed(2)}`);
+    ok('and the G-type fixture reproduces §9.1\'s four light values',
+      ['sun', 'ambSky', 'ambGnd', 'shadowTint'].every((k) =>
+        g[k].every((v, i) => Math.abs(v - REFERENCE_LIGHT[k][i]) < 1e-6)),
+      '#FFD79C #9EC6E6 #AA9C64 #5C6E9E');
+  }
+
+  // --- 9. the shader chunk is the same arithmetic -------------------------
+  {
+    // Not a parity test — that needs a GPU. This is the cheap guard that
+    // catches the drift §2.7 warns about: every constant in the CPU path must
+    // appear in the GLSL, or one of them has been tuned and the other has not.
+    const needed = ['0.62', '0.46', '0.17', '0.58', '0.34', '0.86', '0.80',
+      '0.040', '0.22', '0.052', '4.2', '1.15', '3.2', '2.2', '0.52', '1.32'];
+    const missing = needed.filter((c) => !PAINT_GLSL.includes(c));
+    ok('§2.7 · every constant in the CPU model appears in the GLSL',
+      missing.length === 0, missing.length ? `missing ${missing.join(' ')}`
+        : `${needed.length} constants`);
   }
 }
 
@@ -1020,6 +1214,7 @@ const only = process.argv[2];
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
+  paint: suitePaint,
 };
 
 for (const [name, fn] of Object.entries(suites)) {

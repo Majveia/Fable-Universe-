@@ -249,6 +249,21 @@ export const STOPS = {
   sunDisc: { hex: '#FFFAEA', beam: 0.25 },
   haze: { hex: '#A9BCC7', view: 5, alpha: 1.3, beta: 0.12 },
   mist: { hex: '#D6DDD4', view: 2, alpha: 0.8, beta: 0.20 },
+
+  // §9.1's `light` group. These are the four colours §9.2's paint() runs on,
+  // and they follow the star for the same reason the sky does — a world around
+  // an M dwarf cannot have a #FFD79C sun and a #5C6E9E shadow.
+  //
+  //   sunLight     the direct beam that reaches the ground
+  //   ambSky       the sky's own hemispheric fill, from a mid elevation
+  //   ambGnd       sunlight bounced off the ground: the beam, warmed by albedo,
+  //                so its *star* dependence is the beam's
+  //   shadowTint   what a shadowed surface still receives — sky only, which is
+  //                exactly why §9.2 says shadows are violet and never grey
+  sunLight: { hex: '#FFD79C', beam: 1.0 },
+  ambSky: { hex: '#9EC6E6', view: 45 },
+  ambGnd: { hex: '#AA9C64', beam: 1.0 },
+  shadowTint: { hex: '#5C6E9E', view: 70 },
 };
 
 /** the physical chromaticity a stop is a painting of, under a given star */
