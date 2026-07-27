@@ -13,6 +13,57 @@ somebody starts believing the repo has a build step.
 npm i -g playwright && npx playwright install chromium
 ```
 
+## `check.js` — all of it, one command
+
+```bash
+node tools/check.js --milestone M1                    # everything
+node tools/check.js --milestone M1 --extra "slab=1"   # score an experiment
+node tools/check.js --skip capture                    # the fast half
+```
+
+Runs `verify` → `shadercheck` → `capture` → `gate` in §7's order and prints one
+verdict. It ends by naming the GPU it ran on and saying plainly whether the
+artefacts count: a software rasteriser gets a warning, real silicon gets a tick.
+
+**This is the command to run on a machine with a GPU.** Everything in `tools/`
+executes anywhere; only some of it *means* anything without one, and §M0 is
+specific that a real GPU is the difference between a capture set that gates a
+milestone and one that merely documents it.
+
+## `verify.js` — the maths, offline
+
+```bash
+node tools/verify.js            # every suite
+node tools/verify.js zeldovich  # one
+```
+
+§7.3: new shader math gets a CPU reference before it goes near the render loop.
+These are not snapshots — a snapshot of the implementation under test only
+proves it has not changed, which is the least interesting property it has. Each
+suite computes the answer a second, independent way: the deformation tensor
+against finite differences of the displacement it claims to differentiate, its
+invariants against an eigen-decomposition, `cosmology.js` against adaptive
+Simpson quadrature.
+
+It has already earned its keep twice — once by rejecting a claim that was
+merely plausible ("overdense ⇔ infall" is exact only to first order in D), and
+once by pinning down a missing factor of `a` in comoving continuity.
+
+## `gate.js` — the clauses that are numbers
+
+```bash
+node tools/gate.js --milestone M1
+node tools/gate.js --milestone M1 --extra "slab=1"
+```
+
+§8 says "looks good" is a failed review and asks which pixel region lost the
+point. Several gate clauses go further and are outright numeric — four hue
+families inside a stated luminance band, zero banding at 8-bit, vacuum blacks
+at true zero. Those are computed here, from decoded frames, so the judgement
+axes have somewhere to stand.
+
+It does not score silhouette, materials, or whether the thing is beautiful.
+
 ## `capture.js` — the numbered set
 
 ```bash

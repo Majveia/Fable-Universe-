@@ -18,6 +18,10 @@ import { decodePNG } from './png.js';
 
 const milestone = String(arg('milestone', 'M1'));
 const seed = Number(arg('seed', 20250601));
+// extra query params, so an experiment behind its own flag can be scored
+// against the same clauses without a second copy of this file
+const extra = arg('extra', '') === true ? '' : String(arg('extra', ''));
+const q = (base) => base + (extra ? '&' + extra : '');
 
 const settle = (n) => new Promise((d) => {
   let i = 0;
@@ -167,7 +171,7 @@ if (milestone !== 'M1') {
 
 const EPOCH = Number(arg('a', 0.45));   // web formed, voids still open
 
-console.log(`\ngate · ${milestone} · seed ${seed} · measured at a = ${EPOCH}\n`);
+console.log(`\ngate · ${milestone} · seed ${seed} · a = ${EPOCH}${extra ? ' · ' + extra : ''}\n`);
 
 /** N-body frame, then the same instant under linear theory — clause (c) is
  *  about how much the toggle actually tells you */
@@ -182,13 +186,16 @@ async function pair(query) {
   return { page, nbody, linear };
 }
 
-const ref = await pair(`seed=${seed}`);
+const ref = await pair(q(`seed=${seed}`));
 const legacyA = ref.nbody;
 const legacyF = families(legacyA);
 const legacyToggle = hueDistance(ref.nbody, ref.linear);
 await ref.page.close();
 
-const m1 = await pair(`seed=${seed}&m1=1`);
+const m1 = await pair(q(`seed=${seed}&m1=1`));
+const ctl = await openCosmic(q(`seed=${seed}&m1=1&dither=0`), EPOCH);
+const noDither = analyse(await shot(ctl));
+await ctl.close();
 const page = m1.page;
 const before = await shot(page);
 const A = m1.nbody;
@@ -210,7 +217,11 @@ console.log(`  full histogram ref: ${bar(legacyA)}\n`);
 
 clause('b', '≥4 distinguishable hue families', F.count >= 4,
   `${F.count} families${F.count < 4 ? ` — was ${legacyF.count} before` : ''}`);
-clause('b', 'all lit pixels within 0.02–0.85 luminance', lo >= 0.02 && hi <= 0.85,
+// one 8-bit step of tolerance: the histogram buckets at 1/255, so a frame
+// whose dimmest lit pixel sits exactly on the 0.02 cut lands a bucket below it
+const STEP = 1 / 255;
+clause('b', 'all lit pixels within 0.02–0.85 luminance',
+  lo >= 0.02 - STEP && hi <= 0.85 + STEP,
   `p01..p99 = ${lo.toFixed(3)}..${hi.toFixed(3)}, max ${A.maxLum.toFixed(3)}`);
 clause('d', 'no banding in the deep field at 8-bit', A.worstRun < 24,
   `longest identical-value run ${A.worstRun}px over ${A.scanned}px scanned`
@@ -219,9 +230,17 @@ clause('c', 'the N toggle is more legible than it was',
   m1Toggle > legacyToggle,
   `hue-distribution shift between modes: ${(m1Toggle * 100).toFixed(1)}%`
   + ` vs ${(legacyToggle * 100).toFixed(1)}% before`);
-clause('2.8', 'vacuum blacks stay at true #000', A.atOne / A.n < 0.001,
-  `${((A.pureBlack / A.n) * 100).toFixed(1)}% exactly #000,`
-  + ` ${((A.atOne / A.n) * 100).toFixed(3)}% lifted to 1/255`);
+// §2.8: in vacuum the background is true #000 and blacks are never lifted.
+// Counting pixels at 1/255 tests neither — a faint outer glow legitimately
+// quantises there. What the invariant actually claims is that the vacuum
+// *reaches* zero, so that is what gets measured, against the same frame
+// rendered with the dither pass off (?dither=0). If the two pure-black counts
+// agree, the dither cannot be lifting anything; the luma gate in post.js says
+// the same thing structurally, but a number beats an argument.
+clause('2.8', 'vacuum reaches true #000, and the dither does not lift it',
+  A.pureBlack > 0 && Math.abs(A.pureBlack - noDither.pureBlack) / A.n < 0.005,
+  `${((A.pureBlack / A.n) * 100).toFixed(1)}% exactly #000`
+  + ` (${((noDither.pureBlack / A.n) * 100).toFixed(1)}% with the dither off)`);
 
 // -- (a) motion, across an interval of deep time
 await page.evaluate(() => { const s = window.AEON.active(); s.playing = true; s.rate = 0.35; });
