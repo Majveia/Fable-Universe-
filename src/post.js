@@ -112,7 +112,13 @@ export class Post {
     this.composer.addPass(this.output);
     // last, and after OutputPass, because §M1 says post-sRGB: dithering in
     // linear light would put the noise in the wrong place on the curve
-    if (M1) this.composer.addPass(new ShaderPass(DitherShader));
+    // ?dither=0 turns it off without turning M1 off — the control frame that
+    // lets the gate measure whether it lifts vacuum black rather than argue it
+    const ditherOff = (() => {
+      try { return new URL(window.location.href).searchParams.get('dither') === '0'; }
+      catch { return false; }
+    })();
+    if (M1 && !ditherOff) this.composer.addPass(new ShaderPass(DitherShader));
   }
 
   setScene(scene, camera) {

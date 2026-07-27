@@ -28,10 +28,33 @@ import {
 const BOX = 900;           // comoving box, display units (≙ ~500 Mpc)
 const A_START = 0.048;     // z ≈ 20
 
+const PARAM = (k) => {
+  try { return new URL(window.location.href).searchParams.get(k); }
+  catch { return null; }
+};
+
 /** M1 — the web must breathe. Default-off (§7.4); see docs/plans/M1.md. */
-const M1 = (() => {
-  try { return new URL(window.location.href).searchParams.get('m1') === '1'; }
-  catch { return false; }
+const M1 = PARAM('m1') === '1';
+
+/**
+ * `?slab=<fraction>` — render a view-aligned slice through the box instead of
+ * the whole depth. `?slab=1` takes the default fraction; any number sets it.
+ *
+ * This is the experiment M1's escalation asks for (docs/plans/M1.md §9). The
+ * blocking clause was four distinguishable hue families, and the diagnosis was
+ * that the colour is honest but the projection destroys it: every ray crosses
+ * voids *and* filaments, and an additive sum of differing hues is a
+ * mass-weighted mean hue. A slab shortens the ray so a local field survives to
+ * the frame.
+ *
+ * It only means anything with ?m1=1, because it is the M1 shaders that put a
+ * physical field in the hue channel at all.
+ */
+const SLAB = (() => {
+  const v = PARAM('slab');
+  if (v === null) return 0;
+  const f = v === '1' ? 0.16 : parseFloat(v);
+  return Number.isFinite(f) && f > 0 && f < 1 ? f : 0;
 })();
 
 // how far past the present day deep time keeps drifting, and how much slower
@@ -170,6 +193,22 @@ const M1_TENSOR = /* glsl */`
   }
 `;
 
+/** the slab window: how much of a tracer survives, by depth from the slice */
+const M1_SLAB = /* glsl */`
+  uniform float uSlabHalf;   // half-thickness in display units; 0 = whole box
+
+  // The slice is view-aligned and centred on the box, so it always faces the
+  // camera and turns with it — orbiting sweeps the slice through the volume
+  // rather than swinging a fixed plane edge-on. The edge is a smoothstep, not
+  // a cut: a hard clip would pop tracers in and out as the camera moves, and
+  // §2.5 has no patience for that.
+  float slabWeight(float viewZ, float centreZ) {
+    if (uSlabHalf <= 0.0) return 1.0;
+    float d = abs(viewZ - centreZ) / uSlabHalf;
+    return 1.0 - smoothstep(0.55, 1.0, d);
+  }
+`;
+
 /** the palette — the hue families, and which physics selects each */
 const M1_PALETTE = /* glsl */`
   // Luminance carries density. Hue carries the divergence of the flow, on a
@@ -285,6 +324,7 @@ const M1_VERT = /* glsl */`
   out vec2  vAxis;
   out vec3  vQ;
   ${M1_TENSOR}
+  ${M1_SLAB}
 
   void main() {
     vec3 q = position;
@@ -333,6 +373,7 @@ const M1_VERT = /* glsl */`
     vEdge = 1.0 - smoothstep(0.86, 1.0, max(aq.x, max(aq.y, aq.z)));
 
     vec4 mv = modelViewMatrix * vec4(x, 1.0);
+    vEdge *= slabWeight(mv.z, modelViewMatrix[3].z);
     float size = uPx * (0.95 + 0.6 * clamp(rho - 0.6, 0.0, 2.6)) * (1.0 + vNova * 3.5);
     size = clamp(size * (620.0 / -mv.z), 0.75, 9.0);
 
@@ -492,6 +533,7 @@ const M1_NB_VERT = /* glsl */`
   out vec3  vQ;
   ${NBODY_LAYOUT.LAYOUT}
   ${M1_TENSOR}
+  ${M1_SLAB}
 
   float den(ivec3 c) { return texelFetch(uDen, cellToTexel(c), 0).x; }
 
@@ -524,6 +566,7 @@ const M1_NB_VERT = /* glsl */`
     vEdge = 1.0 - smoothstep(0.86, 1.0, max(ax3.x, max(ax3.y, ax3.z)));
 
     vec4 mv = modelViewMatrix * vec4(disp, 1.0);
+    vEdge *= slabWeight(mv.z, modelViewMatrix[3].z);
     float size = uPx * (0.95 + 0.42 * clamp(vDens, 0.0, 2.0)) * (1.0 + vNova * 3.5);
     size = clamp(size * (620.0 / -mv.z), 0.75, 9.0);
 
@@ -660,6 +703,7 @@ export class CosmicScale {
       uAP: { value: apArr },
       uD: { value: COSMO.growth(this.a) },
       uThetaNorm: { value: 1 },
+      uSlabHalf: { value: SLAB * BOX * 0.5 },
       uLnD: { value: Math.log(Math.max(COSMO.growth(this.a), 1e-6)) },
       uLnA: { value: Math.log(this.a) },
       uF: { value: COSMO.growthRate(this.a) },
@@ -709,6 +753,7 @@ export class CosmicScale {
       uDenPrev: { value: this.sim.densityPrevTexture },
       uThetaK: { value: 0 },
       uThetaNorm: { value: 1 },
+      uSlabHalf: { value: SLAB * BOX * 0.5 },
       uD: { value: COSMO.growth(this.a) },
       uLnD: { value: Math.log(Math.max(COSMO.growth(this.a), 1e-6)) },
       uLnA: { value: Math.log(this.a) },
