@@ -21,11 +21,24 @@ import { COSMO } from './cosmology.js';
 import { hash, RNG } from './rng.js';
 import { NBodySim, NBODY_LAYOUT } from './nbody.js';
 import { softDotTexture } from './nebula.js';
+import {
+  N_MODES, buildModes, deltaLinear, gradDeltaLinear,
+} from './zeldovich.js';
 
 const BOX = 900;           // comoving box, display units (≙ ~500 Mpc)
-const N_MODES = 64;        // plane waves in the displacement field
 const A_START = 0.048;     // z ≈ 20
-const SPECTRAL_TILT = -2.15; // effective displacement-amplitude slope ~ k^tilt
+
+/** M1 — the web must breathe. Default-off (§7.4); see docs/plans/M1.md. */
+const M1 = (() => {
+  try { return new URL(window.location.href).searchParams.get('m1') === '1'; }
+  catch { return false; }
+})();
+
+// how far past the present day deep time keeps drifting, and how much slower
+// it runs once it gets there — §M1 asks for a continuous slow drift, and a
+// clock that stops at a = 1 is a frozen clock
+const A_FUTURE = 7.5;
+const FUTURE_RATE = 0.11;
 
 const vert = /* glsl */`
   uniform vec3  uK[${N_MODES}];
@@ -121,6 +134,265 @@ const frag = /* glsl */`
   }
 `;
 
+// ===========================================================================
+// M1 · the web must breathe
+//
+// Everything below replaces a sine with something the simulation already
+// knows. The derivation is in docs/plans/M1.md §2; the arithmetic is checked
+// against finite differences and an eigen-decomposition by tools/verify.js
+// before it ever reaches a driver (§7.3).
+
+/** the deformation tensor and its invariants — the whole milestone, shared by
+ *  both the linear and the N-body vertex shaders */
+const M1_TENSOR = /* glsl */`
+  // M is symmetric: (xx, yy, zz, xy, xz, yz). r·M·r and u·M·v, packed.
+  float qform(float m0, float m1, float m2, float m3, float m4, float m5, vec3 v) {
+    return m0*v.x*v.x + m1*v.y*v.y + m2*v.z*v.z
+         + 2.0*(m3*v.x*v.y + m4*v.x*v.z + m5*v.y*v.z);
+  }
+  float bform(float m0, float m1, float m2, float m3, float m4, float m5, vec3 u, vec3 v) {
+    return m0*u.x*v.x + m1*u.y*v.y + m2*u.z*v.z
+         + m3*(u.x*v.y + u.y*v.x) + m4*(u.x*v.z + u.z*v.x) + m5*(u.y*v.z + u.z*v.y);
+  }
+
+  // The screen-space thread axis: project the tensor onto the view plane and
+  // decompose the 2x2 exactly. A filament runs along the least-compressed
+  // axis, which is the eigenvector of the larger eigenvalue.
+  //   axis  — unit direction in screen space
+  //   aniso — 0 round, 1 fully directional
+  vec3 threadAxis(float a, float b, float c) {
+    float mean = 0.5*(a + c);
+    float diff = 0.5*(a - c);
+    float rad  = sqrt(diff*diff + b*b);
+    float phi  = 0.5 * atan(2.0*b, a - c);
+    float aniso = rad / (rad + abs(mean) + 1e-7);
+    return vec3(cos(phi), sin(phi), aniso);
+  }
+`;
+
+/** the palette — the hue families, and which physics selects each */
+const M1_PALETTE = /* glsl */`
+  // Luminance carries density. Hue carries the divergence of the flow, on a
+  // four-stop ramp read strictly monotonically:
+  //
+  //   θ ≪ 0  hard infall, collapsed      → violet
+  //   θ <  0  infall                     → cold blue
+  //   θ ≈  0  barely moving              → teal
+  //   θ >  0  outflow                    → warm amber   (voids, emptying)
+  //   dense and θ ≈ 0, under gravity     → cream        (virialized: stopped)
+  //
+  // Four stops rather than a two-colour lerp, because the divergence a tracer
+  // actually experiences is not symmetric about zero. Tracers live where the
+  // mass is, so the particle-weighted distribution is skewed toward infall,
+  // and a straight cool→warm lerp spends almost its whole range inside one
+  // hue: measured, the first version put 88% of lit pixels between 220° and
+  // 280°. The ramp is still a monotone function of θ — nothing is invented,
+  // the transfer is simply spread across the range that occurs, exactly as
+  // §9.6 derives its sky stops through a fixed transfer rather than by taste.
+  //
+  // The cream stop only ever appears under gravity: linear theory cannot
+  // virialize, so pressing N genuinely changes what the halo cores are made
+  // of, which is what §M1's gate (c) asks the toggle to demonstrate.
+  vec3 webColor(float dens, float th, float crossed, float hash) {
+    vec3 col = vec3(0.62, 0.26, 1.00);                                  // θ ≪ 0
+    col = mix(col, vec3(0.18, 0.44, 1.00), smoothstep(-0.85, -0.30, th)); // infall
+    col = mix(col, vec3(0.22, 0.86, 0.78), smoothstep(-0.28,  0.12, th)); // still
+    col = mix(col, vec3(1.00, 0.60, 0.20), smoothstep( 0.10,  0.65, th)); // outflow
+
+    // dense and no longer flowing: it has stopped
+    float vir = smoothstep(0.70, 2.00, dens) * (1.0 - smoothstep(0.05, 0.50, abs(th)));
+    col = mix(col, vec3(1.00, 0.95, 0.86), vir);
+
+    // no two tracers hold quite the same colour
+    col *= vec3(1.0 + 0.09*sin(hash*6.283),
+                1.0 + 0.06*sin(hash*12.6 + 2.0),
+                1.0 + 0.10*cos(hash*6.283));
+
+    // Hue rotates at constant luminance. §9.2 gives this rule for hemispheric
+    // ambient — "normalise to unit luminance so it can rotate hue without ever
+    // bleaching the palette" — and it applies here for the same reason: a
+    // palette that carries brightness lets the flow field set the exposure,
+    // and the first draft of this shader washed the whole web to lavender
+    // exactly that way. Density owns luminance; divergence owns hue.
+    return col / max(dot(col, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+  }
+
+  // Luminance, and nothing but density decides it.
+  //
+  // The gain is deliberately shallow, and that is a physics correction rather
+  // than a taste one. Every tracer carries the same mass, so the image already
+  // encodes density through how many of them land on a pixel. Scaling each
+  // tracer's brightness by the density it sits in counts the same thing twice
+  // — invisible while the field is linear, and ruinous afterwards: by a ≈ 0.7
+  // a quarter of all elements have shell-crossed, so a quarter of the sky
+  // pins to maximum brightness and the web washes out to a white sheet.
+  // Measured, not guessed (tools/verify.js reports the crossed fraction).
+  //
+  // Crowding does the work; this only tilts the balance.
+  //
+  // The range is also what keeps the hue readable. Rendering θ on its own
+  // shows infall running blue along the filaments and outflow filling the
+  // voids between them, exactly as it should — but a steep density gain
+  // extinguishes the void tracers before that reaches the frame, and the
+  // whole divergence channel goes invisible in the half of the volume where
+  // it is most interesting. Fifteen stops from void to node, not ninety.
+  float webLum(float dens) {
+    return 0.012
+         + 0.030 * smoothstep(-1.70, 0.05, dens)
+         + 0.050 * smoothstep(0.35, 1.70, dens)
+         + 0.090 * smoothstep(1.95, 2.48, dens);
+  }
+
+  // Shimmer rides ln D and ln a — both integrals of the Friedmann equation,
+  // neither with a period, so no capture of any length can show a loop. The
+  // amplitude follows the growth rate f, so the web shimmers hardest while
+  // structure is actually forming and calms as Λ takes over.
+  float webShimmer(float lnD, float lnA, float f, float hash, vec3 x) {
+    float s = 0.88 + 0.12 * f * sin(lnD * (3.0 + hash*9.0) + hash*40.0);
+    s *= 0.84 + 0.16 * sin(dot(x, vec3(0.011, 0.007, 0.009)) - lnA*2.4)
+              + 0.12 * sin(dot(x, vec3(-0.006, 0.012, -0.008)) + lnA*1.5);
+    return s;
+  }
+
+  // An anisotropic, area-preserving kernel. sigma along the thread grows by
+  // the stretch factor, sigma across shrinks by the same, so a stretched tracer
+  // is dimmer per pixel rather than a brighter blob — otherwise elongation
+  // would masquerade as density and corrupt the readout.
+  float webKernel(vec2 pc, vec2 axis, float stretch) {
+    vec2 c = pc - 0.5;
+    float u = dot(c, axis);
+    float v = dot(c, vec2(-axis.y, axis.x)) * stretch * stretch;
+    float r2 = u*u + v*v;
+    return r2 > 0.25 ? -1.0 : exp(-r2 * 11.0);
+  }
+`;
+
+const M1_VERT = /* glsl */`
+  precision highp float;
+  uniform vec4  uKA[${N_MODES}];   // (k̂.xyz, |k|) — precomputed, so the mode
+  uniform vec2  uAP[${N_MODES}];   // (amplitude, phase)  loop carries no sqrt
+  uniform float uD;                // growth factor D(a)
+  uniform float uThetaNorm;        // 1/(2.2·D) — puts the divergence on [-1,1]
+  uniform float uAScale;
+  uniform float uPx;
+  out float vDens;      // ln(1 + δ)
+  out float vTheta;     // ∇·v in units of aHf
+  out float vCrossed;
+  out float vHash;
+  out float vNova;
+  out float vStretch;
+  out float vEdge;
+  out vec2  vAxis;
+  out vec3  vQ;
+  ${M1_TENSOR}
+
+  void main() {
+    vec3 q = position;
+    vHash = fract(sin(dot(q, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+
+    vec3 disp = vec3(0.0);
+    float m0 = 0.0, m1 = 0.0, m2 = 0.0, m3 = 0.0, m4 = 0.0, m5 = 0.0;
+    for (int i = 0; i < ${N_MODES}; i++) {
+      vec3  kh = uKA[i].xyz;
+      float kl = uKA[i].w;
+      float ph = kl * dot(kh, q) + uAP[i].y;
+      float amp = uAP[i].x;
+      disp += (amp * sin(ph)) * kh;
+      float w = amp * kl * cos(ph);          // M += w · k̂k̂ᵀ
+      m0 += w*kh.x*kh.x; m1 += w*kh.y*kh.y; m2 += w*kh.z*kh.z;
+      m3 += w*kh.x*kh.y; m4 += w*kh.x*kh.z; m5 += w*kh.y*kh.z;
+    }
+    vec3 x = (q + uD * disp) * uAScale;
+    vQ = x;
+
+    // B = I + D·M. Density is 1/det B; divergence is 3 − I₂/det B, with the
+    // growth factor cancelling out of the ratio (docs/plans/M1.md §2).
+    float b0 = 1.0 + uD*m0, b1 = 1.0 + uD*m1, b2 = 1.0 + uD*m2;
+    float b3 = uD*m3, b4 = uD*m4, b5 = uD*m5;
+    float det = b0*(b1*b2 - b5*b5) - b3*(b3*b2 - b5*b4) + b4*(b3*b5 - b1*b4);
+    float i2  = (b0*b1 - b3*b3) + (b0*b2 - b4*b4) + (b1*b2 - b5*b5);
+
+    vCrossed = det <= 0.0 ? 1.0 : 0.0;
+    float rho = mix(min(1.0 / max(det, 0.0833), 12.0), 12.0, vCrossed);
+    vDens = log(rho);
+    // past shell crossing the ratio is meaningless — but the element is
+    // certainly collapsing, and linear theory says how fast
+    // θ/(aHf) scales with D in the linear regime, so divide it out: hue must
+    // read the same at every epoch, and the residual asymmetry (infall runs
+    // away, outflow saturates — a void can only empty so fast) is physical
+    vTheta = vCrossed > 0.5 ? -1.0 : clamp((3.0 - i2/det) * uThetaNorm, -1.0, 1.0);
+
+    vNova = 0.0;
+    if (vHash > 0.9995) {
+      float lc = fract(uD * 6.0 + vHash * 991.0);
+      vNova = max(0.0, 1.0 - lc * 30.0);
+      vNova *= vNova;
+    }
+
+    vec3 aq = abs(q) / ${(BOX / 2).toFixed(1)};
+    vEdge = 1.0 - smoothstep(0.86, 1.0, max(aq.x, max(aq.y, aq.z)));
+
+    vec4 mv = modelViewMatrix * vec4(x, 1.0);
+    float size = uPx * (0.95 + 0.6 * clamp(rho - 0.6, 0.0, 2.6)) * (1.0 + vNova * 3.5);
+    size = clamp(size * (620.0 / -mv.z), 0.75, 9.0);
+
+    // the thread axis, in screen space, from the projected tensor
+    mat3 R = mat3(modelViewMatrix);
+    vec3 r0 = vec3(R[0][0], R[1][0], R[2][0]);
+    vec3 r1 = vec3(R[0][1], R[1][1], R[2][1]);
+    vec3 ax = threadAxis(
+      qform(m0,m1,m2,m3,m4,m5, r0),
+      bform(m0,m1,m2,m3,m4,m5, r0, r1),
+      qform(m0,m1,m2,m3,m4,m5, r1));
+    // elongate only once the deformation is real (an unstructured early
+    // universe must stay round) and only when the sprite can resolve it
+    float gate = smoothstep(0.10, 0.75, uD * length(vec3(m0, m1, m2)))
+               * smoothstep(2.5, 5.0, size);
+    vStretch = 1.0 + 1.6 * ax.z * gate;
+    vAxis = ax.xy;
+
+    // energy is preserved inside the kernel, but *coverage* is not, and
+    // coverage is what the bloom pass multiplies — so the elongated sprite is
+    // held to the same footprint ceiling the round one had
+    gl_PointSize = min(size * vStretch, 11.0);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const M1_FRAG = /* glsl */`
+  precision highp float;
+  uniform float uLnD;
+  uniform float uLnA;
+  uniform float uF;
+  in float vDens;
+  in float vTheta;
+  in float vCrossed;
+  in float vHash;
+  in float vNova;
+  in float vStretch;
+  in float vEdge;
+  in vec2  vAxis;
+  in vec3  vQ;
+  out vec4 fragColor;
+  ${M1_PALETTE}
+
+  void main() {
+    float fall = webKernel(gl_PointCoord, vAxis, vStretch);
+    if (fall < 0.0) discard;
+
+    vec3 col = webColor(vDens, vTheta, vCrossed, vHash);
+    float lum = webLum(vDens) * webShimmer(uLnD, uLnA, uF, vHash, vQ);
+    col += mix(vec3(1.4, 0.55, 0.32), vec3(1.9, 1.8, 1.55), vNova) * vNova * 2.4;
+
+    vec3 outc = col * (lum + vNova) * fall * vEdge;
+    // §11: one NaN texel is smeared over a whole neighbourhood by the bloom
+    // downsample chain and survives the tonemap as a solid block. NaN is the
+    // only value that fails to equal itself; clamp then takes the infinities.
+    outc = mix(vec3(0.0), outc, vec3(equal(outc, outc)));
+    fragColor = vec4(clamp(outc, 0.0, 64.0), 1.0);
+  }
+`;
+
 // GLSL3 point renderer fed directly by the N-body sim's GPU textures
 const NB_VERT = /* glsl */`
   precision highp float;
@@ -199,6 +471,110 @@ const NB_FRAG = /* glsl */`
   }
 `;
 
+const M1_NB_VERT = /* glsl */`
+  precision highp float;
+  uniform sampler2D uPos;
+  uniform sampler2D uDen;
+  uniform sampler2D uDenPrev;
+  uniform float uThetaK;     // 1/(Δa·f) — turns Δδ into ∇·v in units of aHf
+  uniform float uThetaNorm;  // 1/(2.2·D) — same normalisation the linear path uses
+  uniform float uD;
+  uniform float uAScale;
+  uniform float uPx;
+  out float vDens;
+  out float vTheta;
+  out float vCrossed;
+  out float vHash;
+  out float vNova;
+  out float vStretch;
+  out float vEdge;
+  out vec2  vAxis;
+  out vec3  vQ;
+  ${NBODY_LAYOUT.LAYOUT}
+  ${M1_TENSOR}
+
+  float den(ivec3 c) { return texelFetch(uDen, cellToTexel(c), 0).x; }
+
+  void main() {
+    ivec2 t = ivec2(gl_VertexID % ${NBODY_LAYOUT.PN}, gl_VertexID / ${NBODY_LAYOUT.PN});
+    vec3 x = texelFetch(uPos, t, 0).xyz;
+    ivec3 cell = ivec3(fract(x) * float(G)) % G;
+
+    float rho = max(den(cell), 0.02);
+    float rhoPrev = max(texelFetch(uDenPrev, cellToTexel(cell), 0).x, 0.02);
+    vDens = log(rho);
+    // continuity: θ = −(∂δ/∂t)/(1+δ). Under gravity a virialized halo stops
+    // growing, so θ → 0 and its core goes neutral — the thing linear theory
+    // cannot do, and what pressing N is meant to show (§M1 gate c).
+    vTheta = clamp(-(rho - rhoPrev) * uThetaK * uThetaNorm / rho, -1.0, 1.0);
+    // the PM code has no deformation tensor; "collapsed" is simply "dense"
+    vCrossed = smoothstep(1.6, 2.6, vDens);
+
+    vHash = fract(sin(float(gl_VertexID) * 0.1031) * 43758.5453);
+    vNova = 0.0;
+    if (vHash > 0.9995) {
+      float lc = fract(uD * 6.0 + vHash * 991.0);
+      vNova = max(0.0, 1.0 - lc * 30.0);
+      vNova *= vNova;
+    }
+
+    vec3 disp = (x - 0.5) * ${BOX.toFixed(1)} * uAScale;
+    vQ = disp;
+    vec3 ax3 = abs(x - 0.5) * 2.0;
+    vEdge = 1.0 - smoothstep(0.86, 1.0, max(ax3.x, max(ax3.y, ax3.z)));
+
+    vec4 mv = modelViewMatrix * vec4(disp, 1.0);
+    float size = uPx * (0.95 + 0.42 * clamp(vDens, 0.0, 2.0)) * (1.0 + vNova * 3.5);
+    size = clamp(size * (620.0 / -mv.z), 0.75, 9.0);
+
+    // No tensor here, but there is a field: a filament runs *along* its ridge,
+    // so the thread is perpendicular to the density gradient. Six fetches.
+    vec3 g = vec3(
+      den(cell + ivec3(1,0,0)) - den(cell - ivec3(1,0,0)),
+      den(cell + ivec3(0,1,0)) - den(cell - ivec3(0,1,0)),
+      den(cell + ivec3(0,0,1)) - den(cell - ivec3(0,0,1)));
+    mat3 R = mat3(modelViewMatrix);
+    vec2 gs = vec2(dot(vec3(R[0][0], R[1][0], R[2][0]), g),
+                   dot(vec3(R[0][1], R[1][1], R[2][1]), g));
+    float gmag = length(gs);
+    float aniso = gmag / (gmag + 0.35 * rho + 1e-6);
+    vAxis = gmag > 1e-6 ? vec2(-gs.y, gs.x) / gmag : vec2(1.0, 0.0);
+    vStretch = 1.0 + 1.6 * aniso * smoothstep(2.5, 5.0, size);
+
+    gl_PointSize = min(size * vStretch, 11.0);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const M1_NB_FRAG = /* glsl */`
+  precision highp float;
+  uniform float uLnD;
+  uniform float uLnA;
+  uniform float uF;
+  in float vDens;
+  in float vTheta;
+  in float vCrossed;
+  in float vHash;
+  in float vNova;
+  in float vStretch;
+  in float vEdge;
+  in vec2  vAxis;
+  in vec3  vQ;
+  out vec4 fragColor;
+  ${M1_PALETTE}
+
+  void main() {
+    float fall = webKernel(gl_PointCoord, vAxis, vStretch);
+    if (fall < 0.0) discard;
+    vec3 col = webColor(vDens, vTheta, vCrossed, vHash);
+    float lum = webLum(vDens) * webShimmer(uLnD, uLnA, uF, vHash, vQ);
+    col += mix(vec3(1.4, 0.55, 0.32), vec3(1.9, 1.8, 1.55), vNova) * vNova * 2.4;
+    vec3 outc = col * (lum + vNova) * fall * vEdge;
+    outc = mix(vec3(0.0), outc, vec3(equal(outc, outc)));
+    fragColor = vec4(clamp(outc, 0.0, 64.0), 1.0);
+  }
+`;
+
 export class CosmicScale {
   constructor(app) {
     this.app = app;
@@ -234,49 +610,17 @@ export class CosmicScale {
 
   // ------------------------------------------------------------ field ----
   _buildField(seed) {
-    const r = new RNG(hash(seed, 0xc0517c));
-    const k0 = (2 * Math.PI) / BOX;
-    this.modes = [];
-    let sumAmp2 = 0;
-    for (let i = 0; i < N_MODES; i++) {
-      // isotropic direction
-      const z = r.float(-1, 1), th = r.float(0, 2 * Math.PI);
-      const s = Math.sqrt(1 - z * z);
-      const dir = [s * Math.cos(th), s * Math.sin(th), z];
-      // log-uniform |k| over ~1.3 decades; large scales dominate via the tilt
-      const mag = k0 * Math.exp(Math.log(1.4) + r.next() * (Math.log(26) - Math.log(1.4)));
-      const amp = Math.pow(mag / k0, SPECTRAL_TILT / 2) * Math.abs(r.gauss());
-      const phase = r.float(0, 2 * Math.PI);
-      this.modes.push({ k: [dir[0] * mag, dir[1] * mag, dir[2] * mag], amp, phase });
-      sumAmp2 += amp * amp;
-    }
-    // normalize so today's rms displacement ≈ 7.5% of the box — tuned so
-    // shell-crossing (filament formation) completes right around a = 1
-    const target = BOX * 0.075;
-    const norm = target / Math.sqrt(sumAmp2 / 2);
-    for (const m of this.modes) m.amp *= norm;
+    // one definition, shared with the CPU mirror, the N-body initial
+    // conditions and tools/verify.js — §2.7's lesson, applied here
+    this.modes = buildModes(seed, BOX);
   }
 
   /** linear δ(q) at growth D — CPU mirror of the vertex shader */
-  delta(p, D) {
-    let div = 0;
-    for (const m of this.modes) {
-      const kl = Math.hypot(m.k[0], m.k[1], m.k[2]);
-      const ph = m.k[0] * p.x + m.k[1] * p.y + m.k[2] * p.z + m.phase;
-      div += m.amp * kl * Math.cos(ph);
-    }
-    return -D * div;
-  }
+  delta(p, D) { return deltaLinear(this.modes, [p.x, p.y, p.z], D); }
 
   gradDelta(p, D, out) {
-    out.set(0, 0, 0);
-    for (const m of this.modes) {
-      const kl = Math.hypot(m.k[0], m.k[1], m.k[2]);
-      const ph = m.k[0] * p.x + m.k[1] * p.y + m.k[2] * p.z + m.phase;
-      const c = D * m.amp * kl * Math.sin(ph);
-      out.x += c * m.k[0]; out.y += c * m.k[1]; out.z += c * m.k[2];
-    }
-    return out;
+    const g = gradDeltaLinear(this.modes, [p.x, p.y, p.z], D);
+    return out.set(g[0], g[1], g[2]);
   }
 
   // -------------------------------------------------------- particles ----
@@ -301,13 +645,27 @@ export class CosmicScale {
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), BOX);
 
-    const kArr = [], apArr = [];
+    const kArr = [], apArr = [], kaArr = [];
     for (const m of this.modes) {
       kArr.push(new THREE.Vector3(...m.k));
       apArr.push(new THREE.Vector2(m.amp, m.phase));
+      // |k| and k̂ are constants; computing length(k) inside the mode loop
+      // cost 64 square roots per vertex per frame, which is what pays for the
+      // deformation tensor (docs/plans/M1.md §6)
+      kaArr.push(new THREE.Vector4(m.khat[0], m.khat[1], m.khat[2], m.klen));
     }
     this.uTime = { value: 0 };
-    this.uniforms = {
+    this.uniforms = M1 ? {
+      uKA: { value: kaArr },
+      uAP: { value: apArr },
+      uD: { value: COSMO.growth(this.a) },
+      uThetaNorm: { value: 1 },
+      uLnD: { value: Math.log(Math.max(COSMO.growth(this.a), 1e-6)) },
+      uLnA: { value: Math.log(this.a) },
+      uF: { value: COSMO.growthRate(this.a) },
+      uAScale: { value: 1 },
+      uPx: { value: Math.min(window.devicePixelRatio, 2) },
+    } : {
       uK: { value: kArr },
       uAP: { value: apArr },
       uD: { value: COSMO.growth(this.a) },
@@ -316,9 +674,10 @@ export class CosmicScale {
       uTime: this.uTime,
     };
     const mat = new THREE.ShaderMaterial({
+      ...(M1 ? { glslVersion: THREE.GLSL3 } : {}),
       uniforms: this.uniforms,
-      vertexShader: vert,
-      fragmentShader: frag,
+      vertexShader: M1 ? M1_VERT : vert,
+      fragmentShader: M1 ? M1_FRAG : frag,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       depthTest: false,
@@ -344,7 +703,19 @@ export class CosmicScale {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
     geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), BOX);
-    this.nbUniforms = {
+    this.nbUniforms = M1 ? {
+      uPos: { value: this.sim.posTexture },
+      uDen: { value: this.sim.densityTexture },
+      uDenPrev: { value: this.sim.densityPrevTexture },
+      uThetaK: { value: 0 },
+      uThetaNorm: { value: 1 },
+      uD: { value: COSMO.growth(this.a) },
+      uLnD: { value: Math.log(Math.max(COSMO.growth(this.a), 1e-6)) },
+      uLnA: { value: Math.log(this.a) },
+      uF: { value: COSMO.growthRate(this.a) },
+      uAScale: { value: 1 },
+      uPx: { value: Math.min(window.devicePixelRatio, 2) },
+    } : {
       uPos: { value: this.sim.posTexture },
       uDen: { value: this.sim.densityTexture },
       uAScale: { value: 1 },
@@ -354,8 +725,8 @@ export class CosmicScale {
     this.nbPoints = new THREE.Points(geo, new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
       uniforms: this.nbUniforms,
-      vertexShader: NB_VERT,
-      fragmentShader: NB_FRAG,
+      vertexShader: M1 ? M1_NB_VERT : NB_VERT,
+      fragmentShader: M1 ? M1_NB_FRAG : NB_FRAG,
       blending: THREE.AdditiveBlending,
       depthWrite: false, depthTest: false, transparent: true,
     }));
@@ -406,25 +777,38 @@ export class CosmicScale {
   }
 
   // ------------------------------------------------------------- loop ----
+  /** d(ln a) this frame. Past the present day the clock keeps running, more
+   *  slowly: §M1 wants a continuous drift, and a universe that stops at a = 1
+   *  is a still frame with a play button. */
+  _dLnA(dt) {
+    if (!this.playing) return 0;
+    if (this.a >= A_FUTURE) return 0;
+    return this.rate * (this.a >= 1 ? FUTURE_RATE : 1) * dt;
+  }
+
   update(dt) {
-    // the dance never pauses: twinkle and supernovae run on their own clock
     this.uTime.value += dt;
+    const dln = this._dLnA(dt);
     if (this.mode === 'nbody') {
-      if (this.playing && this.a < 1) {
-        const da = this.a * (Math.exp(this.rate * dt) - 1);
-        this.sim.step(Math.min(da, 1 - this.a + 1e-6));
-        this.a = Math.min(this.sim.a, 1);
-        if (this.a >= 1) this.playing = false;
+      if (dln > 0) {
+        const da = this.a * (Math.exp(dln) - 1);
+        this.sim.step(Math.min(da, A_FUTURE - this.a + 1e-6));
+        this.a = Math.min(this.sim.a, A_FUTURE);
       }
       this.nbUniforms.uPos.value = this.sim.posTexture;
       this.nbUniforms.uDen.value = this.sim.densityTexture;
       this.nbUniforms.uAScale.value = this.physicalView ? this.a : 1;
-    } else if (this.playing && this.a < 1) {
-      this.a = Math.min(this.a * Math.exp(this.rate * dt), 1);
-      if (this.a >= 1) this.playing = false; // the present day
+      if (M1) {
+        this.nbUniforms.uDenPrev.value = this.sim.densityPrevTexture;
+        this.nbUniforms.uThetaK.value = this.sim.thetaScale;
+        this._setDeepTime(this.nbUniforms);
+      }
+    } else if (dln > 0) {
+      this.a = Math.min(this.a * Math.exp(dln), A_FUTURE);
     }
     this.uniforms.uD.value = COSMO.growth(this.a);
     this.uniforms.uAScale.value = this.physicalView ? this.a : 1;
+    if (M1) this._setDeepTime(this.uniforms);
     if (this.comets) {
       const t = this.uTime.value;
       for (const c of this.comets) {
@@ -439,9 +823,23 @@ export class CosmicScale {
     this.controls.update();
   }
 
+  /** the two integrating phases every M1 shimmer rides — ln D and ln a. Both
+   *  come out of the Friedmann equation, neither has a period, so no capture
+   *  of any length can catch a loop. */
+  _setDeepTime(u) {
+    const D = COSMO.growth(this.a);
+    u.uD.value = D;
+    // measured: θ/(aHf·D) has rms ≈ 1.6 and a 5–95 spread near ±2.5 while the
+    // field is linear, so 2.2 puts the bulk of it on [-1, 1]
+    u.uThetaNorm.value = 1 / Math.max(D * 2.2, 1e-4);
+    u.uLnD.value = Math.log(Math.max(COSMO.growth(this.a), 1e-6));
+    u.uLnA.value = Math.log(this.a);
+    u.uF.value = COSMO.growthRate(this.a);
+  }
+
   // ------------------------------------------------------------- time ----
   togglePlay() {
-    if (this.a >= 1 && !this.playing) {
+    if (this.a >= A_FUTURE && !this.playing) {
       this.a = A_START;
       if (this.mode === 'nbody') this.sim.reset(A_START);
       this.playing = true;
@@ -455,10 +853,10 @@ export class CosmicScale {
     this.playing = false;
     if (this.mode === 'nbody') {
       if (dir < 0) { this.sim.reset(A_START); this.a = A_START; }
-      else { this.sim.step(this.a * (Math.exp(0.06) - 1)); this.a = Math.min(this.sim.a, 1); }
+      else { this.sim.step(this.a * (Math.exp(0.06) - 1)); this.a = Math.min(this.sim.a, A_FUTURE); }
       return;
     }
-    this.a = Math.min(Math.max(this.a * Math.exp(dir * 0.06), A_START), 1);
+    this.a = Math.min(Math.max(this.a * Math.exp(dir * 0.06), A_START), A_FUTURE);
   }
 
   timeReadout() {
@@ -469,7 +867,7 @@ export class CosmicScale {
   hudStats() {
     const n = this.mode === 'nbody' ? this.sim.particleCount : this.particleCount;
     return [
-      ['epoch', this.a >= 1 ? 'present day' : (this.playing ? 'evolving' : 'paused')],
+      ['epoch', !this.playing ? 'paused' : (this.a >= 1 ? 'beyond the present day' : 'evolving')],
       ['redshift', 'z = ' + (COSMO.z(this.a) >= 10 ? COSMO.z(this.a).toFixed(1) : COSMO.z(this.a).toFixed(2))],
       ['age of universe', COSMO.age(this.a).toFixed(2) + ' Gyr'],
       ['gravity', this.mode === 'nbody' ? 'particle-mesh N-body' : 'Zel’dovich linear theory'],

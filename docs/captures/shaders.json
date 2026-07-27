@@ -1,0 +1,20 @@
+{
+  "schema": "aeon-shadercheck/1",
+  "when": "2026-07-27T01:24:28.342Z",
+  "complete": true,
+  "shadersCompiled": 98,
+  "failures": 0,
+  "warnings": 0,
+  "scalesVisited": [
+    "blackhole",
+    "cosmic",
+    "galaxy",
+    "planet",
+    "surface",
+    "system"
+  ],
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "softwareRasterizer": true,
+  "pageErrors": [],
+  "detail": []
+}

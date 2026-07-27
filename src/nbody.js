@@ -224,6 +224,27 @@ const DRIFT_FRAG = /* glsl */`
   }
 `;
 
+// ---- density low-pass: the baseline the divergence is measured against ----
+// Differencing the density across a single substep (Δa ≈ 0.006) is a very
+// short lever: the signal is the ~1% the field grows in that time, and it
+// arrives on top of a cloud-in-cell field with about one particle per cell.
+// A one-pole low-pass gives a baseline tens of times longer without any
+// snapshot boundary to pulse across — the lag of the filter *is* the interval.
+const LOWPASS_FRAG = /* glsl */`
+  precision highp float;
+  uniform sampler2D uNow;
+  uniform sampler2D uRef;
+  uniform float uK;
+  out vec4 frag;
+  void main() {
+    ivec2 t = ivec2(gl_FragCoord.xy);
+    frag = vec4(mix(texelFetch(uRef, t, 0).x, texelFetch(uNow, t, 0).x, uK), 0.0, 0.0, 0.0);
+  }
+`;
+
+/** low-pass coefficient; the lag it induces is (1−k)/k substeps */
+const LOWPASS_K = 0.06;
+
 export class NBodySim {
   /**
    * @param modes  the Zel'dovich plane-wave set from CosmicScale, in display
@@ -246,7 +267,16 @@ export class NBodySim {
     });
     this.posA = rt(PN); this.posB = rt(PN);
     this.velA = rt(PN); this.velB = rt(PN);
+    // Two density targets, ping-ponged. The second is not for the solver: the
+    // Poisson step only ever needs the current field. It is there so the
+    // renderer can difference the density in time, which by the continuity
+    // equation is the velocity divergence — the one quantity a particle-mesh
+    // code has no direct handle on, obtained for the cost of one texture
+    // (docs/plans/M1.md §2).
     this.density = rt(TEX);
+    this.densityRef = rt(TEX); this.densityRefB = rt(TEX);
+    this.lastDa = 0;
+    this.refPrimed = false;
     this.fftA = rt(TEX); this.fftB = rt(TEX);
     this.force = rt(TEX);
 
@@ -286,6 +316,9 @@ export class NBodySim {
     this.driftMat = mat(DRIFT_FRAG, {
       uPos: { value: null }, uVel: { value: null }, uDa: { value: 0 }, uA3E: { value: 1 },
     });
+    this.lowpassMat = mat(LOWPASS_FRAG, {
+      uNow: { value: null }, uRef: { value: null }, uK: { value: 1 },
+    });
 
     // deposit: one gl.POINT per particle
     const depGeo = new THREE.BufferGeometry();
@@ -313,6 +346,8 @@ export class NBodySim {
 
   reset(a0) {
     this.a = a0;
+    this.refPrimed = false;      // no flow is known yet
+    this.lastDa = 0;
     this.icMat.uniforms.uD.value = COSMO.growth(a0);
     this.icMat.uniforms.uPfac.value =
       a0 * a0 * COSMO.E(a0) * COSMO.growthRate(a0) * COSMO.growth(a0);
@@ -372,6 +407,14 @@ export class NBodySim {
     // forces
     this.forceMat.uniforms.uPhi.value = src.texture;
     this._pass(this.forceMat, this.force);
+
+    // roll the low-pass baseline forward (first pass adopts the field whole)
+    this.lowpassMat.uniforms.uNow.value = this.density.texture;
+    this.lowpassMat.uniforms.uRef.value = this.densityRef.texture;
+    this.lowpassMat.uniforms.uK.value = this.refPrimed ? LOWPASS_K : 1;
+    this._pass(this.lowpassMat, this.densityRefB);
+    [this.densityRef, this.densityRefB] = [this.densityRefB, this.densityRef];
+    this.refPrimed = true;
   }
 
   /** advance by Δa (internally sub-stepped for stability) */
@@ -383,6 +426,7 @@ export class NBodySim {
     while (remaining > 1e-9 && guard++ < 4) {
       const da = Math.min(remaining, Math.max(0.02 * this.a, 0.0012), 0.006);
       remaining -= da;
+      this.lastDa = da;
 
       this._depositAndSolve();
 
@@ -410,14 +454,44 @@ export class NBodySim {
   }
 
   get posTexture() { return this.posA.texture; }
+  get velTexture() { return this.velA.texture; }
   get densityTexture() { return this.density.texture; }
+  get densityPrevTexture() { return this.densityRef.texture; }
+
+  /**
+   * The scale that turns a density difference into ∇·v in units of aHf.
+   *
+   * Continuity in *comoving* coordinates carries a 1/a on the divergence
+   * term — which is easy to drop, and dropping it pins the whole sky to
+   * maximum infall:
+   *
+   *   ∂δ/∂t + (1/a)·∇·[(1+δ)v] = 0
+   *   θ ≡ ∇·v = −a·(∂δ/∂t)/(1+δ),    dt = da/(aE)
+   *   θ/(aHf) = −Δδ · a / (Δa · f · (1+δ))
+   *
+   * so everything except Δδ and (1+δ) collapses into this one number. The
+   * check that it is right: in linear theory δ ∝ D, and this reduces to
+   * −δ/(1+δ), which is the same −δ_lin the Zel'dovich invariants give in
+   * their linear limit. Two derivations, one answer.
+   *
+   * The interval is not one substep but the lag of the low-pass above, which
+   * is (1−k)/k substeps — about sixteen of them at k = 0.06. Zero before the
+   * first step, which reads as "no flow known yet" rather than as a divide by
+   * zero.
+   */
+  get thetaScale() {
+    const daEff = this.lastDa * (1 - LOWPASS_K) / LOWPASS_K;
+    return daEff > 1e-12 ? this.a / (daEff * COSMO.growthRate(this.a)) : 0;
+  }
 
   dispose() {
-    for (const t of [this.posA, this.posB, this.velA, this.velB, this.density, this.fftA, this.fftB, this.force]) t.dispose();
+    for (const t of [this.posA, this.posB, this.velA, this.velB, this.density,
+      this.densityRef, this.densityRefB, this.fftA, this.fftB, this.force]) t.dispose();
     this.quad.geometry.dispose();
     this.depositPoints.geometry.dispose();
     this.depositPoints.material.dispose();
-    for (const m of [this.icMat, this.fftMat, this.greenMat, this.forceMat, this.kickMat, this.driftMat]) m.dispose();
+    for (const m of [this.icMat, this.fftMat, this.greenMat, this.forceMat,
+      this.kickMat, this.driftMat, this.lowpassMat]) m.dispose();
   }
 }
 

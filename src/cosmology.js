@@ -9,9 +9,15 @@ const OMEGA_M = 0.315;
 const OMEGA_L = 0.685;
 const H0_INV_GYR = 14.51; // 1/H0 in Gyr for h = 0.674
 
-const N_TAB = 2048;
+// The table runs well past the present day: M1 asks the cosmic web for a
+// continuous slow drift rather than a freeze at a = 1, and a clock that clamps
+// is a frozen clock. a = 8 is roughly 20 Gyr hence, far beyond any session.
+// N_TAB rises with the range so resolution below a = 1.5 is not traded away —
+// tools/verify.js checks that against adaptive quadrature rather than trusting
+// the arithmetic here.
+const N_TAB = 4096;
 const A_MIN = 1e-3;
-const A_MAX = 1.5;
+const A_MAX = 8;
 
 function E(a) { return Math.sqrt(OMEGA_M / (a * a * a) + OMEGA_L); }
 
