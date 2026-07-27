@@ -319,10 +319,158 @@ function suiteZeldovich() {
     `${(f10 * 100).toFixed(1)}%`);
 }
 
+
+// ---------------------------------------------------------------------------
+// suite: print
+//
+// §9.4's curve, checked for the properties that make it a *print* rather than
+// an arbitrary rational function — and checked against ACES, which it replaces,
+// so the change is characterised rather than asserted.
+
+/** §9.4 step 1 — the reference's rational print curve, which owns atmosphere */
+function tonemapPrint(x) {
+  x = Math.max(x, 0);
+  return Math.min(Math.max((x * (x * 0.36 + 0.42)) / (x * (x * 0.34 + 0.66) + 0.11), 0), 1);
+}
+
+/** §3 row 3 — AEON's own curve, which survives in vacuum */
+function tonemapVacuum(x) {
+  return Math.min(Math.max(1 - Math.exp(-1.32 * Math.max(x, 0)), 0), 1);
+}
+
+/** and the ruling: cross-faded by the same uPaint that drives the grade */
+function tonemapRef(x, paint) {
+  const v = tonemapVacuum(x), p = tonemapPrint(x);
+  return v + (p - v) * paint;
+}
+
+/** three's ACESFilmicToneMapping, for comparison only */
+function acesRef(x) {
+  const a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+  x *= 0.6;
+  return Math.min(Math.max((x * (a * x + b)) / (x * (c * x + d) + e), 0), 1);
+}
+
+function suitePrint() {
+  console.log('\nprint — §9.4 tonemap properties, and what it changes vs ACES');
+
+  // Two curves, one uniform. §3 row 3 splits the tonemap by medium exactly as
+  // §3 row 1 splits the lift, so every property below has to hold across the
+  // whole cross-fade rather than at its endpoints.
+  const PAINTS = [0, 0.25, 0.5, 0.75, 1];
+
+  ok('both curves map black to black, so the blend does at every uPaint',
+    PAINTS.every((p) => tonemapRef(0, p) === 0));
+  ok('the blend is monotone at every uPaint', (() => {
+    for (const p of PAINTS) {
+      let prev = -1;
+      for (let i = 0; i <= 4000; i++) {
+        const v = tonemapRef(i / 100, p);
+        if (v < prev - 1e-12) return false;
+        prev = v;
+      }
+    }
+    return true;
+  })(), 'a convex blend of two monotone curves — checked, not assumed');
+  ok('it saturates below 1 and never exceeds it, in either medium',
+    PAINTS.every((p) => tonemapRef(1e6, p) <= 1 && tonemapRef(1e6, p) > 0.99),
+    `vacuum ${tonemapVacuum(1e6).toPrecision(6)} · print ${tonemapPrint(1e6).toPrecision(6)}`);
+
+  // Why the split is load-bearing rather than decorative: the two curves agree
+  // in the highlights and diverge hard in the shadows, which is the entire
+  // difference between a deep field and a painted one. Reported, not predicted.
+  {
+    let worst = 0, at = 0;
+    for (let i = 1; i <= 2000; i++) {
+      const x = i / 200, d = tonemapPrint(x) - tonemapVacuum(x);
+      if (d > worst) { worst = d; at = x; }
+    }
+    ok('the print curve lifts shadows and the vacuum curve does not',
+      tonemapPrint(0.02) > tonemapVacuum(0.02) * 2 && worst > 0.05,
+      `at 2% grey: ${tonemapVacuum(0.02).toFixed(4)} → ${tonemapPrint(0.02).toFixed(4)}`
+      + ` (${(tonemapPrint(0.02) / tonemapVacuum(0.02)).toFixed(2)}×);`
+      + ` widest gap ${worst.toFixed(3)} at x = ${at.toFixed(2)}`);
+  }
+
+  // ACES is what both regimes replace, so characterise the departure in each
+  {
+    const dev = (f) => {
+      let m = 0;
+      for (let i = 0; i <= 2000; i++) m = Math.max(m, Math.abs(f(i / 200) - acesRef(i / 200)));
+      return m;
+    };
+    ok('neither regime is ACES by another name',
+      dev(tonemapVacuum) > 0.05 && dev(tonemapPrint) > 0.05,
+      `max |Δ| vs ACES — vacuum ${dev(tonemapVacuum).toFixed(3)} · print ${dev(tonemapPrint).toFixed(3)}`);
+  }
+
+  // §2.8's actual claim, tested end to end rather than asserted: run the whole
+  // print on the CPU and check that vacuum keeps black at exactly zero while
+  // atmosphere lands it on the lift. The shader is the same arithmetic.
+  const LIFT = [0.017, 0.021, 0.036];
+  function printRef(rgb, paint) {
+    let c = rgb.map((v) => tonemapRef(v, paint));
+    const lum = (v) => 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+    const ss = (e0, e1, x) => {
+      const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
+      return t * t * (3 - 2 * t);
+    };
+    let l = lum(c);
+    const sh = [0.90, 0.95, 1.16].map((v) => v + (1 - v) * ss(0.0, 0.34, l));
+    const hi = [1.055, 1.012, 0.925].map((v) => 1 + (v - 1) * ss(0.44, 0.98, l));
+    c = c.map((v, i) => v * (1 + (sh[i] - 1) * 0.85 * paint) * (1 + (hi[i] - 1) * 0.9 * paint));
+    c = c.map((v, i) => v * (1 - LIFT[i] * paint) + LIFT[i] * paint);
+    c = c.map((v) => v + (v * v * (3 - 2 * v) - v) * 0.16 * paint);
+    l = lum(c);
+    const sat = 1 + 0.16 * paint * ss(0.10, 0.42, l) * (1 - ss(0.62, 0.96, l));
+    return c.map((v) => l + (v - l) * sat);
+  }
+
+  const vacuumBlack = printRef([0, 0, 0], 0);
+  ok('§2.8 · in vacuum, black comes out exactly #000',
+    vacuumBlack.every((v) => v === 0), `got [${vacuumBlack.join(', ')}]`);
+
+  // The stronger claim, and the one that makes uPaint = 0 honest: in vacuum the
+  // print is not a faint print, it is *absent*. Every graded step — push, lift,
+  // S, saturation — has to collapse to identity, leaving only AEON's curve.
+  {
+    let worst = 0;
+    for (let i = 0; i <= 60; i++) {
+      const x = i / 20;
+      const got = printRef([x, x * 0.7, x * 0.4], 0);
+      const want = [x, x * 0.7, x * 0.4].map(tonemapVacuum);
+      worst = Math.max(worst, ...got.map((v, k) => Math.abs(v - want[k])));
+    }
+    ok('§3 row 3 · at uPaint 0 the pass is exactly AEON\'s curve and nothing else',
+      worst < 1e-12, `max |Δ| over 61 samples: ${worst.toExponential(2)}`);
+  }
+
+  // The floor is *near* the §9.4 lift rather than equal to it — the S-curve and
+  // the midtone saturation both run afterwards and shape it. What §2.8 claims
+  // is that nothing reaches black, so that is what gets asserted; the exact
+  // floor is reported rather than predicted.
+  const airBlack = printRef([0, 0, 0], 1);
+  ok('§2.8 · in atmosphere, nothing reaches black',
+    airBlack.every((v) => v > 0.005),
+    `floor [${airBlack.map((v) => v.toFixed(4)).join(', ')}]`
+    + ` from a lift of [${LIFT.join(', ')}], violet-biased as §9.4 intends`);
+
+  // and the cross-fade between them has to be continuous, or §3's "cross-fade
+  // on the atmospheric-entry hyperzoom" would be a cut
+  let jump = 0;
+  for (let i = 0; i < 200; i++) {
+    const a = printRef([0.2, 0.2, 0.2], i / 200);
+    const b = printRef([0.2, 0.2, 0.2], (i + 1) / 200);
+    jump = Math.max(jump, ...a.map((v, k) => Math.abs(v - b[k])));
+  }
+  ok('the vacuum→atmosphere cross-fade is continuous', jump < 0.01,
+    `largest step over 200 samples of uPaint: ${jump.toExponential(2)}`);
+}
+
 // ---------------------------------------------------------------------------
 
 const only = process.argv[2];
-const suites = { cosmology: suiteCosmology, zeldovich: suiteZeldovich };
+const suites = { cosmology: suiteCosmology, zeldovich: suiteZeldovich, print: suitePrint };
 
 for (const [name, fn] of Object.entries(suites)) {
   if (only && only !== name) continue;

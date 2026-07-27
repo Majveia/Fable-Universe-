@@ -21,14 +21,35 @@ node tools/check.js --milestone M1 --extra "slab=1"   # score an experiment
 node tools/check.js --skip capture                    # the fast half
 ```
 
-Runs `verify` → `shadercheck` → `capture` → `gate` in §7's order and prints one
-verdict. It ends by naming the GPU it ran on and saying plainly whether the
+Runs `parse` → `verify` → `shadercheck` → `capture` → `gate` in §7's order and
+prints one verdict. It ends by naming the GPU it ran on and saying plainly whether the
 artefacts count: a software rasteriser gets a warning, real silicon gets a tick.
 
 **This is the command to run on a machine with a GPU.** Everything in `tools/`
 executes anywhere; only some of it *means* anything without one, and §M0 is
 specific that a real GPU is the difference between a capture set that gates a
 milestone and one that merely documents it.
+
+## `parse.js` — the parse gate
+
+```bash
+node tools/parse.js             # every module the browser loads
+node tools/parse.js --quiet     # only the failures
+```
+
+Two seconds, no browser, and it runs first because everything after it launches
+Chromium to discover the same thing more slowly.
+
+It exists for one specific defect. A backtick inside a GLSL template literal —
+in a *comment*, where nothing looks wrong — ends the template and turns the rest
+of the shader into JavaScript. The module then fails to parse, `window.AEON`
+never appears, and every tool downstream reports the same useless symptom: the
+page did not boot. §11 lists "shader strings" as a trap; this is the layer
+below it, where the string is not yet a string.
+
+`node --check` is not this guard. Given a file containing an `import` it detects
+ESM, declines to parse, and exits 0 — so a broken module passes. Copying to
+`.mjs` makes it check for real, which is the whole trick.
 
 ## `verify.js` — the maths, offline
 
@@ -118,6 +139,7 @@ that drifts means the generators drifted, which is exactly the alarm you want.
 
 ```bash
 node tools/shadercheck.js
+node tools/shadercheck.js --flags "m1=1,m2=1&slab=1"   # one route per combination
 ```
 
 Exit 0 green · 1 a shader failed or the page threw · 2 the route did not reach
@@ -131,6 +153,12 @@ nothing. Link status is checked too — that is where a varying mismatch shows.
 
 Coverage comes from flying the bench route, so all six scales assemble. A run
 that fails to reach every scale reports **incomplete**, never *pass*.
+
+It flies the route once **per flag combination**, defaulting to the shipped
+build plus `m1=1&m2=1&slab=1`. §7.4 puts milestone work behind a default-off
+flag, so a single unflagged pass compiles the build nobody is iterating on and
+reports green while every new shader in the repo goes unchecked — the same
+failure the gate exists to prevent, one level up.
 
 One limit worth knowing: a shader compiles against *a* driver, not against all
 of them. Green here means green on the machine that ran it — ANGLE over
