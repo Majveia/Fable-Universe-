@@ -350,17 +350,40 @@ const M1_PALETTE = /* glsl */`
   // element is moving. Divergence keeps a job — it modulates within a family,
   // so the flow is still legible along a filament.
   vec3 webColorClass(float dens, float th, float nClass, float hash) {
+    // ---------------------------------------------------------------------
+    // The colours are the observed colour–density relation, not a key.
+    //
+    // The real cosmic web has no intrinsic colour — dark matter emits nothing.
+    // What is actually seen is the galaxies tracing it, and their colour is a
+    // strong, measured function of exactly the quantity this channel computes.
+    // The morphology–density relation (Dressler 1980) and the bimodal galaxy
+    // colour distribution (Baldry et al. 2004) say:
+    //
+    //   void, field      gas-rich, unquenched, actively forming stars
+    //                    → the blue cloud, hot young O/B light        #9FC4FF
+    //   sheet            still forming, slightly older populations    #CFE0FF
+    //   filament         infall begins stripping gas; green valley    #E8E2C4
+    //   knot / cluster   ram-pressure stripped, quenched, all old
+    //                    stars → the red sequence                     #FFB47A
+    //
+    // So the palette runs blue in the empty places and red in the dense ones —
+    // which is the opposite of the intuition that dense means hot, and it is
+    // what the sky actually looks like. A cluster is red because its galaxies
+    // stopped making blue stars a long time ago.
+    //
+    // This also fixes the frame's temperature. The divergence ramp ran violet
+    // through amber, which is a false-colour key: legible, and not a photograph
+    // of anything. These are stellar-population colours on a black sky.
+    //
     // The transitions are narrow on purpose. The count is within 0.15 of an
     // integer for 85% of Lagrangian space (tools/verify.js), so a wide ramp
     // spends its width on a region that barely exists while blending the
     // families that do — measured, 0.15→0.85 edges put 80% of the mass into one
-    // 40° hue band between sheet and filament, and the histogram read two
-    // families. A class that holds its colour across its own range is what
-    // makes it a family.
-    vec3 col = vec3(1.00, 0.56, 0.14);                                    // void
-    col = mix(col, vec3(0.20, 0.90, 0.62), smoothstep(0.40, 0.62, nClass)); // sheet
-    col = mix(col, vec3(0.16, 0.40, 1.00), smoothstep(1.40, 1.62, nClass)); // filament
-    col = mix(col, vec3(0.74, 0.22, 0.98), smoothstep(2.40, 2.62, nClass)); // knot
+    // 40° hue band and the histogram read two families.
+    vec3 col = vec3(0.62, 0.77, 1.00);                                    // void: blue cloud
+    col = mix(col, vec3(0.81, 0.88, 1.00), smoothstep(0.40, 0.62, nClass)); // sheet
+    col = mix(col, vec3(0.91, 0.89, 0.77), smoothstep(1.40, 1.62, nClass)); // filament: green valley
+    col = mix(col, vec3(1.00, 0.71, 0.48), smoothstep(2.40, 2.62, nClass)); // knot: red sequence
 
     // Divergence still speaks inside the family, but through *saturation*, not
     // hue. Leaning the colour toward the next channel along rotated hue by

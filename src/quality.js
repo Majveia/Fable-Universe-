@@ -80,6 +80,16 @@ function chooseTier() {
     const cores = navigator.hardwareConcurrency || 4;
     const coarse = window.matchMedia && matchMedia('(pointer: coarse)').matches;
     if (coarse) return cores >= 6 ? 1 : 0;
+
+    // The GPU decides, and it used to not get a vote. The first version keyed
+    // the tier on `hardwareConcurrency` alone, which is backwards on both ends:
+    // a six-core desktop with a discrete card was graded below a sixteen-core
+    // laptop with integrated graphics. The renderer string is already in hand
+    // for the software check, so ask it.
+    const discrete = /\b(rtx|gtx|radeon rx|geforce|quadro|arc a\d|apple m[1-9])\b/i.test(renderer);
+    const integrated = /\b(intel|uhd|iris|vega \d|adreno|mali|powervr)\b/i.test(renderer);
+    if (discrete) return cores >= 8 ? 3 : 2;
+    if (integrated) return cores >= 8 ? 2 : 1;
     if (cores >= 12) return 3;
     if (cores >= 6) return 2;
     return 1;
@@ -119,5 +129,20 @@ export function qFlag(key, column) {
  * rather than a filtering one.
  */
 export function pixelRatio() {
-  return Math.min(window.devicePixelRatio || 1, 2) * Q.px;
+  const device = Math.min(window.devicePixelRatio || 1, 2);
+  // Never below the device's own ratio unless the row is Low. §5 says the
+  // factor is "always ≥ 1.0 above Low so the composite always resolves *down*
+  // to the canvas" — and the first version of this function ignored that,
+  // multiplying unconditionally. On a 1× display the Low row rendered at 0.85
+  // and upscaled, which is not a soft image so much as a smaller one: point
+  // sprites have a size floor in pixels, so at 0.85 every star and every tracer
+  // covers proportionally more of the frame. Measured on the galaxy scale, it
+  // took mean luminance from 0.116 to 0.157 and lit pixels from 87% to 98% —
+  // the scale washing out, which is exactly what it looked like.
+  return TIER === 0 ? device * Q.px : Math.max(device * Q.px, device);
+}
+
+/** what the renderer is actually doing, for the HUD and for a bug report */
+export function tierReport() {
+  return `${Q.name} · ${pixelRatio().toFixed(2)}× · ?q= to override`;
 }
