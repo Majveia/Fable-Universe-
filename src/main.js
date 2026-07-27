@@ -65,6 +65,9 @@ class App {
 
     /** frames drawn since construction; a harness's only honest clock (§_frame) */
     this.frames = 0;
+    /** set by haltAt(); the frame the loop stopped on, or 0 */
+    this.halted = 0;
+    this._haltAt = 0;
 
     // the classic surface is the default; the streaming globe is opt-in
     this.quadOn = url.searchParams.get('quad') === '1';
@@ -279,6 +282,24 @@ class App {
     if (s.kind === 'clouds') return { type: s.pp.type, atmo: 1.5, mood: s.pp.res?.id };
     if (s.kind === 'planet') return { type: s.pp.type, atmo: 0.55, mood: s.pp.res?.id };
     return null;
+  }
+
+  /**
+   * Draw exactly `n` frames and stop. The only way to photograph a specific
+   * frame: without it a screenshot catches whatever the loop happened to be on
+   * when the compositor got round to it, which is a property of the machine.
+   * Nothing in the universe calls this — it exists for `tools/`.
+   */
+  haltAt(n) {
+    this._haltAt = n;
+    if (this.frames >= n) { this.renderer.setAnimationLoop(null); this.halted = this.frames; }
+  }
+
+  /** and back to running, for a harness that wants more frames after a look */
+  resume() {
+    this._haltAt = 0;
+    this.halted = 0;
+    this.renderer.setAnimationLoop(() => this._frame());
   }
 
   _syncScale() {
@@ -828,6 +849,20 @@ class App {
     // The tier is chosen once in quality.js and the renderer keeps it.
 
     this.bench?.frameEnd();
+
+    // Stop exactly here, if a harness asked to photograph this frame. Counting
+    // frames was only half the problem: `App.frames` told an observer *when*
+    // frame N had been drawn, and the loop then kept drawing while the
+    // screenshot was taken. On a software rasteriser that window holds zero or
+    // one extra frames and nothing moves; on an RTX 3060 at 1400 fps it holds
+    // dozens, and two runs land on different ones. That is what made the
+    // determinism test report 14.54% bit-identical while insisting both runs
+    // were "at frame 94" — they were, when asked. They were not, when
+    // photographed. See tools/repeat.js.
+    if (this._haltAt && this.frames >= this._haltAt) {
+      this.renderer.setAnimationLoop(null);
+      this.halted = this.frames;
+    }
   }
 
   _resize() {

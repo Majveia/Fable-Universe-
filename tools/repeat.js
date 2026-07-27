@@ -11,20 +11,31 @@
 // come out in (?dt=).
 //
 // This is the test that says whether that worked. It loads one URL twice from
-// cold, waits for each to reach the same *app frame*, and compares the two
-// images at the tolerance §7.3 names.
+// cold, **halts** each at the same app frame, and compares the two images at
+// the tolerance §7.3 names.
 //
-// "The same app frame" is load-bearing, and it used to be "90 requestAnimation-
-// Frame ticks after `window.AEON` appeared", which is not the same thing. The
-// render loop starts when App constructs; how many frames it gets through
-// before an external observer attaches is a property of the machine, not of the
-// universe. On a software rasteriser the first frame is slow enough that the
-// observer always wins the race and the two runs land on the same frame — so
-// the test passed at 100% bit-identical. On an RTX 3060 it does not, and the
-// test reported 11.9%: two honest photographs of two different moments.
+// Photographing a known frame is load-bearing, and getting it right took two
+// goes — both of which passed at 100% on a software rasteriser and failed on
+// real hardware, which is the whole argument for §M0's "real GPU, not CI
+// SwiftShader".
 //
-// A determinism test that cannot say which frame it photographed cannot tell a
-// nondeterministic universe from a fast one. So it asks the app.
+//   1. It began as "90 requestAnimationFrame ticks after `window.AEON`
+//      appeared". The render loop starts when App constructs, and how many
+//      frames it completes before an external observer attaches is a property
+//      of the machine. Reported 11.9%.
+//   2. Counting the app's own frames fixed that and was still not enough,
+//      because **the loop kept running while the screenshot was taken**. The
+//      test would report, correctly, that both runs reached frame 94 — and then
+//      photograph frame 94 in one and something later in the other. Reported
+//      14.54%, worst channel delta 68/255.
+//
+// On a software rasteriser that second window holds zero or one extra frames
+// and nothing has moved. At 1400 fps it holds dozens. Two honest photographs of
+// two different moments, twice over.
+//
+// So the app is halted at frame N and photographed while stopped. A determinism
+// test that cannot say which frame it photographed cannot tell a
+// nondeterministic universe from a fast one.
 
 import { arg, launch, playwright, serve } from './lib.js';
 import { decodePNG } from './png.js';
@@ -43,12 +54,13 @@ async function once() {
   await page.goto(url, { waitUntil: 'load' });
   await page.waitForFunction('window.AEON', null, { timeout: 60000 });
   await page.evaluate(() => document.querySelectorAll('.hud, #splash').forEach(e => { e.style.visibility = 'hidden'; }));
-  if (await page.evaluate(() => typeof window.AEON.frames !== 'number')) {
-    throw new Error('repeat: this build has no App.frames counter, so the frame '
-      + 'this photograph was taken at is unknowable. See src/main.js _frame().');
+  if (await page.evaluate(() => typeof window.AEON.haltAt !== 'function')) {
+    throw new Error('repeat: this build cannot be halted at a frame, so the frame '
+      + 'this photograph was taken at is unknowable. See src/main.js haltAt().');
   }
-  await page.waitForFunction((n) => window.AEON.frames >= n, frames, { timeout: 120000 });
-  const at = await page.evaluate(() => window.AEON.frames);
+  await page.evaluate((n) => window.AEON.haltAt(n), frames);
+  await page.waitForFunction(() => window.AEON.halted > 0, null, { timeout: 120000 });
+  const at = await page.evaluate(() => window.AEON.halted);
   const img = decodePNG(await page.screenshot({ type: 'png' }));
   await page.close();
   return { img, at };

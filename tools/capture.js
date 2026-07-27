@@ -69,17 +69,32 @@ function stations(route) {
 // Wait for N rendered frames, not N milliseconds — that is the whole point,
 // and it is why a slow machine shoots the same frame as a fast one.
 //
+// And then *stop*, which is the other half and was missing. Counting frames and
+// then screenshotting a still-running loop photographs whichever frame the
+// compositor reached, which is a property of the machine: at 1400 fps dozens of
+// frames pass between "N frames have been drawn" and the shutter. §7.7 asks
+// every previous milestone to be re-shot and compared; that is not possible
+// against a frame nobody can name. `App.haltAt()` stops the loop inside the
+// frame loop itself, so the pixels on the canvas are frame N exactly.
+//
 // The wall-clock cap is the escape hatch, not the schedule: a scale whose
 // frames cost seconds (a software rasteriser at 1440p, say) would otherwise
 // hold the run open forever, and a capture tool that can hang is not an
 // instrument. Which way the settle ended is recorded in the manifest, so a
 // timed-out frame is never quietly filed next to a settled one.
 const SETTLE = ([n, capMs]) => new Promise((done) => {
+  const app = window.AEON;
   const t0 = performance.now();
-  let i = 0;
+  const start = app.frames;
+  app.haltAt(start + n);
   const tick = () => {
-    if (++i >= n) return done({ frames: i, by: 'frames' });
-    if (performance.now() - t0 > capMs) return done({ frames: i, by: 'timeout' });
+    if (app.halted > 0) return done({ frames: app.halted - start, by: 'frames' });
+    if (performance.now() - t0 > capMs) {
+      // give up on the target, but still stop before the shutter: a capped
+      // frame should be unsettled, never unidentifiable
+      app.haltAt(app.frames);
+      return done({ frames: app.frames - start, by: 'timeout' });
+    }
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);

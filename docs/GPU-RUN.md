@@ -327,3 +327,87 @@ has produced:
 Everything else in run four — `draws p95 1`, `fps 59.9/56.8/55.6`, the deep-time
 FAIL, `verify 25/25`, and the absence of a `parse` step or a provenance banner —
 is the same stale build as runs two and three.
+
+---
+
+## The fifth run — the first one that counted
+
+Clean tree at `4427395`, RTX 3060 Laptop, D3D11. `parse` 55/55 · `verify` 64/64
+· `shaders` green on both flag passes, 98 shaders across all six scales each ·
+`capture` clean, all six stations, no retry needed.
+
+### §5 is green, and this is the first time anyone could say so
+
+```
+fps p50/p95/p99 1428.6/344.8/285.7 · draws p95 98 · tris p95 0.19M · gpu 212.6MB
+```
+
+| | measured | §5 desktop | margin |
+|---|---|---|---|
+| fps p95 / p99 | **344.8 / 285.7** | ≥ 60 / ≥ 50 | 5.7× |
+| draw calls p95 | **98** | ≤ 900 | 9.2× |
+| triangles p95 | **0.19 M** | ≤ 2.2 M | 11.6× |
+| GPU memory | **212.6 MB** | ≤ 400 MB | 1.9× |
+
+**§M1 clause (e) — "budgets unchanged" — is closed.** M1 put a symmetric
+deformation tensor into a shader running on 314k vertices a frame and paid for
+it by deleting 64 square roots from the same loop; the trade came out level with
+room to spare. Every earlier run reported this clause failing, and every one of
+those was measuring vsync, a broken draw counter, or a stale tree.
+
+§M0's gate — *"one command produces a complete numbered capture set from cold
+start"* — is met on hardware whose numbers count.
+
+### The determinism test failed for the second time, for the second reason
+
+```
+repeat · app frame 90
+  both runs at frame   : 94
+  bit-identical pixels : 14.54%
+  worst channel delta  : 68/255
+```
+
+Run three's fix made the test *say which frame it photographed*. This run shows
+that was only half the problem: it waited for `App.frames >= 90`, found 94 in
+both runs — and then took the screenshot **while the loop kept running**.
+
+On a software rasteriser that window holds zero or one extra frames and nothing
+has moved, which is why the test passes at 100% here every time. At 1400 fps it
+holds dozens. Two honest photographs of two different moments, twice over, and
+both times the software rasteriser called it fine.
+
+`App.haltAt(n)` now stops the render loop inside the frame loop itself, so the
+pixels on the canvas *are* frame n. `repeat.js` halts before the shutter and
+`capture.js` does the same — §7.7 asks every previous milestone to be re-shot
+and compared, which is not possible against a frame nobody can name.
+
+Whether any real nondeterminism remains underneath is still open. What is
+settled is that the next answer will be about the universe rather than about
+the shutter.
+
+### §2.8 failed on hardware, and the dither was tipping it
+
+```
+FAIL (2.8) vacuum reaches true #000, and the dither does not lift it
+       39.0% exactly #000 (42.2% with the dither off)
+```
+
+The clause allows 0.5% and the dither cost 3.2 points. Its luma gate opened at
+zero, which still hands a small dither to a pixel sitting at 0.4/255 — a value
+that quantises to black — and half of those round up. The gate now opens at
+**half a display step**, in `post.js` and `print.js` both: below half a step
+there is nothing to dither between. Banding is unaffected, measured here at the
+same 10 px run as the reference frame.
+
+What put so many pixels in that band is the bloom pedestal — M2 act 1 measured
+it directly (`docs/plans/M2.md` §7), and this is the same defect arriving
+through M1's gate. On this container the same clause reads 50.1% against 49.8%,
+which is why it took real hardware to surface.
+
+### Still open
+
+- **(b) ≥4 hue families — 2.** Peaks at 200° with 62.7% achromatic. `M1.md` §12
+  says this needs a decision rather than a commit, and nothing in this run
+  changes that.
+- **The bloom rebuild**, M2 act 2 step 5, which is what actually fixes §2.8 in
+  vacuum rather than stopping the dither from making it worse.
