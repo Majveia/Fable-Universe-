@@ -23,6 +23,7 @@ import { PlanetScale, PLANET_NOTE } from './planetscale.js';
 import { seedAmbient, starName, universeEpigraph } from './rng.js';
 import { advance as advanceClock, resetClock } from './clock.js';
 import { Bench, BENCH_ON, BENCH_SEED } from './bench.js';
+import { Q, pixelRatio } from './quality.js';
 
 const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE, planet: PLANET_NOTE };
 const HINTS = {
@@ -69,7 +70,8 @@ class App {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // §5's quality table, chosen once and never moved again (§11)
+    this.dpr = pixelRatio();
     this.renderer.setPixelRatio(this.dpr);
     document.getElementById('app').appendChild(this.renderer.domElement);
 
@@ -104,7 +106,6 @@ class App {
 
     this.clock = new THREE.Clock();
     this._statT = 0;
-    this._perf = { acc: 0, n: 0 };
     this._warping = false;
 
     // splash dissolves into the young universe — each one opens on its line
@@ -805,28 +806,14 @@ class App {
       if (walking !== this._crumbWalk) { this._crumbWalk = walking; this._crumbs(); }
     }
 
-    // adaptive resolution: hold 60ish, never look potato unless we must —
-    // and never during a flown sequence, which is exactly when it must
-    // look like cinema: the descent keeps a floor under the resolution
-    const p = this._perf;
-    p.acc += dt; p.n++;
-    if (p.n >= 70 && !this._benchPinned) {
-      const avg = p.acc / p.n;
-      const s = this.active();
-      const floor = (s?.auto || s?.asc || s?.ride) ? 1.25 : 1;
-      if (avg > 0.03 && this.dpr > floor) this._setDpr(Math.max(this.dpr - 0.25, floor));
-      else if (avg < 0.015 && this.dpr < Math.min(window.devicePixelRatio || 1, 2)) this._setDpr(this.dpr + 0.25);
-      p.acc = 0; p.n = 0;
-    }
+    // Resolution does not move. It used to: this stepped the pixel ratio up and
+    // down every 70 frames against a frame-time average, which §11 lists as a
+    // known trap — "set once at init, live changes pump visibly" — and the old
+    // code half-conceded it by holding resolution up during flown sequences,
+    // "which is exactly when it must look like cinema." Every sequence is.
+    // The tier is chosen once in quality.js and the renderer keeps it.
 
     this.bench?.frameEnd();
-  }
-
-  _setDpr(v) {
-    this.dpr = v;
-    this.renderer.setPixelRatio(v);
-    this.post.composer.setPixelRatio(v);
-    this._resize();
   }
 
   _resize() {

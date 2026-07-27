@@ -23,6 +23,7 @@ import { SystemScale, systemParams } from './system.js';
 import { BlackHoleScale } from './blackhole.js';
 import { SurfaceScale } from './surface.js';
 import { PlanetScale } from './planetscale.js';
+import { Q } from './quality.js';
 
 /** ?bench=1 — checked once, at import, before anything allocates. */
 export const BENCH_ON = (() => {
@@ -216,10 +217,10 @@ export class Bench {
     this._cur = null;
     this._pending = null;
 
-    // §11: adaptive quality is set once and never moves. During a measured
-    // flight that is not a preference, it is the difference between measuring
-    // the renderer and measuring the resolution controller.
-    app._benchPinned = true;
+    // §11's "set once at init" is now structural — quality.js chooses a tier
+    // before anything allocates and nothing moves it afterwards — so a bench
+    // run no longer has to pin anything to measure the renderer rather than
+    // the resolution controller. The tier it ran at is recorded instead.
 
     // the tour would fly its own route over ours
     app.tour?.stop?.();
@@ -342,6 +343,7 @@ export class Bench {
       schema: 'aeon-perf/1',
       seed: app.seed,
       tier: this.tier,
+      qualityRow: Q.name,
       route: {
         galaxySeed: this.route.galaxySeed,
         starSeed: this.route.starSeed,
