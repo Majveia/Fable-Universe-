@@ -67,25 +67,32 @@ retry; on Linux you may also need `--enable-gpu` to reach the real driver.
 
 ## What to send back
 
-The frames are in `docs/captures/M1/`. Per `docs/captures/README.md`, **a
-gateValid run's PNGs are worth committing and a software run's are not** — so:
+**Run from the default branch, and do not commit the PNGs onto a branch you
+intend to leave.** An earlier version of this page said to `git add -f
+docs/captures/M1/*.png` and push them to a `gpu-run-M1` branch. Doing that makes
+them tracked; the next `capture` run modifies them; and a modified tracked file
+blocks every `git checkout` after it. Three consecutive real-GPU runs measured
+stale code because of that single instruction.
+
+The JSON alone closes the numeric gates and is a few kilobytes:
 
 ```bash
-git checkout -b gpu-run-M1
-git add -f docs/captures/M1/*.png            # .gitignore holds these back by default
-git add docs/captures/M1/*.json
-git commit -m "M1 capture set, real GPU"
-git push -u origin gpu-run-M1
+git add -f docs/captures/M1/*.json
+git commit -m "M1 perf, real GPU"
+git push
 ```
 
-If you would rather not push 20 MB of frames, the JSON alone is enough to close
-the numeric gates — `perf-*.json` and `manifest.json` are a few kilobytes:
+If you want the frames themselves, copy them out of the repo rather than
+committing them:
 
-```bash
-git add docs/captures/M1/*.json && git commit -m "M1 perf, real GPU"
+```powershell
+Copy-Item docs/captures/M1/*.png $HOME/Desktop/aeon-M1/
+git checkout -- docs/captures        # leave the tree clean
 ```
 
-Either way, paste the final verdict block. That is the part I cannot produce.
+Either way, paste the final verdict block. That is the part I cannot produce —
+and since the provenance banner landed it also says, in its own output, whether
+what it measured was the branch or your working tree.
 
 ---
 
@@ -261,3 +268,62 @@ the p99 it exists to record. Left for M6, where `city.js` becomes
 `civilization.js`, with the reasoning recorded so it is a one-session job.
 
 Not their bug: cities are unreachable from the cosmic scale that `repeat` uses.
+
+---
+
+## The fourth run — and why the checkout kept losing
+
+Run four was taken from `gpu-run-M1` again, because the branch switch never
+happened:
+
+```
+git checkout claude/interactive-3d-universe-n6suwb
+error: Your local changes to the following files would be overwritten:
+        docs/captures/M1/01-desktop-cosmic-web.png
+        ... and seven more
+```
+
+**This page caused that.** "What to send back" tells you to `git add -f
+docs/captures/M1/*.png` and commit them to a branch — so the frames became
+tracked, and every subsequent `capture` run modifies them, and a modified
+tracked file blocks every checkout after it. Three runs in a row measured stale
+code for that reason. The instructions below now say to run from the default
+branch and copy frames out rather than committing them where they will fight the
+next checkout.
+
+To get unstuck:
+
+```powershell
+git checkout -- docs/captures       # discard the regenerated frames
+git checkout claude/interactive-3d-universe-n6suwb
+git pull
+git status                          # must be clean
+```
+
+**What run four established anyway**, and it is the most useful thing any run
+has produced:
+
+- **`repeat` passes at 100.00%**, worst channel delta 0/255, on the RTX. That
+  retires run three's 11.90% — it was the mixed tree, not the universe. §2.3
+  holds on hardware where `dt` genuinely varies.
+- **`capture` failed at one station**, and this is a real defect:
+  `05-desktop-surface.png FAILED — Protocol error (Page.captureScreenshot):
+  Unable to capture screenshot`, between two stations that shot cleanly on
+  either side of it. A capture set with a hole in it fails §M0's gate, which
+  asks for a *complete* numbered set, so one transient compositor hiccup costs
+  the whole run. `capture.js` now retries three times with a settle between
+  attempts and records `screenshotAttempts` in the manifest — a retried frame
+  should never be filed silently next to a clean one.
+- **GPU memory 197 MB** against §5's 400 MB, again. That number has been stable
+  across every run and is the one §5 clause that is genuinely green.
+- **Vacuum reaches true `#000` on 24.6%** of the cosmic frame (24.8% with the
+  dither off), so the dither is not lifting it. On this container the same
+  measurement reads 50%, which is worth knowing: real hardware is stricter, and
+  M2 act 1's bloom-pedestal finding matters more than the software numbers
+  suggested.
+- **Hue families: 2**, peaked at 260° with 32% achromatic. Run three's stale
+  build reported 3. The clause stays open either way.
+
+Everything else in run four — `draws p95 1`, `fps 59.9/56.8/55.6`, the deep-time
+FAIL, `verify 25/25`, and the absence of a `parse` step or a provenance banner —
+is the same stale build as runs two and three.
