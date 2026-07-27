@@ -29,6 +29,24 @@ import { addRivers } from './rivers.js';
 import { addInterior } from './interior.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 import { pickLandform } from './landform.js';
+import { PAINT_GLSL, lightFor } from './paint.js';
+
+const PARAM = (k) => {
+  try { return new URL(window.location.href).searchParams.get(k); }
+  catch { return null; }
+};
+
+/** M2 — the print and the rebuilt bloom. Default-off (§7.4). */
+const M2 = PARAM('m2') === '1';
+
+/**
+ * §9.2's light model, act 3. Rides M2 because it is the same milestone, but
+ * `?m2=1&paint=0` turns it off on its own — otherwise a single flag changes the
+ * tonemap, the bloom *and* the lighting at once, and no measurement can say
+ * which of the three moved the frame. §7.4 asks for a flag per change, and one
+ * flag for three changes is the same defect as no flag at all.
+ */
+const PAINT = M2 && PARAM('paint') !== '0';
 
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
@@ -85,6 +103,7 @@ const TERRAIN_FRAG = /* glsl */`
   varying vec3 vW;
   varying vec3 vN;
   ${NOISE_GLSL}
+  ${PAINT ? PAINT_GLSL : ''}
 
   uniform float uSea;    // sea level in world y, or -1e9 for a dry world
 
@@ -129,10 +148,38 @@ const TERRAIN_FRAG = /* glsl */`
     // rain darkens and deepens the ground, pooling colour into the low spots
     col *= mix(1.0, 0.66, uWet);
 
+    float dusk = smoothstep(-0.12, 0.12, uSunDir.y);
+    ${PAINT ? /* glsl */`
+    // §9.2 · every lit surface goes through one function.
+    //
+    // The three ramp stops are a *material* property and materials are act 4,
+    // so they are derived from the base colour here: the shade stop leans cool
+    // toward the shadow tint, the lit stop leans warm toward the sun. That is
+    // the shape §9.1's palettes have — a hue *path* from root to tip, not a
+    // brightness ramp — and act 4 replaces this derivation with the real four
+    // layers rather than replacing the model.
+    Surf sf;
+    sf.N = nb;
+    sf.V = normalize(uCam - vW);
+    sf.L = uSunDir;
+    sf.shade = mix(col * 0.55, uPaintShadowTint * dot(col, vec3(0.33)), 0.28);
+    sf.mid   = col;
+    sf.lit   = mix(col * 1.22, uPaintSun * dot(col, vec3(0.42)), 0.20);
+    sf.soft  = 0.10;
+    // the painterly wobble: the band edge is drawn, not computed, and it is
+    // keyed in metres so it keeps its shape at every distance
+    sf.jit   = (fbm3(vec3(vW.xz * 0.09, uSeed)) * 0.5) * 0.055;
+    sf.shadow = 1.0;            // no shadow map at surface scale yet — act 4
+    sf.trans = 0.0; sf.transCol = vec3(0.0);
+    sf.rim = 0.55;
+    sf.ao = 1.0;
+    sf.ambient = 1.0;
+    vec3 lit = paint(sf) * mix(0.35, 1.0, dusk);
+    ` : /* glsl */`
     // light: wrapped diffuse so dusk rakes long and soft, like film
     float diff = clamp((dot(nb, uSunDir) + 0.3) / 1.3, 0.0, 1.0);
-    float dusk = smoothstep(-0.12, 0.12, uSunDir.y);
     vec3 lit = col * (uSunColor * diff * diff * 1.35 + vec3(0.012, 0.014, 0.02) + uHorizon * 0.26 * dusk);
+    `}
 
     // wet earth holds a broad sheen of the sky and the sun
     if (uWet > 0.02) {
@@ -403,6 +450,41 @@ export class SurfaceScale {
    * human-scale terrain. Three LOD rings carry it ~14 km to a horizon that
    * genuinely curves with the world's true radius.
    */
+  /**
+   * §9.2's four light colours, for this world's actual star.
+   *
+   * `starlight.js` derives them from the spectrum through §9.6's transfer, so a
+   * world around an M dwarf gets a warmer sun *and* a warmer shadow, and one
+   * around an A-type gets a colder both. The elevation is the sun's own at
+   * spawn, because the beam reddens with the air it crosses — the same reason
+   * the horizon is warm.
+   */
+  _paintUniforms() {
+    const T = this.ctx.system?.temp ?? 5778;
+    const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
+    const L = lightFor(T, Math.max(elev, 0.5));
+    const v = (c) => ({ value: new THREE.Vector3(c[0], c[1], c[2]) });
+    this._paintLight = { T, uniforms: { sun: v(L.sun), sky: v(L.ambSky), gnd: v(L.ambGnd), sh: v(L.shadowTint) } };
+    return {
+      uPaintSun: this._paintLight.uniforms.sun,
+      uPaintAmbSky: this._paintLight.uniforms.sky,
+      uPaintAmbGnd: this._paintLight.uniforms.gnd,
+      uPaintShadowTint: this._paintLight.uniforms.sh,
+    };
+  }
+
+  /** the sun climbs, so the beam it sends reddens less — re-derive as it moves */
+  _syncPaintLight() {
+    if (!PAINT || !this._paintLight) return;
+    const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
+    const L = lightFor(this._paintLight.T, Math.max(elev, 0.5));
+    const u = this._paintLight.uniforms;
+    u.sun.value.set(...L.sun);
+    u.sky.value.set(...L.ambSky);
+    u.gnd.value.set(...L.ambGnd);
+    u.sh.value.set(...L.shadowTint);
+  }
+
   _buildTerrain() {
     const pp = this.pp;
     const noise = makeNoise(pp.seed);
@@ -468,6 +550,7 @@ export class SurfaceScale {
     this.terrainMat = new THREE.ShaderMaterial({
       uniforms: {
         uSunDir: this.uSunDir, uSunColor: this.uSunColor,
+        ...(PAINT ? this._paintUniforms() : {}),
         uColA: { value: pp.colA }, uColB: { value: pp.colB }, uColC: { value: pp.colC },
         uHorizon: { value: this.horizonColor },
         uCam: this.uCam,
@@ -1147,6 +1230,7 @@ export class SurfaceScale {
     if (this.caravan) this.caravan.update(dt, this.uSunDir.value.y);
     if (this.weather) this.weather.update(dt, this.uSunDir.value.y);
     if (this.megafauna) this.megafauna.update(dt, this.uSunDir.value.y);
+    this._syncPaintLight();
     if (this.godrays) this.godrays.update(dt);
     if (this.rivers) this.rivers.update(dt);
     if (this.festival) this.festival.update(dt, this.uSunDir.value.y);
