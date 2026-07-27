@@ -17,7 +17,7 @@ import { QuadtreePlanet } from './quadtree.js';
 import { NOISE_GLSL, makeCloudMaterial } from './planet.js';
 import { makeGalaxySkyFromWithin, makeSkyDome } from './starfield.js';
 import { softDotTexture } from './nebula.js';
-import { hash, RNG } from './rng.js';
+import { RNG, arand, hash } from './rng.js';
 import { snoise } from './terrain.js';
 import { addLife } from './life.js';
 import { addSettlement } from './settlement.js';
@@ -918,7 +918,7 @@ export class PlanetScale {
     let best = null, bs = -1e9;
     for (let relax = 0; relax < 3 && !best; relax++) {
       for (let i = 0; i < 380; i++) {
-        const z = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
+        const z = arand() * 2 - 1, th = arand() * Math.PI * 2;
         const q = Math.sqrt(1 - z * z);
         _t5.set(q * Math.cos(th), z, q * Math.sin(th));
         const day = _t5.dot(sun);
@@ -1039,7 +1039,7 @@ export class PlanetScale {
     if (!dir) {
       dir = up.clone();
       for (let i = 0; i < 40 && this.seaR > 0 && this.quad.heightAt(dir) < this.seaR + 0.001; i++) {
-        dir.copy(up).addScaledVector(_t6.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5), 0.02 * (i + 1)).normalize();
+        dir.copy(up).addScaledVector(_t6.set(arand() - 0.5, arand() - 0.5, arand() - 0.5), 0.02 * (i + 1)).normalize();
       }
     }
     const groundDir = dir;
@@ -1170,9 +1170,9 @@ export class PlanetScale {
     const drops = [];
     for (let i = 0; i < N; i++) {
       drops.push(new THREE.Vector3(
-        (Math.random() - 0.5) * 0.03,
-        Math.random() * 0.03 - 0.01,
-        (Math.random() - 0.5) * 0.03));
+        (arand() - 0.5) * 0.03,
+        arand() * 0.03 - 0.01,
+        (arand() - 0.5) * 0.03));
     }
     this._rain = { lines, geo, pos, drops, N };
   }
@@ -1316,8 +1316,8 @@ export class PlanetScale {
     let dir = null;
     for (let i = 0; i < 6; i++) {
       const d = up.clone()
-        .addScaledVector(e1, (Math.random() - 0.5) * 0.05)
-        .addScaledVector(e2, (Math.random() - 0.5) * 0.05).normalize();
+        .addScaledVector(e1, (arand() - 0.5) * 0.05)
+        .addScaledVector(e2, (arand() - 0.5) * 0.05).normalize();
       if (this._cloudAt(d) > 0.5) { dir = d; break; }
     }
     if (!dir) return;
@@ -1596,7 +1596,7 @@ export class PlanetScale {
     this.uWet.value = this.wx.wet;
     this.uFlow.value = 1 + this.wx.wet * 0.8;   // the rivers answer the rain
     this._updateRain(dt, up);
-    if (!this._bolt && this.wx.raining && this.wx.storm && Math.random() < dt / 5) {
+    if (!this._bolt && this.wx.raining && this.wx.storm && arand() < dt / 5) {
       this._spawnBolt(up);
     }
     if (this._bolt) this._updateBolt(dt);

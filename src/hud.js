@@ -2,7 +2,7 @@
 // Everything fades; the universe is the UI.
 
 import { systemParams } from './system.js';
-import { faunaNames } from './rng.js';
+import { arand, faunaNames } from './rng.js';
 
 const CONTROLS_HTML = `
   <b>everywhere</b><br>
@@ -417,8 +417,8 @@ export class HUD {
   _wondrous() {
     const app = this.app;
     for (let t = 0; t < 80; t++) {
-      const g = ((Math.random() * 2 ** 31) | 0) || 1;
-      const s = ((Math.random() * 2 ** 31) | 0) || 1;
+      const g = ((arand() * 2 ** 31) | 0) || 1;
+      const s = ((arand() * 2 ** 31) | 0) || 1;
       const i = systemParams(s).planets.findIndex(p => p.inhabited);
       if (i >= 0) {
         this.atlasPanel.classList.remove('open');

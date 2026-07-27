@@ -5,6 +5,8 @@
 // sinks into a cloud deck, climbs back out, pays the black hole a visit, and
 // starts again somewhere new. Forever. Touch anything and it's yours again.
 
+import { arand } from './rng.js';
+
 export class Tour {
   constructor(app) {
     this.app = app;
@@ -55,7 +57,7 @@ export class Tour {
         this._orbit(true, 0.25);
         if (s.a >= 0.99 && this.timer <= 0) {
           for (let i = 0; i < 10; i++) {
-            const hit = this._pickAt((Math.random() - 0.5) * 0.9, (Math.random() - 0.5) * 0.7);
+            const hit = this._pickAt((arand() - 0.5) * 0.9, (arand() - 0.5) * 0.7);
             if (hit) { app.diveFromHit(s, hit); this.stage = 'galaxy'; this.timer = 13; return; }
           }
           this.timer = 3;
@@ -66,7 +68,7 @@ export class Tour {
         this._orbit(true, 0.45);
         if (this.timer <= 0) {
           for (let i = 0; i < 10; i++) {
-            const hit = this._pickAt((Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.6);
+            const hit = this._pickAt((arand() - 0.5) * 0.8, (arand() - 0.5) * 0.6);
             if (hit && hit.type === 'star') { app.diveFromHit(s, hit); this.stage = 'system'; this.timer = 8; return; }
           }
           this.timer = 3;

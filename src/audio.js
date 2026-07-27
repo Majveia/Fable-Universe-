@@ -9,6 +9,8 @@
 
 // Each resonance's score: [frequency, amplitude, waveform, breath-rate] per
 // partial. Tuned quiet — these sit under the wind, not over it.
+import { arand } from './rng.js';
+
 const MOOD_SCORES = {
   counsel: [[73.4, 0.10, 'sawtooth', 0.028], [110, 0.06, 'sine', 0.041]],                       // D–A, monumental
   wanderers: [[261.6, 0.028, 'sine', 0.05], [329.6, 0.022, 'sine', 0.062], [392, 0.02, 'sine', 0.043], [587.3, 0.012, 'sine', 0.071]], // Cmaj add9 shimmer
@@ -66,7 +68,7 @@ export class Ambience {
     const len = this.ctx.sampleRate * 2;
     const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
     const d = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    for (let i = 0; i < len; i++) d[i] = arand() * 2 - 1;
     return buf;
   }
 
@@ -288,7 +290,7 @@ export class Ambience {
     if (!this.ctx || this.muted) return;
     const c = this.ctx, t = c.currentTime;
     const scale = [1, 1.125, 1.25, 1.5, 1.667, 2];
-    const f = root * scale[(Math.random() * scale.length) | 0];
+    const f = root * scale[(arand() * scale.length) | 0];
     const o = this._osc('sine', f);
     const o2 = this._osc('sine', f * 2.01);
     const g = this._gain(0);

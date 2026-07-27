@@ -27,7 +27,7 @@
 // twin), so streets, boots, workers and paint agree about the level city.
 
 import * as THREE from 'three';
-import { hash, RNG, cityName } from './rng.js';
+import { RNG, arand, cityName, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
 import { planetHeight, fbm } from './terrain.js';
 import { sampleHydro } from './tilebuild.js';
@@ -858,11 +858,11 @@ class City {
         c.s += c.dir * c.spd * dt;   // spd is stored in segments/s
         if (c.s <= 1 || c.s >= c.rd.n - 2) {
           // the end of the road: turn around, or take another one
-          if (Math.random() < 0.5) c.dir *= -1;
+          if (arand() < 0.5) c.dir *= -1;
           else {
             const all = this.roads;
-            c.rd = all[(Math.random() * all.length) | 0];
-            c.dir = Math.random() < 0.5 ? 1 : -1;
+            c.rd = all[(arand() * all.length) | 0];
+            c.dir = arand() < 0.5 ? 1 : -1;
           }
           c.s = Math.min(Math.max(c.s, 1.01), c.rd.n - 2.01);
         }

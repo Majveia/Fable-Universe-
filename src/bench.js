@@ -270,10 +270,17 @@ export class Bench {
     app._syncScale();
   }
 
-  frameStart() { this._fs = performance.now(); }
+  frameStart() {
+    const t = performance.now();
+    // the interval between successive frame starts is the real frame time —
+    // which is not the simulation's dt, and under a fixed timestep is not even
+    // close to it. Measuring dt would report the timestep back as a frame rate.
+    this._wall = this._fs === undefined ? null : t - this._fs;
+    this._fs = t;
+  }
 
   /** called at the tail of App._frame, after everything has been submitted */
-  frameEnd(dt) {
+  frameEnd() {
     if (this.done) return;
     const cpu = performance.now() - this._fs;
     const idx = Math.floor(this.frame / PER);
@@ -294,9 +301,9 @@ export class Bench {
     }
 
     const st = this.stations[idx];
-    if (st && this.frame % PER >= WARM) {
+    if (st && this.frame % PER >= WARM && this._wall !== null) {
       const info = this.app.renderer.info.render;
-      st.frameMs.push(dt * 1000);
+      st.frameMs.push(this._wall);
       st.cpuMs.push(cpu);
       st.calls.push(info.calls);
       st.tris.push(info.triangles);
@@ -343,6 +350,7 @@ export class Bench {
       frames: FRAMES,
       warmupFramesPerStation: WARM,
       wallClockMs: +(performance.now() - this.t0).toFixed(0),
+      fixedTimestepMs: app.fixedDt ? +(app.fixedDt * 1000).toFixed(3) : null,
       device: {
         renderer: String(renderer),
         // §M0 gates on a real GPU: a software rasteriser produces a valid

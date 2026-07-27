@@ -33,6 +33,7 @@ const steps = [
   ['verify', ['tools/verify.js'], 'the maths, against independent references (§7.3)'],
   ['shaders', ['tools/shadercheck.js'], 'every shader as the driver sees it (§M0)'],
   ['capture', ['tools/capture.js', '--milestone', milestone], 'the numbered set + perf JSON (§7.5)'],
+  ['repeat', ['tools/repeat.js'], 'the same URL twice, to §7.3\'s tolerance'],
   ['gate', ['tools/gate.js', '--milestone', milestone, ...(extra ? ['--extra', extra] : [])],
     'the measurable gate clauses (§8)'],
 ];

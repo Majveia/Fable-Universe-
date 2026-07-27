@@ -8,6 +8,7 @@
 
 import * as THREE from 'three';
 import { softDotTexture } from './nebula.js';
+import { arand } from './rng.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 
@@ -18,9 +19,9 @@ export function addGodRays(s) {
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(N * 3);
   for (let i = 0; i < N; i++) {
-    pos[i * 3] = (Math.random() - 0.5) * SPAN;
-    pos[i * 3 + 1] = Math.random() * 120;
-    pos[i * 3 + 2] = (Math.random() - 0.5) * SPAN;
+    pos[i * 3] = (arand() - 0.5) * SPAN;
+    pos[i * 3 + 1] = arand() * 120;
+    pos[i * 3 + 2] = (arand() - 0.5) * SPAN;
   }
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   const motes = new THREE.Points(geo, new THREE.PointsMaterial({

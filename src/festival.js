@@ -8,7 +8,7 @@
 // right night and the sky fills; come back on the wrong one and it's quiet.
 
 import * as THREE from 'three';
-import { hash, RNG } from './rng.js';
+import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
@@ -69,14 +69,14 @@ export function addFestival(s) {
       if (on) {
         spawnT -= dt;
         if (spawnT <= 0) {
-          spawnT = 0.14 + Math.random() * 0.3;
+          spawnT = 0.14 + arand() * 0.3;
           // release a small clutch at a time — a plaza lets go together
           for (let k = 0; k < 3; k++) { const l = lantern.find(x => !x.alive); if (l) spawn(l); }
         }
         // a bell across the fields, now and then
         bellT -= dt;
         if (bellT <= 0) {
-          bellT = 3 + Math.random() * 6;
+          bellT = 3 + arand() * 6;
           s.app.audio?.festivalBell?.(s._scoreRoot ? s._scoreRoot * 2 : 261.6);
         }
       }

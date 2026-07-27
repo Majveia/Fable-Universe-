@@ -9,7 +9,7 @@
 // the air. Stand still a moment and watch the field breathe.
 
 import * as THREE from 'three';
-import { hash, RNG } from './rng.js';
+import { RNG, arand, hash } from './rng.js';
 import { isBiosphere } from './life.js';
 import { softDotTexture } from './nebula.js';
 
@@ -181,19 +181,19 @@ export function addGrass(s) {
   const pLife = new Float32Array(NP);
   const spawnPetal = (i) => {
     // upwind of the camera, chest height to treetop
-    const back = 24 + Math.random() * 30;
-    const side = (Math.random() - 0.5) * 60;
+    const back = 24 + arand() * 30;
+    const side = (arand() - 0.5) * 60;
     const x = s.body.x - s.wind.x * back - s.wind.y * side;
     const z = s.body.z - s.wind.y * back + s.wind.x * side;
     pPos[i * 3] = x;
-    pPos[i * 3 + 1] = s.heightAt(x, z) + 1 + Math.random() * 7;
+    pPos[i * 3 + 1] = s.heightAt(x, z) + 1 + arand() * 7;
     pPos[i * 3 + 2] = z;
-    pVel[i * 3] = s.wind.x * (3 + Math.random() * 3);
+    pVel[i * 3] = s.wind.x * (3 + arand() * 3);
     pVel[i * 3 + 1] = 0;
-    pVel[i * 3 + 2] = s.wind.y * (3 + Math.random() * 3);
-    pLife[i] = 6 + Math.random() * 10;
+    pVel[i * 3 + 2] = s.wind.y * (3 + arand() * 3);
+    pLife[i] = 6 + arand() * 10;
   };
-  for (let i = 0; i < NP; i++) { spawnPetal(i); pLife[i] *= Math.random(); }
+  for (let i = 0; i < NP; i++) { spawnPetal(i); pLife[i] *= arand(); }
   pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
   s.scene.add(petals);
 

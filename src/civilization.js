@@ -9,9 +9,10 @@
 // a skyline or a launch tower.
 
 import * as THREE from 'three';
-import { hash, RNG } from './rng.js';
+import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
 import { addSettlement } from './settlement.js';
+import { now } from './clock.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 
@@ -145,7 +146,7 @@ function buildPort(s, group, site, r, d, dry) {
   return (dt, sunY) => {
     const night = 1 - Math.min(Math.max((sunY + 0.12) * 3.5, 0), 1);
     mat.uniforms.uNight.value = night;
-    const t = performance.now() * 0.001;
+    const t = now();
     for (const g of signs) g.sign.material.opacity = night * (0.4 + 0.35 * Math.sin(t * 1.5 + g.phase));
   };
 }
@@ -200,7 +201,7 @@ function buildMonument(s, group, site, r, d, dry) {
   group.add(beacon);
   return (dt, sunY) => {
     const night = 1 - Math.min(Math.max((sunY + 0.12) * 3.5, 0), 1);
-    beacon.material.opacity = night * (0.6 + 0.4 * Math.sin(performance.now() * 0.002));
+    beacon.material.opacity = night * (0.6 + 0.4 * Math.sin(now() * 2.0));
   };
 }
 
@@ -275,8 +276,8 @@ function buildSpaceport(s, group, site, r, d, dry) {
       ship.position.y = pad0.h + alt;
       plume.position.y = 2 - alt * 0.02;
       plume.material.opacity = Math.min(alt * 0.1, 1);
-      plume.scale.setScalar(10 + Math.sin(performance.now() * 0.02) * 2);
-      if (alt > 1400) { launching = false; ship.position.y = pad0.h; plume.material.opacity = 0; cyc = 22 + Math.random() * 26; }
+      plume.scale.setScalar(10 + Math.sin(now() * 20.0) * 2);
+      if (alt > 1400) { launching = false; ship.position.y = pad0.h; plume.material.opacity = 0; cyc = 22 + arand() * 26; }
     }
   };
 }

@@ -64,6 +64,33 @@ axes have somewhere to stand.
 
 It does not score silhouette, materials, or whether the thing is beautiful.
 
+## `repeat.js` — the same URL twice
+
+```bash
+node tools/repeat.js --url "seed=20250601&m1=1" --frames 90
+```
+
+Loads one URL twice from cold, settles the same number of frames, and compares
+the two frames at the tolerance §7.3 names (≥97% of pixels within 2/255).
+
+This was unrunnable until recently. The universe was deterministic but the
+*frame* was not: transient motion drew from `Math.random()` and a few
+animations read the wall clock, so no two loads of one place agreed exactly.
+Both are seeded now — `arand()` in `rng.js`, `now()` in `clock.js` — and `?dt=`
+pins the timestep so the draws come out in the same order.
+
+Measured, on the walkable surface (the most transient-heavy scale):
+
+| | bit-identical |
+|---|---|
+| seeded, fixed timestep | **100.00%** |
+| control: `arand()` → `Math.random()` | 99.48% |
+| sanity: two *different* seeds | 0.77% |
+
+The control still clears §7.3's bar, which is the point: half a percent of
+run-to-run noise passes a 97% threshold and quietly masks any regression
+smaller than itself. Exact is worth having.
+
 ## `capture.js` — the numbered set
 
 ```bash

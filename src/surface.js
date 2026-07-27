@@ -7,7 +7,7 @@
 // sets on an inhabited world, the glow of cities rises over the ridgeline.
 
 import * as THREE from 'three';
-import { hash, RNG } from './rng.js';
+import { RNG, arand, hash } from './rng.js';
 import { NOISE_GLSL, makeSurfaceMaterial, makeRingMaterial, makeAtmosphereMaterial } from './planet.js';
 import { softDotTexture } from './nebula.js';
 import { addLife, isBiosphere } from './life.js';
@@ -1120,12 +1120,12 @@ export class SurfaceScale {
         sh.next -= dt;
         if (sh.next <= 0 && this._starDark.value > 0.5) {
           sh.t = 0;
-          const az = Math.random() * Math.PI * 2, el = 0.35 + Math.random() * 0.75;
+          const az = arand() * Math.PI * 2, el = 0.35 + arand() * 0.75;
           sh.from.setFromSphericalCoords(9000, Math.PI / 2 - el, az);
-          sh.dirV.set(Math.random() - 0.5, -0.25 - Math.random() * 0.3, Math.random() - 0.5)
+          sh.dirV.set(arand() - 0.5, -0.25 - arand() * 0.3, arand() - 0.5)
             .normalize().multiplyScalar(6500);
           sh.sp.material.rotation = Math.atan2(-sh.dirV.y, Math.hypot(sh.dirV.x, sh.dirV.z));
-          sh.next = 5 + Math.random() * 14;
+          sh.next = 5 + arand() * 14;
         }
       } else {
         sh.t += dt;
