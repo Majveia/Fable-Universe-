@@ -10,6 +10,7 @@
 import * as THREE from 'three';
 import { hash, RNG, ruinName, ruinLore } from './rng.js';
 import { softDotTexture } from './nebula.js';
+import { now } from './clock.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 const EXT = 1400;
@@ -175,7 +176,7 @@ export function addRuins(s) {
     update(dt, sunY) {
       const night = 1 - Math.min(Math.max((sunY + 0.12) * 3.5, 0), 1);
       for (const g of glowSprites) {
-        g.material.opacity = night * (0.55 + 0.45 * Math.sin(performance.now() * 0.0011 + g.position.x));
+        g.material.opacity = night * (0.55 + 0.45 * Math.sin(now() * 1.1 + g.position.x));
       }
       // which monument, if any, are we standing within the memory of?
       let found = null, bestD = 1e9;

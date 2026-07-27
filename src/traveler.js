@@ -11,7 +11,7 @@
 // E again steps off wherever you are; the skiff parks and keeps waiting.
 
 import * as THREE from 'three';
-import { hash, RNG } from './rng.js';
+import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
 
 const EYE = 1.8;
@@ -186,9 +186,9 @@ export function addTraveler(s) {
       const overSea = s.seaLevel !== null && s.heightAt(s.body.x, s.body.z) < s.seaLevel;
       if (sp > 18 && wakeT <= 0) {
         wakeT = 0.05;
-        wPos[wi * 3] = s.body.x - s.vel.x / sp * 2.4 + (Math.random() - 0.5) * 1.4;
+        wPos[wi * 3] = s.body.x - s.vel.x / sp * 2.4 + (arand() - 0.5) * 1.4;
         wPos[wi * 3 + 1] = g + 0.5;
-        wPos[wi * 3 + 2] = s.body.z - s.vel.z / sp * 2.4 + (Math.random() - 0.5) * 1.4;
+        wPos[wi * 3 + 2] = s.body.z - s.vel.z / sp * 2.4 + (arand() - 0.5) * 1.4;
         wAge[wi] = 0;
         wi = (wi + 1) % NW;
       }

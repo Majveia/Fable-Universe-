@@ -1,4 +1,18 @@
 // Deterministic hashing + RNG. The entire universe unfolds from one integer.
+//
+// Two kinds of randomness live here, and the difference matters.
+//
+// An `RNG` stream is *structural*: it decides where a galaxy sits, what a world
+// is made of, which star has a name. Those draws are addressed by seed, and
+// §2.3 makes them permanent — every seeded universe is a public address.
+//
+// The ambient stream below is *transient*: a spark's velocity, a petal's spawn
+// point, which way a car turns at a junction. None of it is the shape of the
+// universe, so none of it was ever seeded, and for a long time that looked
+// harmless. It is not quite: it means two loads of the same URL do not produce
+// the same frame, which is the reason §7.3's pixel diff ("≥97% of pixels within
+// 2/255") and §7.7's re-shoot of every previous milestone could only ever be
+// scored by eye. Seeding it costs nothing and buys both.
 
 /** Robust integer hash (xxhash-style avalanche) over any number of ints. */
 export function hash(...ns) {
@@ -40,6 +54,24 @@ export class RNG {
     return Math.pow(Math.pow(a, g) + u * (Math.pow(b, g) - Math.pow(a, g)), 1 / g);
   }
 }
+
+// ------------------------------------------------------------- ambient ----
+
+/**
+ * The ambient stream: transient motion, seeded once per universe.
+ *
+ * Deliberately one shared stream rather than one per module. Per-module streams
+ * would be tidier to reason about and no more reproducible — what actually
+ * makes a frame repeatable is that the whole program consumes draws in the same
+ * order, which needs a fixed timestep (see `src/clock.js`), not more streams.
+ */
+let ambientStream = new RNG(0x9e3779b9);
+
+/** re-seed the ambient stream; called once at boot from the universe seed */
+export function seedAmbient(...ns) { ambientStream = new RNG(hash(...ns)); }
+
+/** a transient random in [0,1) — the seeded replacement for Math.random() */
+export function arand() { return ambientStream.next(); }
 
 // ---------------------------------------------------------------- names ----
 

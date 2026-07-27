@@ -8,7 +8,7 @@
 // threaded through the bones of the world.
 
 import * as THREE from 'three';
-import { hash, RNG } from './rng.js';
+import { RNG, arand, hash } from './rng.js';
 import { NOISE_GLSL } from './planet.js';
 import { softDotTexture } from './nebula.js';
 
@@ -157,7 +157,7 @@ export function addRivers(s) {
     group.add(sheet);
     // spray + mist at the plunge pool
     for (let i = 0; i < (COARSE ? 10 : 22); i++)
-      sprayList.push({ x: f.x, y: f.bot, z: f.z, w: f.w, vy: Math.random() * 6, life: Math.random() * 1.5 });
+      sprayList.push({ x: f.x, y: f.bot, z: f.z, w: f.w, vy: arand() * 6, life: arand() * 1.5 });
   }
   const sPos = new Float32Array(Math.max(sprayList.length, 1) * 3);
   sprayGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
@@ -174,11 +174,11 @@ export function addRivers(s) {
       for (let i = 0; i < sprayList.length; i++) {
         const p = sprayList[i];
         p.life -= dt;
-        if (p.life <= 0) { p.life = 0.6 + Math.random() * 1.4; p.vy = 2 + Math.random() * 6; }
+        if (p.life <= 0) { p.life = 0.6 + arand() * 1.4; p.vy = 2 + arand() * 6; }
         p.vy -= dt * 6;
-        sPos[i * 3] = p.x + (Math.random() - 0.5) * p.w * 2;
-        sPos[i * 3 + 1] = p.y + Math.max(p.vy, 0) * 2 + Math.random() * 4;
-        sPos[i * 3 + 2] = p.z + (Math.random() - 0.5) * p.w * 2;
+        sPos[i * 3] = p.x + (arand() - 0.5) * p.w * 2;
+        sPos[i * 3 + 1] = p.y + Math.max(p.vy, 0) * 2 + arand() * 4;
+        sPos[i * 3 + 2] = p.z + (arand() - 0.5) * p.w * 2;
       }
       if (sprayList.length) sprayGeo.attributes.position.needsUpdate = true;
     },

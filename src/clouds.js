@@ -8,7 +8,7 @@
 // Fly toward where you look. There is no bottom you would ever reach.
 
 import * as THREE from 'three';
-import { hash, RNG } from './rng.js';
+import { RNG, arand, hash } from './rng.js';
 import { NOISE_GLSL } from './planet.js';
 import { nebulaTexture, softDotTexture } from './nebula.js';
 
@@ -262,12 +262,12 @@ export class CloudsScale {
     this._nextBolt -= dt;
     const F = this.uFlash.value;
     if (this._nextBolt <= 0) {
-      this._nextBolt = 3 + Math.random() * 11;
-      const th = Math.random() * Math.PI * 2;
-      const d = 1200 + Math.random() * 3800;
+      this._nextBolt = 3 + arand() * 11;
+      const th = arand() * Math.PI * 2;
+      const d = 1200 + arand() * 3800;
       F.set(
         this.camera.position.x + Math.cos(th) * d,
-        -380 - Math.random() * 160,
+        -380 - arand() * 160,
         this.camera.position.z + Math.sin(th) * d,
         1.0);
       this.boltSprite.position.set(F.x, F.y, F.z);
@@ -275,7 +275,7 @@ export class CloudsScale {
     if (F.w > 0) {
       F.w = Math.max(F.w - dt * 2.6, 0);
       // a couple of restrikes
-      if (F.w > 0.25 && Math.random() < 0.09) F.w = Math.min(F.w + 0.5, 1);
+      if (F.w > 0.25 && arand() < 0.09) F.w = Math.min(F.w + 0.5, 1);
       this.boltSprite.material.opacity = F.w;
     }
   }

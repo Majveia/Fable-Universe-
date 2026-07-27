@@ -7,7 +7,7 @@
 // worlds — slow constellations of bioluminescent spores.
 
 import * as THREE from 'three';
-import { hash, RNG } from './rng.js';
+import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
 
 function bladeTexture(rng) {
@@ -449,10 +449,10 @@ export function addLife(s) {
         strMat.uniforms.uTime.value = time;
         for (let i = 0; i < strState.length; i++) {
           const st = strState[i];
-          st.heading += (Math.random() - 0.5) * dt * 0.6;
+          st.heading += (arand() - 0.5) * dt * 0.6;
           // steer home if straying, turn from water and steep ground
           const dHome = Math.hypot(st.x, st.z);
-          if (dHome > 520) st.heading = Math.atan2(-st.z, -st.x) + (Math.random() - 0.5);
+          if (dHome > 520) st.heading = Math.atan2(-st.z, -st.x) + (arand() - 0.5);
           // flee the visitor — but a flee-er blocked by water slides along
           // the shore instead of re-aiming into it forever
           let hurry = 1;
@@ -460,7 +460,7 @@ export function addLife(s) {
             const fx = st.x - cam.x, fz = st.z - cam.z;
             const d2 = fx * fx + fz * fz;
             if (d2 < 55 * 55 || scared) {
-              if (!st.blocked) st.heading = Math.atan2(fz, fx) + (Math.random() - 0.5) * 0.4;
+              if (!st.blocked) st.heading = Math.atan2(fz, fx) + (arand() - 0.5) * 0.4;
               hurry = 4;
             }
           } else if (scared) {

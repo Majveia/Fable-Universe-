@@ -20,7 +20,8 @@ import { BlackHoleScale, BLACKHOLE_NOTE } from './blackhole.js';
 import { SurfaceScale, SURFACE_NOTE } from './surface.js';
 import { CloudsScale, CLOUDS_NOTE } from './clouds.js';
 import { PlanetScale, PLANET_NOTE } from './planetscale.js';
-import { starName, universeEpigraph } from './rng.js';
+import { seedAmbient, starName, universeEpigraph } from './rng.js';
+import { advance as advanceClock, resetClock } from './clock.js';
 import { Bench, BENCH_ON, BENCH_SEED } from './bench.js';
 
 const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE, planet: PLANET_NOTE };
@@ -45,6 +46,21 @@ class App {
       // has to fly the same universe on every machine
       : BENCH_ON ? BENCH_SEED
       : (crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff) || 1138;
+    // Transient motion gets its stream now, before any scale is built, so the
+    // sparks and the rain and the traffic are a property of the seed too.
+    // Everything structural was already seeded; this is what was left (§2.3).
+    seedAmbient(this.seed);
+    resetClock();
+
+    // A fixed timestep, when asked for. Seeding alone does not make a frame
+    // reproducible: the draws come out in the order the program asks for them,
+    // and dt-dependent branches ("a bolt every dt/5 seconds") make that order a
+    // function of frame timing. Pin dt and the same URL renders the same frame,
+    // which is what §7.3's pixel diff and §7.7's re-shoot both need.
+    const fixedMs = parseFloat(url.searchParams.get('dt'));
+    this.fixedDt = Number.isFinite(fixedMs) && fixedMs > 0 ? fixedMs / 1000
+      : BENCH_ON ? 1 / 60 : 0;
+
     // the classic surface is the default; the streaming globe is opt-in
     this.quadOn = url.searchParams.get('quad') === '1';
 
@@ -763,7 +779,9 @@ class App {
   // ------------------------------------------------------------- frame ----
   _frame() {
     this.bench?.frameStart();
-    const dt = Math.min(this.clock.getDelta(), 0.1);
+    const real = Math.min(this.clock.getDelta(), 0.1);
+    const dt = this.fixedDt || real;
+    advanceClock(dt);
     this.zoom.update(dt);
     if (this._warping && !this.zoom.busy && !this.hud.warpEl.classList.contains('on')) {
       this._warping = false;
@@ -801,7 +819,7 @@ class App {
       p.acc = 0; p.n = 0;
     }
 
-    this.bench?.frameEnd(dt);
+    this.bench?.frameEnd();
   }
 
   _setDpr(v) {

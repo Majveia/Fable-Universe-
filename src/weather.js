@@ -8,7 +8,7 @@
 // same wind that moves the grass and the sea; the world breathes as one.
 
 import * as THREE from 'three';
-import { hash, RNG } from './rng.js';
+import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
@@ -26,9 +26,9 @@ export function addWeather(s) {
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(N * 3);
   for (let i = 0; i < N; i++) {
-    pos[i * 3] = (Math.random() - 0.5) * span;
-    pos[i * 3 + 1] = Math.random() * top;
-    pos[i * 3 + 2] = (Math.random() - 0.5) * span;
+    pos[i * 3] = (arand() - 0.5) * span;
+    pos[i * 3 + 1] = arand() * top;
+    pos[i * 3 + 2] = (arand() - 0.5) * span;
   }
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   const rain = new THREE.Points(geo, new THREE.PointsMaterial({
@@ -97,9 +97,9 @@ export function addWeather(s) {
         for (let i = 0; i < N; i++) {
           P[i * 3] += wx; P[i * 3 + 1] -= fall; P[i * 3 + 2] += wz;
           if (P[i * 3 + 1] < 0) {
-            P[i * 3] = (Math.random() - 0.5) * span;
+            P[i * 3] = (arand() - 0.5) * span;
             P[i * 3 + 1] = top;
-            P[i * 3 + 2] = (Math.random() - 0.5) * span;
+            P[i * 3 + 2] = (arand() - 0.5) * span;
           }
         }
         geo.attributes.position.needsUpdate = true;

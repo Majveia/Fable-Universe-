@@ -9,6 +9,7 @@
 import * as THREE from 'three';
 import { hash, RNG, constellationName } from './rng.js';
 import { softDotTexture } from './nebula.js';
+import { now } from './clock.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 const SKY_R = 15000;
@@ -120,7 +121,7 @@ export function addConstellations(s) {
     update(dt, sunY) {
       // dark of night reveals them; a slow twinkle keeps them alive
       const dark = Math.max(1 - Math.max(sunY + 0.05, 0) * 4 * s.atmo, 0);
-      const tw = 0.85 + 0.15 * Math.sin(performance.now() * 0.0013);
+      const tw = 0.85 + 0.15 * Math.sin(now() * 1.3);
       for (const m of starMats) m.opacity = dark * tw;
       for (const m of lineMats) m.opacity = dark * 0.32;
       for (const m of labels) m.opacity = dark * 0.7;

@@ -10,7 +10,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { hash, RNG, galaxyName, starName } from './rng.js';
+import { RNG, arand, galaxyName, hash, starName } from './rng.js';
 import { makeNebulaSprites, softDotTexture, galaxyAtlasTexture, makeVolumetricNebula } from './nebula.js';
 import { COSMO } from './cosmology.js';
 import { CollisionSim, COLLISION_NOTE } from './collision.js';
@@ -251,17 +251,17 @@ export class GalaxyScale {
       this.scene.add(sp);
       this._svPool.push({ sp, age: -1 });
     }
-    this._svTimer = 4 + Math.random() * 8;
+    this._svTimer = 4 + arand() * 8;
   }
 
   _updateSupernovae(dt) {
     const R = this.params.radius;
     this._svTimer -= dt * this.speed;
     if (this._svTimer <= 0) {
-      this._svTimer = 6 + Math.random() * 12;
+      this._svTimer = 6 + arand() * 12;
       const slot = this._svPool.find(s => s.age < 0);
       if (slot) {
-        const i = (Math.random() * this.starData.aR.length) | 0;
+        const i = (arand() * this.starData.aR.length) | 0;
         this.starPosAt(i, slot.sp.position);
         slot.age = 0;
       }

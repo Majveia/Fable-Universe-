@@ -10,7 +10,7 @@
 // watch from a real backyard.
 
 import * as THREE from 'three';
-import { hash, RNG } from './rng.js';
+import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
 
 const _t1 = new THREE.Vector3();
@@ -127,7 +127,7 @@ export function addOrbitals(s) {
     const sun = s.uSunDir.value;
     let best = null, bd = -2;
     for (let k = 0; k < 5; k++) {
-      const z = Math.random() * 2 - 1, th = Math.random() * 6.28;
+      const z = arand() * 2 - 1, th = arand() * 6.28;
       const q = Math.sqrt(1 - z * z);
       const d = new THREE.Vector3(q * Math.cos(th), z, q * Math.sin(th));
       const day = d.dot(sun);
@@ -138,9 +138,9 @@ export function addOrbitals(s) {
     return best;
   };
   const endpoint = (time) => {
-    const roll = Math.random();
+    const roll = arand();
     if (roll < 0.55 && stations.length) {
-      const st = stations[(Math.random() * stations.length) | 0];
+      const st = stations[(arand() * stations.length) | 0];
       return (tt, out) => stationPos(st, tt, out);
     }
     if (roll < 0.85) {
@@ -149,7 +149,7 @@ export function addOrbitals(s) {
       return (tt, out) => out.copy(d).multiplyScalar(R * 1.03);
     }
     // gone to deep space
-    const z = Math.random() * 2 - 1, th = Math.random() * 6.28;
+    const z = arand() * 2 - 1, th = arand() * 6.28;
     const q = Math.sqrt(1 - z * z);
     const d = new THREE.Vector3(q * Math.cos(th), z, q * Math.sin(th));
     return (tt, out) => out.copy(d).multiplyScalar(R * 3.6);
@@ -189,7 +189,7 @@ export function addOrbitals(s) {
         if (st.yard) {
           const y = st.yard;
           const burst = Math.sin(time * 7.3 + y.phase) > 0.55 ? 1 : 0;
-          y.sparks.material.opacity = burst * (0.5 + 0.5 * Math.random());
+          y.sparks.material.opacity = burst * (0.5 + 0.5 * arand());
           y.sparks.position.set(0.22 + ((time * 0.05 + y.phase) % 0.4), 0.05 * Math.sin(time * 1.3 + y.phase), 0);
         }
       }
@@ -208,7 +208,7 @@ export function addOrbitals(s) {
         }
         sh.t += dt / sh.dur;
         if (sh.t >= 1) {
-          sh.state = 'idle'; sh.wait = 6 + Math.random() * 26;
+          sh.state = 'idle'; sh.wait = 6 + arand() * 26;
           sh.obj.visible = false;
           continue;
         }

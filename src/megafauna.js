@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
 import { softDotTexture } from './nebula.js';
+import { now } from './clock.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 const EXT = 1400;
@@ -129,7 +130,7 @@ function buildColossus(s, r) {
   g.rotation.y = Math.atan2(s.spawn.x - site.x, s.spawn.z - site.z);   // face the traveler
   s.scene.add(g);
   return { site, height: H,
-    update(night) { for (const c of glow.children) c.material.opacity = night * (0.5 + 0.5 * Math.sin(performance.now() * 0.0016)); } };
+    update(night) { for (const c of glow.children) c.material.opacity = night * (0.5 + 0.5 * Math.sin(now() * 1.6)); } };
 }
 
 function constColor(geo, color) {
