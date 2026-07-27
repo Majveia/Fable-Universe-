@@ -24,6 +24,7 @@ import { seedAmbient, starName, universeEpigraph } from './rng.js';
 import { advance as advanceClock, resetClock } from './clock.js';
 import { Bench, BENCH_ON, BENCH_SEED } from './bench.js';
 import { Q, pixelRatio } from './quality.js';
+import { paintForScale } from './print.js';
 
 const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE, planet: PLANET_NOTE };
 const HINTS = {
@@ -792,6 +793,7 @@ class App {
     const s = this.active();
     s.update(dt);
     s.glide?.(dt);
+    this.post.setPaint(paintForScale(s));
     this.post.render(dt);
     this.zoom.render();
     this.hud.tick(dt);

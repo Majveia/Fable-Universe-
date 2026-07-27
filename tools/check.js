@@ -57,6 +57,10 @@ const run = (name, args) => new Promise((done) => {
 });
 
 const steps = [
+  // first, because every step below it launches a browser to discover the same
+  // thing more slowly: a module that does not parse looks exactly like a page
+  // that would not boot
+  ['parse', ['tools/parse.js', '--quiet'], 'every module the browser loads, parsed'],
   ['verify', ['tools/verify.js'], 'the maths, against independent references (§7.3)'],
   ['shaders', ['tools/shadercheck.js'], 'every shader as the driver sees it (§M0)'],
   ['capture', ['tools/capture.js', '--milestone', milestone], 'the numbered set + perf JSON (§7.5)'],
