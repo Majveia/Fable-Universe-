@@ -64,8 +64,17 @@ const M1 = PARAM('m1') === '1';
  * Order is the geometry buffer's, which is fixed, so the result is stable —
  * but it is *arbitrary* with respect to depth, and that is the honest caveat:
  * this rejects a lot of contamination without being a correct back-to-front
- * resolve. Whether the trade reads as structure or as speckle is a question
- * for the frame, not for the argument, which is why it is behind a flag.
+ * resolve.
+ *
+ * Measured afterwards: it changes 96% of the pixels and 0% of the hue
+ * distribution (docs/plans/M1.md §12). The tracers it rejects turn out to have
+ * the same hue as the ones it keeps, because a thin slab already guarantees
+ * that a ray crosses one structure — so the diagnosis this was built for was
+ * wrong, and the concentration is a unimodal *field*, not an averaged one.
+ *
+ * Kept anyway, on a flag: it costs nothing when off, and a frame where the
+ * nearest structure owns its pixels is a defensible thing to be able to ask
+ * for. It is simply not the fix for gate (b).
  */
 const COMPOSITE_DEPTH = PARAM('comp') === '1';
 
