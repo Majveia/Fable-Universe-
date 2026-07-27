@@ -54,6 +54,46 @@ const GradeShader = {
 
 const NEUTRAL = { lift: [0, 0, 0], gain: [1, 1, 1], sat: 1, vign: 0.12, grain: 0.02 };
 
+/** M1 — the ordered dither. Default-off (§7.4); see docs/plans/M1.md §5. */
+const M1 = (() => {
+  try { return new URL(window.location.href).searchParams.get('m1') === '1'; }
+  catch { return false; }
+})();
+
+// §M1 adopts the reference's ordered dither, ±0.5/255, *after* sRGB — because
+// a smooth gradient must never band, and the cosmic web is the worst banding
+// case in the project.
+//
+// It collides with §2.8, which says vacuum renders to true #000 and blacks are
+// never lifted. A flat ±0.5/255 applied at zero rounds half those pixels up to
+// 1/255 and the deep field stops being black. So the amplitude is gated by
+// luma: true black stays exactly black, and the first step above it — which is
+// where banding actually lives — is dithered at full strength. Both hold.
+const DitherShader = {
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      // §11's second NaN firewall: the bloom pyramid smears one bad texel over
+      // a neighbourhood, and the tonemap will happily print the result
+      vec3 col = mix(vec3(0.0), c.rgb, vec3(equal(c.rgb, c.rgb)));
+      float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      float d = fract(dot(gl_FragCoord.xy, vec2(0.7548776662, 0.5698402909))) - 0.5;
+      col += (d / 255.0) * smoothstep(0.0, 1.5 / 255.0, luma);
+      gl_FragColor = vec4(clamp(col, 0.0, 1.0), c.a);
+    }
+  `,
+};
+
 export class Post {
   constructor(renderer) {
     this.renderer = renderer;
@@ -70,6 +110,9 @@ export class Post {
     this.composer.addPass(this.bloom);
     this.composer.addPass(this.gradePass);
     this.composer.addPass(this.output);
+    // last, and after OutputPass, because §M1 says post-sRGB: dithering in
+    // linear light would put the noise in the wrong place on the curve
+    if (M1) this.composer.addPass(new ShaderPass(DitherShader));
   }
 
   setScene(scene, camera) {

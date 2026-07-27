@@ -38,11 +38,11 @@ const MIME = {
 // dev server are not.
 const REFERENCE = 'hoshi-no-tani.html';
 const REFERENCE_CDN = 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
-const REFERENCE_LOCAL = '/docs/reference/vendor/three-0.180.0.module.js';
+const REFERENCE_LOCAL = '/docs/reference/vendor/three-0.180.0/three.module.js';
 
 /** the repo, served exactly as `python3 -m http.server` would serve it —
  *  save for the one documented rewrite above */
-export async function serve(root = REPO) {
+export async function serve(root = REPO, port = 0) {
   const server = createServer(async (req, res) => {
     try {
       const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
@@ -61,9 +61,9 @@ export async function serve(root = REPO) {
       res.writeHead(404).end('not found');
     }
   });
-  await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
-  const { port } = server.address();
-  return { origin: `http://127.0.0.1:${port}`, close: () => new Promise(r => server.close(r)) };
+  await new Promise((ok) => server.listen(port, '127.0.0.1', ok));
+  const bound = server.address().port;
+  return { origin: `http://127.0.0.1:${bound}`, close: () => new Promise(r => server.close(r)) };
 }
 
 /** playwright lives wherever it lives; a missing one is a one-line fix, so

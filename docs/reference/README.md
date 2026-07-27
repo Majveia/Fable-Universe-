@@ -51,15 +51,21 @@ server on the way out** (`tools/lib.js`) rather than in the file on disk:
 
 | | |
 |---|---|
-| `vendor/three-0.180.0.module.js` | 603,113 B · `c8211c69345d2e9949dc7a8ac969380497aa0600a5a8ac6a459c8cd02dd9cb8a` |
-| `vendor/three.core.js` | 1,403,455 B · r180's build splits the module across two files, and `three.module.js` imports this one |
+| `vendor/three-0.180.0/three.module.js` | 603,113 B · `c8211c69345d2e9949dc7a8ac969380497aa0600a5a8ac6a459c8cd02dd9cb8a` |
+| `vendor/three-0.180.0/three.core.js` | 1,403,455 B · r180 splits its build across two files, and `three.module.js` imports this one by relative path |
 
-Serve the repo with `tools/lib.js` (which every instrument in `tools/` does)
-and the reference resolves entirely from this repo — **verified**: the module
-graph loads with zero offsite requests and zero 404s, and the vendored build
-reports `REVISION '180'` with `WebGLRenderer` present. Open it through a plain
-`python3 -m http.server` and it still works, provided the machine can reach
-jsdelivr.
+The directory carries the version, not the filenames — `three.core.js`'s name
+is fixed by the import inside `three.module.js`, so a second vendored version
+would collide with it if the versions lived in filenames instead.
+
+Run `node tools/serve.js` — or any instrument in `tools/`, which all serve
+through the same function — and the reference resolves entirely from this repo.
+**Verified:** the module graph loads with zero offsite requests and zero 404s,
+and the vendored build reports `REVISION '180'` with `WebGLRenderer` present.
+
+Opened through a plain `python3 -m http.server` it still works, provided the
+machine can reach jsdelivr. That asymmetry is the price of leaving the file
+byte-exact, and it is why `tools/serve.js` exists.
 
 **Capturing it needs a GPU.** Resolving is not rendering. On ANGLE-over-
 SwiftShader, measured twice:
