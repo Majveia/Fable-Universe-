@@ -21,7 +21,12 @@ const seed = Number(arg('seed', 20250601));
 // extra query params, so an experiment behind its own flag can be scored
 // against the same clauses without a second copy of this file
 const extra = arg('extra', '') === true ? '' : String(arg('extra', ''));
-const q = (base) => base + (extra ? '&' + extra : '');
+// The gate scores a *configuration*, not a machine. Without pinning the
+// quality row it would grade whatever tier the runner happened to auto-select
+// — and on a software rasteriser that is Low, a quarter of the tracers, which
+// is not the frame anyone is being asked to judge.
+const tier = arg('q', 'desktop') === true ? 'desktop' : String(arg('q', 'desktop'));
+const q = (base) => `${base}&q=${tier}` + (extra ? '&' + extra : '');
 
 const settle = (n) => new Promise((d) => {
   let i = 0;
@@ -171,7 +176,8 @@ if (milestone !== 'M1') {
 
 const EPOCH = Number(arg('a', 0.45));   // web formed, voids still open
 
-console.log(`\ngate · ${milestone} · seed ${seed} · a = ${EPOCH}${extra ? ' · ' + extra : ''}\n`);
+console.log(`\ngate · ${milestone} · seed ${seed} · a = ${EPOCH} · quality ${tier}`
+  + `${extra ? ' · ' + extra : ''}\n`);
 
 /** N-body frame, then the same instant under linear theory — clause (c) is
  *  about how much the toggle actually tells you */

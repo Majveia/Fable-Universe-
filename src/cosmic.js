@@ -24,6 +24,7 @@ import { softDotTexture } from './nebula.js';
 import {
   N_MODES, buildModes, deltaLinear, gradDeltaLinear,
 } from './zeldovich.js';
+import { qInt } from './quality.js';
 
 const BOX = 900;           // comoving box, display units (≙ ~500 Mpc)
 const A_START = 0.048;     // z ≈ 20
@@ -183,6 +184,29 @@ const M1_TENSOR = /* glsl */`
   // axis, which is the eigenvector of the larger eigenvalue.
   //   axis  — unit direction in screen space
   //   aniso — 0 round, 1 fully directional
+  // The divergence transfer. θ/(aHf·D) is not symmetric about zero and never
+  // could be: outflow is bounded — a void can only empty so fast — while infall
+  // runs away as an element collapses. Measured on the mass-weighted
+  // distribution at D = 0.52: p10 = −7.4 against p90 = +1.1, a negative tail six
+  // times the length of the positive side, with 3.5% already shell-crossed.
+  //
+  // A linear scale cannot spread that. Divide by enough to keep the tail and
+  // the middle collapses to one hue; divide by little and a third of the sky
+  // clamps to the infall end — which is exactly what the frame showed, 31.9%
+  // pinned at −1 and 41% of lit pixels inside one 10° hue bucket.
+  //
+  // Signed log carries a long tail into a bounded range without a clamp. It is
+  // still strictly monotone in θ, so nothing about the readout is invented: the
+  // ordering is the physics, and this is the transfer that makes it visible —
+  // §9.6's argument for deriving stops through a fixed transfer rather than
+  // choosing them by eye, applied to the divergence instead of the sky.
+  //
+  // Referenced to |θ/(aHf·D)| = 12, which the same measurement puts near the
+  // 1st percentile. Clamping falls from 31.9% to 8.8%.
+  float compressTheta(float x) {
+    return clamp(sign(x) * log(1.0 + abs(x)) * 0.3899, -1.0, 1.0);
+  }
+
   vec3 threadAxis(float a, float b, float c) {
     float mean = 0.5*(a + c);
     float diff = 0.5*(a - c);
@@ -233,10 +257,14 @@ const M1_PALETTE = /* glsl */`
   // virialize, so pressing N genuinely changes what the halo cores are made
   // of, which is what §M1's gate (c) asks the toggle to demonstrate.
   vec3 webColor(float dens, float th, float crossed, float hash) {
+    // The edges sit on the compressed distribution's own quantiles at D ≈ 0.52
+    // — p05 −1.01, p20 −0.66, p50 −0.25, p80 +0.18, p95 +0.36 — rather than on
+    // a notional [−1, 1]. The old stops assumed the range was uniformly
+    // populated; it is not, and the amber end was simply unreachable.
     vec3 col = vec3(0.62, 0.26, 1.00);                                  // θ ≪ 0
-    col = mix(col, vec3(0.18, 0.44, 1.00), smoothstep(-0.85, -0.30, th)); // infall
-    col = mix(col, vec3(0.22, 0.86, 0.78), smoothstep(-0.28,  0.12, th)); // still
-    col = mix(col, vec3(1.00, 0.60, 0.20), smoothstep( 0.10,  0.65, th)); // outflow
+    col = mix(col, vec3(0.18, 0.44, 1.00), smoothstep(-0.95, -0.55, th)); // infall
+    col = mix(col, vec3(0.22, 0.86, 0.78), smoothstep(-0.50, -0.10, th)); // still
+    col = mix(col, vec3(1.00, 0.60, 0.20), smoothstep( 0.02,  0.30, th)); // outflow
 
     // dense and no longer flowing: it has stopped
     float vir = smoothstep(0.70, 2.00, dens) * (1.0 - smoothstep(0.05, 0.50, abs(th)));
@@ -357,10 +385,10 @@ const M1_VERT = /* glsl */`
     vDens = log(rho);
     // past shell crossing the ratio is meaningless — but the element is
     // certainly collapsing, and linear theory says how fast
-    // θ/(aHf) scales with D in the linear regime, so divide it out: hue must
-    // read the same at every epoch, and the residual asymmetry (infall runs
-    // away, outflow saturates — a void can only empty so fast) is physical
-    vTheta = vCrossed > 0.5 ? -1.0 : clamp((3.0 - i2/det) * uThetaNorm, -1.0, 1.0);
+    // θ/(aHf) scales with D in the linear regime, so divide it out — hue must
+    // read the same at every epoch — then compress the asymmetric tail. A
+    // shell-crossed element is past the far end of that tail by definition.
+    vTheta = vCrossed > 0.5 ? -1.0 : compressTheta((3.0 - i2/det) * uThetaNorm);
 
     vNova = 0.0;
     if (vHash > 0.9995) {
@@ -548,7 +576,7 @@ const M1_NB_VERT = /* glsl */`
     // continuity: θ = −(∂δ/∂t)/(1+δ). Under gravity a virialized halo stops
     // growing, so θ → 0 and its core goes neutral — the thing linear theory
     // cannot do, and what pressing N is meant to show (§M1 gate c).
-    vTheta = clamp(-(rho - rhoPrev) * uThetaK * uThetaNorm / rho, -1.0, 1.0);
+    vTheta = compressTheta(-(rho - rhoPrev) * uThetaK * uThetaNorm / rho);
     // the PM code has no deformation tensor; "collapsed" is simply "dense"
     vCrossed = smoothstep(1.6, 2.6, vDens);
 
@@ -668,8 +696,9 @@ export class CosmicScale {
 
   // -------------------------------------------------------- particles ----
   _buildParticles() {
-    const url = new URL(window.location.href);
-    const nSide = Math.min(Math.max(parseInt(url.searchParams.get('n')) || 68, 32), 110);
+    // ?n still wins for anyone who saved a link with it (§2.4); the tier row
+    // supplies the default it used to hardcode
+    const nSide = Math.min(Math.max(qInt('n', 'cosmic'), 32), 110);
     const n = nSide ** 3;
     const pos = new Float32Array(n * 3);
     const r = new RNG(hash(this.app.seed, 0x9a27));
@@ -874,9 +903,9 @@ export class CosmicScale {
   _setDeepTime(u) {
     const D = COSMO.growth(this.a);
     u.uD.value = D;
-    // measured: θ/(aHf·D) has rms ≈ 1.6 and a 5–95 spread near ±2.5 while the
-    // field is linear, so 2.2 puts the bulk of it on [-1, 1]
-    u.uThetaNorm.value = 1 / Math.max(D * 2.2, 1e-4);
+    // just 1/D — the shape of the transfer lives in compressTheta(), where it
+    // can be reasoned about against a measured distribution
+    u.uThetaNorm.value = 1 / Math.max(D, 1e-4);
     u.uLnD.value = Math.log(Math.max(COSMO.growth(this.a), 1e-6));
     u.uLnA.value = Math.log(this.a);
     u.uF.value = COSMO.growthRate(this.a);

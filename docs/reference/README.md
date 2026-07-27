@@ -89,4 +89,25 @@ that range, so **capture the reference on its own r180**, never on AEON's r170.
 Anything ported that touches `convertSRGBToLinear`, output colour space or
 render-target formats is re-verified rather than copied.
 
+## Reading notes
+
+Things that will mislead a reader who greps rather than reads. Recorded as
+found, because §11's whole point is that a day lost to one of these is a day
+somebody already lost.
+
+**The grass density exponent is 1.5.** `DENS_POW = 1.5` at line 251, with the
+reasoning §M3 quotes: at exactly 1.5 the shader evaluates `(dn/d)^1.5` as
+`x·x·inversesqrt(x)`, three single-cycle instructions against roughly ten for a
+general `pow()`, on ~12 M vertices a frame. But the comment block at lines
+220–239 still describes the **previous** law at 1.45, in detail and
+persuasively, including a specific argument for why 1.45 beats 1.7. It is
+stale — superseded by the block immediately below it — and `grep 1.45` finds it
+three times against one hit for the live constant. §M3 transcribes the file
+correctly; the file argues with itself.
+
+**The quality table is four rows, and `px` is a multiplier.** `QUALITY` at line
+210. `px` is a supersample factor applied *on top of* device pixel ratio, not a
+pixel ratio itself — 0.85 on Low resolves up, everything above resolves down.
+`src/quality.js` mirrors the shape.
+
 Port techniques and constants. Never files.
