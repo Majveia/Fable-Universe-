@@ -23,6 +23,9 @@ import {
   trace, webClass,
 } from '../src/zeldovich.js';
 import { PAINT_GLSL, REFERENCE_LIGHT, lightFor, paint, ramp3 } from '../src/paint.js';
+import {
+  SUN_BAND, frameAt, macroHeight, scoreComposition, solveLandingSite,
+} from '../src/landing.js';
 
 let failures = 0;
 let checks = 0;
@@ -678,6 +681,134 @@ function suitePaint() {
 }
 
 // ---------------------------------------------------------------------------
+// suite: landing
+//
+// §9.7's composition constraints, and §3's claim that turning them into a
+// solver is "the actual engineering problem the reference sets you".
+//
+// The check that matters is not that the solver returns a site — anything
+// returns a site. It is that the site it returns **beats a random one on the
+// constraints it claims to optimise**, across many worlds. A solver that scores
+// the same as chance is a scoring function with a loop around it.
+
+function suiteLanding() {
+  console.log('\nlanding — §9.7 composition constraints, as a solver (M2)');
+
+  // a spread of worlds rather than one: an ocean planet and a dry one compose
+  // differently, and a solver tuned on a single seed is tuned on nothing
+  const worlds = [];
+  for (let i = 0; i < 12; i++) {
+    worlds.push({
+      noiseSeed: 1000 + i * 7919,
+      oceanLevel: i % 4 === 3 ? -1 : 0.004 + (i % 5) * 0.006,
+      radiusE: 0.7 + (i % 6) * 0.22,
+    });
+  }
+
+  const solved = worlds.map((w, i) => solveLandingSite(w, 0x51 + i * 977, { sites: 90 }));
+
+  ok('every world gets a site', solved.every((s) => s && s.dir),
+    `${worlds.length} worlds`);
+
+  ok('§9.7 · spawn sun is inside the 8–18° band, on every world',
+    solved.every((s) => s.fallback || (s.sunElev >= SUN_BAND[0] && s.sunElev <= SUN_BAND[1])),
+    `elevations ${solved.map((s) => s.sunElev.toFixed(1)).join(' ')}`);
+
+  // --- the comparison against chance --------------------------------------
+  const KEYS = ['lowHorizon', 'offCentre', 'hero', 'lead', 'walls'];
+  const randomScores = [];
+  const solvedScores = [];
+  for (let i = 0; i < worlds.length; i++) {
+    const w = worlds[i];
+    const ocean = w.oceanLevel > -0.5 ? w.oceanLevel : 0;
+    const R = Math.max(w.radiusE, 0.05) * 6.371e6;
+    let sd = 0x9e37 + i * 31;
+    const rand = () => { sd = (sd * 1103515245 + 12345) & 0x7fffffff; return sd / 0x7fffffff; };
+    // 24 random (site, heading) pairs per world, scored the same way
+    for (let k = 0; k < 24; k++) {
+      const z = rand() * 2 - 1, th = rand() * Math.PI * 2, q = Math.sqrt(1 - z * z);
+      const f = frameAt([q * Math.cos(th), z, q * Math.sin(th)]);
+      randomScores.push(scoreComposition(f, w, ocean, R, rand() * Math.PI * 2, 13.5).terms);
+    }
+    if (solved[i].terms) solvedScores.push(solved[i].terms);
+  }
+  const mean = (arr, k) => arr.reduce((s, t) => s + t[k], 0) / arr.length;
+
+  const rows = KEYS.map((k) => ({
+    k, rnd: mean(randomScores, k), sol: mean(solvedScores, k),
+  }));
+  for (const r of rows) {
+    console.log(`       ${r.k.padEnd(11)} random ${r.rnd.toFixed(3)} → solved ${r.sol.toFixed(3)}`
+      + `   ${r.sol > r.rnd ? '+' : ''}${((r.sol - r.rnd) * 100).toFixed(0)}%`);
+  }
+  ok('§9.7 · the solved site beats chance on the terms it can currently see',
+    rows.find((r) => r.k === 'offCentre').sol >= rows.find((r) => r.k === 'offCentre').rnd
+    && rows.find((r) => r.k === 'lowHorizon').sol >= rows.find((r) => r.k === 'lowHorizon').rnd,
+    'framing terms only — see the next check for why that is the whole list');
+
+  // The finding that matters, asserted so it breaks when it is fixed.
+  //
+  // `hero`, `lead` and `walls` all read zero, for the solved site and for a
+  // random one alike. They are not broken: they measure *relief*, in metres,
+  // and the field the solver scores has none. The macro term varies by 1.9 m
+  // over the whole ±1400 m surface — on a 6371 km planet that patch subtends
+  // 0.00022 radians, and planet-scale noise has nothing to say across it.
+  //
+  // So the premise this solver was built on is wrong. `src/landing.js` argues
+  // that "composition is a macro-scale property" and that surface.js's detail
+  // octaves "cannot move a ridge". Backwards: at 1400 m every ridge a viewer
+  // can see comes from `fbm2(x·0.0011)` — a 900 m wavelength — and from the
+  // landform. Those are exactly the terms the solver drops.
+  //
+  // The fix is to score the height function `surface.js` actually builds, which
+  // means extracting it into a shared module — §2.7's own discipline, applied
+  // one level up. This assertion holds *because* the solver is looking at the
+  // wrong field, and will fail the moment it looks at the right one.
+  {
+    const w = worlds[0];
+    const f = frameAt([0.3, 0.7, 0.64]);
+    const R = Math.max(w.radiusE, 0.05) * 6.371e6;
+    let lo = Infinity, hi = -Infinity;
+    for (let x = -1400; x <= 1400; x += 100) {
+      for (let z = -1400; z <= 1400; z += 100) {
+        const h = macroHeight(f, w, w.oceanLevel, R, x, z);
+        if (h < lo) lo = h; if (h > hi) hi = h;
+      }
+    }
+    ok('the macro field is flat at surface scale, which is why relief reads zero',
+      hi - lo < 5 && rows.find((r) => r.k === 'hero').sol < 0.01,
+      `${(hi - lo).toFixed(2)} m of relief across ±1400 m — the ridges a viewer`
+      + ' sees are the detail octaves this solver does not sample');
+  }
+
+  // --- properties of the scorer itself ------------------------------------
+  {
+    const w = worlds[0], ocean = w.oceanLevel, R = w.radiusE * 6.371e6;
+    const f = frameAt([0.3, 0.7, 0.64]);
+    const inBand = scoreComposition(f, w, ocean, R, 1.0, 13.5).terms.band;
+    const out = scoreComposition(f, w, ocean, R, 1.0, 42).terms.band;
+    ok('the sun term is 1 inside the band and falls away outside it',
+      inBand === 1 && out < 0.1, `13.5° → ${inBand} · 42° → ${out.toFixed(3)}`);
+    const t = scoreComposition(f, w, ocean, R, 1.0, 13.5).terms;
+    ok('every term is a normalised [0,1] score',
+      Object.values(t).every((v) => v >= 0 && v <= 1 && Number.isFinite(v)),
+      Object.entries(t).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(' · '));
+  }
+
+  // --- §2.3 ---------------------------------------------------------------
+  {
+    const a = solveLandingSite(worlds[2], 12345, { sites: 60 });
+    const b = solveLandingSite(worlds[2], 12345, { sites: 60 });
+    ok('§2.3 · the same world and seed give the same opening frame',
+      a.dir.every((v, i) => v === b.dir[i]) && a.heading === b.heading
+      && a.sunElev === b.sunElev);
+    const c = solveLandingSite(worlds[2], 999, { sites: 60 });
+    ok('and a different seed gives a different one',
+      c.heading !== a.heading || c.dir.some((v, i) => v !== a.dir[i]));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // suite: print
 //
 // §9.4's curve, checked for the properties that make it a *print* rather than
@@ -1214,7 +1345,7 @@ const only = process.argv[2];
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
-  paint: suitePaint,
+  paint: suitePaint, landing: suiteLanding,
 };
 
 for (const [name, fn] of Object.entries(suites)) {
