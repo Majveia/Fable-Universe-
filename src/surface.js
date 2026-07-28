@@ -27,9 +27,10 @@ import { addMegafauna } from './megafauna.js';
 import { addGodRays } from './godrays.js';
 import { addRivers } from './rivers.js';
 import { addInterior } from './interior.js';
-import { planetHeight, findLandingSite } from './terrain.js';
-import { pickLandform } from './landform.js';
+import { findLandingSite } from './terrain.js';
+import { solveLandingSite } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
+import { makeGround } from './ground.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
 import { qInt } from './quality.js';
 
@@ -57,31 +58,26 @@ const PAINT = PARAM('paint') === '1' || (M2 && PARAM('paint') !== '0');
 /** `?shdebug=1` — output the shadow term itself, so it can be looked at */
 const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');
 
+/**
+ * `?solve=1` — choose the opening frame with the §9.7 composition solver
+ * instead of `findLandingSite`'s height-above-waterline heuristic.
+ *
+ * Default-off per §7.4, and this one has a specific reason to stay off: the
+ * solve costs 127–337 ms of main thread, once, inside `_buildTerrain`. That is
+ * 10–28× §5's 12 ms frame budget in the frame it lands, and §2.5 forbids
+ * covering it with a cut. Flipping the default waits on either a measurement
+ * showing the hyperzoom absorbs it or a change that slices the solve across
+ * frames — a separate commit either way.
+ */
+const SOLVE = PARAM('solve') === '1';
+
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
 const EYE = 1.8;
 
-// ---------------------------------------------------------- JS fbm ---------
-function makeNoise(seed) {
-  const r = new RNG(hash(seed, 0x7e44));
-  const perm = new Uint8Array(512);
-  for (let i = 0; i < 256; i++) perm[i] = i;
-  for (let i = 255; i > 0; i--) {
-    const j = r.int(0, i);
-    [perm[i], perm[j]] = [perm[j], perm[i]];
-  }
-  for (let i = 0; i < 256; i++) perm[256 + i] = perm[i];
-  const grad = (h, x, y) => ((h & 1) ? -x : x) + ((h & 2) ? -y : y);
-  const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
-  return (x, y) => {
-    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
-    x -= Math.floor(x); y -= Math.floor(y);
-    const u = fade(x), v = fade(y);
-    const a = perm[X] + Y, b = perm[X + 1] + Y;
-    return (1 - v) * ((1 - u) * grad(perm[a], x, y) + u * grad(perm[b], x - 1, y)) +
-           v * ((1 - u) * grad(perm[a + 1], x, y - 1) + u * grad(perm[b + 1], x - 1, y - 1));
-  };
-}
+// The JS fbm that used to live here now lives in `src/ground.js`, which owns
+// the walkable ground outright. Leaving a copy behind would have recreated the
+// exact fault this commit is removing — two definitions, free to drift.
 
 // ------------------------------------------------------------ shaders ------
 const TERRAIN_VERT = /* glsl */`
@@ -444,6 +440,25 @@ export class SurfaceScale {
     this.camera.lookAt(this.controls.target);
     this._syncAngles();
 
+    // §9.7 · face the solved heading, and put the sun where the solve assumed.
+    //
+    // Azimuth only. Pitch stays as it is: `lowHorizon` scores the skyline's
+    // elevation *angle*, which is a property of the ground and not of where the
+    // camera is pointed, so the solver has nothing to say about tilt and this
+    // should not pretend otherwise. The existing 1.9° rise is art direction and
+    // survives untouched.
+    if (this.landingSolution) {
+      const s = this.landingSolution;
+      // the solver's +z is forward along its heading, +x to its right — the
+      // same convention `scoreComposition` samples the ground in
+      const fwd = new THREE.Vector3(Math.sin(s.heading), 0, Math.cos(s.heading));
+      this.controls.target.copy(this.camera.position).addScaledVector(fwd, 72);
+      this.controls.target.y = spawn.y + 4;
+      this.camera.lookAt(this.controls.target);
+      this._syncAngles();
+      this.sunPhase = this._sunPhaseFacing(s.sunElev, fwd);
+    }
+
     // a touch more bloom so the sun, water-glitter, the colossus's jewel and
     // the corona crown the frame — enough to glow, not to swallow detail
     this.bloomSettings = { strength: 0.58, radius: 0.72, threshold: 0.34 };
@@ -499,61 +514,45 @@ export class SurfaceScale {
 
   _buildTerrain() {
     const pp = this.pp;
-    const noise = makeNoise(pp.seed);
-    const fbm2 = (x, y, oct, lac = 2.03) => {
-      let v = 0, a = 0.5, f = 1;
-      for (let o = 0; o < oct; o++) { v += a * noise(x * f, y * f); a *= 0.5; f *= lac; }
-      return v;
-    };
 
+    // The landing frame and the walkable ground both come from `src/ground.js`
+    // now — one definition, so the solver below can score the ground a person
+    // will actually stand on rather than the planet-scale field (§2.7).
+    //
+    // §9.7 · the opening frame is solved, not stumbled into. The solver picks
+    // where to stand, which way to face and where the sun is, together, because
+    // a perfect viewpoint facing the wrong way is the failure being fixed.
+    // `ctx.landingDir` still wins: an explicit deep-link is a destination, and
+    // §2.4 says every place is a URL.
+    this.landingSolution = null;
+    if (SOLVE && !this.ctx.landingDir) {
+      const t0 = performance.now();   // logged only — never read into generation (§2.3)
+      const s = solveLandingSite(pp, hash(pp.seed, 0x1a4d), {
+        wind: this.wind, eye: EYE, fov: this.camera.fov,
+      });
+      if (!s.fallback) this.landingSolution = s;
+      console.info(`[§9.7] landing solved in ${(performance.now() - t0) | 0} ms · `
+        + `score ${s.total.toFixed(3)}`
+        + (s.terms ? ' · ' + Object.entries(s.terms)
+          .map(([k, v]) => `${k} ${v.toFixed(2)}`).join(' ') : ' · fallback'));
+    }
+    const ld = this.ctx.landingDir || this.landingSolution?.dir
+      || findLandingSite(pp, hash(pp.seed, 0x1a4d));
+    const g = this.ground = makeGround(pp, ld, { wind: this.wind });
     const type = pp.typeId;
-    // the world's bones: alpine, canyon, plateau, dune, or the old rolling
-    this.landform = pickLandform(pp, this.wind);
-    this.amp = this.landform.amp;
-    this.seaLevel = (type === 1 && pp.oceanLevel > -0.5) || type === 2 ? 0 : null;
-    const ocean = pp.oceanLevel > -0.5 ? pp.oceanLevel : 0.0;
-
-    // landing frame on the sphere
-    const ld = this.ctx.landingDir || findLandingSite(pp, hash(pp.seed, 0x1a4d));
-    const dir = new THREE.Vector3(...ld).normalize();
-    const east = new THREE.Vector3(0, 1, 0).cross(dir);
-    if (east.lengthSq() < 1e-6) east.set(1, 0, 0); else east.normalize();
-    const north = new THREE.Vector3().crossVectors(dir, east);
+    const noise = g.noise;
+    const fbm2 = g.fbm2;
+    const ocean = g.ocean;
+    const Rworld = g.Rworld;
+    this.landform = g.landform;
+    this.amp = g.amp;
+    this.seaLevel = g.seaLevel;
+    const dir = new THREE.Vector3(...g.frame.dir);
+    const east = new THREE.Vector3(...g.frame.east);
+    const north = new THREE.Vector3(...g.frame.north);
     this.landingDir = dir;
-
-    const Rworld = Math.max(pp.radiusE, 0.05) * 6.371e6;   // meters
-    const S_MACRO = 320;                                    // m per height unit
-    const reliefAmp = type === 0 ? 55 : type === 3 ? 30 : type === 4 ? 40 : 42;
-    this.liftY = 0;
-    const p = new THREE.Vector3();
-
-    this.impacts = []; // craters carved into the crust, persistent per visit
-    this._heightFn = (x, z) => {
-      p.copy(dir).multiplyScalar(Rworld).addScaledVector(east, x).addScaledVector(north, z).normalize();
-      const macro = planetHeight(p.x, p.y, p.z, pp.noiseSeed) - ocean;
-      // more relief inland and on high ground, gentler on the shelf
-      const relief = reliefAmp * (0.35 + Math.min(Math.max(macro * 2.2, 0), 1.4));
-      let h = macro * S_MACRO
-        + fbm2(x * 0.0011 + 7.3, z * 0.0011 - 2.1, 5) * relief * 1.7
-        + fbm2(x * 0.009 + 31.7, z * 0.009 + 11.3, 3) * 6;
-      // the landform raises this world's bones — full inland, fading to the
-      // shore so mountains never rise straight out of the sea
-      const land = Math.min(Math.max(macro * 9 + 0.15, 0), 1);
-      h += this.landform.contribute(x, z, noise, land);
-      // the horizon truly curves with this world's radius
-      h -= (x * x + z * z) / (2 * Rworld * 0.34);
-      h += this.liftY;
-      // craters: a raised rim ringing a depressed bowl
-      for (let i = 0; i < this.impacts.length; i++) {
-        const im = this.impacts[i];
-        const d = Math.hypot(x - im.x, z - im.z) / im.r;
-        if (d > 2.2) continue;
-        const bowl = -im.depth * Math.max(1 - d * d, -0.15);
-        const rim = im.depth * 0.55 * Math.exp(-((d - 1) * (d - 1)) * 9);
-        h += (bowl + rim) * im.grown;
-      }
-      return h;
-    };
+    this.impacts = g.impacts;
+    this._heightFn = g.heightAt;
 
     // spawn scan BEFORE meshing, so a waterlocked lift bakes into the rings
     this.spawn = this._findSpawn();
@@ -673,8 +672,8 @@ export class SurfaceScale {
       }
     }
     if (this.seaLevel !== null && bh < this.seaLevel + 3) {
-      this.liftY = this.seaLevel + 5 - bh;
-      bh += this.liftY;
+      this.ground.lift = this.seaLevel + 5 - bh;
+      bh += this.ground.lift;
     }
     return new THREE.Vector3(bx, bh, bz);
   }
@@ -1043,6 +1042,45 @@ export class SurfaceScale {
 
   _sunDirAt(ph, out) {
     return out.set(Math.cos(ph) * 0.9, Math.sin(ph), Math.sin(ph * 0.7) * 0.45 + 0.2).normalize();
+  }
+
+  /**
+   * The day phase that puts the sun at `elevDeg` — and, among the phases that
+   * do, the one that puts it most nearly *ahead* of `fwd`.
+   *
+   * §9.7 forces 8–18° and the solver hands back a target inside it. But the sun
+   * path is a tilted circle, so an elevation is generally reached twice a day —
+   * once climbing, once falling — and those two phases sit on opposite sides of
+   * the sky. §9.2 calls the backlight rim "the connective tissue of the whole
+   * image" and it only fires looking toward the sun, so the choice between them
+   * is the difference between the light model's best term firing and not.
+   *
+   * Inverted by scan rather than algebra: the path mixes `sin(ph)` with
+   * `sin(0.7·ph)` and has no closed form. 2000 steps resolves the phase to
+   * 0.003 rad, well inside the band. Deterministic, and cheap enough to be
+   * unmeasurable next to the solve that precedes it.
+   */
+  _sunPhaseFacing(elevDeg, fwd) {
+    const target = Math.sin(elevDeg * Math.PI / 180);
+    const v = new THREE.Vector3();
+    let best = this.sunPhase, bestErr = Infinity, bestFace = -Infinity;
+    for (let i = 0; i < 2000; i++) {
+      const ph = (i / 2000) * Math.PI * 2;
+      this._sunDirAt(ph, v);
+      const err = Math.abs(v.y - target);
+      if (err > 0.01) continue;                      // ~0.6° of elevation
+      const face = (v.x * fwd.x + v.z * fwd.z) / (Math.hypot(v.x, v.z) || 1);
+      // prefer facing the sun; fall back to closest elevation if none qualify
+      if (face > bestFace + 1e-6) { bestFace = face; bestErr = err; best = ph; }
+    }
+    if (bestFace === -Infinity) {                    // the band is unreachable
+      for (let i = 0; i < 2000; i++) {
+        const ph = (i / 2000) * Math.PI * 2;
+        const err = Math.abs(this._sunDirAt(ph, v).y - target);
+        if (err < bestErr) { bestErr = err; best = ph; }
+      }
+    }
+    return best;
   }
 
   // ------------------------------------------------------- impacts -------

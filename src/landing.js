@@ -30,29 +30,67 @@
 // wrong way, which is exactly the failure being fixed.
 //
 // ---------------------------------------------------------------------------
-// Why the macro field, and not the one the surface actually builds
+// It scores the ground a person will stand on, and the first version did not
 //
-// `surface.js` composes its ground from a macro term, two fbm octaves, a
-// landform contribution and a curvature term. The solver scores the macro term
-// and the curvature only.
+// The first version scored the planet-scale macro field on the argument that
+// "composition is a macro-scale property" and that surface.js's detail octaves
+// "cannot move a ridge". That was backwards, and the suite measured it: the
+// macro field varies by **2.7 m across the whole ±1400 m surface**. On a
+// 6371 km world that patch subtends 0.00022 radians, and planet-scale noise has
+// nothing to say across it. Every ridge a viewer can see comes from
+// `fbm2(x·0.0011)` — a 900 m wavelength — and from the landform.
 //
-// That is deliberate and it is not an approximation of convenience:
-// **composition is a macro-scale property.** A hero landmark, a valley
-// cross-section and a ridge that exits frame are all features of hundreds of
-// metres. The detail octaves have amplitudes of tens of metres over wavelengths
-// of tens of metres — they change what the ground *is made of*, which is act 4,
-// and they cannot move a ridge. Scoring them would cost a great deal and decide
-// nothing.
+// So `hero`, `lead` and `walls` all read exactly zero, for the solved site and
+// a random one alike. The solver was choosing a viewpoint by looking at a
+// different planet.
+//
+// `src/ground.js` now holds the one definition of the walkable ground, and this
+// scores that. Which is §2.7's rule — one definition, because two drift —
+// arriving one level up from where it was written.
 
+import { S_MACRO, frameAt, makeGround } from './ground.js';
 import { planetHeight } from './terrain.js';
+
+// Re-exported, not redefined. This file used to carry its own copy of the
+// tangent-frame construction, and the two had already drifted: at the poles
+// `ground.js` falls back to `[1,0,0]` and this one fell back to
+// `cross([1,0,0], d)`, which are different axes. Nobody had noticed because no
+// test lands on a pole. That is §2.7's failure mode exactly — one definition,
+// because two drift — and the answer is the same one: delete the second.
+export { S_MACRO, frameAt };
 
 const DEG = Math.PI / 180;
 
 /** §9.7: "Sun elevation at spawn forced into 8–18°." */
 export const SUN_BAND = [8, 18];
 
-/** metres per unit of the macro height field — surface.js's own `S_MACRO` */
-export const S_MACRO = 320;
+
+
+// --- normalisation constants ------------------------------------------------
+//
+// Every term is a raw measurement — an angle, a prominence in metres — divided
+// by the value at which it counts as satisfied. Those divisors are the only
+// tuning in the file, so they live together where they can be argued with.
+//
+// All six were first chosen against the macro field, which turned out to vary
+// by 2.7 m across the whole ±1400 m surface where the real ground varies by
+// 333 m: a factor of 123. Calibrated against that, `hero`/`lead`/`walls` all
+// read exactly zero and `lowHorizon` read exactly one, everywhere, for solved
+// and random sites alike. Re-derived here from the measured distribution of
+// each raw quantity over 288 random (site, heading) pairs across twelve worlds,
+// with each divisor set near the p75 of its measurement — a term that is
+// always 0 or always 1 is not a constraint, it is a constant.
+
+/** the skyline elevation a low horizon sits at, and how far off that is tolerable */
+export const HORIZON_DEG = 0.0, HORIZON_TOL_DEG = 9.0;
+/** the rule-of-thirds offset from frame centre */
+export const THIRD_OFF = 1 / 6;
+/** prominence, in metres above a 200 m collar, at which a rise reads as a landmark */
+export const PROM_M = 90;
+/** net cross-frame rise, in degrees, at which the skyline reads as a line */
+export const LEAD_DEG = 12;
+/** how far the frame edges must stand above its middle, in degrees, to be walls */
+export const WALL_DEG = 7;
 
 /** seeded, and the same generator the old picker used, so seeds stay addresses */
 function rng(seed) {
@@ -67,24 +105,9 @@ function rng(seed) {
 }
 
 /**
- * The local tangent frame at a site — `surface.js`'s own construction, so the
- * solver's x/z axes are the ones the ground will actually be built on.
- */
-export function frameAt(dir) {
-  const d = norm(dir);
-  let e = cross([0, 1, 0], d);
-  if (len(e) < 1e-6) e = cross([1, 0, 0], d);   // the poles need a second axis
-  e = norm(e);
-  return { dir: d, east: e, north: norm(cross(d, e)) };
-}
-
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const len = (a) => Math.hypot(a[0], a[1], a[2]);
-const norm = (a) => { const l = len(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
-
-/**
- * The macro ground height in metres at local (x, z), including the curvature
- * term — `surface.js`'s formula with the detail octaves left out.
+ * The planet-scale term alone. Kept only so `tools/verify.js` can keep
+ * measuring how flat it is underfoot — it is the reason this solver was wrong,
+ * and a number that explains a mistake is worth keeping runnable.
  */
 export function macroHeight(frame, pp, ocean, Rworld, x, z) {
   const { dir, east, north } = frame;
@@ -96,6 +119,9 @@ export function macroHeight(frame, pp, ocean, Rworld, x, z) {
   return macro * S_MACRO - (x * x + z * z) / (2 * Rworld * 0.34);
 }
 
+/** per-ground height memo, shared across the headings scored at one site */
+const CACHES = new WeakMap();
+
 /**
  * Score one (site, heading, sun) triple against §9.7.
  *
@@ -103,10 +129,28 @@ export function macroHeight(frame, pp, ocean, Rworld, x, z) {
  * *which* constraint it missed — §8 asks for one sentence naming the region
  * that lost the point, and a scalar cannot answer that.
  */
-export function scoreComposition(frame, pp, ocean, Rworld, heading, sunElevDeg, opts = {}) {
+export function scoreComposition(ground, heading, sunElevDeg, opts = {}) {
   const { eye = 1.68, fov = 52, far = 1400 } = opts;
   const ch = Math.cos(heading), sh = Math.sin(heading);
-  const H = (x, z) => macroHeight(frame, pp, ocean, Rworld, x, z);
+  // Memoised on a 20 m lattice: the skyline scan and the hero search revisit
+  // the same ground repeatedly, and nothing this scorer asks about lives
+  // between lattice points. 20 m is not arbitrary — the finest octave that
+  // moves a skyline is `fbm2(x·0.0011)`'s fifth, a 53 m wavelength, so this is
+  // the coarsest lattice that still resolves the terrain the terms measure.
+  //
+  // The cache is keyed on the *ground*, not on the call, because the solver
+  // scores eight headings at every site and a rotated fan out of one origin
+  // re-reads the same near-field lattice eight times. Held here rather than on
+  // the ground object: `surface.js` builds vertices from the same `heightAt`
+  // and quantising those to 20 m would be a catastrophe.
+  let cache = CACHES.get(ground);
+  if (!cache) { cache = new Map(); CACHES.set(ground, cache); }
+  const H = (x, z) => {
+    const key = ((Math.round(x / 20) & 0xffff) << 16) | (Math.round(z / 20) & 0xffff);
+    let v = cache.get(key);
+    if (v === undefined) { v = ground.heightAt(x, z); cache.set(key, v); }
+    return v;
+  };
   // local frame: +z forward along the heading, +x to the right
   const at = (fwd, side) => H(ch * side + sh * fwd, -sh * side + ch * fwd);
 
@@ -130,19 +174,21 @@ export function scoreComposition(frame, pp, ocean, Rworld, heading, sunElevDeg, 
   }
   const skyMax = Math.max(...sky), skyMean = sky.reduce((s, v) => s + v, 0) / COLS;
   // a low horizon: the mean skyline below the eye line, but not a flat plain
-  const lowHorizon = clamp01(1 - Math.abs(skyMean + 2 * DEG) / (9 * DEG));
-  // off-centre: the tallest column away from the middle
-  const peakCol = sky.indexOf(skyMax);
-  const offCentre = clamp01(Math.abs(peakCol / (COLS - 1) - 0.5) / 0.32);
+  const lowHorizon = clamp01(1 - Math.abs(skyMean / DEG - HORIZON_DEG) / HORIZON_TOL_DEG);
 
   // --- 2 · a hero landmark in the opening frustum -------------------------
   // A landmark is prominence, not height: how far it stands above the terrain
   // immediately around it. And it has to be far enough to read as a landmark
   // and near enough to have scale — §9.7 wants it legible against a human.
-  let hero = 0, heroDist = 0;
-  for (let c = 0; c < COLS; c++) {
+  //
+  // Strided: every second column and every 90 m, because prominence against a
+  // 200 m collar is a 200 m-scale quantity and sampling it every 1.3° and every
+  // 60 m is measuring the same hill four times. This loop is 71% of the
+  // scorer's ground evaluations and the stride pays for the whole solve.
+  let hero = 0, heroDist = 0, heroProm = 0, heroCol = (COLS - 1) / 2;
+  for (let c = 0; c < COLS; c += 2) {
     const a = (c / (COLS - 1) - 0.5) * 2 * halfFov;
-    for (let d = 180; d <= far * 0.8; d += 60) {
+    for (let d = 180; d <= far * 0.8; d += 90) {
       const fx = d * Math.cos(a), fz = d * Math.sin(a);
       const y = at(fx, fz);
       // prominence against a 200 m collar
@@ -152,25 +198,78 @@ export function scoreComposition(frame, pp, ocean, Rworld, heading, sunElevDeg, 
         ring += at(fx + 200 * Math.cos(t), fz + 200 * Math.sin(t));
       }
       const prom = y - ring / 6;
-      const scale = clamp01(prom / 70) * clamp01((far - d) / far + 0.35);
-      if (scale > hero) { hero = scale; heroDist = d; }
+      const scale = clamp01(prom / PROM_M) * clamp01((far - d) / far + 0.35);
+      if (scale > hero) { hero = scale; heroDist = d; heroProm = prom; heroCol = c; }
     }
   }
+
+  // --- 2b · and it is not centred -----------------------------------------
+  // §9.7's "nothing is centred" is about the *subject*, so it reads where the
+  // hero landmark sits in frame — not, as the first version had it, where the
+  // skyline maximum sits.
+  //
+  // Those are different objects, and scoring the skyline maximum put this term
+  // in direct conflict with `lead`: a coherent cross-frame slope is a skyline
+  // that rises steadily to one side, which places its maximum against a frame
+  // edge *by construction*. The two terms could not both be satisfied, and the
+  // solver — correctly, given the weights — spent `offCentre` to buy `lead`,
+  // landing it at exactly 0.500 on all twelve worlds while chance scored 0.590.
+  // Reading the landmark's column decouples them, and it is the more faithful
+  // reading of the clause: the reference's footpath leads out of frame-left
+  // *and* its hero landmark sits off-axis, because they are not the same thing.
+  //
+  // Asymmetric on purpose. A centred landmark is the fault §9.7 names, so it is
+  // punished to zero; one against the frame edge is merely a weaker composition
+  // than one on the third line, so it tapers to half rather than to nothing.
+  const peakOff = Math.abs(heroCol / (COLS - 1) - 0.5);
+  const offCentre = clamp01(peakOff / THIRD_OFF)
+    * (1 - 0.5 * clamp01((peakOff - THIRD_OFF) / (0.5 - THIRD_OFF)));
 
   // --- 3 · a leading line exiting frame -----------------------------------
   // A ridge or valley whose axis is *oblique* to the view runs out of the side
   // of the frame; one straight ahead runs to the vanishing point and leads the
   // eye nowhere. Measure the cross-frame gradient of the skyline: a strong,
-  // consistent slope means a line crossing the view.
-  let slope = 0;
-  for (let c = 1; c < COLS; c++) slope += sky[c] - sky[c - 1];
-  const lead = clamp01(Math.abs(slope) / (7 * DEG));
+  // *consistent* slope means a line crossing the view.
+  //
+  // The first version summed the per-column differences, which telescopes —
+  // `Σ (sky[c] − sky[c−1])` is just `sky[last] − sky[0]`, so it read two columns
+  // out of twenty-one and called it a line. Against 2.65 m of macro relief that
+  // was harmlessly small; against the real ground it saturated at 1.000 on
+  // almost every frame, and a term that is always 1 carries no information while
+  // still dominating an additive total. Magnitude times *coherence* — how much
+  // of the total variation runs one way — distinguishes a ridge crossing the
+  // frame from a jagged skyline with the same endpoints.
+  let up = 0, dn = 0;
+  for (let c = 1; c < COLS; c++) {
+    const d = sky[c] - sky[c - 1];
+    if (d > 0) up += d; else dn -= d;
+  }
+  const netRise = Math.abs(up - dn);
+  const coherence = up + dn > 1e-9 ? netRise / (up + dn) : 0;
+  const lead = clamp01(netRise / LEAD_DEG / DEG) * (0.25 + 0.75 * coherence);
 
   // --- 4 · a valley cross-section framing the view ------------------------
   // The reference's own reason for its viewpoint. Ground rising on both flanks
   // and falling away ahead: the frame has walls.
-  const leftFlank = at(320, -260), rightFlank = at(320, 260), ahead = at(520, 0);
-  const walls = clamp01((Math.min(leftFlank, rightFlank) - ahead) / 45);
+  //
+  // The first version probed three points — `at(320, ±260)` against `at(520, 0)`
+  // — and compared them in metres. Both halves were wrong. Three samples of a
+  // field whose finest octave has a 110 m wavelength is mostly noise, and a
+  // flank 45 m above the valley floor 400 m away subtends 6°, which is not a
+  // wall; what frames a view is angular, not metric. Measured over 288 random
+  // frames it read 0.000 on 70% of them and the solver could not find the term
+  // at all.
+  //
+  // The skyline array already holds the answer. Read across it, the three terms
+  // decompose cleanly: `lowHorizon` is its mean, `lead` its linear trend, and
+  // `walls` its curvature — the edges of the frame standing above the middle.
+  // Twenty-one samples instead of three, at no cost, and the three constraints
+  // stop measuring overlapping things.
+  const band4 = (a, b) => { let s = 0; for (let c = a; c <= b; c++) s += sky[c]; return s / (b - a + 1); };
+  const edges = (band4(0, 3) + band4(COLS - 4, COLS - 1)) / 2;
+  const middle = band4((COLS >> 1) - 2, (COLS >> 1) + 2);
+  const wallRise = edges - middle;
+  const walls = clamp01(wallRise / WALL_DEG / DEG);
 
   // --- 5 · the sun, and where it is relative to the view ------------------
   // §9.7 forces 8–18°. §9.2's rim — "the connective tissue of the whole image"
@@ -181,9 +280,46 @@ export function scoreComposition(frame, pp, ocean, Rworld, heading, sunElevDeg, 
     Math.abs(sunElevDeg - SUN_BAND[0]), Math.abs(sunElevDeg - SUN_BAND[1])) / 10);
 
   const terms = { lowHorizon, offCentre, hero, lead, walls, band };
-  const total = 2.2 * band + 1.6 * hero + 1.3 * lead + 1.1 * walls
-    + 1.0 * lowHorizon + 0.7 * offCentre;
-  return { total, terms, heroDist, skyMeanDeg: skyMean / DEG };
+  const raw = {
+    skyMeanDeg: skyMean / DEG,
+    skyMaxDeg: skyMax / DEG,
+    peakOff,
+    promM: heroProm,
+    netRiseDeg: netRise / DEG,
+    coherence,
+    wallDeg: wallRise / DEG,
+  };
+  return { total: aggregate(terms), terms, raw, heroDist, skyMeanDeg: skyMean / DEG };
+}
+
+/**
+ * Combine the terms **conjunctively**, not additively.
+ *
+ * §8 gates a frame at *"≥4 every axis, ≥4.5 mean"* — a floor per axis and then
+ * an average, in that order. A weighted sum cannot express that: it lets a
+ * saturated term buy out a dead one, and it did. With the additive total the
+ * solver found sites where `lead` pinned at 1.000 and paid for it with
+ * `lowHorizon` and `walls` at zero — a frame with a spectacular diagonal and no
+ * horizon and no walls, which is not what §9.7 asks for and scored *below
+ * chance* on two of the six constraints it claims to optimise.
+ *
+ * A weighted geometric mean over a small floor is §8's rule as arithmetic: a
+ * term near zero drags the whole product down no matter what the others do, so
+ * the solver cannot trade a constraint away. The floor (`FLOOR`) keeps it from
+ * being a hard veto — one genuinely unavailable feature on a flat ocean world
+ * should cost a lot, not everything.
+ */
+const FLOOR = 0.06;
+const WEIGHTS = { band: 2.2, hero: 1.6, lead: 1.3, walls: 1.1, lowHorizon: 1.0, offCentre: 0.7 };
+
+export function aggregate(terms) {
+  let acc = 0, wsum = 0;
+  for (const k in WEIGHTS) {
+    const w = WEIGHTS[k];
+    acc += w * Math.log(FLOOR + (1 - FLOOR) * clamp01(terms[k]));
+    wsum += w;
+  }
+  return Math.exp(acc / wsum);
 }
 
 const clamp01 = (x) => Math.min(Math.max(x, 0), 1);
@@ -196,7 +332,7 @@ const clamp01 = (x) => Math.min(Math.max(x, 0), 1);
  * same reason.
  */
 export function solveLandingSite(pp, hashSeed, opts = {}) {
-  const { sites = 600, shortlist = 6, headings = 8 } = opts;
+  const { sites = 600, shortlist = 10, headings = 8 } = opts;
   const rand = rng(hashSeed);
   const ocean = pp.oceanLevel > -0.5 ? pp.oceanLevel : 0.0;
   const Rworld = Math.max(pp.radiusE, 0.05) * 6.371e6;
@@ -222,6 +358,16 @@ export function solveLandingSite(pp, hashSeed, opts = {}) {
   }
   cands.sort((a, b) => b.live - a.live);
 
+  // Take the shortlist as a *spread* across the passing candidates, not the top
+  // few. Habitability is uncorrelated with composition — the best-scoring sites
+  // are a narrow band of near-identical coastal shelf, and handing the second
+  // stage six versions of the same place leaves it nothing to choose between.
+  // Measured: the top-6 shortlist made `hero` 9% *worse* than chance, because a
+  // hero landmark was not available at any of them.
+  const pool = [];
+  const span = Math.max(1, Math.floor(cands.length / Math.max(shortlist, 1)));
+  for (let i = 0; i < cands.length && pool.length < shortlist; i += span) pool.push(cands[i]);
+
   // The sun is a free variable with nothing to search: the band term is flat
   // inside 8–18° and no other term reads elevation, so every value in the band
   // scores identically. Take the middle — 13°, half a degree off the
@@ -229,11 +375,13 @@ export function solveLandingSite(pp, hashSeed, opts = {}) {
   const sunElev = (SUN_BAND[0] + SUN_BAND[1]) / 2;
 
   let best = null;
-  for (const c of cands.slice(0, shortlist)) {
-    const frame = frameAt(c.dir);
+  for (const c of pool) {
+    // the real ground at this site — the same function surface.js will build
+    const ground = makeGround(pp, c.dir, opts);
+    const frame = ground.frame;
     for (let hd = 0; hd < headings; hd++) {
       const heading = (hd / headings) * Math.PI * 2;
-      const sc = scoreComposition(frame, pp, ocean, Rworld, heading, sunElev, opts);
+      const sc = scoreComposition(ground, heading, sunElev, opts);
       const total = sc.total + c.live * 0.55;
       if (!best || total > best.total) {
         best = { total, dir: c.dir, frame, heading, sunElev, live: c.live, ...sc };
