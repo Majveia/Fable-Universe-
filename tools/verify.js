@@ -26,6 +26,7 @@ import { PAINT_GLSL, REFERENCE_LIGHT, lightFor, paint, ramp3 } from '../src/pain
 import {
   SUN_BAND, frameAt, macroHeight, scoreComposition, solveLandingSite,
 } from '../src/landing.js';
+import { makeGround } from '../src/ground.js';
 
 let failures = 0;
 let checks = 0;
@@ -720,15 +721,13 @@ function suiteLanding() {
   const solvedScores = [];
   for (let i = 0; i < worlds.length; i++) {
     const w = worlds[i];
-    const ocean = w.oceanLevel > -0.5 ? w.oceanLevel : 0;
-    const R = Math.max(w.radiusE, 0.05) * 6.371e6;
     let sd = 0x9e37 + i * 31;
     const rand = () => { sd = (sd * 1103515245 + 12345) & 0x7fffffff; return sd / 0x7fffffff; };
     // 24 random (site, heading) pairs per world, scored the same way
     for (let k = 0; k < 24; k++) {
       const z = rand() * 2 - 1, th = rand() * Math.PI * 2, q = Math.sqrt(1 - z * z);
-      const f = frameAt([q * Math.cos(th), z, q * Math.sin(th)]);
-      randomScores.push(scoreComposition(f, w, ocean, R, rand() * Math.PI * 2, 13.5).terms);
+      const g = makeGround(w, [q * Math.cos(th), z, q * Math.sin(th)]);
+      randomScores.push(scoreComposition(g, rand() * Math.PI * 2, 13.5).terms);
     }
     if (solved[i].terms) solvedScores.push(solved[i].terms);
   }
@@ -741,29 +740,28 @@ function suiteLanding() {
     console.log(`       ${r.k.padEnd(11)} random ${r.rnd.toFixed(3)} → solved ${r.sol.toFixed(3)}`
       + `   ${r.sol > r.rnd ? '+' : ''}${((r.sol - r.rnd) * 100).toFixed(0)}%`);
   }
-  ok('§9.7 · the solved site beats chance on the terms it can currently see',
-    rows.find((r) => r.k === 'offCentre').sol >= rows.find((r) => r.k === 'offCentre').rnd
-    && rows.find((r) => r.k === 'lowHorizon').sol >= rows.find((r) => r.k === 'lowHorizon').rnd,
-    'framing terms only — see the next check for why that is the whole list');
+  ok('§9.7 · the solved site beats chance on every composition term',
+    rows.every((r) => r.sol >= r.rnd),
+    rows.filter((r) => r.sol < r.rnd).map((r) => r.k).join(' ') || `${KEYS.length} terms`);
 
-  // The finding that matters, asserted so it breaks when it is fixed.
+  // The mistake this solver was built on, kept runnable so it cannot come back.
   //
-  // `hero`, `lead` and `walls` all read zero, for the solved site and for a
-  // random one alike. They are not broken: they measure *relief*, in metres,
-  // and the field the solver scores has none. The macro term varies by 1.9 m
-  // over the whole ±1400 m surface — on a 6371 km planet that patch subtends
-  // 0.00022 radians, and planet-scale noise has nothing to say across it.
+  // The first version scored the planet-scale macro field, arguing that
+  // "composition is a macro-scale property" and that surface.js's detail
+  // octaves "cannot move a ridge". Backwards, and this check is the number that
+  // says so: the macro term varies by **2.7 m** across the whole ±1400 m
+  // surface where the ground a person stands on varies by **333 m**. On a
+  // 6371 km world that patch subtends 0.00022 radians and planet-scale noise
+  // has nothing to say across it; every ridge a viewer can see comes from
+  // `fbm2(x·0.0011)` — a 900 m wavelength — and from the landform.
   //
-  // So the premise this solver was built on is wrong. `src/landing.js` argues
-  // that "composition is a macro-scale property" and that surface.js's detail
-  // octaves "cannot move a ridge". Backwards: at 1400 m every ridge a viewer
-  // can see comes from `fbm2(x·0.0011)` — a 900 m wavelength — and from the
-  // landform. Those are exactly the terms the solver drops.
+  // `hero`, `lead` and `walls` consequently read zero for the solved site and a
+  // random one alike, and every threshold in the scorer was calibrated against
+  // a field 123× too flat.
   //
-  // The fix is to score the height function `surface.js` actually builds, which
-  // means extracting it into a shared module — §2.7's own discipline, applied
-  // one level up. This assertion holds *because* the solver is looking at the
-  // wrong field, and will fail the moment it looks at the right one.
+  // Both halves are asserted. The macro field must stay flat *and* the ground
+  // the solver actually reads must have relief, so the day someone reintroduces
+  // the shortcut, this fails rather than quietly scoring a different planet.
   {
     const w = worlds[0];
     const f = frameAt([0.3, 0.7, 0.64]);
@@ -775,21 +773,29 @@ function suiteLanding() {
         if (h < lo) lo = h; if (h > hi) hi = h;
       }
     }
-    ok('the macro field is flat at surface scale, which is why relief reads zero',
-      hi - lo < 5 && rows.find((r) => r.k === 'hero').sol < 0.01,
-      `${(hi - lo).toFixed(2)} m of relief across ±1400 m — the ridges a viewer`
-      + ' sees are the detail octaves this solver does not sample');
+    const real = makeGround(w, [0.3, 0.7, 0.64]);
+    let rlo = Infinity, rhi = -Infinity;
+    for (let x = -1400; x <= 1400; x += 100) {
+      for (let z = -1400; z <= 1400; z += 100) {
+        const h = real.heightAt(x, z);
+        if (h < rlo) rlo = h; if (h > rhi) rhi = h;
+      }
+    }
+    ok('the ground the solver scores has relief and the macro field does not',
+      hi - lo < 5 && rhi - rlo > 40,
+      `macro ${(hi - lo).toFixed(1)} m across ±1400 m · real ground`
+      + ` ${(rhi - rlo).toFixed(0)} m — the ratio this solver used to be wrong by`);
   }
 
   // --- properties of the scorer itself ------------------------------------
   {
-    const w = worlds[0], ocean = w.oceanLevel, R = w.radiusE * 6.371e6;
-    const f = frameAt([0.3, 0.7, 0.64]);
-    const inBand = scoreComposition(f, w, ocean, R, 1.0, 13.5).terms.band;
-    const out = scoreComposition(f, w, ocean, R, 1.0, 42).terms.band;
+    const w = worlds[0];
+    const g = makeGround(w, [0.3, 0.7, 0.64]);
+    const inBand = scoreComposition(g, 1.0, 13.5).terms.band;
+    const out = scoreComposition(g, 1.0, 42).terms.band;
     ok('the sun term is 1 inside the band and falls away outside it',
       inBand === 1 && out < 0.1, `13.5° → ${inBand} · 42° → ${out.toFixed(3)}`);
-    const t = scoreComposition(f, w, ocean, R, 1.0, 13.5).terms;
+    const t = scoreComposition(g, 1.0, 13.5).terms;
     ok('every term is a normalised [0,1] score',
       Object.values(t).every((v) => v >= 0 && v <= 1 && Number.isFinite(v)),
       Object.entries(t).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(' · '));
@@ -1342,10 +1348,96 @@ function suiteStarlight() {
 // ---------------------------------------------------------------------------
 
 const only = process.argv[2];
+// ---------------------------------------------------------------------------
+// suite: ground
+//
+// `src/ground.js` is the one definition of the walkable ground (§2.7's rule,
+// applied one level up from the GLSL↔JS parity it was written about). Its
+// output is not a rendering detail: **the ground is the address.** §2.3 says
+// the same seed gives the same universe on every machine forever, and a
+// shared URL that lands a metre off a cliff it was screenshotted on has
+// broken that promise as surely as a changed seed would.
+//
+// So the guard is a fingerprint, not an intention. These checksums were taken
+// the day the formula moved out of `surface.js` — verified against 441 samples
+// captured from the browser *before* the move, 0 of which differed. Any future
+// edit that shifts a world by a millimetre fails here and has to say so out
+// loud.
+//
+// Two worlds, deliberately: a flat coastal shelf and a mountainous one. A
+// single sample world would let a change to the landform contribution or to
+// the relief ramp pass unseen, and those are the terms most likely to be
+// tuned.
+
+function suiteGround() {
+  console.log('\nground — the one definition of the walkable ground (§2.7, §2.3)');
+
+  const WORLDS = [
+    { label: 'coastal shelf', relief: 24.4, sum: -10717.5872,
+      dir: [0.31, 0.62, 0.72],
+      pp: { seed: 0x5eed1337, typeId: 1, noiseSeed: 424242, oceanLevel: 0.012, radiusE: 1.04 } },
+    { label: 'mountainous world', relief: 764.6, sum: 189612.3066,
+      dir: [0.1, 0.9, 0.42],
+      pp: { seed: 0x5eed1337, typeId: 0, noiseSeed: 7777, oceanLevel: -1, radiusE: 0.55 } },
+  ];
+
+  for (const w of WORLDS) {
+    const g = makeGround(w.pp, w.dir);
+    let sum = 0, lo = Infinity, hi = -Infinity, n = 0;
+    for (let x = -1300; x <= 1300; x += 130) {
+      for (let z = -1300; z <= 1300; z += 130) {
+        const h = g.heightAt(x, z);
+        sum += h; n++;
+        if (h < lo) lo = h;
+        if (h > hi) hi = h;
+      }
+    }
+    ok(`§2.3 · the ${w.label} is where it has always been`,
+      n === 441 && Math.abs(sum - w.sum) < 1e-3 && Math.abs((hi - lo) - w.relief) < 0.1,
+      `441 samples · checksum ${sum.toFixed(4)} (golden ${w.sum.toFixed(4)})`
+      + ` · relief ${(hi - lo).toFixed(1)} m`);
+  }
+
+  // The measurement that reset every constant in the landing solver, kept
+  // runnable because a number that explains a mistake is worth being able to
+  // re-take. Both halves matter: the ground must have relief, and it must be
+  // finite everywhere — a NaN here poisons a whole world silently.
+  {
+    const g = makeGround(WORLDS[1].pp, WORLDS[1].dir);
+    let finite = true;
+    for (let x = -1400; x <= 1400; x += 70) {
+      for (let z = -1400; z <= 1400; z += 70) {
+        if (!Number.isFinite(g.heightAt(x, z))) { finite = false; break; }
+      }
+    }
+    ok('the ground is finite everywhere on the walkable extent', finite,
+      '1681 samples over \u00b11400 m');
+  }
+
+  // `lift` and `impacts` are state the ground owns and callers mutate —
+  // surface.js raises a waterlocked world after the spawn scan, and craters are
+  // carved per visit. If the height function closed over their initial values
+  // instead of reading them, both would silently stop working.
+  {
+    const g = makeGround(WORLDS[0].pp, WORLDS[0].dir);
+    const before = g.heightAt(0, 0);
+    g.lift = 12.5;
+    const lifted = g.heightAt(0, 0);
+    g.lift = 0;
+    g.impacts.push({ x: 0, z: 0, r: 60, depth: 30, grown: 1 });
+    const cratered = g.heightAt(0, 0);
+    ok('the height function reads `lift` and `impacts` live, not at build time',
+      Math.abs(lifted - before - 12.5) < 1e-9 && cratered < before - 1,
+      `lift +12.5 m \u2192 ${(lifted - before).toFixed(2)} m`
+      + ` \u00b7 a 30 m crater \u2192 ${(cratered - before).toFixed(2)} m`);
+  }
+}
+
+
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
-  paint: suitePaint, landing: suiteLanding,
+  paint: suitePaint, landing: suiteLanding, ground: suiteGround,
 };
 
 for (const [name, fn] of Object.entries(suites)) {
