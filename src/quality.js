@@ -36,6 +36,7 @@ const TIER_NAMES = ['low', 'mobile', 'desktop', 'ultra'];
  *   quadDepth   maximum quadtree depth
  *   tileRes     vertices per tile edge
  *   atmoSteps   single-scattering raymarch steps for the sky
+ *   shadowRes   sun shadow map side, in texels (§9.2's drawn edge)
  *   cities      the full metropolis generator
  *   volumetrics volumetric cloud deck and god rays
  *
@@ -44,10 +45,10 @@ const TIER_NAMES = ['low', 'mobile', 'desktop', 'ultra'];
  * become columns, not new URL parameters.
  */
 export const QUALITY = [
-  { name: 'low', px: 0.85, cosmic: 44, quadSplit: 4.5, quadDepth: 14, tileRes: 25, atmoSteps: 6, cities: false, volumetrics: false },
-  { name: 'mobile', px: 1.00, cosmic: 56, quadSplit: 5.5, quadDepth: 16, tileRes: 29, atmoSteps: 8, cities: true, volumetrics: false },
-  { name: 'desktop', px: 1.12, cosmic: 68, quadSplit: 6.5, quadDepth: 18, tileRes: 33, atmoSteps: 12, cities: true, volumetrics: true },
-  { name: 'ultra', px: 1.32, cosmic: 86, quadSplit: 8.0, quadDepth: 20, tileRes: 41, atmoSteps: 16, cities: true, volumetrics: true },
+  { name: 'low', px: 0.85, cosmic: 44, quadSplit: 4.5, quadDepth: 14, tileRes: 25, atmoSteps: 6, shadowRes: 1024, cities: false, volumetrics: false },
+  { name: 'mobile', px: 1.00, cosmic: 56, quadSplit: 5.5, quadDepth: 16, tileRes: 29, atmoSteps: 8, shadowRes: 1536, cities: true, volumetrics: false },
+  { name: 'desktop', px: 1.12, cosmic: 68, quadSplit: 6.5, quadDepth: 18, tileRes: 33, atmoSteps: 12, shadowRes: 2048, cities: true, volumetrics: true },
+  { name: 'ultra', px: 1.32, cosmic: 86, quadSplit: 8.0, quadDepth: 20, tileRes: 41, atmoSteps: 16, shadowRes: 2560, cities: true, volumetrics: true },
 ];
 
 const param = (k) => {
