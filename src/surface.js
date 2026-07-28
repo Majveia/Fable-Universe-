@@ -30,6 +30,8 @@ import { addInterior } from './interior.js';
 import { planetHeight, findLandingSite } from './terrain.js';
 import { pickLandform } from './landform.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
+import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
+import { qInt } from './quality.js';
 
 const PARAM = (k) => {
   try { return new URL(window.location.href).searchParams.get(k); }
@@ -40,13 +42,20 @@ const PARAM = (k) => {
 const M2 = PARAM('m2') === '1';
 
 /**
- * §9.2's light model, act 3. Rides M2 because it is the same milestone, but
- * `?m2=1&paint=0` turns it off on its own — otherwise a single flag changes the
- * tonemap, the bloom *and* the lighting at once, and no measurement can say
- * which of the three moved the frame. §7.4 asks for a flag per change, and one
- * flag for three changes is the same defect as no flag at all.
+ * §9.2's light model, act 3. It rides M2 because it is the same milestone, but
+ * it is separable in *both* directions: `?m2=1&paint=0` is the print without
+ * the lighting, and `?paint=1` is the lighting without the print. Without the
+ * second of those, every measurement of the light model is taken through a
+ * tonemap that lifts shadows 2.66× — which is how a debug frame meant to show
+ * a shadow term came back reading white everywhere.
+ *
+ * §7.4 asks for a flag per change; one flag for three changes is the same
+ * defect as no flag at all.
  */
-const PAINT = M2 && PARAM('paint') !== '0';
+const PAINT = PARAM('paint') === '1' || (M2 && PARAM('paint') !== '0');
+
+/** `?shdebug=1` — output the shadow term itself, so it can be looked at */
+const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');
 
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
@@ -103,7 +112,7 @@ const TERRAIN_FRAG = /* glsl */`
   varying vec3 vW;
   varying vec3 vN;
   ${NOISE_GLSL}
-  ${PAINT ? PAINT_GLSL : ''}
+  ${PAINT ? SHADOW_GLSL + PAINT_GLSL : ''}
 
   uniform float uSea;    // sea level in world y, or -1e9 for a dry world
 
@@ -169,12 +178,13 @@ const TERRAIN_FRAG = /* glsl */`
     // the painterly wobble: the band edge is drawn, not computed, and it is
     // keyed in metres so it keeps its shape at every distance
     sf.jit   = (fbm3(vec3(vW.xz * 0.09, uSeed)) * 0.5) * 0.055;
-    sf.shadow = 1.0;            // no shadow map at surface scale yet — act 4
+    sf.shadow = sunShadow(vW, dot(nb, uSunDir));
     sf.trans = 0.0; sf.transCol = vec3(0.0);
     sf.rim = 0.55;
     sf.ao = 1.0;
     sf.ambient = 1.0;
     vec3 lit = paint(sf) * mix(0.35, 1.0, dusk);
+    ${SHADOW_DEBUG ? (PARAM('shdebug') === '2' ? 'lit = shadowProbe(vW);' : 'lit = vec3(sf.shadow);') : ''}
     ` : /* glsl */`
     // light: wrapped diffuse so dusk rakes long and soft, like film
     float diff = clamp((dot(nb, uSunDir) + 0.3) / 1.3, 0.0, 1.0);
@@ -460,6 +470,7 @@ export class SurfaceScale {
    * the horizon is warm.
    */
   _paintUniforms() {
+    this.sunShadow = new SunShadow({ res: qInt('shres', 'shadowRes') });
     const T = this.ctx.system?.temp ?? 5778;
     const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
     const L = lightFor(T, Math.max(elev, 0.5));
@@ -470,6 +481,7 @@ export class SurfaceScale {
       uPaintAmbSky: this._paintLight.uniforms.sky,
       uPaintAmbGnd: this._paintLight.uniforms.gnd,
       uPaintShadowTint: this._paintLight.uniforms.sh,
+      ...this.sunShadow.uniforms,
     };
   }
 
@@ -587,6 +599,10 @@ export class SurfaceScale {
       this.terrain.add(mesh);
     }
     this.scene.add(this.terrain);
+    // §9.2's shadow needs its occluders named: casting is opt-in, because a
+    // surface scene also holds a 20 km sky dome and a 9.9 km ocean plane that
+    // are opaque, in frustum, and not occluders (src/shadow.js).
+    if (PAINT) markCaster(this.terrain);
   }
 
   _gridWithHole(size, res, hole) {
@@ -1231,6 +1247,10 @@ export class SurfaceScale {
     if (this.weather) this.weather.update(dt, this.uSunDir.value.y);
     if (this.megafauna) this.megafauna.update(dt, this.uSunDir.value.y);
     this._syncPaintLight();
+    if (this.sunShadow) {
+      this.sunShadow.update(this.app.renderer, this.scene, this.camera,
+        this.uSunDir.value, (x, z) => this.heightAt(x, z));
+    }
     if (this.godrays) this.godrays.update(dt);
     if (this.rivers) this.rivers.update(dt);
     if (this.festival) this.festival.update(dt, this.uSunDir.value.y);
