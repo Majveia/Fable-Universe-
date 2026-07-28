@@ -599,10 +599,21 @@ export class SurfaceScale {
       this.terrain.add(mesh);
     }
     this.scene.add(this.terrain);
-    // §9.2's shadow needs its occluders named: casting is opt-in, because a
-    // surface scene also holds a 20 km sky dome and a 9.9 km ocean plane that
-    // are opaque, in frustum, and not occluders (src/shadow.js).
-    if (PAINT) markCaster(this.terrain);
+    // §9.2's shadow needs its occluders named — casting is opt-in (src/shadow.js)
+    // — and only the **finest ring** may cast.
+    //
+    // The other two are LOD, and LOD is a lie that only works at a distance.
+    // Ring 2 is 14 km across at 72 segments: 194 m per quad. A quad that coarse
+    // sits tens of metres above the dune it approximates, and from a 20° sun it
+    // therefore shadows everything behind it. Measured, with all three casting:
+    // every fragment of the near ground came back 0.017 deeper than the map
+    // recorded — a uniform 25 m deficit across 33,420 samples, 100% shadowed.
+    //
+    // Ring 0 is 1400 m across against a 480 m shadow span, so the finest ring
+    // covers the whole map on its own. This is the reference's `uCullR` in a
+    // different shape: an occluder that is not resolved at the map's scale is
+    // not an occluder.
+    if (PAINT) markCaster(this.terrain.children[0]);
   }
 
   _gridWithHole(size, res, hole) {
