@@ -40,12 +40,14 @@
 // ---------------------------------------------------------------------------
 // What is not here yet
 //
-// §9.4 steps 5 (watercolour softening at 0.42 × fog) and its chroma bleed need
-// the fog fraction in the alpha channel, which is §9.3's aerial-perspective
-// port and does not exist yet. They are the two steps that read a *distance*,
-// and they land with the thing that writes one. Everything else — tonemap,
-// shadow/highlight push, lift, S-curve, midtone saturation, paper tooth,
-// vignette, dither — is complete.
+// §9.4 steps 5 (watercolour softening at 0.42 × fog) and its chroma bleed are
+// the two steps that read a *distance*. That distance now exists — `aerial.js`
+// writes §9.3's fog fraction into alpha and `tools/alphaudit.js` proves it
+// arrives here — so what these two were waiting on is no longer missing. They
+// are the only part of §9.4 still owed.
+//
+// Everything else — tonemap, shadow/highlight push, lift, S-curve, midtone
+// saturation, paper tooth, vignette, dither — is complete.
 
 import * as THREE from 'three';
 
@@ -134,6 +136,16 @@ export const PRINT_SHADER = {
 
     void main() {
       vec4 src = texture2D(tDiffuse, vUv);
+      // §9.3's fog fraction rides in alpha, and the audit that proved it
+      // arrives intact also found the one thing that dirties it: three's preset
+      // AdditiveBlending is (SRC_ALPHA, ONE) on the *alpha* channel too, so an
+      // additive sprite adds its own alpha on top of the scene's. Measured on
+      // the surface scale, that is 0.039% of pixels, reaching 1.55.
+      //
+      // Clamped here, at the one place the value is read, rather than at each
+      // of the dozens of places it is written. tools/alphaudit.js still reports
+      // the raw channel, so this bounds the damage without hiding it.
+      float fog = clamp(src.a, 0.0, 1.0);
       // §11: one non-finite fragment survives the tonemap as a solid block, and
       // the bloom downsample chain will have smeared it over a neighbourhood
       // first. NaN is the only value that fails to equal itself.
@@ -197,7 +209,9 @@ export const PRINT_SHADER = {
       float dth = fract(dot(gl_FragCoord.xy, vec2(0.7548776662, 0.5698402909)));
       c += ((dth - 0.5) / 255.0) * smoothstep(0.5 / 255.0, 2.0 / 255.0, luma(c));
 
-      gl_FragColor = vec4(clamp(c, 0.0, 1.0), src.a);
+      // the fog fraction passes through, bounded — §9.4 steps 5 and 5b are the
+      // two that will read it, and they are the only thing still owed here
+      gl_FragColor = vec4(clamp(c, 0.0, 1.0), fog);
     }
   `,
 };

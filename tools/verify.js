@@ -27,6 +27,10 @@ import {
   SUN_BAND, frameAt, macroHeight, scoreComposition, solveLandingSite,
 } from '../src/landing.js';
 import { makeGround } from '../src/ground.js';
+import {
+  FIXTURE_AIR, REFERENCE_PALETTE, aerial, airFor, airPalette, scaleHeight,
+} from '../src/aerial.js';
+import { airColoursQuantised } from '../src/starlight.js';
 
 let failures = 0;
 let checks = 0;
@@ -975,56 +979,12 @@ function suitePrint() {
 // floor is. Plus §9.3's NaN guard, which is the one line in the function that
 // exists because of a bug rather than because of an effect.
 
-/** sRGB hex → linear, the same conversion §9.1 asks for at load */
-function hexLinear(h) {
-  const v = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
-  return v.map((c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)));
-}
-
-const AIR = {
-  haze: hexLinear('#A9BCC7'),
-  mist: hexLinear('#D6DDD4'),
-  horizonSun: hexLinear('#FBE2AE'),
-  anti: hexLinear('#C8D4D6'),
-};
-
-/**
- * §9.3, exactly as the reference computes it. `V` points from the surface
- * *toward the camera* — `normalize(uCamPos - P)`, the reference's convention at
- * every one of its ten call sites — and `sun` points at the sun, both unit. Get
- * that backwards and the Mie term inverts: fog goes cold toward the sun and
- * warm away from it, which still looks like fog and is the wrong image.
- * Returns the composited colour and the fog fraction §9.3 wants in alpha —
- * the reference smuggles it out through a mutable global, which is a GLSL
- * convenience rather than a design, so this returns it.
- */
-function aerial(col, dist, V, sun, worldY, {
-  fogNear = 70, fogFar = 1700, fogMul = 1,
-} = {}) {
-  const ss = (e0, e1, x) => {
-    const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
-    return t * t * (3 - 2 * t);
-  };
-  const mix3 = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
-
-  // a poisoned depth must not poison the colour
-  dist = dist === dist ? Math.min(dist, 1e6) : 1e6;
-
-  const d = Math.max(dist - fogNear, 0);
-  const hf = 1 + (Math.exp(-Math.max(worldY - 6, 0) / 260) - 1) * 0.72;
-  let f = 1 - Math.exp(-Math.pow(d / fogFar, 1.28) * 3.1 * hf * fogMul);
-
-  const vs = -(V[0] * sun[0] + V[1] * sun[1] + V[2] * sun[2]);
-  const mie = Math.pow(Math.min(Math.max(vs, 0), 1), 3.4);
-  let fc = mix3(AIR.haze, AIR.horizonSun, mie * 0.88);
-  fc = mix3(fc, AIR.anti, Math.min(Math.max(vs, -1), 0) * -0.32);
-
-  const pool = ss(46, 8, worldY) * ss(120, 420, dist);
-  fc = mix3(fc, AIR.mist, pool * 0.45);
-  f = Math.min(Math.max(f + pool * 0.16, 0), 1);
-
-  return { col: mix3(col, fc, f), fog: f, fc };
-}
+// The implementation under test is `src/aerial.js` — imported, not copied.
+// This suite carried its own transcription of §9.3 for two commits, which is
+// exactly the shape of the fault the previous commit removed one level up:
+// `landing.js` had grown a second `frameAt` and the two had already drifted at
+// the poles. A CPU reference that is a *copy* of the shipped function stops
+// being a reference the moment either one moves.
 
 function suiteAerial() {
   console.log('\naerial — §9.3, before it enters a shader (M2 act 2)');
@@ -1039,7 +999,12 @@ function suiteAerial() {
   const toward = SUN.map((v) => -v);
   const away = SUN.slice();
   const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-  const at = (dist, y = 100, V = toward, o) => aerial(GREY, dist, V, SUN, y, o);
+  // `aerial()` takes the two positions rather than a view vector, which is what
+  // makes the reversal in its header unrepresentable — so a probe has to place
+  // a camera. The shaded point sits at the origin at height `y` and the camera
+  // `dist` away along `V`.
+  const at = (dist, y = 100, V = toward, air) => aerial(
+    GREY, [0, y, 0], [V[0] * dist, y + V[1] * dist, V[2] * dist], SUN, air);
 
   ok('inside the near plane there is no fog at all',
     at(0).fog === 0 && at(70).fog === 0,
@@ -1100,7 +1065,7 @@ function suiteAerial() {
     // moves *toward* K_MIST. Asserting an absolute channel order here would be
     // asserting the Mie term instead, which at 13.5° dominates anything the
     // pool does.
-    const d2 = (c) => c.reduce((s, v, i) => s + (v - AIR.mist[i]) ** 2, 0);
+    const d2 = (c) => c.reduce((s, v, i) => s + (v - REFERENCE_PALETTE.mist[i]) ** 2, 0);
     const pooled = at(600, 10).fc, dry = at(600, 60).fc;
     ok('pooling moves the fog colour toward mist',
       d2(pooled) < d2(dry),
@@ -1109,11 +1074,11 @@ function suiteAerial() {
 
   // §9.3's one defensive line, and the reason it is there
   {
-    const bad = aerial(GREY, NaN, toward, SUN, 100);
+    const bad = aerial(GREY, [NaN, 100, 0], [0, 100, 0], SUN);
     ok('§9.3 · a NaN depth does not poison the colour',
       bad.col.every((v) => v === v) && bad.fog === bad.fog && bad.fog <= 1,
       `NaN depth → fog ${bad.fog} · colour [${bad.col.map((v) => v.toFixed(3)).join(', ')}]`);
-    const inf = aerial(GREY, Infinity, toward, SUN, 100);
+    const inf = aerial(GREY, [Infinity, 100, 0], [0, 100, 0], SUN);
     ok('an infinite depth saturates rather than overflowing',
       inf.col.every(Number.isFinite) && inf.fog === 1);
   }
@@ -1127,6 +1092,120 @@ function suiteAerial() {
     }
     ok('the fog fraction is smooth enough to serve as the post chain\'s depth',
       worst < 0.02, `largest step over a 10 m increment: ${worst.toFixed(4)}`);
+  }
+
+  // -------------------------------------------------------------------------
+  // Act 2 step 3: the three constants that could not port as literals.
+  //
+  // Everything above tests the reference's function. Everything below tests the
+  // part that is AEON's — that one valley's measurements became a family of
+  // worlds without any of them stopping being measurements.
+
+  const EARTHLIKE = { massE: 1, radiusE: 1, Teq: FIXTURE_AIR.Teq };
+
+  {
+    const a = airFor(EARTHLIKE, { atmo: 1, hazeX: 1 });
+    ok('§16.3 · an Earth-like world under an Earth-like air reproduces the reference exactly',
+      Math.abs(a.hazeH - 260) < 1e-9 && Math.abs(a.thickness - 1) < 1e-12,
+      `hazeH ${a.hazeH.toFixed(6)} m (reference 260) · thickness ${a.thickness}`);
+  }
+
+  {
+    // §16.3(a)'s stated check: an airless world needs no special case, the
+    // parameterisation has to dispose of it. Not "small" — absent.
+    const none = airFor({ massE: 0.012, radiusE: 0.27, Teq: 270 }, { atmo: 0, hazeX: 1 });
+    let clean = true;
+    for (let d = 0; d <= 40000; d += 137) {
+      const r = at(d, 12, toward, none);
+      if (r.fog !== 0 || r.col.some((v, i) => v !== GREY[i])) { clean = false; break; }
+    }
+    ok('§16.3 · an airless world has no fog at any distance, exactly',
+      clean, 'thickness 0 returns the colour bit-for-bit and a fog of exactly 0');
+  }
+
+  {
+    // The claim the multiply form makes: thickness rescales the distance axis
+    // and does not touch the *shape*. If it did, `hazeX` would be an art knob
+    // that bends the physics rather than one that rescales it.
+    const thick = airFor(EARTHLIKE, { atmo: 1, hazeX: 2.5 });
+    let worst = 0;
+    for (let d = 80; d <= 6000; d += 13) {
+      // dn = dist · thickness, so 2.5x the air at d is 1x the air at 2.5d
+      const a = at(d * 2.5, 12).fog;
+      const b = at(d, 12, toward, thick).fog;
+      worst = Math.max(worst, Math.abs(a - b));
+    }
+    ok('thicker air rescales the distance axis and leaves the curve\'s shape alone',
+      worst < 1e-12, `worst disagreement over 80 m .. 6 km: ${worst.toExponential(2)}`);
+  }
+
+  {
+    // §16.3(c): the haze layer is a boundary layer, so it tracks kT/(mg). Both
+    // signs matter — low gravity lets it stand deeper, high gravity crushes it.
+    const mars = airFor({ massE: 0.107, radiusE: 0.532, Teq: 210 }, { atmo: 0.12 });
+    const heavy = airFor({ massE: 5.5, radiusE: 1.6, Teq: 290 }, { atmo: 1 });
+    ok('the haze layer follows the world\'s own gravity and temperature',
+      mars.hazeH > 500 && heavy.hazeH < 200,
+      `mars g ${mars.gravity.toFixed(2)} → ${mars.hazeH.toFixed(0)} m ·`
+      + ` super-earth g ${heavy.gravity.toFixed(2)} → ${heavy.hazeH.toFixed(0)} m`
+      + ` · fixture g 9.81 → 260 m`);
+    ok('and it is the scale height it claims to be, not a fitted curve',
+      Math.abs(scaleHeight(FIXTURE_AIR.Teq, 9.80665) - 7464.4) < 1,
+      `kT/(mg) at ${FIXTURE_AIR.Teq} K and 1 g = ${scaleHeight(FIXTURE_AIR.Teq, 9.80665).toFixed(1)} m`);
+  }
+
+  {
+    // §16.3(b) / §9.6: the air's colour is the star's, through the same transfer
+    // the sky uses — and the fixture is the test that the transfer is right.
+    const g = airPalette(FIXTURE.T, FIXTURE.elev);
+    const err = Math.max(...['haze', 'mist', 'horizonSun', 'anti'].map(
+      (k) => Math.max(...g[k].map((v, i) => Math.abs(v - REFERENCE_PALETTE[k][i])))));
+    ok('§9.6 · the transfer reproduces §9.1\'s four painted air colours for a G-type star',
+      err < 2 / 255, `worst channel error ${(err * 255).toExponential(2)}/255`);
+
+    const m = airPalette(3100, 13.5);
+    const warmth = (c) => c[0] - c[2];
+    ok('and an M dwarf\'s air is warmer than a G star\'s, not merely dimmer',
+      warmth(m.haze) > warmth(g.haze) + 0.15,
+      `r−b of the haze: ${warmth(g.haze).toFixed(3)} at 5778 K → ${warmth(m.haze).toFixed(3)} at 3100 K`);
+  }
+
+  {
+    // The V convention §16.2 calls the one that cannot be checked by looking.
+    // `aerial()` takes positions precisely so this cannot happen by accident —
+    // this asserts that it *would* have mattered, which is why the signature is
+    // shaped the way it is.
+    const P = [0, 100, 0];
+    const cam = [toward[0] * 1500, 100 + toward[1] * 1500, toward[2] * 1500];
+    const right = aerial(GREY, P, cam, SUN);
+    const flipped = aerial(GREY, cam, P, SUN);
+    const warmth = (c) => c[0] - c[2];
+    ok('swapping the shaded point and the camera inverts the Mie term',
+      warmth(right.fc) > 0.2 && warmth(flipped.fc) < 0,
+      `r−b ${warmth(right.fc).toFixed(3)} the right way round, ${warmth(flipped.fc).toFixed(3)} reversed`
+      + ' — both look like fog, and only one is the right image');
+  }
+
+  {
+    // §5 · the memo that pays for act 2's second caller. Its error is not
+    // asserted to be zero — it is asserted to be smaller than the display can
+    // show, which is the property that lets it exist at all.
+    const keys = Object.keys(airColours(5778, 13.5));
+    let worst = 0, at1 = '', key = '';
+    for (let e = 0.5; e <= 80; e += 0.017) {
+      const exact = airColours(5778, e), memo = airColoursQuantised(5778, e);
+      for (const k of keys) {
+        const d = Math.max(...exact[k].map((v, i) => Math.abs(v - memo[k][i])));
+        if (d > worst) { worst = d; at1 = e.toFixed(2); key = k; }
+      }
+    }
+    ok('§5 · the airmass-bucketed transfer stays under half a display step',
+      worst * 255 < 1, `worst ${(worst * 255).toFixed(3)}/255 (${key} at ${at1}°)`
+      + ' — under the ±0.5/255 dither §9.4 step 8 applies over the top');
+
+    ok('§2.3 · and the bucket is arrival-order independent',
+      airColoursQuantised(5778, 13.5) === airColoursQuantised(5778, 13.504),
+      'two elevations inside one bucket return the same table, whichever asked first');
   }
 }
 

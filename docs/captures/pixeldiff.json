@@ -1,0 +1,86 @@
+{
+  "when": "2026-07-31T04:01:00.438Z",
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "cases": 4096,
+  "tol": 0.00784313725490196,
+  "rows": [
+    {
+      "name": "fixture",
+      "n": 4096,
+      "nonFinite": 0,
+      "colourPct": 100,
+      "fogPct": 100,
+      "maxErr": 3.1927377786011846e-7,
+      "maxErr255": 0.0000814148133543302,
+      "maxAt": 549,
+      "maxWhat": "r",
+      "fogMax": 2.2591820592055e-7,
+      "fogMax255": 0.00005760914250974025
+    },
+    {
+      "name": "mars",
+      "n": 4096,
+      "nonFinite": 0,
+      "colourPct": 100,
+      "fogPct": 100,
+      "maxErr": 3.23117796963146e-7,
+      "maxErr255": 0.00008239503822560224,
+      "maxAt": 2918,
+      "maxWhat": "r",
+      "fogMax": 2.4011838528625873e-7,
+      "fogMax255": 0.00006123018824799598
+    },
+    {
+      "name": "venusian",
+      "n": 4096,
+      "nonFinite": 0,
+      "colourPct": 100,
+      "fogPct": 100,
+      "maxErr": 4.391728607444634e-7,
+      "maxErr255": 0.00011198907948983816,
+      "maxAt": 436,
+      "maxWhat": "r",
+      "fogMax": 2.4299511935943485e-7,
+      "fogMax255": 0.00006196375543665589
+    },
+    {
+      "name": "heavy",
+      "n": 4096,
+      "nonFinite": 0,
+      "colourPct": 100,
+      "fogPct": 100,
+      "maxErr": 3.171475300156601e-7,
+      "maxErr255": 0.00008087262015399332,
+      "maxAt": 3141,
+      "maxWhat": "r",
+      "fogMax": 2.272601444808231e-7,
+      "fogMax255": 0.00005795133684260989
+    },
+    {
+      "name": "m-dwarf",
+      "n": 4096,
+      "nonFinite": 0,
+      "colourPct": 100,
+      "fogPct": 100,
+      "maxErr": 3.535905435114728e-7,
+      "maxErr255": 0.00009016558859542556,
+      "maxAt": 2902,
+      "maxWhat": "b",
+      "fogMax": 2.526010345338392e-7,
+      "fogMax255": 0.000064413263806129
+    },
+    {
+      "name": "airless",
+      "n": 4096,
+      "nonFinite": 0,
+      "colourPct": 100,
+      "fogPct": 100,
+      "maxErr": 5.960464477539063e-8,
+      "maxErr255": 0.00001519918441772461,
+      "maxAt": 47,
+      "maxWhat": "b",
+      "fogMax": 0,
+      "fogMax255": 0
+    }
+  ]
+}

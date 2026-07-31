@@ -302,3 +302,67 @@ export function airColours(T, elev = FIXTURE.elev) {
   }
   return out;
 }
+
+/**
+ * The same table, for the render loop, bucketed in airmass.
+ *
+ * `airColours` is a spectral integral — fourteen stops, each over 201
+ * wavelengths and three colour-matching functions — and it measures **1.73 ms**.
+ * `surface.js` calls it once per frame from its update loop, which spends 14% of
+ * §5's 12 ms CPU budget re-deriving a value whose input moved by a hundredth of
+ * a degree since the last frame. §2.9 makes the frame budget a correctness
+ * property and §5 says any change that costs frames must pay for them; act 2
+ * needs a second caller, so this is that payment.
+ *
+ * **Bucketed in airmass, not elevation.** Elevation is the wrong variable:
+ * airmass goes as 1/sin(h), so a quarter-degree step near the horizon moves
+ * `skyHorizon` by 6.2/255 while a five-degree step at noon moves nothing.
+ * Equal *relative* steps in airmass are equal steps in how much air the beam
+ * crossed, which is the quantity every stop is a function of.
+ *
+ * At 1% per bucket the worst step across all fourteen stops over 0.5°–75° is
+ * **1.15/255**, measured — below the display's own quantisation and below the
+ * ±0.5/255 dither §9.4 step 8 already applies over the top. So the steps need
+ * no interpolation to be invisible, and this stays a memo rather than becoming
+ * a resampler.
+ *
+ * `airColours` itself stays exact and unmemoised, because §19's fixture check
+ * pins it to §9.1's painted hexes at 5e-8 and a bucket would drift that by
+ * three orders of magnitude. The transfer is exact; only the render loop's
+ * *sampling* of it is quantised, and by a stated amount.
+ *
+ * Deterministic (§2.3): the bucket is a pure function of the inputs, so two
+ * machines land in the same one.
+ */
+const AIR_CACHE = new Map();
+const BUCKET = Math.log(1.01);
+
+export function airColoursQuantised(T, elev = FIXTURE.elev) {
+  const bucket = Math.round(Math.log(airmass(elev)) / BUCKET);
+  const key = T + '|' + bucket;
+  let hit = AIR_CACHE.get(key);
+  if (hit === undefined) {
+    // Evaluate at the bucket's own elevation rather than at the caller's, so
+    // every elevation inside a bucket gets the *same* answer. Keyed on the
+    // caller's instead, the cache would return whichever elevation happened to
+    // ask first and the quantisation error would depend on arrival order —
+    // which is a determinism leak (§2.3) that no test would catch, because
+    // every individual answer is inside tolerance.
+    hit = airColours(T, elevForAirmass(Math.exp(bucket * BUCKET)));
+    // A day walks ~345 buckets and a session can visit many worlds. Cheap to
+    // rebuild, so drop the whole table rather than carry an LRU for it.
+    if (AIR_CACHE.size > 512) AIR_CACHE.clear();
+    AIR_CACHE.set(key, hit);
+  }
+  return hit;
+}
+
+/** the elevation whose airmass is `X` — bisection, since `airmass` is monotone */
+function elevForAirmass(X) {
+  let lo = 0.02, hi = 90;
+  for (let i = 0; i < 48; i++) {
+    const m = (lo + hi) * 0.5;
+    if (airmass(m) > X) lo = m; else hi = m;
+  }
+  return (lo + hi) * 0.5;
+}
