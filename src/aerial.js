@@ -182,7 +182,7 @@ const mix3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a
  * the sun, all in world metres. Returns the composited colour and the fog
  * fraction §9.3 puts in alpha.
  */
-export function aerial(col, P, camPos, sun, air = {}, palette = REFERENCE_PALETTE) {
+export function aerial(col, P, camPos, sun, height = null, air = {}, palette = REFERENCE_PALETTE) {
   const { thickness = 1, hazeScale = 1, base = 0 } = air;
 
   const dx = camPos[0] - P[0], dy = camPos[1] - P[1], dz = camPos[2] - P[2];
@@ -207,7 +207,8 @@ export function aerial(col, P, camPos, sun, air = {}, palette = REFERENCE_PALETT
 
   // normalise both axes into the fixture's frame (see the header)
   const dn = dRaw * thickness;
-  const yn = finite ? (P[1] - base) / hazeScale : 0;
+  const h = height === null ? P[1] - base : height;
+  const yn = finite ? h / hazeScale : 0;
 
   const d = Math.max(dn - 70, 0);
   const hf = 1 + (Math.exp(-Math.max(yn - 6, 0) / 260) - 1) * 0.72;
@@ -247,7 +248,13 @@ export const AERIAL_GLSL = /* glsl */`
   uniform float uAirHazeScale;   // boundary-layer depth, relative to 260 m
   uniform float uAirBase;        // the world's datum in world y, metres
 
-  vec4 aerial(vec3 col, vec3 P, vec3 camPos, vec3 sunDir) {
+  // height is metres above the world's datum — sea level where there is a sea.
+  // It is a parameter and NOT P.y, because AEON has two surface scales and only
+  // one of them is flat: at planet scale the camera sits at the origin and up
+  // is radial, so a tile's world y is its latitude rather than its altitude.
+  // Deriving it here would put a pole 6371 km above the haze layer. Every
+  // caller knows its own geometry; this function should not have to guess.
+  vec4 aerial(vec3 col, vec3 P, vec3 camPos, vec3 sunDir, float height) {
     vec3 toCam = camPos - P;
     float raw = length(toCam);
 
@@ -264,7 +271,7 @@ export const AERIAL_GLSL = /* glsl */`
     // both axes into the fixture's frame, so the constants below are the
     // reference's verbatim
     float dn = dist * uAirThickness;
-    float yn = finite ? (P.y - uAirBase) / max(uAirHazeScale, 1.0e-3) : 0.0;
+    float yn = finite ? height / max(uAirHazeScale, 1.0e-3) : 0.0;
 
     float d = max(dn - 70.0, 0.0);
     float hf = 1.0 + (exp(-max(yn - 6.0, 0.0) / 260.0) - 1.0) * 0.72;

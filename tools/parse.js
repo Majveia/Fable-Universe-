@@ -1,6 +1,6 @@
 // The parse gate.
 //
-//   node tools/parse.js [--dir src] [--quiet]
+//   node tools/parse.js [--dir src,tools] [--quiet]
 //
 // Every .js the browser loads, parsed before anything is launched. It exists
 // because of one specific defect that has now cost two runs:
@@ -53,7 +53,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { arg, REPO } from './lib.js';
 
-const dir = join(REPO, String(arg('dir', 'src')));
+const dirs = String(arg('dir', 'src,tools')).split(',').map((d) => join(REPO, d.trim()));
 const quiet = arg('quiet') === true;
 
 async function walk(d) {
@@ -72,6 +72,11 @@ function strayBackticks(src) {
   const hits = [];
   for (let s = 0; s < lines.length; s++) {
     if (!/\/\*\s*glsl\s*\*\/\s*`/.test(lines[s])) continue;
+    // ...unless the marker is itself inside a comment. This file's own header
+    // *illustrates* the defect, and the first version of this check duly
+    // reported the illustration — a lint that cannot read a description of the
+    // bug it looks for will be switched off by the first person it lies to.
+    if (lines[s].trim().startsWith('//') || lines[s].trim().startsWith('*')) continue;
     for (let i = s + 1; i < lines.length; i++) {
       if (!lines[i].includes('`')) continue;
       if (lines[i].trim().startsWith('//')) hits.push({ line: i + 1, text: lines[i].trim() });
@@ -81,7 +86,7 @@ function strayBackticks(src) {
   return hits;
 }
 
-const files = await walk(dir);
+const files = (await Promise.all(dirs.map(walk))).flat().sort();
 const tmp = mkdtempSync(join(tmpdir(), 'aeon-parse-'));
 let failed = 0;
 

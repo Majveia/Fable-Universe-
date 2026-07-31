@@ -145,7 +145,7 @@ const RUN = ({ chunk, packed, count, worlds }) => {
     return s;
   };
 
-  const VS = `#version 300 es
+  const VS = /* glsl */`#version 300 es
     void main() {
       vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
       gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
@@ -153,7 +153,7 @@ const RUN = ({ chunk, packed, count, worlds }) => {
 
   // The chunk, verbatim, plus the smallest main that can drive it. Row 0 of the
   // input texture is the colour, 1 the shaded point, 2 the camera, 3 the sun.
-  const FS = `#version 300 es
+  const FS = /* glsl */`#version 300 es
     precision highp float;
     precision highp sampler2D;
     uniform sampler2D uCases;
@@ -165,7 +165,11 @@ ${chunk}
       vec3 P   = texelFetch(uCases, ivec2(i, 1), 0).rgb;
       vec3 cam = texelFetch(uCases, ivec2(i, 2), 0).rgb;
       vec3 sun = texelFetch(uCases, ivec2(i, 3), 0).rgb;
-      oColor = aerial(col, P, cam, sun);
+      // The height argument, exactly as a real call site forms it: surface.js
+      // passes vW.y minus the datum, so the probe does too. Passing raw P.y
+      // here instead diverged from the CPU twin on the one world with a
+      // non-zero datum, and the gate caught it at 174/255 — the gate working.
+      oColor = aerial(col, P, cam, sun, P.y - uAirBase);
     }`;
 
   let prog;
@@ -311,7 +315,7 @@ async function main() {
   const rows = [];
   let failed = 0;
   for (const w of worlds) {
-    const cpu = expanded.map((e) => aerial(e.col, e.P, e.camPos, e.sun, w.air, w.palette));
+    const cpu = expanded.map((e) => aerial(e.col, e.P, e.camPos, e.sun, null, w.air, w.palette));
     const r = compare(w.name, out.results[w.name], cpu);
     rows.push(r);
     const pass = r.colourPct >= 97 && r.fogPct >= 97 && r.nonFinite === 0;

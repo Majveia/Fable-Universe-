@@ -243,7 +243,7 @@ const TERRAIN_FRAG = /* glsl */`
     // The fog fraction goes into **alpha**, which is the whole trick — it is how
     // the post chain learns each pixel's distance, and it is what §9.4 step 5
     // spends on distance-graded watercolour softening.
-    vec4 air = aerial(lit, vW, uCam, uSunDir);
+    vec4 air = aerial(lit, vW, uCam, uSunDir, vW.y - uAirBase);
     gl_FragColor = air;
     ${AIR_DEBUG ? 'gl_FragColor = vec4(vec3(air.a), 1.0);' : ''}
     ` : /* glsl */`
@@ -392,7 +392,7 @@ const OCEAN_FRAG = /* glsl */`
     col += vec3(0.9, 0.95, 1.0) * crest * 0.18 * (0.25 + 0.75 * day);
 
     ${AERIAL ? /* glsl */`
-    vec4 air = aerial(col, vW, uCam, uSunDir);
+    vec4 air = aerial(col, vW, uCam, uSunDir, vW.y - uAirBase);
     gl_FragColor = air;
     ${AIR_DEBUG ? 'gl_FragColor = vec4(vec3(air.a), 1.0);' : ''}
     ` : /* glsl */`

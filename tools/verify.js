@@ -1113,8 +1113,11 @@ function suiteAerial() {
   // makes the reversal in its header unrepresentable — so a probe has to place
   // a camera. The shaded point sits at the origin at height `y` and the camera
   // `dist` away along `V`.
+  // `height` is passed as null so the probe keeps using P.y, which is what the
+  // reference's own frame means by height — the explicit parameter exists for
+  // planet scale, where up is radial and world y is latitude.
   const at = (dist, y = 100, V = toward, air) => aerial(
-    GREY, [0, y, 0], [V[0] * dist, y + V[1] * dist, V[2] * dist], SUN, air);
+    GREY, [0, y, 0], [V[0] * dist, y + V[1] * dist, V[2] * dist], SUN, null, air);
 
   ok('inside the near plane there is no fog at all',
     at(0).fog === 0 && at(70).fog === 0,
