@@ -13,6 +13,7 @@
 import * as THREE from 'three';
 import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
+import { airOf, applyAerial } from './aerial.js';
 
 const EYE = 1.8;
 
@@ -23,25 +24,25 @@ export function addTraveler(s) {
   const avatar = new THREE.Group();
   const cloak = new THREE.Mesh(
     new THREE.ConeGeometry(0.42, 1.3, 9),
-    new THREE.MeshStandardMaterial({ color: 0x2c3350, roughness: 0.85 }));
+    applyAerial(new THREE.MeshStandardMaterial({ color: 0x2c3350, roughness: 0.85 }), airOf(s), { name: 'traveler/addTraveler' }));
   cloak.position.y = 0.65;
   const head = new THREE.Mesh(
     new THREE.SphereGeometry(0.16, 12, 10),
-    new THREE.MeshStandardMaterial({ color: 0xe6c6a4, roughness: 0.7 }));
+    applyAerial(new THREE.MeshStandardMaterial({ color: 0xe6c6a4, roughness: 0.7 }), airOf(s), { name: 'traveler/addTraveler' }));
   head.position.y = 1.42;
   const hat = new THREE.Mesh(
     new THREE.ConeGeometry(0.44, 0.26, 10),
-    new THREE.MeshStandardMaterial({ color: 0xc9a86a, roughness: 0.9 }));
+    applyAerial(new THREE.MeshStandardMaterial({ color: 0xc9a86a, roughness: 0.9 }), airOf(s), { name: 'traveler/addTraveler' }));
   hat.position.y = 1.58;
   const scarf = new THREE.Mesh(
     new THREE.PlaneGeometry(0.16, 0.55),
-    new THREE.MeshStandardMaterial({ color: 0xa33b2e, roughness: 0.8, side: THREE.DoubleSide }));
+    applyAerial(new THREE.MeshStandardMaterial({ color: 0xa33b2e, roughness: 0.8, side: THREE.DoubleSide }), airOf(s), { name: 'traveler/addTraveler' }));
   scarf.position.set(0, 1.15, -0.28);
   scarf.rotation.x = 0.5;
-  const lantern = new THREE.Sprite(new THREE.SpriteMaterial({
+  const lantern = new THREE.Sprite(applyAerial(new THREE.SpriteMaterial({
     map: softDotTexture(32), color: new THREE.Color(1.3, 0.85, 0.45),
     transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
-  }));
+  }), airOf(s), { name: 'traveler/addTraveler' }));
   lantern.position.set(0.34, 0.75, 0.12);
   lantern.scale.setScalar(1.6);
   avatar.add(cloak, head, hat, scarf, lantern);
@@ -50,12 +51,12 @@ export function addTraveler(s) {
 
   // ------------------------------------------------------------- skiff ----
   const skiff = new THREE.Group();
-  const hullMat = new THREE.MeshStandardMaterial({ color: 0xd8d2c2, roughness: 0.5, metalness: 0.15 });
+  const hullMat = applyAerial(new THREE.MeshStandardMaterial({ color: 0xd8d2c2, roughness: 0.5, metalness: 0.15 }), airOf(s), { name: 'traveler/addTraveler' });
   const hull = new THREE.Mesh(new THREE.CapsuleGeometry(0.5, 2.2, 6, 10), hullMat);
   hull.rotation.x = Math.PI / 2;
   hull.scale.set(1.2, 1, 0.42);
   hull.position.y = 0.4;
-  const wingMat = new THREE.MeshStandardMaterial({ color: 0xcac2ae, roughness: 0.55, metalness: 0.2 });
+  const wingMat = applyAerial(new THREE.MeshStandardMaterial({ color: 0xcac2ae, roughness: 0.55, metalness: 0.2 }), airOf(s), { name: 'traveler/addTraveler' });
   const wingL = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.1, 1.0), wingMat);
   wingL.position.set(-1.45, 0.42, 0.25);
   wingL.rotation.set(0.06, 0.45, 0);
@@ -63,23 +64,23 @@ export function addTraveler(s) {
   wingR.position.x = 1.45;
   wingR.rotation.set(0.06, -0.45, 0);
   const fin = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.5),
-    new THREE.MeshStandardMaterial({
+    applyAerial(new THREE.MeshStandardMaterial({
       color: 0x8fb6c9, roughness: 0.2, metalness: 0.3,
       transparent: true, opacity: 0.55, side: THREE.DoubleSide,
-    }));
+    }), airOf(s), { name: 'traveler/addTraveler' }));
   fin.position.set(0, 0.85, -0.7);
   fin.rotation.x = -0.35;
   const keel = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 2.6),
-    new THREE.MeshBasicMaterial({
+    applyAerial(new THREE.MeshBasicMaterial({
       color: new THREE.Color(0.35, 0.8, 1.1), transparent: true, opacity: 0.4,
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-    }));
+    }), airOf(s), { name: 'traveler/addTraveler' }));
   keel.rotation.x = Math.PI / 2;
   keel.position.y = 0.06;
-  const engine = new THREE.Sprite(new THREE.SpriteMaterial({
+  const engine = new THREE.Sprite(applyAerial(new THREE.SpriteMaterial({
     map: softDotTexture(32), color: new THREE.Color(0.5, 0.9, 1.3),
     transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending,
-  }));
+  }), airOf(s), { name: 'traveler/addTraveler' }));
   engine.position.set(0, 0.42, 1.6);
   engine.scale.setScalar(1.1);
   skiff.add(hull, wingL, wingR, fin, keel, engine);
@@ -98,10 +99,10 @@ export function addTraveler(s) {
   const wPos = new Float32Array(NW * 3);
   const wAge = new Float32Array(NW).fill(9);
   wakeGeo.setAttribute('position', new THREE.BufferAttribute(wPos, 3));
-  const wake = new THREE.Points(wakeGeo, new THREE.PointsMaterial({
+  const wake = new THREE.Points(wakeGeo, applyAerial(new THREE.PointsMaterial({
     map: softDotTexture(32), color: 0xbfc8cc, size: 2.2,
     transparent: true, opacity: 0.22, depthWrite: false, sizeAttenuation: true,
-  }));
+  }), airOf(s), { name: 'traveler/addTraveler' }));
   wake.visible = false;
   s.scene.add(wake);
   let wi = 0, wakeT = 0;

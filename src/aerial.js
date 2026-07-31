@@ -319,3 +319,213 @@ export function syncAerialPalette(uniforms, palette) {
   uniforms.uAirHorSun.value.set(...palette.horizonSun);
   uniforms.uAirAnti.value.set(...palette.anti);
 }
+
+// ------------------------------------------- injection into three's shaders --
+//
+// §9.3 is wired into `surface.js` by hand, which is right for a shader this
+// repo wrote. It does not reach the other 120 draws at surface scale, because
+// those use three's own materials — and `scene.fog` is unset, so the string
+// `.fog` does not occur anywhere in `src/`. A conifer at 900 m therefore stands
+// at full contrast against ground behind it that has gone 87% to haze.
+//
+// docs/plans/M2.md §27 is the design. The short version:
+//
+//   · Two hooks, both present in all four material classes:
+//       vertex    #include <fog_vertex>       the last include, so everything
+//                                             each shader computes is in scope
+//       fragment  #include <opaque_fragment>  where gl_FragColor is first
+//                                             assigned, and *before*
+//                                             tonemapping and colorspace, so
+//                                             the mix is in linear light
+//                                             whatever the renderer is set to
+//     Both appended after, never replaced, so none of three's chunk text is
+//     reproduced here and nothing has to be kept in step with it.
+//
+//   · three provides a world position for *none* of them. `worldpos_vertex` is
+//     included in meshbasic, meshphysical and points, but its whole body sits
+//     behind USE_ENVMAP / DISTANCE / USE_SHADOWMAP / USE_TRANSMISSION /
+//     NUM_SPOT_LIGHT_COORDS, and AEON satisfies none of those — §22's sun
+//     shadow is its own pass. So `worldPosition` does not exist in any of these
+//     programs, which is both the problem and the reason there is no name to
+//     collide with.
+//
+//   · A sprite's quad is built in *view* space around modelViewMatrix[3], so
+//     its corners have no world position at all — they are an angular size
+//     standing in for an object. The origin is the only world point a billboard
+//     denotes, and that is what it gets. See BILLBOARD_MAX_R.
+
+/**
+ * THREE.NormalBlending. Inlined rather than imported for the reason the header
+ * gives: this module is imported by `tools/verify.js` and `tools/pixeldiff.js`,
+ * which have no renderer, and it must stay free of three.
+ */
+const NORMAL_BLENDING = 1;
+
+const PARAM = (k) => {
+  try { return new URL(window.location.href).searchParams.get(k); }
+  catch { return null; }
+};
+
+/**
+ * `?airmat=1` — default off per §7.4, and read here rather than at each of the
+ * thirteen call sites so there is one flag and one place it is read. With it
+ * off `applyAerial` installs nothing, so the program cache key is untouched and
+ * the build is bit-identical.
+ */
+export const AIRMAT = PARAM('airmat') === '1';
+
+/**
+ * The largest world radius a billboard may have before one fog value over the
+ * whole quad stops being good enough, in metres.
+ *
+ * Derived, not chosen: running `aerial()` over a quad's true extent and putting
+ * both ends through §9.4's print, the error crosses this repo's own 2/255 gate
+ * at about 4 m. Every sprite in the scene that represents an *object* is under
+ * it — the largest is 3.8 m — and every billboard above it is atmosphere
+ * (weather veils, the cloud deck, city glow) or outside the atmosphere
+ * (constellations), none of which is fogged at all. `tools/verify.js` pins the
+ * derivation, so a change to §9.3's constants reports a new bound rather than
+ * quietly invalidating this one.
+ *
+ * Exceeding it warns and carries on. It does **not** throw: this is a
+ * zero-dependency universe with no error recovery, and turning a 3/255 shading
+ * error into a black screen for someone who followed a shared URL (§2.4) is the
+ * wrong trade. The gate lives in the instrument.
+ */
+export const BILLBOARD_MAX_R = 4;
+
+/** every billboard that went over, for a tool that wants to read it back */
+export const AIR_OVERSIZE = [];
+
+const VERT_DECL = 'varying vec3 vAirW;\n';
+
+// `transformed` is in scope at <fog_vertex> for every class that runs
+// <begin_vertex>, and after <skinning_vertex> and <morphtarget_vertex>, so a
+// deformed vertex reports where it actually ended up. This is
+// `worldpos_vertex`'s own arithmetic, under a name that cannot collide with it.
+const VERT_MESH = /* glsl */`
+  vec4 airLocal = vec4( transformed, 1.0 );
+  #ifdef USE_BATCHING
+    airLocal = batchingMatrix * airLocal;
+  #endif
+  #ifdef USE_INSTANCING
+    airLocal = instanceMatrix * airLocal;
+  #endif
+  vAirW = ( modelMatrix * airLocal ).xyz;
+`;
+
+// A sprite has no `transformed` — three never includes <begin_vertex> for one.
+// modelMatrix[3].xyz is the sprite's world origin, constant over the quad.
+const VERT_SPRITE = /* glsl */`
+  vAirW = modelMatrix[ 3 ].xyz;
+`;
+
+// `cameraPosition` is already in three's fragment prefix, so §9.3's third
+// argument costs nothing. The sun is not, and is declared inside the uAir
+// namespace this module reserves rather than added to AERIAL_GLSL, whose
+// signature is fixed: surface.js and planetscale.js both call it.
+const FRAG_DECL = /* glsl */`
+  varying vec3 vAirW;
+  uniform vec3 uAirSun;
+` + AERIAL_GLSL;
+
+/**
+ * Solid: alpha is free. three defines OPAQUE when the material is not
+ * transparent and blends Normal, which is exactly when blending is *disabled* —
+ * so nothing downstream reads this alpha as coverage and §9.3's fog fraction
+ * can have it.
+ */
+const FRAG_SOLID = /* glsl */`
+  {
+    vec4 airOut = aerial( gl_FragColor.rgb, vAirW, cameraPosition, uAirSun, vAirW.y - uAirBase );
+    gl_FragColor = vec4( airOut.rgb, airOut.a );
+  }
+`;
+
+/**
+ * Veil: alpha is coverage and it cannot be both. three blends NormalBlending
+ * with the alpha channel's *source* factor set to ONE, so writing a fog
+ * fraction there would not merely mislabel the pixel, it would change the
+ * composite. The colour is fogged; alpha is left exactly as it was.
+ */
+const FRAG_VEIL = /* glsl */`
+  {
+    vec4 airOut = aerial( gl_FragColor.rgb, vAirW, cameraPosition, uAirSun, vAirW.y - uAirBase );
+    gl_FragColor.rgb = airOut.rgb;
+  }
+`;
+
+const V_HOOK = '#include <fog_vertex>';
+const F_HOOK = '#include <opaque_fragment>';
+
+/**
+ * The uniform block an injected material needs — `aerialUniforms()` plus the
+ * sun. One place knows how `surface.js` names its two blocks, so a rename
+ * breaks one line rather than thirteen.
+ *
+ * Returns null when the scale has no air block, which is what happens with
+ * `?aerial=0`: the call sites then inject nothing, which is the right answer.
+ */
+export function airOf(scale) {
+  if (!scale || !scale._airU || !scale.uSunDir) return null;
+  return { ...scale._airU, uAirSun: scale.uSunDir };
+}
+
+/**
+ * Give one of three's built-in materials §9.3, by `onBeforeCompile`.
+ *
+ * `uniforms` is `airOf(scale)`. `bucket` is 'solid' or 'veil' (§27.6) and
+ * defaults to what three's own OPAQUE define would decide. `radius` is a
+ * billboard's world radius, for the BILLBOARD_MAX_R check.
+ *
+ * Returns the material, so it can be used inline at a construction site.
+ *
+ * Hand-written `ShaderMaterial`s are returned untouched: they have no
+ * `#include` tokens to hook, and the mechanism for them is the one
+ * `surface.js` already uses — paste `AERIAL_GLSL`, call `aerial()`, merge
+ * `aerialUniforms()`.
+ */
+export function applyAerial(material, uniforms, { bucket = null, radius = 0, name = '' } = {}) {
+  if (!AIRMAT || !material || !uniforms) return material;
+  if (material.isShaderMaterial || material.isRawShaderMaterial) return material;
+
+  const sprite = !!material.isSpriteMaterial;
+  const solid = bucket
+    ? bucket === 'solid'
+    : (material.transparent === false && material.blending === NORMAL_BLENDING);
+
+  if (radius > BILLBOARD_MAX_R && (sprite || material.isPointsMaterial)) {
+    AIR_OVERSIZE.push({ name, radius, kind: sprite ? 'sprite' : 'points' });
+    if (typeof console !== 'undefined') {
+      console.warn(`aerial: ${name || 'billboard'} has world radius ${radius} m,`
+        + ` over BILLBOARD_MAX_R ${BILLBOARD_MAX_R} m — one fog value over the`
+        + ' quad is past the 2/255 gate. See docs/plans/M2.md §27.4.');
+    }
+  }
+
+  material.onBeforeCompile = (shader) => {
+    // shared by reference, so syncAerialPalette() reaches every injected
+    // material as the sun moves without any of them being tracked
+    Object.assign(shader.uniforms, uniforms);
+
+    if (!shader.vertexShader.includes(V_HOOK) || !shader.fragmentShader.includes(F_HOOK)) {
+      // §27.8 risk 1: the hooks are vendored-three-r170 strings. Fail loudly in
+      // the console at init rather than silently not fogging, but still do not
+      // throw — see BILLBOARD_MAX_R for why nothing here takes the frame down.
+      if (typeof console !== 'undefined') console.warn('aerial: hook missing, not injected');
+      return;
+    }
+    shader.vertexShader = VERT_DECL + shader.vertexShader.replace(
+      V_HOOK, V_HOOK + (sprite ? VERT_SPRITE : VERT_MESH));
+    shader.fragmentShader = FRAG_DECL + shader.fragmentShader.replace(
+      F_HOOK, F_HOOK + (solid ? FRAG_SOLID : FRAG_VEIL));
+  };
+
+  // §27.7: the cache key defaults to onBeforeCompile.toString(), which is the
+  // *function* source and identical for every call site — so two materials
+  // whose emitted source differs would otherwise share a program. Everything
+  // that changes the emitted text has to appear here.
+  material.customProgramCacheKey = () => `aeonair:${solid ? 'solid' : 'veil'}:${sprite ? 's' : 'm'}`;
+  material.needsUpdate = true;
+  return material;
+}

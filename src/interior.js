@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
 import { softDotTexture } from './nebula.js';
+import { airOf, applyAerial } from './aerial.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 
@@ -74,8 +75,8 @@ export function addInterior(s) {
   group.rotation.y = face;
   s.scene.add(group);
 
-  const stone = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.09, 0.14, 0.6), roughness: 0.94, flatShading: true });
-  const dark = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.08, 0.12, 0.4), roughness: 0.96, flatShading: true });
+  const stone = applyAerial(new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.09, 0.14, 0.6), roughness: 0.94, flatShading: true }), airOf(s), { name: 'interior/addInterior' });
+  const dark = applyAerial(new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.08, 0.12, 0.4), roughness: 0.96, flatShading: true }), airOf(s), { name: 'interior/addInterior' });
 
   // stylobate + floor
   const styl = new THREE.Mesh(new THREE.BoxGeometry(HW * 2 + 8, 1.4, HD * 2 + 8), stone);
@@ -139,10 +140,10 @@ export function addInterior(s) {
   plinth.position.set(0, floorY - site.h + 1.5, -HD * 0.6); group.add(plinth);
   const bowl = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 1.2, 1.4, 12), dark);
   bowl.position.set(0, floorY - site.h + 3.7, -HD * 0.6); group.add(bowl);
-  const flame = new THREE.Sprite(new THREE.SpriteMaterial({
+  const flame = new THREE.Sprite(applyAerial(new THREE.SpriteMaterial({
     map: softDotTexture(64), color: new THREE.Color(1.6, 1.05, 0.5),
     transparent: true, opacity: 0.95, depthWrite: false, blending: THREE.AdditiveBlending,
-  }));
+  }), airOf(s), { name: 'interior/addInterior' }));
   flame.position.set(0, floorY - site.h + 5.2, -HD * 0.6); flame.scale.setScalar(6); group.add(flame);
   const light = new THREE.PointLight(new THREE.Color(1.0, 0.72, 0.4), 0, 90, 2);
   light.position.copy(flame.position); group.add(light);
@@ -154,10 +155,10 @@ export function addInterior(s) {
 
   // clerestory light-shafts: slanted additive beams from high windows to floor
   const shafts = [];
-  const shaftMat = new THREE.MeshBasicMaterial({
+  const shaftMat = applyAerial(new THREE.MeshBasicMaterial({
     color: new THREE.Color(1.0, 0.92, 0.7), transparent: true, opacity: 0,
     depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
-  });
+  }), airOf(s), { name: 'interior/addInterior' });
   for (let i = 0; i < (COARSE ? 2 : 4); i++) {
     const sx = (i / 3 - 0.5) * HW * 1.2;
     const beam = new THREE.Mesh(new THREE.PlaneGeometry(4, WALL * 1.5), shaftMat.clone());

@@ -11,6 +11,7 @@ import * as THREE from 'three';
 import { hash, RNG, ruinName, ruinLore } from './rng.js';
 import { softDotTexture } from './nebula.js';
 import { now } from './clock.js';
+import { airOf, applyAerial } from './aerial.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 const EXT = 1400;
@@ -40,8 +41,8 @@ export function addRuins(s) {
 
   // weathered stone: the world's rock, gone grey and lichen-flecked
   const stoneCol = pp.colB.clone().lerp(new THREE.Color(0.4, 0.42, 0.4), 0.6);
-  const stoneMat = new THREE.MeshStandardMaterial({ color: stoneCol, roughness: 0.96, metalness: 0.02, flatShading: true });
-  const mossMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(0.24, 0.32, 0.2), roughness: 1, flatShading: true });
+  const stoneMat = applyAerial(new THREE.MeshStandardMaterial({ color: stoneCol, roughness: 0.96, metalness: 0.02, flatShading: true }), airOf(s), { name: 'ruins/addRuins' });
+  const mossMat = applyAerial(new THREE.MeshStandardMaterial({ color: new THREE.Color(0.24, 0.32, 0.2), roughness: 1, flatShading: true }), airOf(s), { name: 'ruins/addRuins' });
   const glyphTex = softDotTexture(32);
 
   const group = new THREE.Group();
@@ -136,10 +137,10 @@ export function addRuins(s) {
         base.setMatrixAt(i, d.matrix);
       }
       group.add(base);
-      const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      const glow = new THREE.Sprite(applyAerial(new THREE.SpriteMaterial({
         map: glyphTex, color: new THREE.Color(0.5, 0.85, 1.1),
         transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
-      }));
+      }), airOf(s), { name: 'ruins/addRuins' }));
       glow.position.set(site.x, gh + ht - 1, site.z);
       glow.scale.setScalar(5);
       group.add(glow);

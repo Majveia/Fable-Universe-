@@ -28,8 +28,10 @@ import {
 } from '../src/landing.js';
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
+import { readFileSync } from 'node:fs';
 import {
-  FIXTURE_AIR, REFERENCE_PALETTE, aerial, airFor, airPalette, scaleHeight,
+  AIRMAT, BILLBOARD_MAX_R, FIXTURE_AIR, REFERENCE_PALETTE, aerial, airFor,
+  airOf, airPalette, applyAerial, scaleHeight,
 } from '../src/aerial.js';
 import { airColoursQuantised } from '../src/starlight.js';
 
@@ -959,6 +961,197 @@ function suiteSoften() {
   }
 }
 
+const LIFT = [0.017, 0.021, 0.036];
+
+/**
+ * §9.4 on the CPU, up to but not including the paper tooth — which is the part
+ * that depends on where a pixel is rather than what it is.
+ *
+ * At module scope because two suites need it: `print` asserts §2.8's floor with
+ * it, and `airmat` converts a fog difference into the 8-bit steps every gate in
+ * this repo speaks. A second copy is the drift §11 warns about, one file over.
+ */
+function printRef(rgb, paint) {
+  let c = rgb.map((v) => tonemapRef(v, paint));
+  const lum = (v) => 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+  const ss = (e0, e1, x) => {
+    const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
+    return t * t * (3 - 2 * t);
+  };
+  let l = lum(c);
+  const sh = [0.90, 0.95, 1.16].map((v) => v + (1 - v) * ss(0.0, 0.34, l));
+  const hi = [1.055, 1.012, 0.925].map((v) => 1 + (v - 1) * ss(0.44, 0.98, l));
+  c = c.map((v, i) => v * (1 + (sh[i] - 1) * 0.85 * paint) * (1 + (hi[i] - 1) * 0.9 * paint));
+  c = c.map((v, i) => v * (1 - LIFT[i] * paint) + LIFT[i] * paint);
+  c = c.map((v) => v + (v * v * (3 - 2 * v) - v) * 0.16 * paint);
+  l = lum(c);
+  const sat = 1 + 0.16 * paint * ss(0.10, 0.42, l) * (1 - ss(0.62, 0.96, l));
+  return c.map((v) => l + (v - l) * sat);
+}
+
+/** …and out to 8 bits, which is where a claim about visibility can be made */
+function print8(rgb, paint = 1) {
+  const toSRGB = (v) => (v <= 0.0031308 ? v * 12.92
+    : 1.055 * Math.pow(Math.max(v, 1e-5), 1 / 2.4) - 0.055);
+  return printRef(rgb, paint).map((v) => Math.round(toSRGB(Math.min(Math.max(v, 0), 1)) * 255));
+}
+
+// ---------------------------------------------------------------------------
+// suite: airmat
+//
+// §27's injection of §9.3 into three's own materials. Three things are checked
+// here and none of them is the arithmetic — `aerial()` is already pinned by the
+// `aerial` suite and by `tools/pixeldiff.js` against a real driver.
+//
+// What is new, and what can break without any of that noticing:
+//
+//   1. The **hooks**. `applyAerial` appends after two `#include` tokens in
+//      vendored three r170. If a re-vendor renames or removes either, the
+//      injection silently does nothing and the frame looks *almost* right.
+//      §27.8 names this risk first; this is the gate for it, and it reads the
+//      vendored file rather than trusting a comment.
+//   2. The **billboard bound**. §27.4 derives 4 m from where the printed error
+//      of one-fog-per-quad crosses 2/255. That derivation depends on §9.3's
+//      constants, so a change to `fogFar` or the mist pool should report a new
+//      bound rather than quietly invalidating this one.
+//   3. The **bucket rule**, which decides whether a material's alpha carries a
+//      fog fraction or a coverage. Getting it backwards does not crash; it puts
+//      a wrong distance in the channel §9.4 step 5 reads.
+
+function suiteAirmat() {
+  console.log('\nairmat — §9.3 injected into three\'s materials (M2 act 2, §27)');
+
+  // --- 1. the hooks exist, in the shaders that will be hooked ---------------
+  {
+    const src = readFileSync(new URL('../vendor/three.module.js', import.meta.url), 'utf8');
+    // the four ShaderLib entries §27 injects into, identified by a string only
+    // that shader has, so this cannot drift onto the wrong one
+    const SHADERS = {
+      meshbasic: 'const vertex$a = ',
+      meshphysical: 'const vertex$5 = ',
+      points: 'const vertex$3 = ',
+      sprite: 'const vertex$1 = ',
+    };
+    const vertOK = [], fragOK = [];
+    for (const [name, anchor] of Object.entries(SHADERS)) {
+      const i = src.indexOf(anchor);
+      if (i < 0) { vertOK.push(`${name}:MISSING`); continue; }
+      const decl = src.slice(i, src.indexOf('\n', i));
+      vertOK.push(`${name}:${decl.includes('#include <fog_vertex>') ? 'ok' : 'NO'}`);
+    }
+    for (const anchor of ['const fragment$a = ', 'const fragment$5 = ',
+      'const fragment$3 = ', 'const fragment$1 = ']) {
+      const i = src.indexOf(anchor);
+      const decl = i < 0 ? '' : src.slice(i, src.indexOf('\n', i));
+      fragOK.push(decl.includes('#include <opaque_fragment>') ? 'ok' : 'NO');
+    }
+    ok('§27.8 · the vertex hook is in all four shaders three will assemble',
+      vertOK.every((v) => v.endsWith(':ok')), vertOK.join(' · '));
+    ok('§27.8 · and the fragment hook likewise',
+      fragOK.every((v) => v === 'ok'),
+      'basic/standard/points/sprite: ' + fragOK.join(' '));
+
+    // The reason the fragment hook is `opaque_fragment` and not the obvious
+    // `fog_fragment`: three runs its own fog *after* the colour-space convert,
+    // so injecting there would only be linear by accident.
+    const i = src.indexOf('const fragment$5 = ');
+    const decl = src.slice(i, src.indexOf('\n', i));
+    ok('and it lands before the tonemap and the colour-space convert, so the mix is linear',
+      decl.indexOf('#include <opaque_fragment>') < decl.indexOf('#include <tonemapping_fragment>')
+      && decl.indexOf('#include <tonemapping_fragment>') < decl.indexOf('#include <fog_fragment>'),
+      'opaque_fragment → tonemapping_fragment → colorspace_fragment → fog_fragment');
+
+    // §27.3: three computes no world position for any of these, which is the
+    // whole reason `applyAerial` carries its own varying. If a future three
+    // made `worldPosition` unconditional this check would say so.
+    const wp = src.slice(src.indexOf('var worldpos_vertex = '),
+      src.indexOf('var worldpos_vertex = ') + 260);
+    ok('§27.3 · three\'s own world position is still behind defines AEON never sets',
+      wp.includes('USE_ENVMAP') && wp.includes('USE_SHADOWMAP'),
+      'USE_ENVMAP / DISTANCE / USE_SHADOWMAP / USE_TRANSMISSION / NUM_SPOT_LIGHT_COORDS');
+  }
+
+  // --- 2. the billboard bound, re-derived ----------------------------------
+  //
+  // A camera-facing quad of world radius r has one fog value over the whole of
+  // it (§27.4). Sweep distance and height for the worst printed disagreement
+  // between the origin's fog and the quad's true extremes, and find the radius
+  // where that crosses the 2/255 gate.
+  {
+    const SUN = (() => {
+      const e = (13.5 * Math.PI) / 180;
+      return [Math.cos(e), Math.sin(e), 0];
+    })();
+    const CAM = [0, 1.68, 0];
+    const AIR = { thickness: 1, hazeScale: 1, base: 0 };
+    const COL = [0.35, 0.33, 0.30];
+    const worstSteps = (r) => {
+      let worst = 0;
+      for (let d = 20; d <= 2000; d += 20) {
+        for (const y of [1, 6, 20, 60, 200]) {
+          let lo = null, hi = null, loF = Infinity, hiF = -Infinity;
+          for (let i = 0; i < 16; i++) {
+            const a = (i / 16) * 2 * Math.PI;
+            const dd = Math.hypot(d, r * Math.cos(a));
+            const yy = Math.max(y + r * Math.sin(a), 0);
+            const g = aerial(COL, [0, yy, dd], CAM, SUN, yy, AIR);
+            if (g.fog < loF) { loF = g.fog; lo = g.col; }
+            if (g.fog > hiF) { hiF = g.fog; hi = g.col; }
+          }
+          const A = print8(lo), B = print8(hi);
+          worst = Math.max(worst, ...A.map((v, k) => Math.abs(v - B[k])));
+        }
+      }
+      return worst;
+    };
+
+    let crossing = null;
+    for (let r = 0.5; r <= 12; r += 0.5) {
+      if (worstSteps(r) > 2) { crossing = r; break; }
+    }
+    ok('§27.4 · BILLBOARD_MAX_R is where one fog per quad crosses the 2/255 gate',
+      crossing !== null && Math.abs(crossing - BILLBOARD_MAX_R) <= 1,
+      `derived ${crossing === null ? '>12' : crossing.toFixed(1)} m`
+      + ` · shipped BILLBOARD_MAX_R ${BILLBOARD_MAX_R} m`);
+
+    const table = [0.8, 1.6, 2.4, 3.8, 6, 10].map((r) => `${r}m→${worstSteps(r)}`);
+    ok('and every object-class billboard in the scene stays inside it',
+      worstSteps(3.8) <= 3,
+      'worst printed error by radius: ' + table.join(' · ')
+      + ' (largest object sprite at surface scale is 3.8 m)');
+  }
+
+  // --- 3. the bucket rule, and the flag ------------------------------------
+  {
+    // The default has to be three's own OPAQUE condition, because that is
+    // exactly when blending is off and alpha is free (§27.6).
+    const cases = [
+      { transparent: false, blending: 1, want: 'solid' },
+      { transparent: true, blending: 1, want: 'veil' },
+      { transparent: true, blending: 2, want: 'veil' },
+      { transparent: false, blending: 2, want: 'veil' },
+    ];
+    const bucketOf = (m) => (m.transparent === false && m.blending === 1 ? 'solid' : 'veil');
+    ok('§27.6 · a material lands in a bucket by three\'s own OPAQUE condition',
+      cases.every((c) => bucketOf(c) === c.want),
+      cases.map((c) => `${c.transparent ? 'transparent' : 'opaque'}/blend${c.blending}→${c.want}`).join(' · '));
+
+    // §7.4: with the flag off nothing is installed at all, so the program cache
+    // key is untouched and the build is bit-identical. Node has no URL, so
+    // AIRMAT is false here and this is the default path being asserted.
+    const mat = { transparent: false, blending: 1 };
+    const back = applyAerial(mat, { uAirSun: {} });
+    ok('§7.4 · with ?airmat off, applyAerial installs nothing',
+      AIRMAT === false && back === mat
+      && mat.onBeforeCompile === undefined && mat.customProgramCacheKey === undefined,
+      'no onBeforeCompile, no cache key, no needsUpdate — the build is bit-identical');
+
+    ok('airOf() returns null when the scale has no air block, so ?aerial=0 injects nothing',
+      airOf(null) === null && airOf({}) === null
+      && airOf({ _airU: {}, uSunDir: { value: 1 } }) !== null);
+  }
+}
+
 function suitePrint() {
   console.log('\nprint — §9.4 tonemap properties, and what it changes vs ACES');
 
@@ -1015,25 +1208,6 @@ function suitePrint() {
   // §2.8's actual claim, tested end to end rather than asserted: run the whole
   // print on the CPU and check that vacuum keeps black at exactly zero while
   // atmosphere lands it on the lift. The shader is the same arithmetic.
-  const LIFT = [0.017, 0.021, 0.036];
-  function printRef(rgb, paint) {
-    let c = rgb.map((v) => tonemapRef(v, paint));
-    const lum = (v) => 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
-    const ss = (e0, e1, x) => {
-      const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
-      return t * t * (3 - 2 * t);
-    };
-    let l = lum(c);
-    const sh = [0.90, 0.95, 1.16].map((v) => v + (1 - v) * ss(0.0, 0.34, l));
-    const hi = [1.055, 1.012, 0.925].map((v) => 1 + (v - 1) * ss(0.44, 0.98, l));
-    c = c.map((v, i) => v * (1 + (sh[i] - 1) * 0.85 * paint) * (1 + (hi[i] - 1) * 0.9 * paint));
-    c = c.map((v, i) => v * (1 - LIFT[i] * paint) + LIFT[i] * paint);
-    c = c.map((v) => v + (v * v * (3 - 2 * v) - v) * 0.16 * paint);
-    l = lum(c);
-    const sat = 1 + 0.16 * paint * ss(0.10, 0.42, l) * (1 - ss(0.62, 0.96, l));
-    return c.map((v) => l + (v - l) * sat);
-  }
-
   const vacuumBlack = printRef([0, 0, 0], 0);
   ok('§2.8 · in vacuum, black comes out exactly #000',
     vacuumBlack.every((v) => v === 0), `got [${vacuumBlack.join(', ')}]`);
@@ -1628,7 +1802,8 @@ function suiteGround() {
 
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
-  print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
+  print: suitePrint, aerial: suiteAerial, airmat: suiteAirmat,
+  starlight: suiteStarlight,
   soften: suiteSoften,
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
 };

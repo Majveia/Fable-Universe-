@@ -11,6 +11,7 @@ import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
 import { isBiosphere } from './life.js';
 import { softDotTexture } from './nebula.js';
+import { airOf, applyAerial } from './aerial.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 
@@ -154,11 +155,11 @@ function makeFireflies(s) {
   }
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   const warm = new THREE.Color().setHSL(r.float(0.1, 0.42), 0.9, 0.6);
-  const flies = new THREE.Points(geo, new THREE.PointsMaterial({
+  const flies = new THREE.Points(geo, applyAerial(new THREE.PointsMaterial({
     map: softDotTexture(24), color: warm, size: 1.1,
     transparent: true, opacity: 0, depthWrite: false,
     blending: THREE.AdditiveBlending, sizeAttenuation: true,
-  }));
+  }), airOf(s), { name: 'wildlife/makeFireflies' }));
   flies.frustumCulled = false;
   s.scene.add(flies);
   let t = 0;
