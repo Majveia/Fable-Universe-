@@ -33,16 +33,39 @@ function ringTexture() {
   return new THREE.CanvasTexture(cv);
 }
 
+// The anamorphic streak, faded on *both* axes.
+//
+// It used to be one horizontal gradient painted over the whole canvas, which
+// made the alpha constant down every column: the sprite reached its long edges
+// still at full strength and stopped there. Additive, `depthTest: false`,
+// `renderOrder: 20` and 120 units wide, that prints as a hard-edged band right
+// across the sky — a 9.2/255 step in a single row against a sky whose own
+// gradient moves 0.3/255 per row, measured at 1280x720 on seed 1337146641.
+//
+// So the transverse profile is `(1 - s^2)^2` for `s` the distance from the
+// spine in half-widths: it reaches zero *and* zero slope at the edge, so
+// neither the value nor its derivative steps. Which is also what a streak
+// looks like — glass scatters light into a soft-shouldered line, not a bar.
 function streakTexture() {
   const cv = document.createElement('canvas');
-  cv.width = 256; cv.height = 32;
+  cv.width = 256; cv.height = 64;
   const g = cv.getContext('2d');
-  const grad = g.createLinearGradient(0, 0, 256, 0);
-  grad.addColorStop(0, 'rgba(255,255,255,0)');
-  grad.addColorStop(0.5, 'rgba(255,255,255,0.85)');
-  grad.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = grad;
-  g.fillRect(0, 0, 256, 32);
+  const along = g.createLinearGradient(0, 0, 256, 0);
+  along.addColorStop(0, 'rgba(255,255,255,0)');
+  along.addColorStop(0.5, 'rgba(255,255,255,0.85)');
+  along.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = along;
+  g.fillRect(0, 0, 256, 64);
+  // `destination-in` keeps the destination and multiplies its alpha by the
+  // source's — the one composite op that lets two canvas gradients multiply
+  const across = g.createLinearGradient(0, 0, 0, 64);
+  for (let i = 0; i <= 16; i++) {
+    const s = Math.abs(i / 8 - 1), a = (1 - s * s) ** 2;
+    across.addColorStop(i / 16, `rgba(255,255,255,${a})`);
+  }
+  g.globalCompositeOperation = 'destination-in';
+  g.fillStyle = across;
+  g.fillRect(0, 0, 256, 64);
   return new THREE.CanvasTexture(cv);
 }
 
