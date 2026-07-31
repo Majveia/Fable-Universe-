@@ -27,6 +27,7 @@ import {
   SUN_BAND, frameAt, macroHeight, scoreComposition, solveLandingSite,
 } from '../src/landing.js';
 import { makeGround } from '../src/ground.js';
+import { soften, wetFor } from '../src/wash.js';
 import {
   FIXTURE_AIR, REFERENCE_PALETTE, aerial, airFor, airPalette, scaleHeight,
 } from '../src/aerial.js';
@@ -849,6 +850,115 @@ function acesRef(x) {
   return Math.min(Math.max((x * (a * x + b)) / (x * (c * x + d) + e), 0), 1);
 }
 
+// ---------------------------------------------------------------------------
+// suite: soften
+//
+// §9.4 steps 5 and 5b, before they enter the render loop (§7.3). The
+// implementation is `src/soft.js` — imported, not copied.
+//
+// These two are unusual among the print's steps in that their *correctness* is
+// almost entirely a matter of what they refuse to do. A blur blended by
+// distance is trivial to write and trivial to write wrongly, and every wrong
+// version still looks soft. So the checks assert the refusals: that a pixel's
+// brightness cannot move, that vacuum is untouched, that the near field does
+// not defocus, and that the whole thing is monotone in distance.
+
+function suiteSoften() {
+  console.log('\nsoften — §9.4 steps 5 and 5b, before they enter the loop');
+
+  const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const C = [0.42, 0.31, 0.18];         // a warm mid pixel
+  const S = [0.19, 0.28, 0.51];         // a wash of quite a different colour
+
+  ok('§2.8 · in vacuum the whole step is exactly nothing',
+    soften(C, S, 1, 0).col.every((v, i) => v === C[i]),
+    'uPaint = 0 — every grade step scales by it, and these two are no exception');
+
+  {
+    // The property that makes this paint rather than defocus, and it is exact
+    // rather than approximate: the wash's chroma has zero luminance by
+    // construction, so no amount of bleed can move a pixel's brightness.
+    let worst = 0;
+    for (let f = 0; f <= 1.0001; f += 0.02) {
+      const out = soften(C, S, f).col;
+      const straight = C[0] + (S[0] - C[0]) * Math.min(f * 0.85, 1) * 0.42;
+      const soft = [straight,
+        C[1] + (S[1] - C[1]) * Math.min(f * 0.85, 1) * 0.42,
+        C[2] + (S[2] - C[2]) * Math.min(f * 0.85, 1) * 0.42];
+      worst = Math.max(worst, Math.abs(lum(out) - lum(soft)));
+    }
+    ok('§9.4 5b · the chroma bleed cannot move a pixel\'s luminance',
+      worst < 1e-12,
+      `worst drift over the whole fog range: ${worst.toExponential(2)}`
+      + ' — paint runs, pixels do not');
+  }
+
+  {
+    // ...and it does move the colour, or it would be a very expensive no-op
+    const near = soften(C, S, 0).col, far = soften(C, S, 1).col;
+    const chroma = (c) => Math.hypot(c[0] - lum(c), c[2] - lum(c));
+    ok('and it does move the colour, further with distance',
+      chroma(far) < chroma(near) * 0.75,
+      `chroma toward the wash: ${chroma(near).toFixed(4)} at the camera`
+      + ` → ${chroma(far).toFixed(4)} at full fog`);
+  }
+
+  {
+    const near = soften(C, S, 0);
+    ok('§9.4 5 · nothing softens at the camera',
+      near.wet === 0, 'fog 0 → wet 0 → the blurred tap is not blended at all');
+    // The bleed's floor is the reference's, and deliberate — its own note
+    // records that this was a flat 20% everywhere and that putting it on
+    // distance was the fix, not deleting it.
+    ok('but a little chroma still runs in the foreground, as the reference has it',
+      near.col.some((v, i) => Math.abs(v - C[i]) > 1e-6),
+      'the 0.09 floor — a watercolour with perfectly crisp near colour is a print of one');
+  }
+
+  {
+    let mono = true, prev = -1;
+    for (let f = 0; f <= 1.0001; f += 0.005) {
+      const d = Math.abs(soften(C, S, f).col[2] - C[2]);
+      if (d < prev - 1e-12) { mono = false; break; }
+      prev = d;
+    }
+    ok('the wash strengthens monotonically with distance',
+      mono, 'a depth cue that reverses anywhere is a depth cue nobody can read');
+  }
+
+  {
+    // The 0.85 is a *ceiling*, not a saturation point — `fog · 0.85` never
+    // reaches 1 for any legal fog. So the strongest wash the print can apply is
+    // 0.85 · 0.42 = 0.357, and the furthest ridge in frame still keeps 64% of
+    // itself. That is the difference between bled and erased, and it is why
+    // §8 axis 1 can still find a silhouette at the horizon.
+    ok('even at the far plane the wash never replaces the image',
+      Math.abs(wetFor(1) - 0.85) < 1e-12,
+      `wet tops out at ${wetFor(1).toFixed(2)} → softening ${(0.85 * 0.42).toFixed(3)},`
+      + ` bleed ${(0.09 + 0.17 * 0.85).toFixed(3)} — a far ridge keeps 64% of itself`);
+
+    // And the clamp is not decoration. The alpha audit measured additive
+    // sprites pushing the channel to 1.55; `print.js` bounds it before this
+    // sees it, but if one ever slipped through, the wash would still be finite
+    // rather than an extrapolation past the wash itself.
+    const over = soften(C, S, 1.55).col, atOne = soften(C, S, 1 / 0.85).col;
+    ok('and an out-of-range fog cannot extrapolate past the wash',
+      over.every((v, i) => Math.abs(v - atOne[i]) < 1e-12),
+      'clamp(fog · 0.85) — measured alpha reached 1.55 before print.js bounded it');
+  }
+
+  {
+    // §11, one level up from the shader: the wash is sampled over the *whole*
+    // frame, not just where the light is, so a poisoned texel in it would reach
+    // every pixel that reads it.
+    const bad = soften(C, [NaN, NaN, NaN], 1).col;
+    ok('§11 · the shader firewalls the wash, and the CPU twin agrees on where',
+      bad.every((v) => v !== v),
+      'a NaN wash poisons the CPU result — which is why print.js selects it to'
+      + ' zero at the tap, and soft.js again at the downsample');
+  }
+}
+
 function suitePrint() {
   console.log('\nprint — §9.4 tonemap properties, and what it changes vs ACES');
 
@@ -1516,6 +1626,7 @@ function suiteGround() {
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
+  soften: suiteSoften,
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
 };
 

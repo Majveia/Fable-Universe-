@@ -11,6 +11,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { BloomChain } from './bloom.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { SoftChain } from './soft.js';
 import { PRINT_SHADER } from './print.js';
 
 const GradeShader = {
@@ -144,6 +145,25 @@ export class Post {
       // channel §9.3 needs untouched all the way from the scene to the print.
       this.composer.addPass(this.gradePass);
       this.composer.addPass(this.bloom);
+      // §9.4 step 5's wash. It runs on the *graded* frame for the same reason
+      // the bloom does — what runs should be the colour the world's resonance
+      // decided on — and like the bloom it swaps nothing, so §9.3's alpha
+      // reaches the print untouched.
+      //
+      // Default **off even under ?m2=1**, which is not timidity: the step is
+      // correct and its suite is green, but it reads the alpha channel, and
+      // only terrain, ocean and sky write a real distance into it. Everything
+      // else writes 1.0, so a building forty metres away takes the same wash as
+      // the horizon behind it. Measured, and recorded in docs/plans/M2.md §25.
+      //
+      // So it waits on the material fix rather than shipping a correct step
+      // into a wrong input. `?wash=1` turns it on; flipping the default is the
+      // separate commit §7.4 asks for, and it belongs to the same change that
+      // gives the foreground a distance.
+      if (PARAM('wash') === '1') {
+        this.soft = new SoftChain();
+        this.composer.addPass(this.soft);
+      }
 
       // The print does its own tonemap and its own sRGB encode, so OutputPass
       // has nothing left to do and three's renderer-level tonemapping has to
@@ -153,6 +173,10 @@ export class Post {
       this.printPass = new ShaderPass(PRINT_SHADER);
       this.printPass.uniforms.uGrain.value = ditherOff ? 0 : 1;
       this.printPass.uniforms.uBloom.value = this.bloom.texture;
+      if (this.soft) {
+        this.printPass.uniforms.uSoft.value = this.soft.texture;
+        this.printPass.uniforms.uWash.value = 1;
+      }
       this.composer.addPass(this.printPass);
     } else {
       this.composer.addPass(this.bloom);
@@ -221,6 +245,10 @@ export class Post {
       // setSize reallocates the chain's targets, so the sampler has to be
       // re-pointed or the print keeps reading a disposed texture
       this.printPass.uniforms.uBloom.value = this.bloom.texture;
+      if (this.soft) {
+        this.soft.setSize(w, h);
+        this.printPass.uniforms.uSoft.value = this.soft.texture;
+      }
     }
   }
   render(dt) {
