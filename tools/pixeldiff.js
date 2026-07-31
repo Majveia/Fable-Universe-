@@ -541,6 +541,219 @@ async function terrainSuite(n) {
   return failed ? 1 : 0;
 }
 
+
+// ---------------------------------------------------------------------------
+// §2.7, one level deeper: can two *correct* float32 implementations disagree?
+//
+// §28 found the JS port and the shader disagree because one works in float64
+// and the other in float32, and proposed fround-ing the port so the CPU matches
+// the GPU. It also raised a worse question and said one machine could not
+// answer it: the shader's own evaluation runs float32 through a `floor`, so two
+// GPUs that round `x * (1/289)` differently at 10^7 would draw **different
+// coastlines for the same seed** — and §2.3 promises the same universe on every
+// machine, forever.
+//
+// One machine cannot compare two drivers. It can do something better, because
+// the question is not really "do these two GPUs agree" — it is "is this field's
+// float32 evaluation *fragile*". A fragile one will be disagreed about by any
+// two implementations that differ in rounding at all, and drivers differ for a
+// dozen reasons: fused multiply-add, the order a compiler associates a sum,
+// whether `floor` is a native instruction or a conversion.
+//
+// So: perturb each input by **one unit in the last place** — the smallest
+// change a float32 can express, and far smaller than any legitimate difference
+// between two drivers computing the same expression — and see how far the
+// output moves. If a 1-ULP input can move the height by a metre, the field is
+// balanced on a discontinuity and cross-driver agreement is luck.
+//
+// The float64 twin is the control. It runs the identical algebra, so if the
+// jumps were inherent to simplex noise rather than to float32, it would show
+// them too.
+
+/** the next representable float32 above or below x */
+const ULP_BUF = new ArrayBuffer(4);
+const ULP_F = new Float32Array(ULP_BUF);
+const ULP_I = new Int32Array(ULP_BUF);
+function ulp(x, dir) {
+  ULP_F[0] = Math.fround(x);
+  if (ULP_F[0] === 0) { ULP_I[0] = dir > 0 ? 1 : -2147483647; return ULP_F[0]; }
+  ULP_I[0] += (ULP_F[0] > 0 ? dir : -dir);
+  return ULP_F[0];
+}
+
+
+/**
+ * The same float32 field, with every `mod289` argument nudged by one ULP before
+ * its `floor`.
+ *
+ * This is the test that matters, and the input-perturbation test above is not a
+ * substitute for it. A 1-ULP change to a *direction* is a perturbation of a
+ * quantity near 1. The discontinuity is not there — it is inside `mod289`,
+ * whose argument reaches about 10^7 by the third `permute`, and where one ULP
+ * is nearly 1.0. Two drivers differ at intermediates, not at inputs: one may
+ * contract `((x*34)+10)*x` into an FMA, or associate a sum the other way, and
+ * either moves the argument by an ULP *of a large number*.
+ *
+ * So this perturbs where drivers actually differ. If the field survives it, a
+ * driver disagreement cannot reach §2.7's tolerance. If it does not, §2.3 is
+ * exposed on real hardware and no amount of fixing the JS port helps.
+ */
+const m289p = (x, e) => f(f(x + e * Math.sign(x || 1) * (Math.abs(f(x)) > 0 ? ulpDelta(x) : 0))
+  - f(f(Math.floor(f(f(x) * f(1 / 289)))) * 289));
+function ulpDelta(x) {
+  const a = Math.fround(x);
+  return Math.abs(ulp(a, 1) - a);
+}
+
+async function fragilitySuite(n) {
+  const count = Math.max(n, 10000);
+  const dirs = directions(count);
+  const seeds = [0.317, 1, 7.77, 42.5];
+  const R = 2600, AMP_MAX = 15;
+  const tol = (1e-4 * R) / AMP_MAX;
+
+  console.log('\npixeldiff · §2.7 · is the float32 height field fragile?');
+  console.log('  Perturbing each input by 1 ULP — smaller than any difference two');
+  console.log('  drivers could have — and measuring how far the output moves.');
+  console.log(`  ${count} samples x ${seeds.length} worlds · §2.7 tolerance ${tol.toExponential(3)}\n`);
+
+  let anyFragile = false;
+  for (const seed of seeds) {
+    let worst32 = 0, over32 = 0, worst64 = 0, over64 = 0, at = -1;
+    for (let i = 0; i < count; i++) {
+      const p = [dirs[i * 3], dirs[i * 3 + 1], dirs[i * 3 + 2]];
+      const base32 = planetHeight32(p[0], p[1], p[2], seed);
+      const base64 = planetHeight(p[0], p[1], p[2], seed);
+      let d32 = 0, d64 = 0;
+      for (let k = 0; k < 3; k++) {
+        for (const dir of [1, -1]) {
+          const q = p.slice();
+          q[k] = ulp(q[k], dir);
+          d32 = Math.max(d32, Math.abs(planetHeight32(q[0], q[1], q[2], seed) - base32));
+          d64 = Math.max(d64, Math.abs(planetHeight(q[0], q[1], q[2], seed) - base64));
+        }
+      }
+      if (d32 > tol) over32++;
+      if (d64 > tol) over64++;
+      if (d32 > worst32) { worst32 = d32; at = i; }
+      worst64 = Math.max(worst64, d64);
+    }
+    const fragile = over32 > 0;
+    if (fragile) anyFragile = true;
+    console.log(`  ${fragile ? 'FRAGILE' : 'stable '} seed ${String(seed).padEnd(7)}`
+      + ` float32: ${over32}/${count} samples move past tolerance for a 1-ULP input`
+      + `  worst ${worst32.toExponential(2)} (at ${at})`);
+    console.log(`          ${' '.repeat(13)}float64: ${over64}/${count}`
+      + `  worst ${worst64.toExponential(2)}   <- the control`);
+  }
+
+
+  // ---- the intermediate test, which is the one that decides it --------------
+  //
+  // Rebuilt inline rather than parameterising `snoise32`, because the point is
+  // to perturb exactly one operation and leave every other bit identical.
+  const permP = (x, e) => {
+    const y = f(f(f(f(x) * 34) + 10) * f(x));
+    const yp = f(y + e * ulpDelta(y));
+    return f(yp - f(f(Math.floor(f(yp * f(1 / 289)))) * 289));
+  };
+  const snoise32P = (vx, vy, vz, e) => {
+    // identical to snoise32 except `perm` -> `permP`
+    vx = f(vx); vy = f(vy); vz = f(vz);
+    const F = f(1 / 3), G = f(1 / 6);
+    const sk = f(f(f(vx + vy) + vz) * F);
+    const ix = Math.floor(f(vx + sk)), iy = Math.floor(f(vy + sk)), iz = Math.floor(f(vz + sk));
+    const t = f(f(f(ix + iy) + iz) * G);
+    const x0 = f(f(vx - ix) + t), y0 = f(f(vy - iy) + t), z0 = f(f(vz - iz) + t);
+    const gx = x0 >= y0 ? 1 : 0, gy = y0 >= z0 ? 1 : 0, gz = z0 >= x0 ? 1 : 0;
+    const lx = 1 - gx, ly = 1 - gy, lz = 1 - gz;
+    const i1x = Math.min(gx, lz), i1y = Math.min(gy, lx), i1z = Math.min(gz, ly);
+    const i2x = Math.max(gx, lz), i2y = Math.max(gy, lx), i2z = Math.max(gz, ly);
+    const x1 = f(f(x0 - i1x) + G), y1 = f(f(y0 - i1y) + G), z1 = f(f(z0 - i1z) + G);
+    const x2 = f(f(x0 - i2x) + f(2 * G)), y2 = f(f(y0 - i2y) + f(2 * G)), z2 = f(f(z0 - i2z) + f(2 * G));
+    const x3 = f(x0 - 0.5), y3 = f(y0 - 0.5), z3 = f(z0 - 0.5);
+    const im = m289(ix), jm = m289(iy), km = m289(iz);
+    const p0 = permP(f(permP(f(permP(km, e) + jm), e) + im), e);
+    const p1 = permP(f(permP(f(permP(f(km + i1z), e) + f(jm + i1y)), e) + f(im + i1x)), e);
+    const p2 = permP(f(permP(f(permP(f(km + i2z), e) + f(jm + i2y)), e) + f(im + i2x)), e);
+    const p3 = permP(f(permP(f(permP(f(km + 1), e) + f(jm + 1)), e) + f(im + 1)), e);
+    const nx = f(2 / 7), ny = f(f(0.5 / 7) - 1), nz = f(1 / 7);
+    const grad = (pv) => {
+      const j = f(pv - f(49 * Math.floor(f(f(pv * nz) * nz))));
+      const xg = Math.floor(f(j * nz));
+      const yg = Math.floor(f(j - f(7 * xg)));
+      let a = f(f(xg * nx) + ny), b = f(f(yg * nx) + ny);
+      const h = f(f(1 - Math.abs(a)) - Math.abs(b));
+      const sh = h <= 0 ? -1 : 0;
+      a = f(a + f(f(Math.floor(a) * 2 + 1) * sh));
+      b = f(b + f(f(Math.floor(b) * 2 + 1) * sh));
+      return [a, b, h];
+    };
+    const G0 = grad(p0), G1 = grad(p1), G2 = grad(p2), G3g = grad(p3);
+    const d2 = (a, x, y, z) => f(f(f(a[0] * x) + f(a[1] * y)) + f(a[2] * z));
+    const sq = (a) => f(f(f(a[0] * a[0]) + f(a[1] * a[1])) + f(a[2] * a[2]));
+    const n0 = tinv(sq(G0)), n1 = tinv(sq(G1)), n2 = tinv(sq(G2)), n3 = tinv(sq(G3g));
+    const w = (x, y, z) => {
+      let m = f(0.5 - f(f(f(x * x) + f(y * y)) + f(z * z)));
+      m = m > 0 ? m : 0; m = f(m * m); return f(m * m);
+    };
+    return f(105 * f(f(f(f(w(x0, y0, z0) * f(n0 * d2(G0, x0, y0, z0)))
+      + f(w(x1, y1, z1) * f(n1 * d2(G1, x1, y1, z1))))
+      + f(w(x2, y2, z2) * f(n2 * d2(G2, x2, y2, z2))))
+      + f(w(x3, y3, z3) * f(n3 * d2(G3g, x3, y3, z3)))));
+  };
+  const heightP = (dx, dy, dz, seed, e) => {
+    const sx = f(seed * 17.31), sy = f(seed * 9.17), sz = f(seed * 31.7);
+    let v = 0, a = 0.5;
+    let x = f(f(dx * 2.3) + sx), y = f(f(dy * 2.3) + sy), z = f(f(dz * 2.3) + sz);
+    for (let i = 0; i < 5; i++) {
+      v = f(v + f(a * snoise32P(x, y, z, e)));
+      x = f(f(x * 2.07) + 11.3); y = f(f(y * 2.07) + 11.3); z = f(f(z * 2.07) + 11.3);
+      a = f(a * 0.5);
+    }
+    let w2 = 0, b = 0.5;
+    let X = f(f(dx * 5) + f(sx * 1.7)), Y = f(f(dy * 5) + f(sy * 1.7)), Z = f(f(dz * 5) + f(sz * 1.7));
+    for (let i = 0; i < 4; i++) {
+      w2 = f(w2 + f(b * f(1 - Math.abs(snoise32P(X, Y, Z, e)))));
+      X = f(f(X * 2.13) + 5.7); Y = f(f(Y * 2.13) + 5.7); Z = f(f(Z * 2.13) + 5.7);
+      b = f(b * 0.5);
+    }
+    return f(f(f(v * 0.75) + f(w2 * 0.45)) - 0.28);
+  };
+
+  console.log('\n  the intermediate test — one ULP inside mod289, where drivers differ:\n');
+  let interFragile = false;
+  for (const seed of seeds) {
+    let over = 0, worst = 0, at = -1;
+    for (let i = 0; i < count; i++) {
+      const p = [dirs[i * 3], dirs[i * 3 + 1], dirs[i * 3 + 2]];
+      const base = heightP(p[0], p[1], p[2], seed, 0);
+      for (const e of [1, -1]) {
+        const d = Math.abs(heightP(p[0], p[1], p[2], seed, e) - base);
+        if (d > worst) { worst = d; at = i; }
+        if (d > tol) { over++; break; }
+      }
+    }
+    if (over > 0) interFragile = true;
+    console.log(`  ${over > 0 ? 'FRAGILE' : 'stable '} seed ${String(seed).padEnd(7)}`
+      + ` ${over}/${count} samples move past tolerance`
+      + `  worst ${worst.toExponential(2)} (at ${at})`
+      + `  = ${((worst * AMP_MAX) / R).toExponential(2)} of R`);
+  }
+  anyFragile = anyFragile || interFragile;
+
+  console.log('\n  ' + (anyFragile
+    ? 'FRAGILE. A 1-ULP input change moves the height past §2.7\'s own tolerance,\n'
+      + '  so any two implementations that round differently anywhere will disagree.\n'
+      + '  Two GPUs are two such implementations. §2.3 is exposed on real hardware,\n'
+      + '  and fround-ing the JS port would match one driver rather than fix this.'
+    : 'STABLE. A 1-ULP input change stays inside §2.7\'s tolerance, so two drivers\n'
+      + '  that differ only in rounding cannot disagree by more than the budget.\n'
+      + '  The float64/float32 gap in §28 is then the whole story, and fround-ing\n'
+      + '  src/terrain.js is a complete fix rather than a partial one.'));
+  return anyFragile ? 1 : 0;
+}
+
 // ----------------------------------------------------------------- report ---
 
 const TOL = 2 / 255;
@@ -580,6 +793,7 @@ function compare(name, gpu, cpu) {
 async function main() {
   const suite = String(arg('suite', 'all'));
   if (suite === 'terrain') process.exit(await terrainSuite(Number(arg('cases', 10000))));
+  if (suite === 'fragility') process.exit(await fragilitySuite(Number(arg('cases', 10000))));
 
   const n = Number(arg('cases', 4096));
   const list = cases(n, 0x9e3779b9);
