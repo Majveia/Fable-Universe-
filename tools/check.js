@@ -65,31 +65,61 @@ const run = (name, args) => new Promise((done) => {
   p.on('close', (code) => done({ name, code, secs: Math.round((Date.now() - t0) / 1000) }));
 });
 
+/**
+ * A step may be **known-open**: a gate that fails today for a reason already
+ * written down. §7.6 says a run below gate goes back to step 4 and, after five
+ * iterations, escalates "with a written account of the blocking axis" — so the
+ * account should live in the instrument rather than in somebody's memory.
+ *
+ * A known-open step reports `open` instead of `FAIL` and does not set the exit
+ * code, which is the easy half. The half that matters is the other one: when it
+ * starts *passing*, the verdict says so and tells you to delete the entry.
+ * Otherwise a gate that was fixed months ago stays marked open forever, and the
+ * list stops being an account of anything.
+ */
 const steps = [
   // first, because every step below it launches a browser to discover the same
   // thing more slowly: a module that does not parse looks exactly like a page
   // that would not boot
   ['parse', ['tools/parse.js', '--quiet'], 'every module the browser loads, parsed'],
   ['verify', ['tools/verify.js'], 'the maths, against independent references (§7.3)'],
+  // §7.3 has two halves and this is the second: `verify` proves the CPU
+  // reference has the properties §9 asks for, `pixeldiff` proves the shader
+  // computes the same function. Neither implies the other — a chunk can be a
+  // perfect port of a wrong reference, or a wrong port of a right one.
+  ['pixeldiff', ['tools/pixeldiff.js'], 'the GLSL against its CPU twin (§7.3)'],
   ['shaders', ['tools/shadercheck.js'], 'every shader as the driver sees it (§M0)'],
   ['capture', ['tools/capture.js', '--milestone', milestone], 'the numbered set + perf JSON (§7.5)'],
   ['repeat', ['tools/repeat.js'], 'the same URL twice, to §7.3\'s tolerance'],
+  ['alphaudit', ['tools/alphaudit.js', ...(extra ? ['--extra', extra] : [])],
+    '§9.3\'s fog fraction, composited (§16.6)',
+    'only terrain, ocean and sky write a real distance into alpha; everything'
+    + ' else writes 1.0. docs/plans/M2.md §24-25.'],
   ['gate', ['tools/gate.js', '--milestone', milestone, ...(extra ? ['--extra', extra] : [])],
     'the measurable gate clauses (§8)'],
 ];
 
 const results = [];
-for (const [name, args, what] of steps) {
+for (const [name, args, what, open] of steps) {
   if (skip.includes(name)) { console.log(`\n· skipping ${name} — ${what}`); continue; }
-  results.push(await run(`${name} — ${what}`, args));
+  results.push({ ...await run(`${name} — ${what}`, args), open });
 }
 
 // --------------------------------------------------------------- verdict ---
 
 console.log(`\n${'═'.repeat(64)}\n  verdict\n${'═'.repeat(64)}`);
 for (const r of results) {
-  console.log(`  ${r.code === 0 ? 'pass' : 'FAIL'}  ${r.name.split(' — ')[0].padEnd(9)} ${String(r.secs).padStart(4)}s`
+  const label = r.code === 0 ? 'pass' : (r.open ? 'open' : 'FAIL');
+  console.log(`  ${label}  ${r.name.split(' — ')[0].padEnd(9)} ${String(r.secs).padStart(4)}s`
     + (r.code === 0 ? '' : `   exit ${r.code}`));
+  if (r.code !== 0 && r.open) console.log(`          ${r.open}`);
+}
+
+// The half that keeps the open list honest.
+const fixed = results.filter((r) => r.open && r.code === 0);
+if (fixed.length) {
+  console.log('\n  ✓ known-open, and now passing — remove the entry in tools/check.js:');
+  for (const r of fixed) console.log(`      ${r.name.split(' — ')[0]}`);
 }
 
 // did any of it run on real silicon?
@@ -143,6 +173,7 @@ if (!gpu) {
   console.log('  ✓ real GPU, clean tree — these numbers count against §5 and the gates.');
 }
 
-const failed = results.filter(r => r.code !== 0);
+// a known-open step is a recorded finding, not a regression
+const failed = results.filter((r) => r.code !== 0 && !r.open);
 console.log();
 process.exit(failed.length ? 1 : 0);
