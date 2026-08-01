@@ -268,7 +268,7 @@ const m289 = (x) => f(x - f(f(Math.floor(f(f(x) * f(1 / 289)))) * 289));
 const perm = (x) => m289(f(f(f(f(x) * 34) + 10) * f(x)));
 const tinv = (r) => f(1.79284291400159 - f(0.85373472095314 * f(r)));
 
-function snoise32(vx, vy, vz) {
+export function snoise32(vx, vy, vz) {
   vx = f(vx); vy = f(vy); vz = f(vz);
   const F = f(1 / 3), G = f(1 / 6);
   const s = f(f(f(vx + vy) + vz) * F);
@@ -336,7 +336,7 @@ const ridged32 = (x, y, z) => {
   }
   return v;
 };
-const planetHeight32 = (dx, dy, dz, seed) => {
+export const planetHeight32 = (dx, dy, dz, seed) => {
   const sx = f(seed * 17.31), sy = f(seed * 9.17), sz = f(seed * 31.7);
   const cont = fbm32(f(f(dx * 2.3) + sx), f(f(dy * 2.3) + sy), f(f(dz * 2.3) + sz));
   const mount = ridged32(f(f(dx * 5) + f(sx * 1.7)), f(f(dy * 5) + f(sy * 1.7)), f(f(dz * 5) + f(sz * 1.7)));
@@ -479,7 +479,11 @@ async function terrainSuite(n) {
   const pw = await playwright();
   const browser = await launch(pw);
   const page = await browser.newPage();
-  await page.goto(`${site.origin}/index.html`, { waitUntil: 'load' });
+  // `--int` loads the page with ?intnoise=1, so `planet.js` emits the integer
+  // permutation. The chunk still comes from the app's own module — the point of
+  // reading it through the page rather than keeping a copy here.
+  const intNoise = arg('int') === true;
+  await page.goto(`${site.origin}/index.html${intNoise ? '?intnoise=1' : ''}`, { waitUntil: 'load' });
   // NOISE_GLSL from the app's own module, through the page's import map — the
   // string the renderer receives, never a copy of it kept in this file
   await page.addScriptTag({ type: 'module', content:
@@ -487,6 +491,8 @@ async function terrainSuite(n) {
      window.__noise = NOISE_GLSL;` });
   await page.waitForFunction('window.__noise', null, { timeout: 60000 });
   const noise = await page.evaluate(() => window.__noise);
+  console.log('  chunk: ' + (noise.includes('iperm(iperm') ? 'integer permutation' : 'float permutation')
+    + ` · ${noise.length} chars`);
   const out = await page.evaluate(TERRAIN_RUN,
     { noise, dirs: Array.from(dirs), count, seeds, W: 512 });
   await browser.close();
@@ -501,6 +507,8 @@ async function terrainSuite(n) {
   // uses R = 2600 and amp 7..15, and the tightest budget is the largest amp.
   const R = 2600, AMP_MAX = 15;
   const tol = (1e-4 * R) / AMP_MAX;
+  console.log('  GPU side: ' + (intNoise ? 'the integer permutation (--int, ?intnoise=1)'
+    : 'the float permutation, as shipped'));
   console.log('  CPU side: ' + (F32 ? 'src/terrain.js\'s algebra, in float32 (--f32)'
     : 'src/terrain.js as shipped, float64'));
   console.log(`  ${count} samples x ${seeds.length} worlds`

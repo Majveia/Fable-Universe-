@@ -9,10 +9,114 @@ import * as THREE from 'three';
 
 // --------------------------------------------------------------- noise ----
 // Ashima Arts / Ian McEwan simplex noise (MIT), the workhorse of this file.
+//
+// ---------------------------------------------------------------------------
+// ?intnoise=1 — the permutation in integers (docs/plans/M2.md §28)
+//
+// Ashima's permute is mod289(((x*34)+10)*x) over values that are **always
+// integers in 0..288**. It is integer arithmetic written in floats because
+// GLSL 1.00 had no usable integer type, and float32 gets it wrong: by the third
+// permute the argument reaches about 1e7, where the rounding of 1/289 is enough
+// to put floor(x*(1/289)) on the wrong integer. When that happens the result
+// moves by 289, which selects an entirely different gradient.
+//
+// Measured by node tools/pixeldiff.js --suite fragility: a one-ULP difference
+// in that intermediate — smaller than any legitimate difference between two
+// drivers — moves 99.5% of the planet past §2.7's tolerance. Two GPUs that
+// contract one multiply-add differently therefore draw different coastlines for
+// the same seed, and §2.3's promise of the same universe on every machine rests
+// on them happening to agree.
+//
+// WebGL2 compiles #version 300 es, which has integers, and the whole chain
+// fits: the largest intermediate is (288*34+10)*288, about 2.8e6, against an
+// int32 ceiling of 2.1e9. Integer arithmetic has no rounding, so there is no
+// floor to flip and no driver freedom to exercise.
+//
+// The three gradient-index floors go the same way — p % 49, j / 7, j % 7 —
+// because they are equally discontinuous and equally integral.
+//
+// floor(v + dot(v, C.yyy)) stays float on purpose. That one is the simplex
+// *cell* index, and simplex noise is continuous across a cell boundary by
+// construction, so flipping it does not move the value. The fragility suite
+// confirms it: a one-ULP input perturbation moves nothing.
+//
+// What this is **not** is a change to the noise. src/terrain.js computes the
+// same chain in float64, which is exact at these magnitudes — checked against
+// the integer form over -5000..5000 with zero disagreements — so the integer
+// path reproduces the CPU port's values rather than diverging from them. The
+// shader is the side that has been wrong.
+const INT_NOISE = (() => {
+  try { return new URL(window.location.href).searchParams.get('intnoise') === '1'; }
+  catch { return false; }
+})();
+
+const PERM_FLOAT = /* glsl */`
+  i = mod289(i);
+  vec4 p = permute(permute(permute(
+            i.z + vec4(0.0, i1.z, i2.z, 1.0))
+          + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+          + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+  float n_ = 0.142857142857;
+  vec3 ns = n_ * D.wyz - D.xzx;
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+  vec4 x_ = floor(j * ns.z);
+  vec4 y_ = floor(j - 7.0 * x_);
+`;
+
+// % on a negative int is not what the float version does: mod289 there is
+// x - floor(x/289)*289, and floor rounds *down*, so a negative index comes back
+// positive. ((x % 289) + 289) % 289 reproduces that exactly.
+const PERM_INT = /* glsl */`
+  ivec3 iI = ((ivec3(i) % 289) + 289) % 289;
+  ivec4 pI = iperm(iperm(iperm(
+              iI.z + ivec4(0, int(i1.z), int(i2.z), 1))
+            + iI.y + ivec4(0, int(i1.y), int(i2.y), 1))
+            + iI.x + ivec4(0, int(i1.x), int(i2.x), 1));
+  vec4 p = vec4(pI);
+  float n_ = 0.142857142857;
+  vec3 ns = n_ * D.wyz - D.xzx;
+  ivec4 jI = pI % 49;
+  ivec4 xI = jI / 7;
+  ivec4 yI = jI - 7 * xI;
+  vec4 j = vec4(jI);
+  vec4 x_ = vec4(xI);
+  vec4 y_ = vec4(yI);
+`;
+
+// The gradient table's own discontinuity, and the real fault §28 was looking
+// for. `x` and `y` are not arbitrary floats — with `x_`, `y_` integers in 0..6,
+//
+//     x = x_*(2/7) + (0.5/7 - 1) = (4*x_ - 13) / 14      exactly
+//     h = 1 - |x| - |y|          = (14 - |4x_-13| - |4y_-13|) / 14
+//
+// and **7 of the 49 cells have h exactly zero**: (0,3) (1,2) (2,1) (3,0) (4,6)
+// (5,5) (6,4). `sh = -step(h, 0.0)` is then decided entirely by rounding noise,
+// and float32 and float64 land on opposite sides of all seven — float64 reads
+// four of them as <= 0 and float32 reads the other three. When `sh` flips, both
+// gradient components shift by one, which is a different gradient vector, and
+// the corner's contribution changes outright.
+//
+// That is 14% of the table, it does not depend on coordinate magnitude, and it
+// is why two implementations disagree at small coordinates where nothing else
+// could explain it. It is also why making the *permutation* exact changed
+// nothing measurable: the permutation was never the fault.
+//
+// Ashima's own answer is unambiguous — `step(edge, x)` returns 1 when
+// `x >= edge`, so `step(0.0, 0.0)` is 1 and `sh` is -1 for all seven. Neither
+// float path gets that right. The integer test does, on every machine, because
+// there is nothing left to round.
+const GRAD_FLOAT = /* glsl */`  vec4 h = 1.0 - abs(x) - abs(y);`;
+const GRAD_INT = /* glsl */`
+  ivec4 hI = ivec4(14) - abs(4 * xI - 13) - abs(4 * yI - 13);
+  vec4 h = vec4(hI) / 14.0;`;
+const SH_FLOAT = /* glsl */`  vec4 sh = -step(h, vec4(0.0));`;
+const SH_INT = /* glsl */`  vec4 sh = -step(vec4(hI), vec4(0.0));`;
+
 export const NOISE_GLSL = /* glsl */`
 vec3 mod289(vec3 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
 vec4 mod289(vec4 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
 vec4 permute(vec4 x){ return mod289(((x*34.0)+10.0)*x); }
+ivec4 iperm(ivec4 x){ return (((x*34)+10)*x) % 289; }
 vec4 taylorInvSqrt(vec4 r){ return 1.79284291400159 - 0.85373472095314 * r; }
 float snoise(vec3 v){
   const vec2 C = vec2(1.0/6.0, 1.0/3.0);
@@ -26,24 +130,15 @@ float snoise(vec3 v){
   vec3 x1 = x0 - i1 + C.xxx;
   vec3 x2 = x0 - i2 + C.yyy;
   vec3 x3 = x0 - D.yyy;
-  i = mod289(i);
-  vec4 p = permute(permute(permute(
-            i.z + vec4(0.0, i1.z, i2.z, 1.0))
-          + i.y + vec4(0.0, i1.y, i2.y, 1.0))
-          + i.x + vec4(0.0, i1.x, i2.x, 1.0));
-  float n_ = 0.142857142857;
-  vec3 ns = n_ * D.wyz - D.xzx;
-  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
-  vec4 x_ = floor(j * ns.z);
-  vec4 y_ = floor(j - 7.0 * x_);
+${INT_NOISE ? PERM_INT : PERM_FLOAT}
   vec4 x = x_ * ns.x + ns.yyyy;
   vec4 y = y_ * ns.x + ns.yyyy;
-  vec4 h = 1.0 - abs(x) - abs(y);
+${INT_NOISE ? GRAD_INT : GRAD_FLOAT}
   vec4 b0 = vec4(x.xy, y.xy);
   vec4 b1 = vec4(x.zw, y.zw);
   vec4 s0 = floor(b0)*2.0 + 1.0;
   vec4 s1 = floor(b1)*2.0 + 1.0;
-  vec4 sh = -step(h, vec4(0.0));
+${INT_NOISE ? SH_INT : SH_FLOAT}
   vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
   vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
   vec3 p0 = vec3(a0.xy, h.x);
