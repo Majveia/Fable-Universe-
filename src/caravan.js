@@ -10,6 +10,7 @@
 import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
 import { softDotTexture } from './nebula.js';
+import { airOf, applyAerial } from './aerial.js';
 
 export function addCaravan(s) {
   if (!s.pp.inhabited || !s.settlement?.routes?.length) return null;
@@ -20,11 +21,11 @@ export function addCaravan(s) {
   if (route.length < 4) return null;
 
   const ground = (x, z) => Math.max(s.heightAt(x, z), s.seaLevel === null ? -1e9 : s.seaLevel);
-  const hide = new THREE.MeshStandardMaterial({ color: 0x6b5640, roughness: 0.9, flatShading: true });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x3a2f24, roughness: 0.95 });
-  const cloth = new THREE.MeshStandardMaterial({
+  const hide = applyAerial(new THREE.MeshStandardMaterial({ color: 0x6b5640, roughness: 0.9, flatShading: true }), airOf(s), { name: 'caravan/addCaravan' });
+  const dark = applyAerial(new THREE.MeshStandardMaterial({ color: 0x3a2f24, roughness: 0.95 }), airOf(s), { name: 'caravan/addCaravan' });
+  const cloth = applyAerial(new THREE.MeshStandardMaterial({
     color: new THREE.Color().setHSL(r.float(0, 1), 0.4, 0.5), roughness: 0.85, side: THREE.DoubleSide,
-  });
+  }), airOf(s), { name: 'caravan/addCaravan' });
 
   // one pack beast: a body ellipsoid, a low head, four stub legs
   function beast() {
@@ -75,10 +76,10 @@ export function addCaravan(s) {
     pole.rotation.z = Math.PI / 2; pole.position.set(2.5, 1.1, 0);
     g.add(pole);
     // the lantern
-    const lamp = new THREE.Sprite(new THREE.SpriteMaterial({
+    const lamp = new THREE.Sprite(applyAerial(new THREE.SpriteMaterial({
       map: softDotTexture(32), color: new THREE.Color(1.35, 0.85, 0.42),
       transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
-    }));
+    }), airOf(s), { name: 'caravan/lamp', radius: 1.1 }));
     lamp.position.set(1.4, 2.6, 0);
     lamp.scale.setScalar(2.2);
     g.add(lamp);

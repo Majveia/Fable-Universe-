@@ -38,20 +38,32 @@
 // `1 − exp(−1.32·c)`. One uniform, two rulings, no second pipeline.
 //
 // ---------------------------------------------------------------------------
-// What is not here yet
+// All eight steps, in the reference's order
 //
-// §9.4 steps 5 (watercolour softening at 0.42 × fog) and its chroma bleed need
-// the fog fraction in the alpha channel, which is §9.3's aerial-perspective
-// port and does not exist yet. They are the two steps that read a *distance*,
-// and they land with the thing that writes one. Everything else — tonemap,
-// shadow/highlight push, lift, S-curve, midtone saturation, paper tooth,
-// vignette, dither — is complete.
+// Steps 5 and 5b were the last two owed, because they are the only two that
+// read a *distance*: `src/aerial.js` writes §9.3's fog fraction into alpha,
+// `tools/alphaudit.js` proves it arrives here, and `src/soft.js` supplies the
+// wash they blend toward. They sit before the bloom, which is where the
+// reference puts them — what runs on wet paper is the *image*, not the light
+// added on top of it.
+//
+// So the order here is: soften → bleed → bloom → tonemap → shadow/highlight →
+// lift → S and saturation → paper tooth → vignette → sRGB → dither. §9.4 says
+// order matters, and this is it.
 
 import * as THREE from 'three';
+import { WASH_GLSL } from './wash.js';
 
 export const PRINT_SHADER = {
   uniforms: {
     tDiffuse: { value: null },
+    uSoft: { value: null },     // §9.4 step 5's wash — see src/soft.js
+    // 0 when no wash is bound. An unbound sampler reads as white in three, and
+    // white through the chroma bleed would drain the frame — so this is not a
+    // convenience, it is the guard that makes the flag safe. At 0 the whole
+    // step is exactly nothing, which is the same property `uPaint = 0` has and
+    // the suite already proves.
+    uWash: { value: 0 },
     uBloom: { value: null },    // §9.4's step order: the bloom composites here
     uBloomAmt: { value: 0 },
     uPaint: { value: 0 },       // 0 vacuum · 1 atmosphere (§2.8, §3 row 1)
@@ -71,12 +83,14 @@ export const PRINT_SHADER = {
     precision highp float;
     uniform sampler2D tDiffuse;
     uniform sampler2D uBloom;
+    uniform sampler2D uSoft;
     uniform float uBloomAmt;
-    uniform float uPaint, uExposure, uGrain, uVignette;
+    uniform float uPaint, uExposure, uGrain, uVignette, uWash;
     uniform vec2 uRes;
     varying vec2 vUv;
 
     float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+${WASH_GLSL}
 
     // §9.4 step 1 — a rational curve. Not ACES. Not Reinhard.
     vec3 tonemapPrint(vec3 x) {
@@ -134,10 +148,32 @@ export const PRINT_SHADER = {
 
     void main() {
       vec4 src = texture2D(tDiffuse, vUv);
+      // §9.3's fog fraction rides in alpha, and the audit that proved it
+      // arrives intact also found the one thing that dirties it: three's preset
+      // AdditiveBlending is (SRC_ALPHA, ONE) on the *alpha* channel too, so an
+      // additive sprite adds its own alpha on top of the scene's. Measured on
+      // the surface scale, that is 0.039% of pixels, reaching 1.55.
+      //
+      // Clamped here, at the one place the value is read, rather than at each
+      // of the dozens of places it is written. tools/alphaudit.js still reports
+      // the raw channel, so this bounds the damage without hiding it.
+      float fog = clamp(src.a, 0.0, 1.0);
       // §11: one non-finite fragment survives the tonemap as a solid block, and
       // the bloom downsample chain will have smeared it over a neighbourhood
       // first. NaN is the only value that fails to equal itself.
       vec3 c = mix(vec3(0.0), src.rgb, vec3(equal(src.rgb, src.rgb)));
+
+      // §9.4 steps 5 and 5b. This is what §9.3's alpha channel exists for:
+      // the wash is the whole frame at an eighth (src/soft.js), and blending
+      // toward it in proportion to how much air a pixel sits behind is what
+      // makes a far ridge read as bled rather than as out of focus.
+      //
+      // §11's firewall at the tap, because unlike the bloom this texture is
+      // read over the *whole* frame — one poisoned texel would reach every
+      // pixel that samples it, not just the ones near a light.
+      vec3 wash = texture2D(uSoft, vUv).rgb;
+      wash = mix(vec3(0.0), wash, vec3(equal(wash, wash)));
+      c = soften(c, wash, fog, uPaint * uWash);
 
       // The bloom composites here, not as a pass of its own — §9.4's step order
       // puts it before the tonemap, and bloom.js explains why it must not be an
@@ -197,7 +233,9 @@ export const PRINT_SHADER = {
       float dth = fract(dot(gl_FragCoord.xy, vec2(0.7548776662, 0.5698402909)));
       c += ((dth - 0.5) / 255.0) * smoothstep(0.5 / 255.0, 2.0 / 255.0, luma(c));
 
-      gl_FragColor = vec4(clamp(c, 0.0, 1.0), src.a);
+      // the fog fraction passes through, bounded — §9.4 steps 5 and 5b are the
+      // two that will read it, and they are the only thing still owed here
+      gl_FragColor = vec4(clamp(c, 0.0, 1.0), fog);
     }
   `,
 };

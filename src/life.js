@@ -9,6 +9,7 @@
 import * as THREE from 'three';
 import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
+import { airOf, applyAerial } from './aerial.js';
 
 function bladeTexture(rng) {
   const cv = document.createElement('canvas');
@@ -37,6 +38,8 @@ export function addLife(s) {
   const pp = s.pp;
   if (!isBiosphere(pp)) return null;
   const r = new RNG(hash(pp.seed, 0x11fe));
+  // §9.3 for everything below, behind ?airmat=1 (docs/plans/M2.md §27)
+  const air = airOf(s);
   const EXT = 1400;
   // ecology: the host may carry a persistent regional population; without
   // one (moons, classic surface) the old defaults stand
@@ -75,10 +78,10 @@ export function addLife(s) {
     g1.dispose(); g2.dispose();
     return geo;
   })();
-  const tuftMat = new THREE.MeshBasicMaterial({
+  const tuftMat = applyAerial(new THREE.MeshBasicMaterial({
     map: bladeTexture(r), transparent: true, alphaTest: 0.3,
     color: vegColor.clone(), side: THREE.DoubleSide, depthWrite: true,
-  });
+  }), air, { bucket: 'veil', name: 'life tufts' });
   const nTufts = Math.max(80, Math.round(650 * vegF));
   const tufts = new THREE.InstancedMesh(tuftGeo, tuftMat, nTufts);
   const d = new THREE.Object3D();
@@ -97,8 +100,8 @@ export function addLife(s) {
   s.scene.add(tufts);
 
   // ---------------------------------------------------------- trees ----
-  const trunkMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.07, 0.3, 0.22), roughness: 1 });
-  const canopyMat = new THREE.MeshStandardMaterial({ color: canopyColor, roughness: 0.9, flatShading: true });
+  const trunkMat = applyAerial(new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.07, 0.3, 0.22), roughness: 1 }), air, { name: 'tree trunks' });
+  const canopyMat = applyAerial(new THREE.MeshStandardMaterial({ color: canopyColor, roughness: 0.9, flatShading: true }), air, { name: 'tree canopies' });
   const nTrees = Math.max(20, Math.round(130 * vegF));
   const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.14, 0.3, 1, 5), trunkMat, nTrees);
   const canopies = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), canopyMat, nTrees);
@@ -190,9 +193,9 @@ export function addLife(s) {
   const nFlow = Math.round((COARSE ? 240 : 460) * vegF);
   if (nFlow > 30) {
     const fGeo = new THREE.PlaneGeometry(0.55, 0.55);
-    const fMat = new THREE.MeshBasicMaterial({
+    const fMat = applyAerial(new THREE.MeshBasicMaterial({
       color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.95,
-    });
+    }), air, { bucket: 'veil', name: 'flowers' });
     const flowers = new THREE.InstancedMesh(fGeo, fMat, nFlow);
     flowers.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(nFlow * 3), 3);
     const speciesA = new THREE.Color().setHSL(r.float(0, 1), 0.75, 0.62);
@@ -369,10 +372,10 @@ export function addLife(s) {
     const tex = softDotTexture(32);
     spores = [];
     for (let i = 0; i < 46; i++) {
-      const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+      const sp = new THREE.Sprite(applyAerial(new THREE.SpriteMaterial({
         map: tex, color: new THREE.Color().setHSL(r.float(0.3, 0.55), 0.8, 0.6),
         blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, opacity: 0,
-      }));
+      }), air, { bucket: 'veil', radius: 0.8, name: 'spores' }));
       const x = r.float(-500, 500), z = r.float(-500, 500);
       sp.position.set(x, (dryland(x, z) ?? 0) + r.float(2, 14), z);
       sp.scale.setScalar(r.float(0.5, 1.6));

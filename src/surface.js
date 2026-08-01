@@ -30,6 +30,7 @@ import { addInterior } from './interior.js';
 import { findLandingSite } from './terrain.js';
 import { solveLandingSite } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
+import { AERIAL_GLSL, aerialUniforms, airFor, airPalette, syncAerialPalette } from './aerial.js';
 import { makeGround } from './ground.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
 import { qInt } from './quality.js';
@@ -55,8 +56,29 @@ const M2 = PARAM('m2') === '1';
  */
 const PAINT = PARAM('paint') === '1' || (M2 && PARAM('paint') !== '0');
 
+/**
+ * §9.3's aerial perspective, act 2. Separable in both directions like `paint`,
+ * and for a sharper reason than symmetry: it is the one change that writes the
+ * *alpha* channel, so `?m2=1&aerial=0` is the build that isolates whether a
+ * defect in the print came from the grade or from the distance it was handed.
+ */
+const AERIAL = PARAM('aerial') === '1' || (M2 && PARAM('aerial') !== '0');
+
 /** `?shdebug=1` — output the shadow term itself, so it can be looked at */
 const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');
+
+/**
+ * `?airdebug=1` — the fog fraction as greyscale, from the surfaces that compute
+ * it. It answers "is the depth cue shaped right", which is the question a still
+ * cannot answer once the fog has been mixed into a colour.
+ *
+ * It does **not** answer §16.6's audit question — whether anything drawn
+ * *without* `aerial()` corrupts the alpha channel — because a material that
+ * writes garbage into alpha does not have this flag. That one is answered from
+ * outside, by reading the composited render target back; see
+ * `tools/alphaudit.js`.
+ */
+const AIR_DEBUG = AERIAL && PARAM('airdebug') === '1';
 
 /**
  * `?solve=1` — choose the opening frame with the §9.7 composition solver
@@ -109,6 +131,7 @@ const TERRAIN_FRAG = /* glsl */`
   varying vec3 vN;
   ${NOISE_GLSL}
   ${PAINT ? SHADOW_GLSL + PAINT_GLSL : ''}
+  ${AERIAL ? AERIAL_GLSL : ''}
 
   uniform float uSea;    // sea level in world y, or -1e9 for a dry world
 
@@ -212,10 +235,23 @@ const TERRAIN_FRAG = /* glsl */`
       lit += vec3(1.0, 0.3, 0.05) * glow * 2.0 * smoothstep(0.3, 0.0, hgt);
     }
 
+    ${AERIAL ? /* glsl */`
+    // §9.3 · aerial perspective. Not one colour and not one exponent: the air
+    // is warm toward the sun and cool away from it, it thins with altitude, and
+    // mist pools where a valley floor is far enough away to have air over it.
+    //
+    // The fog fraction goes into **alpha**, which is the whole trick — it is how
+    // the post chain learns each pixel's distance, and it is what §9.4 step 5
+    // spends on distance-graded watercolour softening.
+    vec4 air = aerial(lit, vW, uCam, uSunDir, vW.y - uAirBase);
+    gl_FragColor = air;
+    ${AIR_DEBUG ? 'gl_FragColor = vec4(vec3(air.a), 1.0);' : ''}
+    ` : /* glsl */`
     // aerial perspective
     float dist = length(vW - uCam);
     lit = mix(lit, uHorizon * max(dusk, 0.08), 1.0 - exp(-dist * 0.0007));
     gl_FragColor = vec4(lit, 1.0);
+    `}
   }
 `;
 
@@ -276,6 +312,14 @@ const SKY_FRAG = /* glsl */`
       stars = vec3(0.9, 0.88, 1.0) * exp(-sd2 * sd2 * 3.5) * (h - 0.994) / 0.006 * dark;
     }
 
+    // §16.6's audit, decided rather than inherited: the sky writes **alpha 1**,
+    // maximally distant. Two reasons, and the second is the one that matters.
+    // A painted sky is the furthest thing in frame, so it should take the full
+    // wet-in-wet softening — that is how a watercolour wash behaves. And the
+    // far terrain asymptotes to fog 1 at the horizon; if the sky wrote 0 there
+    // would be a step discontinuity in the post chain's idea of distance
+    // exactly along the horizon line, which is the most looked-at edge in the
+    // frame. It was already 1.0 by accident. Now it is 1.0 on purpose.
     gl_FragColor = vec4(sky + sun + stars, 1.0);
   }
 `;
@@ -318,6 +362,7 @@ const OCEAN_FRAG = /* glsl */`
   varying vec3 vW;
   varying vec3 vN;
   ${NOISE_GLSL}
+  ${AERIAL ? AERIAL_GLSL : ''}
 
   void main() {
     // three bands of chop riding the swell, all drifting downwind
@@ -346,9 +391,15 @@ const OCEAN_FRAG = /* glsl */`
       snoise(vec3(vW.xz * 0.4 - drift * 0.05, uTime * 0.6)) * 0.5 + 0.5);
     col += vec3(0.9, 0.95, 1.0) * crest * 0.18 * (0.25 + 0.75 * day);
 
+    ${AERIAL ? /* glsl */`
+    vec4 air = aerial(col, vW, uCam, uSunDir, vW.y - uAirBase);
+    gl_FragColor = air;
+    ${AIR_DEBUG ? 'gl_FragColor = vec4(vec3(air.a), 1.0);' : ''}
+    ` : /* glsl */`
     float dist = length(vW - uCam);
     col = mix(col, uHorizon * max(day, 0.08), 1.0 - exp(-dist * 0.0007));
     gl_FragColor = vec4(col, 1.0);
+    `}
   }
 `;
 
@@ -488,7 +539,8 @@ export class SurfaceScale {
     this.sunShadow = new SunShadow({ res: qInt('shres', 'shadowRes') });
     const T = this.ctx.system?.temp ?? 5778;
     const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
-    const L = lightFor(T, Math.max(elev, 0.5));
+    // quantised: this is re-derived every frame from the update loop (§5)
+    const L = lightFor(T, Math.max(elev, 0.5), true);
     const v = (c) => ({ value: new THREE.Vector3(c[0], c[1], c[2]) });
     this._paintLight = { T, uniforms: { sun: v(L.sun), sky: v(L.ambSky), gnd: v(L.ambGnd), sh: v(L.shadowTint) } };
     return {
@@ -504,12 +556,64 @@ export class SurfaceScale {
   _syncPaintLight() {
     if (!PAINT || !this._paintLight) return;
     const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
-    const L = lightFor(this._paintLight.T, Math.max(elev, 0.5));
+    const L = lightFor(this._paintLight.T, Math.max(elev, 0.5), true);
     const u = this._paintLight.uniforms;
     u.sun.value.set(...L.sun);
     u.sky.value.set(...L.ambSky);
     u.gnd.value.set(...L.ambGnd);
     u.sh.value.set(...L.shadowTint);
+  }
+
+  /**
+   * §9.3's air, as the two normalising numbers and four colours `aerial.js`
+   * asks for. Everything here is the world's own: the atmosphere strength it
+   * was generated with, its surface gravity and equilibrium temperature, and
+   * the star it orbits.
+   */
+  _aerialUniforms() {
+    const pp = this.pp;
+    this._airT = this.ctx.system?.temp ?? 5778;
+    this._air = airFor(pp, {
+      atmo: this.atmo,
+      hazeX: pp.res?.hazeX ?? 1,
+      // §9.3 measures height from the valley floor. `seaLevel` is null on a dry
+      // world, where the heightfield's own datum is zero — and a world whose
+      // terrain sat at y = +400 would otherwise never pool any mist at all.
+      base: this.seaLevel ?? 0,
+    });
+    this._airU = aerialUniforms(THREE.Vector3, this._air, this._airPalette());
+    return this._airU;
+  }
+
+  /**
+   * The air's colour for the sun where it is now, dimmed by how much of the sun
+   * is above the horizon.
+   *
+   * The dimming is not a fade — it is the physics. Extinction does not care
+   * whether it is night: the air is just as thick and occludes just as much, so
+   * the fog *fraction* is untouched. What goes to zero after dark is
+   * **in-scattering**, because there is no beam left to scatter. So night dims
+   * the four colours and leaves alpha alone, which is strictly more correct
+   * than the single `uHorizon * max(dusk, 0.08)` this replaces — and it falls
+   * out of §9.3's split between the fraction and the colour rather than being
+   * bolted onto it.
+   *
+   * The floor is not zero because a night sky is not black: stars, moons,
+   * airglow, and on an inhabited world the cities themselves.
+   */
+  _airPalette() {
+    const y = Math.min(Math.max(this.uSunDir.value.y, -1), 1);
+    const elev = (Math.asin(y) * 180) / Math.PI;
+    const p = airPalette(this._airT, Math.max(elev, 0.5), true);
+    const t = Math.min(Math.max((y + 0.12) / 0.24, 0), 1);
+    const night = Math.max(t * t * (3 - 2 * t), 0.06);
+    const dim = (c) => [c[0] * night, c[1] * night, c[2] * night];
+    return { haze: dim(p.haze), mist: dim(p.mist), horizonSun: dim(p.horizonSun), anti: dim(p.anti) };
+  }
+
+  _syncAerial() {
+    if (!AERIAL || !this._airU) return;
+    syncAerialPalette(this._airU, this._airPalette());
   }
 
   _buildTerrain() {
@@ -562,6 +666,7 @@ export class SurfaceScale {
       uniforms: {
         uSunDir: this.uSunDir, uSunColor: this.uSunColor,
         ...(PAINT ? this._paintUniforms() : {}),
+        ...(AERIAL ? this._aerialUniforms() : {}),
         uColA: { value: pp.colA }, uColB: { value: pp.colB }, uColC: { value: pp.colC },
         uHorizon: { value: this.horizonColor },
         uCam: this.uCam,
@@ -830,6 +935,10 @@ export class SurfaceScale {
     this.ocean = new THREE.Mesh(geo, new THREE.ShaderMaterial({
       uniforms: {
         uSunDir: this.uSunDir, uSunColor: this.uSunColor,
+        // the same uniform objects the terrain holds, not a second set: one
+        // definition of this world's air, so the shore cannot disagree with the
+        // sea about how far away the horizon is
+        ...(AERIAL ? this._airU : {}),
         uHorizon: { value: this.horizonColor },
         uDeep: { value: this.pp.typeId === 2 ? this.pp.colA : new THREE.Color(0.02, 0.1, 0.2) },
         uCam: this.uCam,
@@ -1296,6 +1405,7 @@ export class SurfaceScale {
     if (this.weather) this.weather.update(dt, this.uSunDir.value.y);
     if (this.megafauna) this.megafauna.update(dt, this.uSunDir.value.y);
     this._syncPaintLight();
+    this._syncAerial();
     if (this.sunShadow) {
       this.sunShadow.update(this.app.renderer, this.scene, this.camera,
         this.uSunDir.value, (x, z) => this.heightAt(x, z));

@@ -46,11 +46,25 @@ Expect **20–40 minutes**. Most of it is the 600-frame bench, three times.
 
 | step | what it proves |
 |---|---|
+| `parse` | every module the browser loads, parsed — plus the lint for backticks inside GLSL templates, which has caught five real defects |
 | `verify` | the maths, against independent references — quadrature, finite differences, an eigen-decomposition (§7.3) |
+| `pixeldiff` | §7.3's other half: the GLSL computes the same function as its CPU twin, 4096 cases on six worlds, gate ≥97% within 2/255 |
 | `shaders` | every shader compiles *as the driver receives it*, all six scales (§M0) |
 | `capture` | the numbered frame set + a perf JSON per tier (§7.5) |
 | `repeat` | the same URL renders the same frame twice, to §7.3's tolerance |
+| `alphaudit` | §9.3's fog fraction survives compositing into the print (§16.6) |
 | `gate` | the measurable M1 clauses (§8) |
+
+`verify` and `pixeldiff` answer different questions and neither implies the
+other: a shader chunk can be a perfect port of a wrong reference, or a wrong
+port of a right one.
+
+**A step may report `open` rather than `pass` or `FAIL`.** That is a gate which
+fails today for a reason already written down — §7.6 asks for "a written account
+of the blocking axis", and it belongs in the instrument rather than in somebody's
+memory. An open step does not set the exit code. When one starts *passing*, the
+verdict says so and tells you to delete the entry, so the list cannot rot into a
+record of things that were fixed years ago. Today `alphaudit` is the only one.
 
 It ends by naming the GPU and saying whether the artefacts count:
 
