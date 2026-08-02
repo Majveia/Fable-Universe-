@@ -28,6 +28,7 @@ import {
 } from '../src/landing.js';
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
+import { cloudWind, makeWind, meanFlow, shear, windAt } from '../src/wind.js';
 import { readFileSync } from 'node:fs';
 import {
   AIRMAT, BILLBOARD_MAX_R, FIXTURE_AIR, REFERENCE_PALETTE, aerial, airFor,
@@ -1152,6 +1153,145 @@ function suiteAirmat() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// suite: wind
+//
+// §M3's field, before any of it reaches a shader (§7.3). What is asserted is
+// not the numbers — it is the six properties that make this *weather* rather
+// than an animated texture, each of which survives a plausible edit that breaks
+// the image. Plus the two §2.3 clauses that the reference's own implementation
+// would fail, and which docs/plans/M3.md §3 rules on.
+
+function suiteWind() {
+  console.log('\nwind — §M3\'s field, before it enters a shader');
+
+  const w = makeWind(1337146641);
+
+  {
+    const a = windAt(w, 12, -30, 1.5, 40);
+    const b = windAt(w, 12, -30, 1.5, 40);
+    ok('§2.3 · the same seed, place and time give the same air',
+      a.x === b.x && a.z === b.z && a.gust === b.gust,
+      'pure in (seed, x, z, height, t) — no clock, no entropy');
+  }
+
+  {
+    // The reference integrates dt and calls Math.random(); either would make
+    // this fail, and the second is the one that is easy to miss — a wind that
+    // accumulates gives one answer at 60 fps and another at 30, so a capture
+    // would depend on how fast the machine ran.
+    const before = windAt(w, 5, 5, 2, 100);
+    for (let t = 0; t < 300; t += 0.37) windAt(w, t, -t, 1 + (t % 3), t);
+    const after = windAt(w, 5, 5, 2, 100);
+    ok('§2.3 · and sampling it elsewhere first changes nothing',
+      before.x === after.x && before.z === after.z,
+      'nothing integrates, so the field is frame-rate independent');
+  }
+
+  {
+    let mono = true;
+    let prev = -1;
+    for (let h = 0; h <= 40; h += 0.05) {
+      const v = shear(h);
+      if (v < prev - 1e-12 || !Number.isFinite(v)) { mono = false; break; }
+      prev = v;
+    }
+    ok('the boundary layer is monotone in height and finite at the ground',
+      mono && Number.isFinite(shear(0)) && shear(0) > 0,
+      `0 m ${shear(0).toFixed(4)} · 1.68 m ${shear(1.68).toFixed(4)}`
+      + ' — a profile returning 0 would freeze every blade\'s base');
+    near('and it is normalised to 1.0 at the 10 m reference height', shear(10), 1, 1e-4);
+  }
+
+  {
+    // §M3's defining ingredient: a *front*. It arrives fast and leaves slowly,
+    // and a symmetric bump — which is what a sine or a gaussian would give —
+    // reads as a swell rather than as weather.
+    let peak = 0, tPeak = 0;
+    for (let t = 0; t < 400; t += 0.1) {
+      const g = windAt(w, 0, 0, 1.68, t).gust;
+      if (g > peak) { peak = g; tPeak = t; }
+    }
+    const at = (t) => windAt(w, 0, 0, 1.68, t).gust;
+    // time to climb the last half of the rise, against time to fall the same
+    let rise = 0, fall = 0;
+    for (let d = 0; d < 30; d += 0.1) { if (at(tPeak - d) < peak * 0.5) { rise = d; break; } }
+    for (let d = 0; d < 60; d += 0.1) { if (at(tPeak + d) < peak * 0.5) { fall = d; break; } }
+    ok('§M3 · a gust is a front — it arrives faster than it leaves',
+      peak > 0.5 && fall > rise * 2,
+      `peak ${peak.toFixed(2)} · rises to half in ${rise.toFixed(1)} s,`
+      + ` falls back in ${fall.toFixed(1)} s (${(fall / rise).toFixed(1)}x)`);
+  }
+
+  {
+    let gusty = 0, n = 0;
+    for (let t = 0; t < 600; t += 0.25) { n++; if (windAt(w, 0, 0, 1.68, t).gust > 0.05) gusty++; }
+    const pct = (gusty / n) * 100;
+    ok('and gusts are events rather than a constant',
+      pct > 2 && pct < 45,
+      `the air is gusting ${pct.toFixed(1)}% of a 600 s window`
+      + ' — always gusting is a fan, never gusting is a still');
+  }
+
+  {
+    // A gust that only scales the vector reads as somebody turning a volume
+    // knob. It has to rotate the flow too.
+    let worstTurn = 0;
+    for (let t = 0; t < 400; t += 0.1) {
+      const r = windAt(w, 0, 0, 1.68, t);
+      if (r.gust < 0.3) continue;
+      const m = meanFlow(w, t);
+      const a0 = Math.atan2(m.fwd[1], m.fwd[0]);
+      const a1 = Math.atan2(r.z, r.x);
+      let d = Math.abs(a1 - a0);
+      if (d > Math.PI) d = 2 * Math.PI - d;
+      worstTurn = Math.max(worstTurn, d);
+    }
+    ok('a gust veers the flow, it does not only scale it',
+      worstTurn > 0.08,
+      `up to ${(worstTurn * 180 / Math.PI).toFixed(1)}° off the mean while gusting`);
+  }
+
+  {
+    // Taylor's frozen-turbulence hypothesis, which is the whole reason the
+    // turbulence is sampled at (x − v·t): an eddy should be *carried along* by
+    // the mean flow, so looking downwind a moment later finds the same eddy.
+    // Wobbling in place would fail this and still look like noise.
+    const t0 = 120, dt = 2.0;
+    const m = meanFlow(w, t0);
+    const px = 0, pz = 0;
+    const carried = windAt(w, px + m.fwd[0] * m.speed * dt, pz + m.fwd[1] * m.speed * dt, 1.68, t0 + dt);
+    const stayed = windAt(w, px, pz, 1.68, t0 + dt);
+    const here = windAt(w, px, pz, 1.68, t0);
+    const d = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+    ok('turbulence is advected with the flow, not wobbling in place',
+      d(here, carried) < d(here, stayed),
+      `following the eddy downwind: ${d(here, carried).toFixed(3)} m/s of change,`
+      + ` standing still: ${d(here, stayed).toFixed(3)}`);
+  }
+
+  {
+    const a = makeWind(1), b = makeWind(2);
+    let differ = false;
+    for (let t = 0; t < 200; t += 1) {
+      if (Math.abs(windAt(a, 0, 0, 1.68, t).gust - windAt(b, 0, 0, 1.68, t).gust) > 0.2) {
+        differ = true; break;
+      }
+    }
+    ok('§2.3 · and two worlds get different weather', differ);
+  }
+
+  {
+    const t = 100;
+    const cw = cloudWind(w, t), sp = meanFlow(w, t).speed;
+    const cs = Math.hypot(cw.x, cw.z);
+    ok('the cloud deck runs faster than the surface and veered off it',
+      cs > sp * 2 && cs < sp * 3,
+      `${cs.toFixed(2)} m/s aloft against ${sp.toFixed(2)} at the ground`
+      + ' — a deck running with the surface reads as painted on the same glass');
+  }
+}
+
 function suitePrint() {
   console.log('\nprint — §9.4 tonemap properties, and what it changes vs ACES');
 
@@ -1804,7 +1944,7 @@ const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, airmat: suiteAirmat,
   starlight: suiteStarlight,
-  soften: suiteSoften,
+  soften: suiteSoften, wind: suiteWind,
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
 };
 
