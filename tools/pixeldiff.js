@@ -510,6 +510,7 @@ async function terrainSuite(n) {
   console.log('  GPU side: ' + (intNoise ? 'the integer permutation (--int, ?intnoise=1)'
     : 'the float permutation, as shipped'));
   console.log('  CPU side: ' + (F32 ? 'src/terrain.js\'s algebra, in float32 (--f32)'
+    : intNoise ? 'src/terrain.js, float64 with the integer gradient test'
     : 'src/terrain.js as shipped, float64'));
   console.log(`  ${count} samples x ${seeds.length} worlds`
     + ` · gate: max |dh| < ${tol.toExponential(3)}`
@@ -521,7 +522,7 @@ async function terrainSuite(n) {
     let worst = 0, at = -1, sum = 0, over = 0, contW = 0, mountW = 0, snW = 0;
     for (let i = 0; i < count; i++) {
       const x = dirs[i * 3], y = dirs[i * 3 + 1], z = dirs[i * 3 + 2];
-      const cpu = F32 ? planetHeight32(x, y, z, seed) : planetHeight(x, y, z, seed);
+      const cpu = F32 ? planetHeight32(x, y, z, seed) : planetHeight(x, y, z, seed, intNoise);
       const d = Math.abs(g[i * 4] - cpu);
       sum += d;
       if (d > tol) over++;
@@ -614,6 +615,7 @@ function ulpDelta(x) {
 }
 
 async function fragilitySuite(n) {
+  const INT = arg('int') === true;
   const count = Math.max(n, 10000);
   const dirs = directions(count);
   const seeds = [0.317, 1, 7.77, 42.5];
@@ -621,6 +623,14 @@ async function fragilitySuite(n) {
   const tol = (1e-4 * R) / AMP_MAX;
 
   console.log('\npixeldiff · §2.7 · is the float32 height field fragile?');
+  if (INT) {
+    console.log('\n  --int: the question does not arise in this path, and that is the');
+    console.log('  answer rather than a dodge. The intermediate this suite perturbs is');
+    console.log('  `mod289`\'s argument, and under the integer permutation there is no');
+    console.log('  float intermediate there to perturb — no rounding, so no freedom for');
+    console.log('  two drivers to differ. What remains float is the skew and `x0`, and');
+    console.log('  those are what the input-perturbation test below measures.\n');
+  }
   console.log('  Perturbing each input by 1 ULP — smaller than any difference two');
   console.log('  drivers could have — and measuring how far the output moves.');
   console.log(`  ${count} samples x ${seeds.length} worlds · §2.7 tolerance ${tol.toExponential(3)}\n`);
@@ -729,6 +739,10 @@ async function fragilitySuite(n) {
     return f(f(f(v * 0.75) + f(w2 * 0.45)) - 0.28);
   };
 
+  if (INT) {
+    console.log('\n  the intermediate test is skipped under --int: mod289 is integer there.');
+    return 0;
+  }
   console.log('\n  the intermediate test — one ULP inside mod289, where drivers differ:\n');
   let interFragile = false;
   for (const seed of seeds) {

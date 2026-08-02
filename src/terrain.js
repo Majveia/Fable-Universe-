@@ -8,13 +8,42 @@
 
 // ---- exact Ashima snoise(vec3) port ---------------------------------------
 
+/**
+ * `?intnoise=1` — decide the gradient table's sign from integers (§28.2).
+ *
+ * `x` and `y` in Ashima's gradient table are not arbitrary floats. With `xg`,
+ * `yg` integers in 0..6,
+ *
+ *     x = xg*(2/7) + (0.5/7 - 1) = (4*xg - 13) / 14      exactly
+ *     h = 1 - |x| - |y|          = (14 - |4*xg-13| - |4*yg-13|) / 14
+ *
+ * and seven of the forty-nine cells have h **exactly zero** — (0,3) (1,2) (2,1)
+ * (3,0) (4,6) (5,5) (6,4). `sh = h <= 0` is then decided by rounding noise, and
+ * float64 and float32 land on opposite sides of all seven: this file reads four
+ * as <= 0 and the shader reads the other three. That is the whole of §2.7's
+ * parity failure — see docs/plans/M2.md §28.2.
+ *
+ * Ashima's own semantics settle it: `step(edge, x)` returns 1 when `x >= edge`,
+ * so `step(0.0, 0.0)` is 1 and `sh` is -1 for all seven. Neither float path gets
+ * that right; the integer test does, on every machine, because there is nothing
+ * left to round.
+ *
+ * Default-off (§7.4): turning it on moves every world, so flipping it is its own
+ * commit with the shift measured. `planetHeight` and `snoise` take it as an
+ * argument so `tools/` can measure both without a browser.
+ */
+const INT_NOISE = (() => {
+  try { return new URL(window.location.href).searchParams.get('intnoise') === '1'; }
+  catch { return false; }
+})();
+
 const F3 = 1 / 3, G3 = 1 / 6;
 
 function mod289(x) { return x - Math.floor(x * (1 / 289)) * 289; }
 function permute(x) { return mod289(((x * 34) + 10) * x); }
 function taylorInvSqrt(r) { return 1.79284291400159 - 0.85373472095314 * r; }
 
-export function snoise(vx, vy, vz) {
+export function snoise(vx, vy, vz, exact = INT_NOISE) {
   // skew
   const s = (vx + vy + vz) * F3;
   const ix = Math.floor(vx + s), iy = Math.floor(vy + s), iz = Math.floor(vz + s);
@@ -50,7 +79,9 @@ export function snoise(vx, vy, vz) {
     // b0/b1, s0/s1, sh folding — scalar equivalent:
     const sx = Math.floor(gx_) * 2 + 1;
     const sy = Math.floor(gy_) * 2 + 1;
-    const sh = gh <= 0 ? -1 : 0;
+    const sh = exact
+      ? ((14 - Math.abs(4 * xg - 13) - Math.abs(4 * yg - 13)) <= 0 ? -1 : 0)
+      : (gh <= 0 ? -1 : 0);
     gx_ += sx * sh;
     gy_ += sy * sh;
     out[0] = gx_; out[1] = gy_; out[2] = gh;
@@ -80,20 +111,20 @@ export function snoise(vx, vy, vz) {
 
 // ---- the same pyramids the shader stacks ----------------------------------
 
-export function fbm(x, y, z) {
+export function fbm(x, y, z, exact = INT_NOISE) {
   let v = 0, a = 0.5;
   for (let i = 0; i < 5; i++) {
-    v += a * snoise(x, y, z);
+    v += a * snoise(x, y, z, exact);
     x = x * 2.07 + 11.3; y = y * 2.07 + 11.3; z = z * 2.07 + 11.3;
     a *= 0.5;
   }
   return v;
 }
 
-export function ridged(x, y, z) {
+export function ridged(x, y, z, exact = INT_NOISE) {
   let v = 0, a = 0.5;
   for (let i = 0; i < 4; i++) {
-    v += a * (1 - Math.abs(snoise(x, y, z)));
+    v += a * (1 - Math.abs(snoise(x, y, z, exact)));
     x = x * 2.13 + 5.7; y = y * 2.13 + 5.7; z = z * 2.13 + 5.7;
     a *= 0.5;
   }
@@ -105,10 +136,10 @@ export function ridged(x, y, z) {
  * the exact expression from the orbital fragment shader:
  *   h = fbm(p·2.3 + sd)·0.75 + ridged(p·5 + sd·1.7)·0.45 − 0.28
  */
-export function planetHeight(dx, dy, dz, noiseSeed) {
+export function planetHeight(dx, dy, dz, noiseSeed, exact = INT_NOISE) {
   const sx = noiseSeed * 17.31, sy = noiseSeed * 9.17, sz = noiseSeed * 31.7;
-  const cont = fbm(dx * 2.3 + sx, dy * 2.3 + sy, dz * 2.3 + sz);
-  const mount = ridged(dx * 5 + sx * 1.7, dy * 5 + sy * 1.7, dz * 5 + sz * 1.7);
+  const cont = fbm(dx * 2.3 + sx, dy * 2.3 + sy, dz * 2.3 + sz, exact);
+  const mount = ridged(dx * 5 + sx * 1.7, dy * 5 + sy * 1.7, dz * 5 + sz * 1.7, exact);
   return cont * 0.75 + mount * 0.45 - 0.28;
 }
 
