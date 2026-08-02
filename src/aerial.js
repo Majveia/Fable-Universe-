@@ -490,13 +490,19 @@ export function airOf(scale) {
  *
  * Returns the material, so it can be used inline at a construction site.
  *
+ * `enabled` defaults to the `AIRMAT` flag and exists so a test can assert the
+ * off path. Since the default flipped on, `AIRMAT` is *true* under `node`,
+ * where there is no URL to read `?airmat=0` from — so without this parameter
+ * the off path became untestable at the moment it stopped being the default.
+ *
  * Hand-written `ShaderMaterial`s are returned untouched: they have no
  * `#include` tokens to hook, and the mechanism for them is the one
  * `surface.js` already uses — paste `AERIAL_GLSL`, call `aerial()`, merge
  * `aerialUniforms()`.
  */
-export function applyAerial(material, uniforms, { bucket = null, radius = 0, name = '' } = {}) {
-  if (!AIRMAT || !material || !uniforms) return material;
+export function applyAerial(material, uniforms,
+  { bucket = null, radius = 0, name = '', enabled = AIRMAT } = {}) {
+  if (!enabled || !material || !uniforms) return material;
   if (material.isShaderMaterial || material.isRawShaderMaterial) return material;
 
   const sprite = !!material.isSpriteMaterial;

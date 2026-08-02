@@ -1138,14 +1138,26 @@ function suiteAirmat() {
       cases.map((c) => `${c.transparent ? 'transparent' : 'opaque'}/blend${c.blending}→${c.want}`).join(' · '));
 
     // §7.4: with the flag off nothing is installed at all, so the program cache
-    // key is untouched and the build is bit-identical. Node has no URL, so
-    // AIRMAT is false here and this is the default path being asserted.
+    // key is untouched and the build is bit-identical.
+    //
+    // `enabled: false` is passed explicitly now. It used to rely on `AIRMAT`
+    // being false under node for want of a URL — which stopped being true the
+    // moment the default flipped on (§30), and this check caught that within
+    // the hour. The property is about the *off path*, so the test should name
+    // it rather than inherit it.
     const mat = { transparent: false, blending: 1 };
-    const back = applyAerial(mat, { uAirSun: {} });
-    ok('§7.4 · with ?airmat off, applyAerial installs nothing',
-      AIRMAT === false && back === mat
+    const back = applyAerial(mat, { uAirSun: {} }, { enabled: false });
+    ok('§7.4 · with ?airmat=0, applyAerial installs nothing',
+      back === mat
       && mat.onBeforeCompile === undefined && mat.customProgramCacheKey === undefined,
       'no onBeforeCompile, no cache key, no needsUpdate — the build is bit-identical');
+
+    // The flip itself, pinned. §30 turned this on for 7% of the frame's
+    // standard deviation against a §8 axis-3 defect that predated act 2, and a
+    // default that quietly flips back should fail here rather than in a capture.
+    ok('§30 · and the default is on — ?airmat=0 is the off switch, not the on one',
+      AIRMAT === true,
+      'flipped on the evidence in docs/plans/M3.md\u0027s predecessor §30');
 
     ok('airOf() returns null when the scale has no air block, so ?aerial=0 injects nothing',
       airOf(null) === null && airOf({}) === null
