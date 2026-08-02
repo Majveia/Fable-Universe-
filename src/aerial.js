@@ -367,12 +367,22 @@ const PARAM = (k) => {
 };
 
 /**
- * `?airmat=1` — default off per §7.4, and read here rather than at each of the
- * thirteen call sites so there is one flag and one place it is read. With it
- * off `applyAerial` installs nothing, so the program cache key is untouched and
- * the build is bit-identical.
+ * `?airmat=0` turns this off. **Default on**, flipped in its own change as §7.4
+ * requires, on this evidence (docs/plans/M2.md §30):
+ *
+ * It costs 2.0 of the frame's standard deviation, 7%, and closes a §8 axis-3
+ * defect that predates all of act 2 — `scene.fog` is unset, so roughly 120
+ * objects were not fogged *at all*, and a conifer at 600 m stood at full
+ * contrast against hazed ground behind it. Fixing a depth cue that is absent is
+ * worth more than 7% of a range already generous in the midtones. The hero
+ * colossus losing contrast from 6.958 to 3.525 is not a loss; it is the
+ * landmark §9.7's solver exists to place finally sitting in air.
+ *
+ * Read here rather than at each of the thirteen call sites, so there is one
+ * flag and one place it is read. With it off `applyAerial` installs nothing, so
+ * the program cache key is untouched and the build is bit-identical to before.
  */
-export const AIRMAT = PARAM('airmat') === '1';
+export const AIRMAT = PARAM('airmat') !== '0';
 
 /**
  * The largest world radius a billboard may have before one fog value over the
