@@ -589,12 +589,13 @@ wander.
 
 ![fireflies over the night meadow](docs/screenshots/63-fireflies-dusk.png)
 
-And the night has **names**. Each world's sky carries a handful of
-**named constellations** — bright stars joined by hairline strokes with a
-label that kindles beneath the figure ("The Drowned Reaper", "The
-Lantern-Bearer") — drawn from the seed, wheeling as the world turns,
-fading in only when the sky goes dark. Look up at dusk and the sky means
-something.
+And the night has **figures**. Each world's sky carries a handful of
+**constellations** — bright stars joined by hairline strokes — drawn from the
+seed, wheeling as the world turns, fading in only when the sky goes dark. They
+have names ("The Reaper", "The Empty Throne", "The Kindled Wanderer"), derived
+from the same seed and never written across the sky: a typeface is somebody's
+drawing, and nothing here is drawn by anybody. Look up at dusk and the sky
+means something without saying so.
 
 ![the night's constellations over Velune](docs/screenshots/64-constellations.png)
 
