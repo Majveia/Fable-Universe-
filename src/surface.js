@@ -33,6 +33,8 @@ import { PAINT_GLSL, lightFor } from './paint.js';
 import { AERIAL_GLSL, aerialUniforms, airFor, airPalette, syncAerialPalette } from './aerial.js';
 import { makeGround } from './ground.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
+import { makeWind } from './wind.js';
+import { WindField } from './windfield.js';
 import { qInt } from './quality.js';
 
 const PARAM = (k) => {
@@ -42,6 +44,13 @@ const PARAM = (k) => {
 
 /** M2 — the print and the rebuilt bloom. Default-off (§7.4). */
 const M2 = PARAM('m2') === '1';
+
+/**
+ * M3 — one wind field, sampled by everything. Default-off (§7.4), and the
+ * rollback docs/plans/M3.md §8 names: off restores the constant vector exactly,
+ * because no consumer is converted until the field it reads is green.
+ */
+const WIND = PARAM('wind') === '1';
 
 /**
  * §9.2's light model, act 3. It rides M2 because it is the same milestone, but
@@ -438,6 +447,30 @@ export class SurfaceScale {
     // one wind owns this whole world: the sea, the grass, the petals
     const windAng = new RNG(hash(pp.seed, 0x817d)).float(0, 6.28);
     this.wind = new THREE.Vector2(Math.cos(windAng), Math.sin(windAng));
+    // ...except that it is one *constant vector*, which docs/plans/M3.md §1
+    // measures as the whole diagnosis: one direction, one strength, everywhere,
+    // for the whole of time. §M3's field replaces it, behind `?wind=1` (§7.4),
+    // and takes the same direction so the flag changes the wind's *behaviour*
+    // and not the world's prevailing bearing.
+    //
+    // `meanDirDeg` is where the air comes *from*, the convention every weather
+    // report uses and the opposite of `this.wind`, so the conversion is here
+    // and stated rather than inlined.
+    if (WIND) {
+      // fwd = (cos a, sin a) and meanFlow builds fwd = (-sin dir, -cos dir),
+      // so dir = atan2(-cos a, -sin a). Worth the two lines: a sign slip here
+      // is invisible in a still and wrong in every frame.
+      const fromDeg = (Math.atan2(-Math.cos(windAng), -Math.sin(windAng)) * 180) / Math.PI;
+      const wr = new RNG(hash(pp.seed, 0x817e));
+      this.air = makeWind(pp.seed, {
+        // thicker air carries more of it; an airless world gets a token breeze
+        // that nothing will sample, rather than a special case
+        meanSpeed: 2.4 + 4.4 * atmoStrength * wr.float(0.55, 1.35),
+        meanDirDeg: fromDeg,
+        gustiness: wr.float(0.7, 1.35),
+      });
+      this.windField = new WindField(this.air);
+    }
     this.horizonColor = pp.atmoColor.clone().multiplyScalar(0.5).add(new THREE.Color(0.04, 0.04, 0.05));
     this.zenithColor = pp.atmoColor.clone().multiplyScalar(0.26);
     // the magic hour needs somewhere to return from
@@ -1406,6 +1439,12 @@ export class SurfaceScale {
     if (this.megafauna) this.megafauna.update(dt, this.uSunDir.value.y);
     this._syncPaintLight();
     this._syncAerial();
+    // before anything samples it, and before the shadow pass, so the two
+    // render-target passes sit together rather than either side of the scene
+    if (this.windField) {
+      this.windField.update(this.app.renderer, this.uTime.value,
+        this.camera.position.x, this.camera.position.z);
+    }
     if (this.sunShadow) {
       this.sunShadow.update(this.app.renderer, this.scene, this.camera,
         this.uSunDir.value, (x, z) => this.heightAt(x, z));
@@ -1543,6 +1582,9 @@ export class SurfaceScale {
 
   dispose() {
     this.ruins?.dispose?.();
+    // its target and quad live outside `this.scene`, so the traverse below
+    // cannot reach them
+    this.windField?.dispose?.();
     this.app.audio?.surfaceScoreOff?.();
     window.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('keyup', this._onKeyUp);

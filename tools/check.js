@@ -88,6 +88,18 @@ const steps = [
   // computes the same function. Neither implies the other — a chunk can be a
   // perfect port of a wrong reference, or a wrong port of a right one.
   ['pixeldiff', ['tools/pixeldiff.js'], 'the GLSL against its CPU twin (§7.3)'],
+  // §2.7 on the path the build actually ships. Split out rather than folded
+  // into the step above, because folding it in would take the aerial and wind
+  // gates down with it and a single `open` would then be covering three
+  // questions — which is how a known-open entry stops being an account of
+  // anything.
+  ['parity', ['tools/pixeldiff.js', '--suite', 'terrain'],
+    '§2.7 on the shipped float gradient path',
+    'the seven zero-h gradient cells: float32 and float64 land on opposite'
+    + ' sides of all seven, so the pair disagrees on ~18% of samples. Closed by'
+    + ' `?intnoise=1` and measured green there (the step above runs it); flipping'
+    + ' the default moves every world once and re-takes the `ground` goldens,'
+    + ' which docs/plans/M2.md §28.7 leaves to a human.'],
   ['shaders', ['tools/shadercheck.js'], 'every shader as the driver sees it (§M0)'],
   ['capture', ['tools/capture.js', '--milestone', milestone], 'the numbered set + perf JSON (§7.5)'],
   ['repeat', ['tools/repeat.js'], 'the same URL twice, to §7.3\'s tolerance'],

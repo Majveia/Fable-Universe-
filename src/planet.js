@@ -112,7 +112,23 @@ const GRAD_INT = /* glsl */`
 const SH_FLOAT = /* glsl */`  vec4 sh = -step(h, vec4(0.0));`;
 const SH_INT = /* glsl */`  vec4 sh = -step(vec4(hI), vec4(0.0));`;
 
-export const NOISE_GLSL = /* glsl */`
+/**
+ * The chunk, built for one gradient path or the other.
+ *
+ * A parameter rather than a module constant because two callers now want
+ * different answers, and the reason is not symmetry — it is that they are
+ * paying different prices. Flipping `?intnoise=1` for the *terrain* moves every
+ * world once and re-takes the `ground` goldens, so §28.7 leaves it to a human.
+ * `src/wind.js` has no worlds to move and no goldens to re-take: it is new, so
+ * it takes the exact path from its first commit and its GLSL↔JS pair is green
+ * on any driver rather than green on this one.
+ *
+ * Two definitions of `snoise` can then exist on one page, in different
+ * programs, which is fine — and if a future shader ever tries to include both,
+ * it is a redefinition error at compile time and `shadercheck.js` says so. Loud
+ * beats silent.
+ */
+export const noiseGLSL = (exact) => /* glsl */`
 vec3 mod289(vec3 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
 vec4 mod289(vec4 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
 vec4 permute(vec4 x){ return mod289(((x*34.0)+10.0)*x); }
@@ -130,15 +146,15 @@ float snoise(vec3 v){
   vec3 x1 = x0 - i1 + C.xxx;
   vec3 x2 = x0 - i2 + C.yyy;
   vec3 x3 = x0 - D.yyy;
-${INT_NOISE ? PERM_INT : PERM_FLOAT}
+${exact ? PERM_INT : PERM_FLOAT}
   vec4 x = x_ * ns.x + ns.yyyy;
   vec4 y = y_ * ns.x + ns.yyyy;
-${INT_NOISE ? GRAD_INT : GRAD_FLOAT}
+${exact ? GRAD_INT : GRAD_FLOAT}
   vec4 b0 = vec4(x.xy, y.xy);
   vec4 b1 = vec4(x.zw, y.zw);
   vec4 s0 = floor(b0)*2.0 + 1.0;
   vec4 s1 = floor(b1)*2.0 + 1.0;
-${INT_NOISE ? SH_INT : SH_FLOAT}
+${exact ? SH_INT : SH_FLOAT}
   vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
   vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
   vec3 p0 = vec3(a0.xy, h.x);
@@ -167,6 +183,9 @@ float ridged(vec3 p) {
   return v;
 }
 `;
+
+/** the chunk this build ships, on whichever path `?intnoise` selects */
+export const NOISE_GLSL = noiseGLSL(INT_NOISE);
 
 const SURF_VERT = /* glsl */`
   varying vec3 vN;      // world normal

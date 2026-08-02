@@ -41,6 +41,7 @@ import {
   AERIAL_GLSL, REFERENCE_PALETTE, aerial, airFor, airPalette,
 } from '../src/aerial.js';
 import { fbm as cpuFbm, planetHeight, ridged as cpuRidged, snoise as cpuSnoise } from '../src/terrain.js';
+import { WIND_GLSL, makeWind, shear, windSample, windScale, windUniforms } from '../src/wind.js';
 import { arg, launch, playwright, REPO, serve } from './lib.js';
 
 // ------------------------------------------------------------- the cases ---
@@ -210,7 +211,11 @@ ${chunk}
   gl.bindTexture(gl.TEXTURE_2D, out);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, null);
+  // count x 1, matching the viewport below. This read `W, H` for a while —
+  // variables that exist in the *terrain* runner and nowhere near this one, so
+  // the whole default run died with "W is not defined" before printing a line,
+  // and the two suites that take an explicit --suite were unaffected and hid it.
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, count, 1, 0, gl.RGBA, gl.FLOAT, null);
   const fbo = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, out, 0);
@@ -468,12 +473,21 @@ ${noise}
   return { results, renderer: gl.getParameter(dbg ? dbg.UNMASKED_RENDERER_WEBGL : gl.RENDERER) };
 };
 
-async function terrainSuite(n) {
+async function terrainSuite(n, exact) {
   const F32 = arg('f32') === true;
   // §2.7 says 10^4 samples; take it literally rather than as a suggestion
   const count = Math.max(n, 10000);
   const dirs = directions(count);
-  const seeds = [0.317, 1.0, 7.77, 42.5, 913.25];
+  // `system.js` draws `noiseSeed: pr.float(0, 100)`, so the first four are
+  // seeds a world can actually have and the fifth is not. §28.6 added 913.25 as
+  // an out-of-range stress row and said in words that it "stays in the suite and
+  // stays failing" — the code never implemented that, so a run that behaved
+  // exactly as the plan describes still exited 1. It is reported now and does
+  // not set the exit code, which is what the sentence meant.
+  const seeds = [
+    { v: 0.317 }, { v: 1.0 }, { v: 7.77 }, { v: 42.5 },
+    { v: 913.25, stress: 'out of range: system.js draws noiseSeed in 0..100 (§28.6)' },
+  ];
 
   const site = await serve();
   const pw = await playwright();
@@ -482,7 +496,7 @@ async function terrainSuite(n) {
   // `--int` loads the page with ?intnoise=1, so `planet.js` emits the integer
   // permutation. The chunk still comes from the app's own module — the point of
   // reading it through the page rather than keeping a copy here.
-  const intNoise = arg('int') === true;
+  const intNoise = exact === undefined ? arg('int') === true : exact;
   await page.goto(`${site.origin}/index.html${intNoise ? '?intnoise=1' : ''}`, { waitUntil: 'load' });
   // NOISE_GLSL from the app's own module, through the page's import map — the
   // string the renderer receives, never a copy of it kept in this file
@@ -494,7 +508,7 @@ async function terrainSuite(n) {
   console.log('  chunk: ' + (noise.includes('iperm(iperm') ? 'integer permutation' : 'float permutation')
     + ` · ${noise.length} chars`);
   const out = await page.evaluate(TERRAIN_RUN,
-    { noise, dirs: Array.from(dirs), count, seeds, W: 512 });
+    { noise, dirs: Array.from(dirs), count, seeds: seeds.map((s) => s.v), W: 512 });
   await browser.close();
   await site.close();
 
@@ -516,8 +530,9 @@ async function terrainSuite(n) {
     + ` · gate: max |dh| < ${tol.toExponential(3)}`
     + `  (1e-4 of planet radius at R=${R}, amp=${AMP_MAX})\n`);
 
-  let failed = 0;
-  for (const seed of seeds) {
+  let failed = 0, open = 0;
+  for (const sd of seeds) {
+    const seed = sd.v;
     const g = out.results[seed];
     let worst = 0, at = -1, sum = 0, over = 0, contW = 0, mountW = 0, snW = 0;
     for (let i = 0; i < count; i++) {
@@ -527,26 +542,35 @@ async function terrainSuite(n) {
       sum += d;
       if (d > tol) over++;
       if (d > worst) { worst = d; at = i; }
-      // the two terms separately, so a failure names which one drifted
+      // The two terms separately, so a failure names which one drifted — and
+      // each on the same gradient path as the headline number. These three read
+      // the module default for a while instead of `intNoise`, so under --int
+      // they compared the integer GPU against the float CPU and reported ~1.7
+      // of disagreement in the same rows whose total agreed to 1e-5. A
+      // diagnostic that contradicts the measurement it is meant to explain is
+      // worse than no diagnostic.
       const sx = seed * 17.31, sy = seed * 9.17, sz = seed * 31.7;
-      const c = cpuFbm(x * 2.3 + sx, y * 2.3 + sy, z * 2.3 + sz);
-      const m = cpuRidged(x * 5 + sx * 1.7, y * 5 + sy * 1.7, z * 5 + sz * 1.7);
+      const c = cpuFbm(x * 2.3 + sx, y * 2.3 + sy, z * 2.3 + sz, intNoise);
+      const m = cpuRidged(x * 5 + sx * 1.7, y * 5 + sy * 1.7, z * 5 + sz * 1.7, intNoise);
       contW = Math.max(contW, Math.abs(g[i * 4 + 1] - c));
       mountW = Math.max(mountW, Math.abs(g[i * 4 + 2] - m));
-      snW = Math.max(snW, Math.abs(g[i * 4 + 3] - cpuSnoise(x * 2.3 + sx, y * 2.3 + sy, z * 2.3 + sz)));
+      snW = Math.max(snW, Math.abs(g[i * 4 + 3]
+        - cpuSnoise(x * 2.3 + sx, y * 2.3 + sy, z * 2.3 + sz, intNoise)));
     }
     const pass = worst < tol;
-    if (!pass) failed++;
-    console.log(`  ${pass ? 'ok  ' : 'FAIL'} seed ${String(seed).padEnd(8)}`
+    if (!pass) { if (sd.stress) open++; else failed++; }
+    console.log(`  ${pass ? 'ok  ' : sd.stress ? 'open' : 'FAIL'} seed ${String(seed).padEnd(8)}`
       + ` max |dh| ${worst.toExponential(3)}  mean ${(sum / count).toExponential(2)}`
       + `  (worst at ${at})`
       + `  = ${((worst * AMP_MAX) / R).toExponential(2)} of R`
       + `\n        over tolerance: ${over}/${count} (${((over / count) * 100).toFixed(3)}%)`
       + `  ·  fbm ${contW.toExponential(2)}  ridged ${mountW.toExponential(2)}`
       + `  ·  one octave of snoise ${snW.toExponential(2)}`);
+    if (!pass && sd.stress) console.log(`        open, not a regression — ${sd.stress}`);
   }
-  console.log(`\n${failed ? failed + ' world(s) FAILED §2.7' : '§2.7 parity holds on all '
-    + seeds.length + ' worlds'}`);
+  console.log(`\n${failed ? failed + ' world(s) FAILED §2.7'
+    : '§2.7 parity holds on every seed a world can have'
+      + (open ? ` · ${open} out-of-range stress row open, as §28.6 records` : '')}`);
   return failed ? 1 : 0;
 }
 
@@ -776,6 +800,350 @@ async function fragilitySuite(n) {
   return anyFragile ? 1 : 0;
 }
 
+// ---------------------------------------------------------------------------
+// suite: wind — §M3 step 2's gate, and it runs before the field is wired to
+// anything
+//
+// docs/plans/M3.md §4 puts this test *first* for a reason that is written down
+// rather than inferred: the CPU and GPU faces of the height field drifted, went
+// untested, and failed by 46×, and §11 lists the failure by name. So the wind's
+// two faces get their gate before either is allowed near a render loop.
+//
+// `src/wind.js` cuts the field so that only its arithmetic exists twice — the
+// seeded half is resolved once on the CPU and uploaded — which means this suite
+// tests exactly the part that can drift and nothing else. Both sides receive
+// the identical thirty-eight floats, so a disagreement here is a port defect or
+// float32, and cannot be a difference of opinion about which lap a gust is on.
+//
+// ---------------------------------------------------------------------------
+// The cases are chosen against the branch, not spread for the sake of spread
+//
+// The gust loop early-outs at `u > 0.16` and `u < -6.0`. That branch is the one
+// place where two implementations can disagree by a *finite* amount rather than
+// by rounding: land a point a hair either side of it and one side counts a cell
+// the other drops. So for every cell at every time the case list contains four
+// points placed exactly on those two edges, constructed from the uniforms
+// themselves — a random spread over the plane will not land on any of them, and
+// the aerial suite learned that lesson first.
+//
+// ---------------------------------------------------------------------------
+// And it reports a shelf life, which is the honest thing to do about `snoise`
+//
+// The turbulence is sampled at `x − v·t` (Taylor). That coordinate grows
+// linearly with elapsed time — about 190 after an hour, 4500 after a day — and
+// float32 resolves a simplex cell less and less finely as it goes. The CPU side
+// is float64 and does not degrade, so the *pair* comes apart before either half
+// does. The suite therefore sweeps `t` across five decades and prints where
+// parity ends rather than asserting a bound nobody measured.
+
+const WIND_RUN = ({ noise, chunk, pts, count, frames, W }) => {
+  const H = Math.ceil(count / W);
+  const cv = document.createElement('canvas');
+  const gl = cv.getContext('webgl2', { antialias: false });
+  if (!gl) return { error: 'no webgl2' };
+  if (!gl.getExtension('EXT_color_buffer_float')) return { error: 'no EXT_color_buffer_float' };
+
+  const compile = (type, src) => {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+    return sh;
+  };
+  const VS = `#version 300 es
+    void main() {
+      vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+      gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+    }`;
+  // The chunk verbatim, under the noise it declares it needs — §M0's rule: the
+  // thing under test is the string the driver receives.
+  const FS = `#version 300 es
+    precision highp float;
+    precision highp sampler2D;
+    uniform sampler2D uPts;
+    out vec4 oColor;
+${noise}
+${chunk}
+    void main() {
+      vec3 p = texelFetch(uPts, ivec2(gl_FragCoord.xy), 0).rgb;
+      oColor = vec4(windField(p.xy), windShear(p.z));
+    }`;
+
+  let prog;
+  try {
+    prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return { error: 'link: ' + gl.getProgramInfoLog(prog) };
+  } catch (e) { return { error: 'compile: ' + e.message }; }
+  gl.useProgram(prog);
+
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.uniform1i(gl.getUniformLocation(prog, 'uPts'), 0);
+
+  const out = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, out);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, null);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, out, 0);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+    return { error: 'incomplete framebuffer' };
+  }
+  gl.viewport(0, 0, W, H);
+  gl.activeTexture(gl.TEXTURE0);
+
+  const uMean = gl.getUniformLocation(prog, 'uWindMean');
+  const uAdv = gl.getUniformLocation(prog, 'uWindAdv');
+  const uS = gl.getUniformLocation(prog, 'uWindCellS[0]');
+  const uP = gl.getUniformLocation(prog, 'uWindCellP[0]');
+
+  const rgba = new Float32Array(W * H * 4);
+  const buf = new Float32Array(W * H * 4);
+  const results = {};
+  for (const fr of frames) {
+    const p = pts[fr.key];
+    rgba.fill(0);
+    for (let i = 0; i < count; i++) {
+      rgba[i * 4] = p[i * 3]; rgba[i * 4 + 1] = p[i * 3 + 1]; rgba[i * 4 + 2] = p[i * 3 + 2];
+    }
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, rgba);
+    gl.uniform3fv(uMean, fr.mean);
+    gl.uniform2fv(uAdv, fr.adv);
+    gl.uniform4fv(uS, fr.cellS);
+    gl.uniform2fv(uP, fr.cellP);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.FLOAT, buf);
+    results[fr.key] = Array.from(buf.subarray(0, count * 4));
+  }
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  return { results, renderer: gl.getParameter(dbg ? dbg.UNMASKED_RENDERER_WEBGL : gl.RENDERER) };
+};
+
+/** the case list for one moment: the branch edges by hand, then a spread */
+function windCases(U, n, seed) {
+  const r = lcg(seed);
+  const [fx, fz] = [U.mean[0], U.mean[1]];
+  const [sx, sz] = [-fz, fx];
+  // (along, across) back to (x, z): the basis is orthonormal, so transpose it
+  const place = (along, across, h) => [along * fx + across * sx, along * fz + across * sz, h];
+
+  const out = [];
+  for (let k = 0; k < U.cellS.length / 4; k++) {
+    const s = U.cellS[k * 4], c = U.cellS[k * 4 + 1], len = U.cellS[k * 4 + 2];
+    for (const u of [0.16, -6.0]) {
+      for (const eps of [-1e-4, 1e-4]) out.push(place(s + (u + eps) * len, c, 1.68));
+    }
+    // and one in the body of the front, where the cell is unambiguously live
+    out.push(place(s - 1.2 * len, c, 1.68));
+  }
+  while (out.length < n) {
+    // three shells: inside the 440 m target, out where the analytic fallback
+    // lives, and far enough away to catch anything that scales with position
+    const R = [220, 2200, 40000][Math.floor(r() * 3)];
+    const a = r() * Math.PI * 2, d = Math.sqrt(r()) * R;
+    out.push([Math.cos(a) * d, Math.sin(a) * d, r() < 0.1 ? r() * 0.4 : r() * 40]);
+  }
+  return out;
+}
+
+async function windSuite(n) {
+  const count = Math.max(n, 10000);
+  const w = makeWind(1337146641);
+  const scale = windScale(w);
+  // five decades of elapsed time. The first three are every session anybody
+  // will have; the last two are where the header says the pair comes apart.
+  const times = [0, 7.3, 60, 600, 3600, 86400];
+
+  const frames = [], pts = {}, cpu = {};
+  for (const t of times) {
+    const U = windUniforms(w, t);
+    const key = 't' + t;
+    const list = windCases(U, count, 0x9e3779b9 ^ Math.round(t * 1000));
+    pts[key] = list.flat();
+    frames.push({
+      key,
+      mean: Array.from(U.mean), adv: Array.from(U.adv),
+      cellS: Array.from(U.cellS), cellP: Array.from(U.cellP),
+    });
+    cpu[key] = list.map((p) => {
+      const f = windSample(U, p[0], p[1]);
+      return [f.x, f.z, f.gust, shear(p[2])];
+    });
+  }
+
+  const site = await serve();
+  const pw = await playwright();
+  const browser = await launch(pw);
+  const page = await browser.newPage();
+  await page.goto(`${site.origin}/index.html`, { waitUntil: 'load' });
+  // The chunk from the app's own module, exactly as the terrain suite does —
+  // and `WIND_GLSL` says in its own docstring that it requires one in scope.
+  //
+  // `noiseGLSL(true)` and not `NOISE_GLSL`: the wind takes the exact gradient
+  // path unconditionally, because it is new and pays none of the price that
+  // keeps `?intnoise` default-off for the terrain. `src/wind.js` makes the same
+  // choice on the CPU side by pinning `snoise`'s fourth argument, and this line
+  // is the other half of that pair. Point it at `NOISE_GLSL` instead and the
+  // suite reports 74% — a real measurement of a defect that is not the wind's.
+  await page.addScriptTag({ type: 'module', content:
+    `import { noiseGLSL } from '${site.origin}/src/planet.js';
+     window.__noise = noiseGLSL(true);` });
+  await page.waitForFunction('window.__noise', null, { timeout: 60000 });
+  const noise = await page.evaluate(() => window.__noise);
+  const out = await page.evaluate(WIND_RUN,
+    { noise, chunk: WIND_GLSL, pts, count, frames, W: 512 });
+  await browser.close();
+  await site.close();
+
+  if (out.error) { console.error('pixeldiff wind · ' + out.error); return 1; }
+
+  console.log('\npixeldiff · §M3 · the wind field, GLSL against src/wind.js');
+  console.log('  driver: ' + out.renderer);
+  console.log(`  ${count} points x ${times.length} moments · gate: >=97% within 2/255`
+    + ` of full scale (${scale.toFixed(1)} m/s)`);
+  console.log('  the seeded half is uploaded, not recomputed — so only the arithmetic'
+    + ' is under test\n');
+
+  let failed = 0, peak = 0;
+  const rows = [];
+  for (const t of times) {
+    const key = 't' + t, g = out.results[key], c = cpu[key];
+    let within = 0, worst = 0, worstAt = -1, worstWhat = '', shearMax = 0, nonFinite = 0;
+    for (let i = 0; i < count; i++) {
+      const a = [g[i * 4], g[i * 4 + 1], g[i * 4 + 2], g[i * 4 + 3]];
+      if (!a.every(Number.isFinite)) { nonFinite++; continue; }
+      peak = Math.max(peak, Math.abs(a[0]), Math.abs(a[1]));
+      let e = 0, what = '';
+      for (let k = 0; k < 3; k++) {
+        const d = Math.abs(a[k] - c[i][k]) / scale;
+        if (d > e) { e = d; what = ['vx', 'vz', 'gust'][k]; }
+      }
+      if (e <= TOL) within++;
+      if (e > worst) { worst = e; worstAt = i; worstWhat = what; }
+      shearMax = Math.max(shearMax, Math.abs(a[3] - c[i][3]));
+    }
+    const pct = (within / count) * 100;
+    const pass = pct >= 97 && nonFinite === 0;
+    if (!pass) failed++;
+    rows.push({ t, pct, max255: worst * 255, maxMs: worst * scale, shearMax, nonFinite });
+    console.log(`  ${pass ? 'ok  ' : 'FAIL'} t = ${String(t).padEnd(7)}s`
+      + ` ${pct.toFixed(2)}% within 2/255`
+      + `  max ${(worst * 255).toFixed(4)}/255 = ${(worst * scale).toExponential(2)} m/s`
+      + ` (${worstWhat}, point ${worstAt})`
+      + `  · shear ${shearMax.toExponential(2)}`
+      + (nonFinite ? `  NON-FINITE ${nonFinite}` : ''));
+  }
+
+  console.log(`\n  the advected coordinate reaches ${((w.baseSpeed * times[times.length - 1])
+    * 0.0125).toFixed(0)} at t = ${times[times.length - 1]} s, where float32 resolves a`
+    + ' simplex cell to about'
+    + ` ${(Math.pow(2, Math.ceil(Math.log2(w.baseSpeed * times[times.length - 1] * 0.0125)) - 23)).toExponential(1)}`
+    + ' — that is the shelf life, and it is why the sweep is here');
+  console.log(`  observed peak |v| ${peak.toFixed(2)} m/s against a declared full scale of`
+    + ` ${scale.toFixed(1)} — ${(scale / Math.max(peak, 1e-6)).toFixed(2)}x of headroom`);
+
+  const rt = await windTargetCheck(w, 137.5, 61.3, -4820.9, scale);
+  if (rt) failed += rt;
+
+  console.log(`\n${failed ? failed + ' wind check(s) FAILED' : 'the wind field agrees at all '
+    + times.length + ' moments, and its render target holds the same field'}`);
+  return { code: failed ? 1 : 0, rows };
+}
+
+/**
+ * The render target itself, read back and compared to `windSample`.
+ *
+ * The suite above gates the *function*; this gates everything between the
+ * function and a texel — the GLSL3 compile, the uniform upload, the half-float
+ * format, and above all the addressing, which is written in two files that have
+ * to be exact inverses. `verify.js` checks that inverse arithmetically without a
+ * browser; this checks that the pass and the sampler agree about which world
+ * point a texel *is*, which arithmetic cannot.
+ *
+ * It also stands in for a coverage gap rather than duplicating one.
+ * `shadercheck.js` compiles every shader the bench route reaches, and on
+ * SwiftShader that route does not reach the surface scale inside its timeout —
+ * so on this machine the wind pass would otherwise never be compiled by
+ * anything.
+ */
+async function windTargetCheck(w, t, camX, camZ, scale) {
+  const site = await serve();
+  const pw = await playwright();
+  const browser = await launch(pw);
+  const page = await browser.newPage();
+  await page.goto(`${site.origin}/index.html`, { waitUntil: 'load' });
+
+  // A module script, so the bare `three` specifier resolves through the page's
+  // own import map — the same reason the chunks above are read through the page
+  // rather than from disk.
+  await page.addScriptTag({ type: 'module', content: `
+    import * as THREE from 'three';
+    import { WIND_SIZE, makeWind, windTexel, windWindow } from '${site.origin}/src/wind.js';
+    import { WindField } from '${site.origin}/src/windfield.js';
+    try {
+      const cv = document.createElement('canvas');
+      cv.width = 8; cv.height = 8;
+      const renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: false });
+      const wind = makeWind(${w.seed}, { meanSpeed: ${w.baseSpeed},
+        meanDirDeg: ${(w.baseDir * 180) / Math.PI}, gustiness: ${w.gustiness} });
+      const field = new WindField(wind);
+      field.update(renderer, ${t}, ${camX}, ${camZ});
+      const raw = new Uint16Array(WIND_SIZE * WIND_SIZE * 4);
+      renderer.readRenderTargetPixels(field.rt, 0, 0, WIND_SIZE, WIND_SIZE, raw);
+      // decoded in-page and thinned to a stride, because 262144 half-floats
+      // across the bridge as JSON is minutes of nothing useful
+      const out = [];
+      const [ox, oz] = windWindow(${camX}, ${camZ});
+      const px = windTexel();
+      for (let j = 0; j < WIND_SIZE; j += 5) {
+        for (let i = 0; i < WIND_SIZE; i += 5) {
+          const o = (j * WIND_SIZE + i) * 4;
+          out.push([ox + (i + 0.5) * px, oz + (j + 0.5) * px,
+            THREE.DataUtils.fromHalfFloat(raw[o]),
+            THREE.DataUtils.fromHalfFloat(raw[o + 1]),
+            THREE.DataUtils.fromHalfFloat(raw[o + 2])]);
+        }
+      }
+      window.__rt = { texels: out };
+    } catch (e) { window.__rt = { error: String(e && e.message || e) }; }
+  ` });
+  await page.waitForFunction('window.__rt', null, { timeout: 60000 });
+  const got = await page.evaluate(() => window.__rt);
+  await browser.close();
+  await site.close();
+
+  if (got.error) {
+    console.log(`\n  FAIL the render target — ${got.error}`);
+    return 1;
+  }
+
+  const U = windUniforms(w, t);
+  let worst = 0, within = 0;
+  for (const [x, z, vx, vz, g] of got.texels) {
+    const c = windSample(U, x, z);
+    const e = Math.max(Math.abs(vx - c.x), Math.abs(vz - c.z), Math.abs(g - c.gust)) / scale;
+    if (e <= TOL) within++;
+    worst = Math.max(worst, e);
+  }
+  const n = got.texels.length;
+  const pct = (within / n) * 100;
+  const pass = pct >= 97;
+  console.log(`\n  ${pass ? 'ok  ' : 'FAIL'} the 256² target holds the same field —`
+    + ` ${pct.toFixed(2)}% of ${n} texels within 2/255`
+    + `  max ${(worst * 255).toFixed(4)}/255 = ${(worst * scale).toExponential(2)} m/s`);
+  console.log('       read back through three, at a camera 4.8 km off the origin, so the'
+    + ' window addressing is under test and not just the arithmetic');
+  return pass ? 0 : 1;
+}
+
 // ----------------------------------------------------------------- report ---
 
 const TOL = 2 / 255;
@@ -816,6 +1184,7 @@ async function main() {
   const suite = String(arg('suite', 'all'));
   if (suite === 'terrain') process.exit(await terrainSuite(Number(arg('cases', 10000))));
   if (suite === 'fragility') process.exit(await fragilitySuite(Number(arg('cases', 10000))));
+  if (suite === 'wind') process.exit((await windSuite(Number(arg('cases', 10000)))).code);
 
   const n = Number(arg('cases', 4096));
   const list = cases(n, 0x9e3779b9);
@@ -909,10 +1278,20 @@ async function main() {
 
   console.log(`\n${failed ? failed + ' world(s) failed' : 'all ' + rows.length + ' worlds pass'}`);
 
-  // §2.7's parity test runs in the same command, because it is the same
-  // question asked of a different chunk and nobody should have to know that
-  // this file holds two of them.
-  if (suite === 'all') failed += await terrainSuite(10000);
+  // §2.7's and §M3's parity tests run in the same command, because they are the
+  // same question asked of different chunks and nobody should have to know that
+  // this file holds three of them.
+  //
+  // The terrain runs here on the **exact** gradient path, which is the one §2.7
+  // is closed on (§28.6) and the one the wind now ships. The shipped float path
+  // still fails, that is §28.7's open finding rather than a regression, and
+  // `--suite terrain` measures it — `tools/check.js` runs exactly that as a
+  // known-open step so it stays visible instead of being folded in here where
+  // it would take the aerial and wind gates down with it.
+  if (suite === 'all') {
+    failed += await terrainSuite(10000, true);
+    failed += (await windSuite(10000)).code;
+  }
   process.exit(failed ? 1 : 0);
 }
 

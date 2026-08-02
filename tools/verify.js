@@ -28,7 +28,9 @@ import {
 } from '../src/landing.js';
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
-import { cloudWind, makeWind, meanFlow, shear, windAt } from '../src/wind.js';
+import {
+  WIND_SIZE, WIND_SPAN, cloudWind, makeWind, meanFlow, shear, windAt, windTexel, windWindow,
+} from '../src/wind.js';
 import { readFileSync } from 'node:fs';
 import {
   AIRMAT, BILLBOARD_MAX_R, FIXTURE_AIR, REFERENCE_PALETTE, aerial, airFor,
@@ -1291,6 +1293,55 @@ function suiteWind() {
       }
     }
     ok('§2.3 · and two worlds get different weather', differ);
+  }
+
+  // The GPU copy's addressing (src/windfield.js). Arithmetic, so it lives in
+  // wind.js and is checkable here; the render target it addresses is not.
+  {
+    const t = windTexel();
+    const [ox, oz] = windWindow(0, 0);
+    ok('§M3 · the window is a whole number of texels, centred on the camera',
+      Math.abs(ox + WIND_SPAN / 2) < 1e-9 && Math.abs(oz + WIND_SPAN / 2) < 1e-9
+      && Number.isInteger(WIND_SPAN / t) && WIND_SPAN / t === WIND_SIZE,
+      `${WIND_SPAN} m across ${WIND_SIZE} texels = ${t} m each`
+      + ` · origin (${ox}, ${oz})`);
+  }
+
+  {
+    // The point of snapping: a camera that has not crossed a texel must not
+    // move the lattice, or a blade standing still reads a different point every
+    // frame and shimmers in a way no filter removes.
+    const t = windTexel();
+    const a = windWindow(0, 0), b = windWindow(t * 0.49, -t * 0.49);
+    const c = windWindow(t, 0);
+    ok('§M3 · and it snaps, so a sub-texel step does not move the lattice',
+      a[0] === b[0] && a[1] === b[1] && Math.abs(c[0] - a[0] - t) < 1e-9,
+      `moved ${(t * 0.49).toFixed(3)} m: origin unchanged`
+      + ` · moved ${t.toFixed(3)} m: origin +${(c[0] - a[0]).toFixed(3)} m`);
+  }
+
+  {
+    // world -> uv -> world, through the two expressions the pass and the
+    // sampler actually use. They are written in different files and must be
+    // inverses; if they are not, the field is offset from the world by a
+    // constant and it looks like the wind blowing from the wrong bearing.
+    const t = windTexel();
+    let worst = 0, contained = true;
+    for (const [cx, cz] of [[0, 0], [13.7, -204.2], [-9e3, 4e3], [1e5, -1e5]]) {
+      const [ox, oz] = windWindow(cx, cz);
+      // the camera is inside its own window, with margin
+      if (cx - ox < 1 || cx - ox > WIND_SPAN - 1) contained = false;
+      if (cz - oz < 1 || cz - oz > WIND_SPAN - 1) contained = false;
+      for (let i = 0; i < WIND_SIZE; i += 37) {
+        const P = ox + (i + 0.5) * t;              // the pass: origin + uv*span
+        const uv = (P - ox) / WIND_SPAN;           // the sampler: (P-origin)/span
+        worst = Math.max(worst, Math.abs(uv * WIND_SIZE - (i + 0.5)));
+      }
+    }
+    ok('§M3 · and the pass and the sampler are inverses of each other',
+      worst < 1e-9 && contained,
+      `worst texel-centre round-trip ${worst.toExponential(1)} texels`
+      + ' · the camera stays inside its own window at every offset tried');
   }
 
   {
