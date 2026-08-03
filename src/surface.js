@@ -57,7 +57,40 @@ const M2 = PARAM('m2') !== '0';
  * §7.4 asks for a flag per change; one flag for three changes is the same
  * defect as no flag at all.
  */
-const PAINT = PARAM('paint') === '1' || (M2 && PARAM('paint') !== '0');
+/**
+ * §9.2's light model — **still default-off**, alone among M2's acts, and the
+ * reason is a measurement rather than caution.
+ *
+ * Captured on seed 20250601 with the print and §9.3 both on, `?paint=1` flattens
+ * the terrain to a single pale wash: every trace of the detail normals, the
+ * meadow patchwork and the grain disappears. `?paint=0` on the same frame keeps
+ * all of it. The light model is not wrong — it is doing exactly what §9.2
+ * specifies, and that is the problem in this frame.
+ *
+ * The three-stop ramp bands at `t = 0.17` and `t = 0.58`. `t` is the
+ * half-Lambert wrap, `ndl·0.62 + 0.46`, which maps the *whole* lit hemisphere
+ * into 0.46–1.0 — so with the sun at the +24° this capture had, and a smooth
+ * dome of ground under it, every pixel lands above the upper band edge. One
+ * band is occupied, the ramp returns one colour, and every scrap of normal
+ * variation is quantised away. The bands are supposed to be visible (§11 lists
+ * deleting them as the archetypal PBR reflex); they are not supposed to be the
+ * only thing you can see.
+ *
+ * Two things fix it and neither exists yet:
+ *
+ *   §9.7's landing solver puts the spawn sun in an 8–18° band, which is the
+ *   geometry the ramp is tuned for — and it is `?solve=1`, also default-off,
+ *   because a full solve costs 127–337 ms of main thread (§M2.md §15).
+ *
+ *   Act 4's four-layer triplanar materials supply real `shade`/`mid`/`lit`
+ *   stops. What feeds them today is a derivation from one base colour, marked
+ *   in the shader below as a placeholder for exactly that reason.
+ *
+ * So it waits for its dependencies rather than shipping a regression, and the
+ * flag stays exactly as it was. `?paint=1` still turns it on for anyone
+ * working on it.
+ */
+const PAINT = PARAM('paint') === '1';
 
 /**
  * §9.3's aerial perspective, act 2. Separable both ways for the same reason
