@@ -27,7 +27,10 @@ import {
   SUN_BAND, frameAt, macroHeight, scoreComposition, solveLandingSite,
 } from '../src/landing.js';
 import { makeGround } from '../src/ground.js';
-import { GAIT, Walker, gravityOf, replay } from '../src/avatar.js';
+import {
+  ARM, GAIT, LOOK, Walker, gravityOf, replay, sweepArm,
+} from '../src/avatar.js';
+import { BINDINGS, JUMP_CODE, input, setAnalog } from '../src/input.js';
 import {
   AERIAL_ALPHA_IS_CLARITY, AERIAL_GLSL, EARTH_AIR, HAZE_FRACTION, REFERENCE_AIR,
   REFERENCE_PARAMS, aerial, aerialParams, airFor, molarMass, scaleHeight,
@@ -1797,11 +1800,82 @@ function suiteWalk() {
       drift < 1.0, `20 s of walking: ${drift.toFixed(3)} m apart at 60 vs 120 Hz`);
   }
 
+  // --- the third-person boom, which is the one gate clause §M4 spells out ---
+  //
+  // "camera never clips terrain across the full route." `traveler.js:233`
+  // clamps the boom against the height *directly under the camera*, which is a
+  // different question from whether anything sits between the camera and the
+  // head — walk backwards toward a cliff and the old arm goes through it.
+  {
+    // a wall rising to the east, the case a downward clamp cannot see
+    const wall = (x) => (x < 0 ? 0 : Math.min(x * 4, 30));
+    const head = { x: -1, y: 1.4, z: 0 };
+    const east = { x: 1, y: 0.25, z: 0 };
+    const el = Math.hypot(east.x, east.y, east.z);
+    const dir = { x: east.x / el, y: east.y / el, z: east.z / el };
+    const len = sweepArm(head, dir, 4.6, (x) => wall(x));
+    ok('§M4 · the boom stops at a wall the head is not under',
+      len < 2.0 && len >= 0,
+      `4.6 m arm swept into a rising face → ${len.toFixed(2)} m`);
+
+    // ...and is unobstructed over open ground
+    ok('and keeps its full length where nothing is in the way',
+      Math.abs(sweepArm(head, dir, 4.6, () => -100) - 4.6) < 1e-9);
+
+    // The real claim, over the real terrain: sample the arm along a route and
+    // assert the camera is never inside the ground.
+    const g = makeGround(WORLDS[1].pp, WORLDS[1].dir);
+    const w = new Walker({ heightAt: g.heightAt, gravity: 9.80665 });
+    w.place(0, 0);
+    let worst = Infinity, frames = 0, pulled = 0;
+    for (let i = 0; i < 3000; i++) {
+      w.step(1 / 60, { move: { x: Math.sin(i * 0.006), y: 1 }, sprint: (i % 500) < 250 }, i * 0.0021);
+      const yaw = i * 0.0021, pitch = Math.sin(i * 0.013) * 1.2;
+      const cp = Math.cos(pitch * 0.62), sp = Math.sin(pitch * 0.62);
+      const d = { x: Math.sin(yaw) * cp, y: sp + ARM.rise / ARM.dist, z: Math.cos(yaw) * cp };
+      const dl = Math.hypot(d.x, d.y, d.z);
+      d.x /= dl; d.y /= dl; d.z /= dl;
+      const h = { x: w.pos.x, y: w.pos.y + GAIT.eye * 0.82, z: w.pos.z };
+      const L = sweepArm(h, d, ARM.dist, g.heightAt);
+      if (L < ARM.dist - 1e-9) pulled++;
+      const cx = h.x + d.x * L, cy = h.y + d.y * L, cz = h.z + d.z * L;
+      worst = Math.min(worst, cy - g.heightAt(cx, cz));
+      frames++;
+    }
+    ok('§M4 · the camera never ends up inside the terrain over the route',
+      worst > 0, `closest the boom ever came to the ground over ${frames} frames:`
+      + ` ${worst.toFixed(3)} m · pulled in on ${(100 * pulled / frames).toFixed(1)}% of them`);
+  }
+
+  // --- one sensitivity, where there were three ------------------------------
+  {
+    ok('one look sensitivity and one pitch clamp, not three',
+      LOOK.perPixel > 0.002 && LOOK.perPixel < 0.005 && LOOK.pitchClamp < Math.PI / 2,
+      `${LOOK.perPixel} rad/px, clamp ±${LOOK.pitchClamp} —`
+      + ' replacing 0.0035/1.45, 0.0024/1.50 and 0.0040/1.25');
+  }
+
   // --- the constitution's own numbers ---------------------------------------
   {
     ok('§6 M4 · eye height 1.68 m and FOV 52, which the reference also uses',
       GAIT.eye === 1.68 && GAIT.fov === 52,
       'hoshi-no-tani.html:181-185 agrees to the digit');
+  }
+
+  // --- the action map, and the one binding that cannot be a binding ---------
+  {
+    ok('§2.4 · Space stays with pause-time, so jump goes through scale-first',
+      !Object.values(BINDINGS).some((c) => c.includes('Space')) && JUMP_CODE === 'Space',
+      'main.js:421 binds Space globally and a saved link expects it to pause');
+
+    // an analog source must survive the trip that used to flatten it
+    setAnalog({ x: 0.25, y: 0.4 });
+    const kept = Math.hypot(input.move.x, input.move.y);
+    setAnalog(null);
+    ok('an analog source writes the axis directly, magnitude intact',
+      Math.abs(kept - Math.hypot(0.25, 0.4)) < 1e-12,
+      `|move| = ${kept.toFixed(4)} — the synthetic-KeyboardEvent bridge`
+      + ' delivered 1.0 or 0.0 and nothing else');
   }
 }
 

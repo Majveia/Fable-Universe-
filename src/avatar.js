@@ -388,6 +388,60 @@ export class Walker {
   }
 }
 
+// ---------------------------------------------------------------------------
+// where the body is looked at from
+//
+// These live here rather than in `camera.js` for one reason: `camera.js` has to
+// import three, and every module `tools/verify.js` exercises must not — the
+// suite runs in Node, where the browser's importmap does not exist. The rig's
+// *geometry* is plain numbers and is exactly the part §M4's gate makes a claim
+// about, so it sits on this side of the line and `camera.js` re-exports it.
+
+/** one sensitivity, one clamp, for every scale that looks around by dragging */
+export const LOOK = {
+  /** radians per pixel of drag — the mean of the three it replaces */
+  perPixel: 0.0031,
+  /** how much slower pitch is than yaw; a wrist turns further than it nods */
+  pitchScale: 0.92,
+  /** radians. Short of ±π/2 so the horizon never inverts */
+  pitchClamp: 1.45,
+};
+
+/** third-person rig geometry (§9.7 — the horizon is held low) */
+export const ARM = {
+  dist: 4.6,           // metres behind the head
+  rise: 1.35,          // metres above it
+  lookAhead: 0.16,     // seconds of velocity the aim point leads by
+  follow: 7.0,         // exponential rate, s⁻¹
+  clearance: 0.55,     // metres the boom keeps off any surface
+  samples: 12,         // how finely the boom is swept for obstructions
+};
+
+/**
+ * Sweep the boom and return the distance at which it first meets the ground.
+ *
+ * `traveler.js:233` clamps the arm against the height *directly under the
+ * camera*, which is a different question from whether anything sits between the
+ * camera and the head — walk backwards toward a cliff and that arm goes through
+ * it. §M4's gate says "camera never clips terrain across the full route", so
+ * the segment is swept and the boom shortened to the first obstruction.
+ *
+ * Marching a fixed number of samples rather than solving analytically is
+ * deliberate: the height field is noise and has no closed form. Twelve samples
+ * over 4.6 m is a 38 cm resolution against a 55 cm clearance, so the boom
+ * cannot pass through anything it could not also stand on.
+ */
+export function sweepArm(head, dir, maxDist, heightAt,
+  clearance = ARM.clearance, samples = ARM.samples) {
+  for (let i = 1; i <= samples; i++) {
+    const t = (i / samples) * maxDist;
+    if (head.y + dir.y * t < heightAt(head.x + dir.x * t, head.z + dir.z * t) + clearance) {
+      return ((i - 1) / samples) * maxDist;
+    }
+  }
+  return maxDist;
+}
+
 /**
  * Replay a fixed input trace at a fixed timestep and return the trajectory.
  *

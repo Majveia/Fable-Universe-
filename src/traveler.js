@@ -201,12 +201,18 @@ export function addTraveler(s) {
     },
 
     /** after movement: seat the camera (and the figure) for this frame */
+    // `camera` may be null: under §M4 the rig in `camera.js` owns the lens and
+    // this is called only to keep the avatar mesh following. Splitting the two
+    // responsibilities is what lets the new rig land without the figure, its
+    // scarf, its lantern and its gait all having to move in the same commit.
     place(dt, camera) {
       T._t += dt;
       if (!T.third) {
         avatar.visible = false;
-        camera.position.copy(s.body);
-        camera.quaternion.setFromEuler(new THREE.Euler(s.pitch, s.yaw, 0, 'YXZ'));
+        if (camera) {
+          camera.position.copy(s.body);
+          camera.quaternion.setFromEuler(new THREE.Euler(s.pitch, s.yaw, 0, 'YXZ'));
+        }
         return;
       }
 
@@ -228,6 +234,8 @@ export function addTraveler(s) {
         const night = 1 - Math.min(Math.max((s.uSunDir.value.y + 0.12) * 3.5, 0), 1);
         lantern.material.opacity = night * 0.85;
       }
+
+      if (!camera) return;   // §M4's rig owns the lens; the figure is done
 
       // the camera hangs back on a spring, orbiting with the drag
       const dist = T.riding ? 11 : 7;
