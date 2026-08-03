@@ -13,7 +13,7 @@
 // quadrature against a lookup table, finite differences against an analytic
 // derivative — and asserts the two agree.
 
-import { COSMO } from '../src/cosmology.js';
+import { A_OPEN, A_START, COSMO } from '../src/cosmology.js';
 import {
   FIXTURE, STOPS, airColours, airmass, hexToLinear, linearToHex, planck,
   spectrumToXYZ, toGamut, xyzToLinearSRGB,
@@ -1537,6 +1537,85 @@ function suiteGround() {
 // own height field, against an analytic step count — rather than against a
 // snapshot of the controller, which would only prove it had not changed.
 
+// ---------------------------------------------------------------------------
+// suite: opening
+//
+// §8 axis 1 asks for "a readable subject at three distances", and the cosmic
+// web is the first thing anyone sees. It opened at a = 0.048 — z ≈ 20, before
+// any structure has formed — so what a visitor arrived at was a field of
+// speckle, and the web only appeared after nineteen seconds of watching.
+//
+// That is not a brightness problem and no grade fixes it. It is the same class
+// of choice §9.7 makes when it forces the spawn sun into an 8–18° band: the
+// opening frame is a composition, and a composition has to contain its subject.
+// So the epoch is measured here, against the seed's own mode set, rather than
+// chosen by eye.
+
+function suiteOpening() {
+  console.log('\nopening — §8 axis 1, does the first frame contain its subject');
+
+  const BOX = 1000;
+  const modes = buildModes(20250601, BOX);
+  const N = 22;
+
+  /** density contrast statistics of the linear field at growth D */
+  const contrast = (a) => {
+    const D = COSMO.growth(a);
+    const q = [0, 0, 0];
+    let s = 0, s2 = 0, n = 0, over = 0;
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < N; j++) {
+        for (let k = 0; k < N; k++) {
+          q[0] = ((i + 0.5) / N) * BOX; q[1] = ((j + 0.5) / N) * BOX; q[2] = ((k + 0.5) / N) * BOX;
+          const d = deltaLinear(modes, q, D);
+          s += d; s2 += d * d; n++;
+          if (Math.abs(d) > 1) over++;
+        }
+      }
+    }
+    const mean = s / n;
+    return { sigma: Math.sqrt(s2 / n - mean * mean), over: over / n };
+  };
+
+  {
+    const early = contrast(0.048);
+    ok('at the epoch the web used to open on, there is no web',
+      early.sigma < 0.15 && early.over < 0.001,
+      `a = 0.048 · σ(δ) = ${early.sigma.toFixed(3)}, ${(100 * early.over).toFixed(1)}%`
+      + ' of the volume overdense — a ripple on a uniform grid, which is what it looked like');
+  }
+
+  {
+    const now = contrast(A_OPEN);
+    ok('§8 axis 1 · at the epoch it opens on now, there is',
+      now.sigma > 1.2 && now.over > 0.4,
+      `a = ${A_OPEN} · σ(δ) = ${now.sigma.toFixed(3)},`
+      + ` ${(100 * now.over).toFixed(1)}% overdense`);
+  }
+
+  {
+    // Monotone up to saturation, which is the reason A_OPEN is near the present
+    // day rather than as late as possible: past a ≈ 2.5 the nodes swallow the
+    // filaments and σ stops buying legibility.
+    const s = [0.25, 0.45, 0.7, 1.0, 1.6, 2.5].map((a) => contrast(a).sigma);
+    let rising = true;
+    for (let i = 1; i < s.length; i++) if (s[i] <= s[i - 1]) rising = false;
+    ok('structure grows monotonically with the growth factor, and then saturates',
+      rising && contrast(4).sigma / contrast(2.5).sigma < 1.1,
+      s.map((v, i) => v.toFixed(2)).join(' → ')
+      + ` · a = 4 adds only ${((contrast(4).sigma / contrast(2.5).sigma - 1) * 100).toFixed(1)}%`);
+  }
+
+  {
+    // The formation replay is not lost — it is what the tour resets to, and
+    // what scrubbing back reaches. A_START stays where the physics wants it.
+    ok('and the simulation still begins where the physics begins',
+      A_START < 0.06,
+      `A_START = ${A_START} (z ≈ ${(1 / A_START - 1).toFixed(0)}) — the tour resets`
+      + ' here to replay formation, and the deep-time lever scrubs back to it');
+  }
+}
+
 function suiteWalk() {
   console.log('\nwalk — §M4\'s controller, before it enters the render loop');
 
@@ -2240,7 +2319,7 @@ const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
-  walk: suiteWalk, material: suiteMaterial,
+  walk: suiteWalk, material: suiteMaterial, opening: suiteOpening,
 };
 
 for (const [name, fn] of Object.entries(suites)) {

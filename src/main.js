@@ -449,7 +449,12 @@ class App {
         case 'KeyB': if (!s.onKey?.('KeyB')) this.hud.toggleLog(); break;
         case 'KeyU': this.freshUniverse(); break;
         case 'KeyG': this.hud.toggleAtlas(); break;
-        case 'KeyN': this.hud.toggleBestiary(); break;
+        // Same scale-first rule as KeyB above, and it was missing. `cosmic.js`
+        // handles KeyN — it is the N-body/Zel'dovich toggle, and §M1's gate
+        // clause (c) is *about* that toggle. This line took the key first, so
+        // the clause was unreachable from a keyboard: pressing N opened the
+        // bestiary and the comparison the milestone is scored on never ran.
+        case 'KeyN': if (!s.onKey?.('KeyN')) this.hud.toggleBestiary(); break;
         case 'Slash': this.hud.toggleControls(); break;
         default: s.onKey?.(e.code);
       }

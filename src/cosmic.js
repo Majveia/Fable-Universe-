@@ -17,7 +17,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { COSMO } from './cosmology.js';
+import { A_OPEN, A_START, COSMO } from './cosmology.js';
 import { hash, RNG } from './rng.js';
 import { NBodySim, NBODY_LAYOUT } from './nbody.js';
 import { softDotTexture } from './nebula.js';
@@ -27,7 +27,9 @@ import {
 import { qInt } from './quality.js';
 
 const BOX = 900;           // comoving box, display units (≙ ~500 Mpc)
-const A_START = 0.048;     // z ≈ 20
+// A_START and A_OPEN live in cosmology.js — see the note there. They are
+// epoch constants, and `tools/verify.js` has to be able to read them without a
+// renderer, which a module that imports three cannot offer.
 
 const PARAM = (k) => {
   try { return new URL(window.location.href).searchParams.get(k); }
@@ -813,7 +815,7 @@ export class CosmicScale {
     this.camera = new THREE.PerspectiveCamera(55, 1, 1, 20000);
     this.camera.position.set(0, BOX * 0.33, BOX * 0.85);
 
-    this.a = A_START;
+    this.a = A_OPEN;
     this.playing = true;
     this.rate = 0.16;          // d(ln a)/dt per real second
     this.physicalView = false;
