@@ -30,6 +30,10 @@ import { addInterior } from './interior.js';
 import { findLandingSite } from './terrain.js';
 import { solveLandingSite } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
+import { AERIAL_GLSL, aerialParams, airFor } from './aerial.js';
+import { GAIT, Walker, gravityOf } from './avatar.js';
+import { CameraRig } from './camera.js';
+import { attachKeyboard, input, jumpHeld } from './input.js';
 import { makeGround } from './ground.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
 import { qInt } from './quality.js';
@@ -39,8 +43,8 @@ const PARAM = (k) => {
   catch { return null; }
 };
 
-/** M2 — the print and the rebuilt bloom. Default-off (§7.4). */
-const M2 = PARAM('m2') === '1';
+/** M2 — the print and the rebuilt bloom. **Default-on**; `?m2=0` goes back. */
+const M2 = PARAM('m2') !== '0';
 
 /**
  * §9.2's light model, act 3. It rides M2 because it is the same milestone, but
@@ -53,7 +57,65 @@ const M2 = PARAM('m2') === '1';
  * §7.4 asks for a flag per change; one flag for three changes is the same
  * defect as no flag at all.
  */
-const PAINT = PARAM('paint') === '1' || (M2 && PARAM('paint') !== '0');
+/**
+ * §9.2's light model — **still default-off**, alone among M2's acts, and the
+ * reason is a measurement rather than caution.
+ *
+ * Captured on seed 20250601 with the print and §9.3 both on, `?paint=1` flattens
+ * the terrain to a single pale wash: every trace of the detail normals, the
+ * meadow patchwork and the grain disappears. `?paint=0` on the same frame keeps
+ * all of it. The light model is not wrong — it is doing exactly what §9.2
+ * specifies, and that is the problem in this frame.
+ *
+ * The three-stop ramp bands at `t = 0.17` and `t = 0.58`. `t` is the
+ * half-Lambert wrap, `ndl·0.62 + 0.46`, which maps the *whole* lit hemisphere
+ * into 0.46–1.0 — so with the sun at the +24° this capture had, and a smooth
+ * dome of ground under it, every pixel lands above the upper band edge. One
+ * band is occupied, the ramp returns one colour, and every scrap of normal
+ * variation is quantised away. The bands are supposed to be visible (§11 lists
+ * deleting them as the archetypal PBR reflex); they are not supposed to be the
+ * only thing you can see.
+ *
+ * Two things fix it and neither exists yet:
+ *
+ *   §9.7's landing solver puts the spawn sun in an 8–18° band, which is the
+ *   geometry the ramp is tuned for — and it is `?solve=1`, also default-off,
+ *   because a full solve costs 127–337 ms of main thread (§M2.md §15).
+ *
+ *   Act 4's four-layer triplanar materials supply real `shade`/`mid`/`lit`
+ *   stops. What feeds them today is a derivation from one base colour, marked
+ *   in the shader below as a placeholder for exactly that reason.
+ *
+ * So it waits for its dependencies rather than shipping a regression, and the
+ * flag stays exactly as it was. `?paint=1` still turns it on for anyone
+ * working on it.
+ */
+const PAINT = PARAM('paint') === '1';
+
+/**
+ * §9.3's aerial perspective, act 2. Separable both ways for the same reason
+ * `?paint=` is: `?m2=1&aerial=0` is the print over the old one-line fog, and
+ * `?aerial=1` is the depth cue without the print. One flag for three changes is
+ * the same defect as no flag at all (§7.4).
+ *
+ * It also writes the fog fraction into the alpha channel, which is what §9.4
+ * step 5 spends on distance-graded softening — so with `?aerial=0` the print
+ * has no distance to read and that step is inert. That is the intended
+ * behaviour of the flag, not a gap in it.
+ */
+const AERIAL = PARAM('aerial') === '1' || (M2 && PARAM('aerial') !== '0');
+
+/**
+ * §M4 — the body, the camera rig and the shared input axis. **Default-on**;
+ * `?m4=0` restores the old inline walk.
+ *
+ * It keeps its own flag rather than riding M2's because it changes what the
+ * frame *is* rather than how it is printed: eye height moves 1.80 → 1.68 m and
+ * the field of view 62 → 52, which are §6 M4's numbers and the reference's.
+ * Both move every existing capture, which is why the flip is this commit and
+ * not the one that built them (§7.4).
+ */
+const M4 = PARAM('m4') !== '0';
 
 /** `?shdebug=1` — output the shadow term itself, so it can be looked at */
 const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');
@@ -109,6 +171,7 @@ const TERRAIN_FRAG = /* glsl */`
   varying vec3 vN;
   ${NOISE_GLSL}
   ${PAINT ? SHADOW_GLSL + PAINT_GLSL : ''}
+  ${AERIAL ? AERIAL_GLSL : ''}
 
   uniform float uSea;    // sea level in world y, or -1e9 for a dry world
 
@@ -214,8 +277,22 @@ const TERRAIN_FRAG = /* glsl */`
 
     // aerial perspective
     float dist = length(vW - uCam);
+    ${AERIAL ? /* glsl */`
+    // §9.3. The alpha is not decoration: it is this pixel's distance, and
+    // §9.4 step 5 spends it on the watercolour softening. Anything that
+    // overwrites it — a blend mode, a pass that ignores it — turns every
+    // pixel's "distance" into a lie the print then acts on.
+    //
+    // Night is handled on the uniform rather than here. The air's radiance
+    // falls with the sun, but the air itself does not go away, so dimming the
+    // four colours in _syncAerial keeps a midnight valley reading as depth.
+    // Mixing the fog *fraction* toward zero instead would have deleted the
+    // depth cue at exactly the hour the light stops carrying it.
+    gl_FragColor = aerial(lit, dist, normalize(uCam - vW), uSunDir, vW.y);
+    ` : /* glsl */`
     lit = mix(lit, uHorizon * max(dusk, 0.08), 1.0 - exp(-dist * 0.0007));
     gl_FragColor = vec4(lit, 1.0);
+    `}
   }
 `;
 
@@ -276,7 +353,13 @@ const SKY_FRAG = /* glsl */`
       stars = vec3(0.9, 0.88, 1.0) * exp(-sd2 * sd2 * 3.5) * (h - 0.994) / 0.006 * dark;
     }
 
-    gl_FragColor = vec4(sky + sun + stars, 1.0);
+    // The one surface that has to declare its distance rather than inherit it.
+    // Alpha is clarity (src/aerial.js): the sky is at infinity, so it is the
+    // least clear thing in the frame and §9.4 step 5 gives it the full wash.
+    // That is a decision, not an accident — a painted four-stop gradient is
+    // exactly what wet-in-wet softening should be strongest on, and the sun
+    // disc is already 3× oversize and deliberately soft-edged (§9.6).
+    gl_FragColor = vec4(sky + sun + stars, ${AERIAL ? '0.0' : '1.0'});
   }
 `;
 
@@ -318,6 +401,7 @@ const OCEAN_FRAG = /* glsl */`
   varying vec3 vW;
   varying vec3 vN;
   ${NOISE_GLSL}
+  ${AERIAL ? AERIAL_GLSL : ''}
 
   void main() {
     // three bands of chop riding the swell, all drifting downwind
@@ -347,8 +431,14 @@ const OCEAN_FRAG = /* glsl */`
     col += vec3(0.9, 0.95, 1.0) * crest * 0.18 * (0.25 + 0.75 * day);
 
     float dist = length(vW - uCam);
+    ${AERIAL ? /* glsl */`
+    // The ocean plane runs to EXT*24, so without a real extinction curve its
+    // far edge was the one place the old one-line fog visibly failed to close.
+    gl_FragColor = aerial(col, dist, normalize(uCam - vW), uSunDir, vW.y);
+    ` : /* glsl */`
     col = mix(col, uHorizon * max(day, 0.08), 1.0 - exp(-dist * 0.0007));
     gl_FragColor = vec4(col, 1.0);
+    `}
   }
 `;
 
@@ -363,7 +453,10 @@ export class SurfaceScale {
     this.sys = ctx.system;
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(62, 1, 0.1, 30000);
+    // §6 M4's numbers, which the reference also uses to the digit: FOV 52, near
+    // 0.12 m. The old 62/0.1 predate both documents.
+    this.camera = new THREE.PerspectiveCamera(M4 ? GAIT.fov : 62,
+      1, M4 ? 0.12 : 0.1, 30000);
 
     this.playing = true;
     this.speed = 1;
@@ -432,12 +525,34 @@ export class SurfaceScale {
     // hushes at the ruins — tuned to this world's own resonance root
     this._scoreRoot = 130.8 * Math.pow(2, ((hash(pp.seed, 0x5c0e) % 5)) / 12);
     this.app.audio?.surfaceScore?.(this._scoreRoot);
-    this.controls = { // duck-typed for the hyperzoom
-      enabled: false,
-      target: new THREE.Vector3(spawn.x + 60, spawn.y + 4, spawn.z - 40),
-      update: () => {},
-    };
-    this.camera.lookAt(this.controls.target);
+    if (M4) {
+      // §M4. The rig *is* the controls object — it implements the same
+      // duck-typed `{ enabled, target, update() }` the hyperzoom has always
+      // driven, so `transition.js` and every enter/exit/resume call site work
+      // unchanged and there is no second code path to keep in step.
+      this.walker = new Walker({
+        heightAt: (x, z) => this.heightAt(x, z),
+        gravity: gravityOf(pp),
+        seaLevel: this.seaLevel,
+      });
+      this.walker.place(spawn.x, spawn.z, spawn.y);
+      this.rig = new CameraRig({
+        camera: this.camera,
+        walker: this.walker,
+        heightAt: (x, z) => this.heightAt(x, z),
+      });
+      this.rig.target = new THREE.Vector3(spawn.x + 60, spawn.y + 4, spawn.z - 40);
+      this.controls = this.rig;
+      this.camera.lookAt(this.rig.target);
+      this.rig.syncFromCamera();
+    } else {
+      this.controls = { // duck-typed for the hyperzoom
+        enabled: false,
+        target: new THREE.Vector3(spawn.x + 60, spawn.y + 4, spawn.z - 40),
+        update: () => {},
+      };
+      this.camera.lookAt(this.controls.target);
+    }
     this._syncAngles();
 
     // §9.7 · face the solved heading, and put the sun where the solve assumed.
@@ -498,6 +613,67 @@ export class SurfaceScale {
       uPaintShadowTint: this._paintLight.uniforms.sh,
       ...this.sunShadow.uniforms,
     };
+  }
+
+  /**
+   * §9.3's uniform block. One object, shared by every surface-scale material,
+   * so the terrain and the ocean can never disagree about how far away the
+   * horizon is — which is what "one shared chunk" in `M2.md` §16.2 buys.
+   *
+   * The three lengths come from `aerialParams()` and are physics (§16.3): a
+   * property of this world's air, not of AEON's 1400 m tile.
+   */
+  _aerialUniforms() {
+    if (this._airU) return this._airU;
+    const T = this.ctx.system?.temp ?? 5778;
+    const p = aerialParams(this.pp, this.atmo, 1);
+    const v = (c) => ({ value: new THREE.Vector3(c[0], c[1], c[2]) });
+    const air = airFor(T, 13.5);
+    this._air = {
+      T,
+      u: {
+        haze: v(air.haze), mist: v(air.mist),
+        horizonSun: v(air.horizonSun), anti: v(air.anti),
+      },
+    };
+    this._airU = {
+      uAirHaze: this._air.u.haze,
+      uAirMist: this._air.u.mist,
+      uAirHorizonSun: this._air.u.horizonSun,
+      uAirAnti: this._air.u.anti,
+      uAirNear: { value: p.near },
+      uAirFar: { value: p.far },
+      uAirHazeH: { value: p.hazeH },
+      uAirMistAmt: { value: p.mistAmt },
+    };
+    return this._airU;
+  }
+
+  /**
+   * The air, as the sun moves. Two things change and they are not the same
+   * thing: the *hue* follows the beam's path length through the air, so the
+   * haze reddens as the sun drops; the *radiance* follows how much light is in
+   * the air at all, which is what makes midnight fog dark instead of absent.
+   *
+   * Doing the second in the fragment shader — mixing the fog fraction toward
+   * zero at dusk — would have removed the depth cue at exactly the hour §9.7
+   * tunes the whole light model for.
+   */
+  _syncAerial() {
+    if (!AERIAL || !this._air) return;
+    const y = Math.min(Math.max(this.uSunDir.value.y, -1), 1);
+    const elev = (Math.asin(y) * 180) / Math.PI;
+    const air = airFor(this._air.T, Math.max(elev, 0.5));
+    // Civil twilight is about −6°: below it the air is lit by scattered light
+    // it no longer receives directly, and 0.06 is where the reference's own
+    // night floor sits rather than zero — air is never a black wall.
+    const lum = 0.06 + 0.94 * Math.min(Math.max((y + 0.10) / 0.28, 0), 1);
+    const u = this._air.u;
+    const set = (t, c) => t.value.set(c[0] * lum, c[1] * lum, c[2] * lum);
+    set(u.haze, air.haze);
+    set(u.mist, air.mist);
+    set(u.horizonSun, air.horizonSun);
+    set(u.anti, air.anti);
   }
 
   /** the sun climbs, so the beam it sends reddens less — re-derive as it moves */
@@ -562,6 +738,7 @@ export class SurfaceScale {
       uniforms: {
         uSunDir: this.uSunDir, uSunColor: this.uSunColor,
         ...(PAINT ? this._paintUniforms() : {}),
+        ...(AERIAL ? this._aerialUniforms() : {}),
         uColA: { value: pp.colA }, uColB: { value: pp.colB }, uColC: { value: pp.colC },
         uHorizon: { value: this.horizonColor },
         uCam: this.uCam,
@@ -830,6 +1007,10 @@ export class SurfaceScale {
     this.ocean = new THREE.Mesh(geo, new THREE.ShaderMaterial({
       uniforms: {
         uSunDir: this.uSunDir, uSunColor: this.uSunColor,
+        // the same objects the terrain holds, not a copy — §16.2's "one shared
+        // chunk" is only true if the uniforms are shared too, and `_syncAerial`
+        // writes each colour once for every material that reads it
+        ...(AERIAL ? this._aerialUniforms() : {}),
         uHorizon: { value: this.horizonColor },
         uDeep: { value: this.pp.typeId === 2 ? this.pp.colA : new THREE.Color(0.02, 0.1, 0.2) },
         uCam: this.uCam,
@@ -1142,6 +1323,16 @@ export class SurfaceScale {
 
   // ------------------------------------------------------------ input ----
   _bindInput() {
+    if (M4) {
+      // One shared source, attached once and idempotent, instead of a private
+      // pair of listeners per scale. It also brings the two this scale never
+      // had: a `keyup` that survives the scale being popped, and a `blur`
+      // handler — without which a key held across an alt-tab stays held and
+      // the body walks into the horizon while the tab is hidden.
+      attachKeyboard();
+      this._drag = null;
+      return;
+    }
     this._onKeyDown = (e) => this.keys.add(e.code);
     this._onKeyUp = (e) => this.keys.delete(e.code);
     window.addEventListener('keydown', this._onKeyDown);
@@ -1152,22 +1343,85 @@ export class SurfaceScale {
   onPointerUp() { this._drag = null; }
   onPointerMove(e) {
     if (!this._drag) return;
-    this.yaw -= (e.clientX - this._drag.x) * 0.0035;
-    this.pitch = Math.min(Math.max(this.pitch - (e.clientY - this._drag.y) * 0.0032, -1.45), 1.45);
+    const dx = e.clientX - this._drag.x, dy = e.clientY - this._drag.y;
     this._drag = { x: e.clientX, y: e.clientY };
+    if (M4) {
+      // one sensitivity and one clamp, where three scales each had their own
+      this.rig.look(dx, dy);
+      this.yaw = this.rig.yaw; this.pitch = this.rig.pitch;
+      return;
+    }
+    this.yaw -= dx * 0.0035;
+    this.pitch = Math.min(Math.max(this.pitch - dy * 0.0032, -1.45), 1.45);
   }
 
+  /**
+   * §M4's step, and the bridge back to everything that was written against the
+   * old one.
+   *
+   * Twenty-odd things in this file and its neighbours read `this.body` and
+   * `this.vel` — the door check, the tile clamp, the audio, the traveler's
+   * figure, the discovery captions. Rather than convert all of them in the same
+   * commit that introduces the controller, the controller's state is written
+   * back into those two fields each frame. `this.body` keeps meaning what it
+   * always meant: the *eye*, not the feet.
+   */
+  _stepBody(dt) {
+    const w = this.walker;
+    w.fly = this.fly;
+    w.seaLevel = this.seaLevel;
+
+    if (this.inside) {
+      // A shrine has a floor of its own and walls that hold you; the height
+      // field says nothing about either. The controller is handed the interior
+      // as its ground for as long as you are in it, so stepping through the
+      // door does not mean stepping into a second movement model.
+      const c = this.interior.bounds.clamp(w.pos.x, w.pos.z);
+      w.pos.x = c.x; w.pos.z = c.z;
+      w.pos.y += (this.interior.floorY - w.pos.y) * (1 - Math.exp(-12 * dt));
+      w.vel.y = 0;
+      w.grounded = true;
+    }
+
+    w.step(dt, {
+      move: input.move,
+      jump: jumpHeld(),
+      sprint: input.down('sprint'),
+      up: (input.down('up') ? 1 : 0) - (input.down('down') ? 1 : 0),
+    }, this.rig.yaw);
+
+    // write back, so nothing downstream has to know any of this changed
+    this.body.set(w.pos.x, w.eyeY(), w.pos.z);
+    this.vel.set(w.vel.x, w.vel.y, w.vel.z);
+    this.yaw = this.rig.yaw;
+    this.pitch = this.rig.pitch;
+  }
+
+  /**
+   * Adopt whatever the camera is currently pointing at. This is the handoff
+   * primitive — the hyperzoom flies the camera and then hands it back, and
+   * without this the view would snap to wherever the controller last thought
+   * it was looking, which is a cut (§2.5).
+   */
   _syncAngles() {
     const d = new THREE.Vector3();
     this.camera.getWorldDirection(d);
     this.yaw = Math.atan2(-d.x, -d.z);
     this.pitch = Math.asin(Math.min(Math.max(d.y, -1), 1));
+    if (this.rig) { this.rig.yaw = this.yaw; this.rig.pitch = this.pitch; }
   }
 
   onKey(code) {
+    // §2.4 · Space belongs to pause-time globally (`main.js:421`) and a saved
+    // link expects it to pause. So jump takes the scale-first path already
+    // established for KeyB: this scale claims Space while it is walking, and
+    // an unhandled press still falls through to `togglePlay`.
+    if (M4 && code === 'Space' && this.controls.enabled && !this.traveler?.riding) return true;
     if (code === 'KeyF') { this.fly = !this.fly; return true; }
     if (code === 'KeyC') {
       const third = this.traveler.toggleView();
+      // the rig and the figure agree about which person we are in, always
+      if (this.rig) this.rig.third = third;
       this.app.hud.setHint(third
         ? 'third person · the traveler walks · c returns to their eyes'
         : 'first person · c steps back outside');
@@ -1296,6 +1550,7 @@ export class SurfaceScale {
     if (this.weather) this.weather.update(dt, this.uSunDir.value.y);
     if (this.megafauna) this.megafauna.update(dt, this.uSunDir.value.y);
     this._syncPaintLight();
+    this._syncAerial();
     if (this.sunShadow) {
       this.sunShadow.update(this.app.renderer, this.scene, this.camera,
         this.uSunDir.value, (x, z) => this.heightAt(x, z));
@@ -1322,6 +1577,8 @@ export class SurfaceScale {
       }
       if (this.traveler?.riding) {
         this.traveler.drive(dt);
+      } else if (M4) {
+        this._stepBody(dt);
       } else {
         const view = new THREE.Quaternion().setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'));
         const speed = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 60 : 16) * (this.fly ? 3 : 1);
@@ -1354,8 +1611,20 @@ export class SurfaceScale {
         this.body.x = Math.min(Math.max(this.body.x, -EXT * 0.48), EXT * 0.48);
         this.body.z = Math.min(Math.max(this.body.z, -EXT * 0.48), EXT * 0.48);
       }
+      if (M4 && !this.traveler?.riding) {
+        // the body owns the tile clamp too, so the two cannot disagree
+        this.walker.pos.x = this.body.x;
+        this.walker.pos.z = this.body.z;
+      }
       this._doorCheck(dt);
-      this.traveler.place(dt, this.camera);
+      // The rig places the camera in M4; `traveler.place` still runs so the
+      // avatar mesh keeps following, but it is told not to touch the camera.
+      if (M4 && !this.traveler?.riding) {
+        this.traveler.place(dt, null);
+        this.rig.place(dt);
+      } else {
+        this.traveler.place(dt, this.camera);
+      }
     } else this._hadCtl = false;
     if (this.flare) this.flare.update(this.camera);
     if (this.interior) this.interior.update(dt, this.uSunDir.value.y, this.inside);

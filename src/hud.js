@@ -3,6 +3,31 @@
 
 import { systemParams } from './system.js';
 import { arand, faunaNames } from './rng.js';
+import { attachKeyboard, input } from './input.js';
+import { TouchLayer, coarsePointer, watchPointerKind } from './touch.js';
+
+const PARAM = (k) => {
+  try { return new URL(window.location.href).searchParams.get(k); }
+  catch { return null; }
+};
+
+/**
+ * §M7 — the invisible thumb layer, and the HUD cut to §3's three persistent
+ * elements. **Default-on**; `?m7=0` restores the old rosette and the seven
+ * resident elements.
+ *
+ * The two halves ride one flag because they are one claim: §8 axis 7 asks
+ * whether you could delete the HUD entirely and lose no orientation, and that
+ * is not answerable while the controls are part of what is on screen.
+ */
+const M7 = PARAM('m7') !== '0';
+
+/**
+ * The three that stay (§3: "hairline type, ≤3 persistent elements"). Everything
+ * else is summoned — a corner tap on glass, ` or Tab on a keyboard — rather
+ * than resident. There were seven.
+ */
+const PERSISTENT = ['crumbs', 'stats', 'timectl'];
 
 const CONTROLS_HTML = `
   <b>everywhere</b><br>
@@ -120,8 +145,77 @@ export class HUD {
       this.hints.classList.remove('faded');
     });
 
+    if (M7) { this._buildM7(app); return; }
     // on glass, the universe grows thumbs
-    if (window.matchMedia && matchMedia('(pointer: coarse)').matches) this._buildTouch(app);
+    if (coarsePointer()) this._buildTouch(app);
+  }
+
+  /**
+   * §M7. The thumb layer becomes a *source* for `input.js` rather than a
+   * keyboard impersonator, and the chrome goes from seven persistent elements
+   * to three.
+   *
+   * The pointer kind is watched rather than sampled once. `hud.js` read it at
+   * construction and never again, so a hybrid laptop touched after load got the
+   * thumb layer *and* kept every keyboard listener live — which is §M0's
+   * unfinished item, closed here.
+   */
+  _buildM7(app) {
+    // Idempotent, and needed here as well as in `surface.js`: the idle timer
+    // the chrome fades on lives in `input.js`, and without this it would only
+    // start running once you had landed on a planet.
+    attachKeyboard();
+
+    const summonable = ['hints', 'card', 'discovery', 'science'];
+    for (const k of summonable) this[k]?.classList.add('summoned');
+    this._summonEls = summonable.map((k) => this[k]).filter(Boolean);
+    this._summoned = false;
+
+    // one root, one toggle. `H` used to iterate `.hud` and set each element's
+    // visibility independently, which can and did desync — an element created
+    // after the last press came back on its own.
+    this.chrome = document.createElement('div');
+    this.chrome.id = 'chrome';
+    document.body.appendChild(this.chrome);
+
+    const mount = () => {
+      const coarse = coarsePointer();
+      document.body.classList.toggle('coarse', coarse);
+      if (coarse && !this.touch) this.touch = new TouchLayer(app);
+      if (!coarse && this.touch) { this.touch.dispose(); this.touch = null; }
+    };
+    mount();
+    watchPointerKind(mount);
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Backquote' || e.code === 'Tab') {
+        e.preventDefault();
+        this.toggleSummon();
+      }
+    });
+  }
+
+  /**
+   * `H` — show me the world with nothing on it.
+   *
+   * Every `.hud` element at once, including the thumb layer, which the previous
+   * implementation missed because `#touch` never carried the class. Tracked as
+   * one boolean rather than read back off each element, so it cannot desync
+   * when something is created between presses.
+   */
+  toggleChrome() {
+    this._hidden = !this._hidden;
+    for (const el of document.querySelectorAll('.hud')) {
+      el.style.visibility = this._hidden ? 'hidden' : '';
+    }
+    return this._hidden;
+  }
+
+  /** bring the summoned elements in, or send them back */
+  toggleSummon(force) {
+    this._summoned = force === undefined ? !this._summoned : force;
+    for (const el of this._summonEls ?? []) el.classList.toggle('summoned', !this._summoned);
+    return this._summoned;
   }
 
   /**
@@ -493,6 +587,20 @@ export class HUD {
 
   tick(dt) {
     this._idleT += dt;
+    if (M7) {
+      // §3 asks for a fade after 4 s; the old one waited 6 s and applied to a
+      // single element. The timer is read straight off `input.js` rather than
+      // accumulated here — that is now the only thing that knows what counts as
+      // input (a thumb, a key, a wheel, a gamepad), and it counts in wall time,
+      // where this loop's `dt` is capped at 0.1 s and would stretch a 4 s fade
+      // to eighty on a slow rasteriser.
+      this._idleT = input.idle;
+      const rest = this._idleT > 4 && !this._summoned;
+      for (const k of PERSISTENT) this[k]?.classList.toggle('resting', rest);
+      this.touch?.tick(dt);
+      this._tickContext(dt);
+      return;
+    }
     if (this._idleT > 6) this.hints.classList.add('faded');
     if (this._touchUi && (this._touchIdle += dt) > 4) this._touchUi.classList.add('dim');
     // the context button wears its current meaning
@@ -517,5 +625,11 @@ export class HUD {
       if (surf) this._actBtn.textContent = s.traveler?.riding ? '✕' : '⛵';
       this._vsEl.style.display = surf ? 'none' : '';
     }
+  }
+
+  /** M7 keeps only the readout that changes; the rest is summoned */
+  _tickContext(dt) {
+    if ((this._ctxT = (this._ctxT ?? 0) + dt) < 0.4) return;
+    this._ctxT = 0;
   }
 }
