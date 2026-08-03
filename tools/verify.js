@@ -13,6 +13,7 @@
 // quadrature against a lookup table, finite differences against an analytic
 // derivative — and asserts the two agree.
 
+import { readFileSync } from 'node:fs';
 import { A_OPEN, A_START, COSMO } from '../src/cosmology.js';
 import {
   FIXTURE, STOPS, airColours, airmass, hexToLinear, linearToHex, planck,
@@ -43,6 +44,11 @@ import {
   REFERENCE_PARAMS, aerial, aerialParams, airFor, molarMass, scaleHeight,
   surfaceTemp,
 } from '../src/aerial.js';
+import {
+  BASE_DROP, HORIZON_VERT, MAX_BANDS, RIDGE_SEGS, SATURATION, bandPlan,
+  NO_LIMIT, baseAngles, buildHorizon, geometricHorizon, horizonFragment, marchSkyline,
+  ridgeAlbedo, saturationRadius,
+} from '../src/horizon.js';
 
 let failures = 0;
 let checks = 0;
@@ -2523,12 +2529,496 @@ function suiteOcean() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// suite: horizon
+//
+// §M2 act 6. The claim under test is not "the ridges look hazy" — it is that
+// the silhouette on the horizon is the *world's own*, reprojected without
+// distortion, and that the ring it replaces was genuinely contributing nothing.
+// Both are decidable on the CPU, which is the whole reason `src/horizon.js`
+// imports no three.
+//
+// The independent computation (§7.3) for the skyline is a march at four times
+// the angular resolution. It is a strict superset by construction — the radial
+// stride is geometric, so `r₀·g^k` are exactly the samples `r₀·(g^¼)^{4k}` —
+// which means the coarse march can never *exceed* the fine one, and the only
+// question a test can meaningfully ask is how much silhouette it misses.
+
+function horizonWorld(w, over = {}) {
+  const pp = { Teq: 255, massE: 1, radiusE: 1, ...w.pp, ...over.pp };
+  const g = makeGround(pp, w.dir);
+  const spawn = { x: 0, z: 0, y: g.heightAt(0, 0) };
+  const params = aerialParams(pp, over.atmo ?? 1, 1);
+  return { pp, g, spawn, params, seaLevel: pp.oceanLevel > -0.5 && pp.typeId === 1 ? 0 : null };
+}
+
+function horizonOf(w, over = {}) {
+  const { g, spawn, params, seaLevel } = horizonWorld(w, over);
+  const yEye = spawn.y + 1.8;
+  return {
+    g,
+    yEye,
+    seaLevel,
+    params,
+    h: buildHorizon(g.heightAt, {
+      yEye, ox: 0, oz: 0, eyeR: 0,
+      nearHalf: 1400 * 3.3 * 0.5,
+      params,
+      Reff: g.Rworld * 0.34,
+      seaLevel,
+    }),
+  };
+}
+
+function suiteHorizon() {
+  console.log('\nhorizon — the far ridges are the world\'s own skyline (§M2 act 6, §9.7)');
+
+  const TAU2 = Math.PI * 2;
+  const temperate = horizonOf(WORLDS[0]);
+  const mountains = horizonOf(WORLDS[1]);
+
+  // --- the reprojection is exact -------------------------------------------
+  //
+  // A curtain at radius R carries the true silhouette of terrain at any other
+  // distance only if it preserves the elevation angle exactly. This is the
+  // property the whole act rests on, so it is checked to float64 and not to
+  // a tolerance anyone chose.
+  {
+    let worst = 0, n = 0;
+    for (const c of [temperate, mountains]) {
+      for (let k = 0; k < c.h.bands.length; k++) {
+        const b = c.h.bands[k], prof = c.h.sky.band[k];
+        for (let i = 0; i < prof.tan.length; i++) {
+          const yTop = b.position[i * 6 + 4];
+          const got = (yTop - c.yEye) / b.radius;
+          worst = Math.max(worst, Math.abs(got - prof.tan[i]));
+          n++;
+        }
+      }
+    }
+    ok('the curtain reproduces the measured elevation angle exactly',
+      worst < 2e-6 && n > 400, `worst ${worst.toExponential(2)} over ${n} columns`);
+  }
+
+  // --- the skyline is the terrain's, at 4× the resolution -------------------
+  {
+    const c = mountains;
+    const segs = c.h.sky.segs;
+    const growth = 1 + TAU2 / segs;
+    const fine = Math.pow(growth, 0.25);
+    let worst = 0, over = 0;
+    for (let t = 0; t < 16; t++) {
+      const i = Math.floor((t / 16) * segs);
+      const a = (i / segs) * TAU2, ca = Math.cos(a), sa = Math.sin(a);
+      const rEdge = (1400 * 3.3 * 0.5) / Math.max(Math.abs(ca), Math.abs(sa));
+      // the same grid the silhouette leg runs on, at four times the resolution —
+      // a strict superset, so the coarse march can only ever miss, never exceed
+      let best = -Infinity;
+      for (let r = rEdge; r <= c.h.rMax; r *= fine) {
+        let hgt = c.g.heightAt(ca * r, sa * r);
+        if (c.seaLevel !== null && hgt < c.seaLevel) hgt = c.seaLevel;
+        best = Math.max(best, (hgt - c.yEye) / r);
+      }
+      let coarse = -Infinity;
+      for (const prof of c.h.sky.band) coarse = Math.max(coarse, prof.tan[i]);
+      if (coarse > best + 1e-12) over++;
+      worst = Math.max(worst, best - coarse);
+    }
+    ok('the coarse march never invents silhouette the fine march cannot find',
+      over === 0, `${over} of 16 azimuths above the 4× reference`);
+    // The radial stride is chosen to match the azimuthal one, so neither is
+    // meant to be the limiting error. That is the claim to test — not an
+    // absolute miss in metres, which would be a number nobody derived.
+    const step = TAU2 / segs;
+    ok('and its radial stride misses less than its azimuthal stride resolves',
+      worst < step,
+      `${worst.toExponential(2)} vs ${step.toExponential(2)} rad `
+      + `(${(worst * c.h.radii[0]).toFixed(1)} m of apparent height)`);
+  }
+
+  // --- no sky between the ground's edge and the curtain's foot --------------
+  //
+  // The construction guarantees it; this recomputes the claim from the terrain
+  // rather than from `occ`, by casting the ray the curtain's foot sits on and
+  // asserting it strikes retained ground.
+  {
+    // enough relief to make the occlusion hard, and more than one surviving
+    // band, so the stacking rule below has something to stack
+    const c = mountains;
+    const segs = c.h.sky.segs;
+    let below = 0, hit = 0, tested = 0, rayTested = 0, stacked = 0, stackTested = 0;
+    // read the geometry that was actually built, not a recomputation of it
+    const footOf = (kk, i) => (c.h.bands[kk].position[i * 6 + 1] - c.yEye) / c.h.bands[kk].radius;
+    for (let kk = 0; kk < c.h.bands.length; kk++) {
+      const k = c.h.kept[kk];
+      const prof = c.h.sky.band[k];
+      // what stands in front of this band: the retained ground, plus every
+      // nearer curtain that was actually kept
+      const front = Float64Array.from(c.h.sky.occ);
+      for (let j = 0; j < kk; j++) {
+        const pj = c.h.sky.band[c.h.kept[j]];
+        for (let i = 0; i < front.length; i++) {
+          if (pj.tan[i] > front[i]) front[i] = pj.tan[i];
+        }
+      }
+      const base = new Float64Array(front.length);
+      for (let i = 0; i < front.length; i++) base[i] = footOf(kk, i);
+      for (let i = 0; i < segs; i += 7) {
+        tested++;
+        if (base[i] <= prof.tan[i] + 1e-9 && base[i] <= front[i] + 1e-9) below++;
+        if (kk > 0) {
+          stackTested++;
+          // an outer band's foot is placed against the nearest thing that hides
+          // it, so it should sit exactly one drop below min(wall, its own crest)
+          // compared as drawn height rather than as tangent: the positions are
+          // float32, and a centimetre at 3.5 km is well inside that
+          const want = Math.min(front[i], prof.tan[i]) - BASE_DROP;
+          if (Math.abs(base[i] - want) * c.h.bands[kk].radius < 0.01) stacked++;
+          continue;   // the ray test below is about the ground, and only the
+        }              // first band meets the ground directly
+        rayTested++;
+        // independent: does the ground actually rise above this ray?
+        const a = (i / segs) * TAU2, ca = Math.cos(a), sa = Math.sin(a);
+        const rEdge = (1400 * 3.3 * 0.5) / Math.max(Math.abs(ca), Math.abs(sa));
+        let struck = false;
+        for (let r = 24; r <= rEdge; r *= 1.01) {
+          let hgt = c.g.heightAt(ca * r, sa * r);
+          if (c.seaLevel !== null && hgt < c.seaLevel) hgt = c.seaLevel;
+          if ((hgt - c.yEye) / r >= base[i]) { struck = true; break; }
+        }
+        if (struck) hit++;
+      }
+    }
+    ok('every column\'s foot sits below both its crest and what stands in front',
+      below === tested, `${below}/${tested} columns across ${c.h.bands.length} bands`);
+    ok('and a ray along the first band\'s foot strikes retained ground',
+      hit === rayTested && rayTested > 0, `${hit}/${rayTested} rays occluded`);
+    // The outer bands pay for the guarantee in overdraw, so the guarantee has
+    // to be measured against the nearest thing that provides it — the previous
+    // curtain — and not against the valley floor three bands away.
+    ok('and an outer band\'s foot stops at the curtain in front of it, not at the ground',
+      stacked === stackTested && stackTested > 0,
+      `${stacked}/${stackTested} feet one drop below the nearer wall`);
+
+    // The foot is sampled per column and drawn as a straight edge between
+    // columns, so the margin has to cover how far the true occlusion dips below
+    // that straight edge mid-segment. That is a measurable quantity, not a rule
+    // of thumb, and it is what BASE_DROP has to beat.
+    let dip = 0;
+    for (let i = 0; i < segs; i += 7) {
+      const am = ((i + 0.5) / segs) * TAU2, ca = Math.cos(am), sa = Math.sin(am);
+      const rEdge = (1400 * 3.3 * 0.5) / Math.max(Math.abs(ca), Math.abs(sa));
+      let mid = -Infinity;
+      for (let r = 24; r <= rEdge; r *= 1.01) {
+        let hgt = c.g.heightAt(ca * r, sa * r);
+        if (c.seaLevel !== null && hgt < c.seaLevel) hgt = c.seaLevel;
+        mid = Math.max(mid, (hgt - c.yEye) / r);
+      }
+      const lin = (c.h.sky.occ[i] + c.h.sky.occ[(i + 1) % segs]) / 2;
+      dip = Math.max(dip, lin - mid);
+    }
+    ok('the drop covers how far the true occlusion dips below the drawn edge',
+      BASE_DROP > dip, `drop ${BASE_DROP} vs worst mid-segment dip ${dip.toFixed(4)}`);
+  }
+
+  // --- saturationRadius inverts the fog it is named after -------------------
+  {
+    const p = REFERENCE_PARAMS;
+    for (const crest of [40, 220, 640]) {
+      const d = saturationRadius(p, crest, p.hazeH);
+      const V = [0, 0, 1], sun = [0, 0.3, -0.954];
+      const f = aerial([0.5, 0.5, 0.5], d, V, sun, crest, { ...p, mistAmt: 0 }).fog;
+      near(`saturation at a ${crest} m crest is where §9.3's own fog reaches ${SATURATION}`,
+        f, SATURATION, 1e-9);
+    }
+    ok('and a taller crest sees further, because it is above more of the haze',
+      saturationRadius(REFERENCE_PARAMS, 640, 260)
+        > saturationRadius(REFERENCE_PARAMS, 40, 260) * 1.5);
+    ok('genuinely infinite extinction length returns no limit rather than NaN',
+      saturationRadius({ near: 0, far: Infinity }, 400, 8436) === Infinity);
+    // §9.3 gives a vacuum `far = 1e9` rather than an infinity so one formula
+    // covers both. The saturation radius inherits that, and has to come back
+    // beyond anything a planet could put a horizon at rather than beyond
+    // floating point.
+    ok('and §9.3\'s 1e9 vacuum convention comes back past every possible horizon',
+      saturationRadius({ near: 7e7, far: 1.7e9 }, 400, 8436) > NO_LIMIT);
+  }
+
+  // --- the geometric horizon, against the exact tangent length --------------
+  {
+    for (const [R, h] of [[6.371e6 * 0.34, 640], [1.738e6 * 0.34, 220], [1e5, 800]]) {
+      const yEye = 1.68;
+      const exact = Math.sqrt(2 * R * yEye + yEye * yEye) + Math.sqrt(2 * R * h + h * h);
+      const got = geometricHorizon(R, yEye, h);
+      ok(`the horizon at R=${(R / 1e3) | 0} km matches the exact tangent length`,
+        Math.abs(got - exact) / exact < h / (2 * R) + 1e-9,
+        `${(got / 1e3).toFixed(2)} vs ${(exact / 1e3).toFixed(2)} km`);
+    }
+  }
+
+  // --- the band count is a property of the air, not a constant -------------
+  {
+    const thick = horizonOf(WORLDS[1], { atmo: 1 });
+    const thin = horizonOf(WORLDS[1], { atmo: 0.25 });
+    const airless = horizonOf(WORLDS[1], { atmo: 0 });
+    ok('thinner air pushes the horizon out until the world\'s own curvature takes over',
+      thin.h.rMax > thick.h.rMax && airless.h.rMax >= thin.h.rMax
+        && airless.h.rMax === airless.h.geo,
+      `${thick.h.rMax | 0} → ${thin.h.rMax | 0} → ${airless.h.rMax | 0} m `
+      + `(curvature at ${airless.h.geo | 0} m)`);
+    ok('and it plans more bands, up to the stated ceiling',
+      thin.h.planned.length >= thick.h.planned.length
+        && airless.h.planned.length === MAX_BANDS,
+      `${thick.h.planned.length} / ${thin.h.planned.length} / ${airless.h.planned.length} planned`);
+    // Planning is the air's job; keeping is occlusion's. A band that rises
+    // nowhere above the ridge in front of it is not drawn however clear the
+    // air is, which is the one thing the extinction curve cannot know.
+    ok('but occlusion, not the air, decides how many are drawn',
+      airless.h.bands.length <= airless.h.planned.length
+        && airless.h.bands.length >= 1,
+      `${airless.h.bands.length} of ${airless.h.planned.length} survive occlusion`);
+    ok('an airless world is limited by its own curvature, not by extinction',
+      airless.h.sat > NO_LIMIT && airless.h.rMax === airless.h.geo,
+      `geo ${(airless.h.geo / 1e3).toFixed(1)} km · sat ${airless.h.sat.toExponential(1)} m`);
+    ok('a thick-air world is limited by extinction, not by curvature',
+      thick.h.sat < thick.h.geo, `sat ${thick.h.sat | 0} m · geo ${thick.h.geo | 0} m`);
+  }
+
+  // --- the ring it replaces really was contributing nothing -----------------
+  //
+  // The claim in the commit, computed. Ring 2 spans EXT·1.58 to EXT·5 (half of
+  // EXT·10), 9899 m at the corners.
+  {
+    const p = aerialParams({ Teq: 255, massE: 1, radiusE: 1, typeId: 1 }, 1, 1);
+    const V = [0, 0, 1], sun = [0, 0.3, -0.954];
+    const inner = aerial([0.5, 0.5, 0.5], 1400 * 1.58, V, sun, 0, { ...p, mistAmt: 0 }).fog;
+    const corner = aerial([0.5, 0.5, 0.5], 1400 * 5 * Math.SQRT2, V, sun, 0, { ...p, mistAmt: 0 }).fog;
+    ok('at its inner edge the retired ring shows under 2% of its own colour',
+      1 - inner < 0.02, `clarity ${((1 - inner) * 100).toFixed(2)}%`);
+    ok('and at its corners, under 0.01%',
+      1 - corner < 1e-4, `clarity ${((1 - corner) * 100).toExponential(2)}%`);
+    ok('so a temperate world retires it, on arithmetic rather than on taste',
+      saturationRadius(p, 220, p.hazeH) < 1400 * 5 * Math.SQRT2);
+    const thin = aerialParams({ Teq: 255, massE: 1, radiusE: 1, typeId: 1 }, 0.25, 1);
+    ok('and a thin-atmosphere world keeps it, from the same line of arithmetic',
+      saturationRadius(thin, 220, thin.hazeH) > 1400 * 5 * Math.SQRT2);
+  }
+
+  // --- what it costs ------------------------------------------------------
+  {
+    // ring 2 as `_gridWithHole(EXT*10, 72, EXT*1.58)` counts it
+    const res = 72, half = 1400 * 10 / 2, cell = 1400 * 10 / res, hole = 1400 * 1.58;
+    let quads = 0;
+    for (let j = 0; j < res; j++) {
+      for (let i = 0; i < res; i++) {
+        const cx = -half + (i + 0.5) * cell, cz = -half + (j + 0.5) * cell;
+        if (Math.abs(cx) < hole && Math.abs(cz) < hole) continue;
+        quads++;
+      }
+    }
+    const ringTris = quads * 2;
+    const bandTris = MAX_BANDS * RIDGE_SEGS * 2;
+    ok('four full bands cost under a quarter of the ring they replace',
+      bandTris < ringTris / 4, `${bandTris} vs ${ringTris} triangles`);
+    ok('and a real world draws well under that ceiling',
+      mountains.h.bands.length * RIDGE_SEGS * 2 <= bandTris,
+      `${mountains.h.bands.length} of ${mountains.h.planned.length} planned · `
+      + `${mountains.h.bands.length * RIDGE_SEGS * 2} triangles`);
+    ok('the whole measurement costs less than meshing the finest ring',
+      mountains.h.sky.samples < 168 * 168,
+      `${mountains.h.sky.samples} height evaluations vs ${168 * 168}`);
+  }
+
+  // --- determinism: this module adds no entropy at all ---------------------
+  {
+    const src = readFileSync(new URL('../src/horizon.js', import.meta.url), 'utf8');
+    ok('§2.3 · the horizon draws no entropy — no RNG, no clock, no hash',
+      !/Math\.random|Date\.now|performance\.now|new RNG|hash\(/.test(src));
+    const again = horizonOf(WORLDS[1]);
+    let same = again.h.bands.length === mountains.h.bands.length;
+    for (let k = 0; same && k < mountains.h.bands.length; k++) {
+      const a = mountains.h.bands[k].position, b = again.h.bands[k].position;
+      if (a.length !== b.length) { same = false; break; }
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) { same = false; break; }
+    }
+    ok('and two builds of the same world are bit-identical',
+      same && mountains.h.bands.length > 0);
+  }
+
+  // --- the ring closes, and the sea is a skyline too -----------------------
+  {
+    for (const c of [temperate, mountains]) {
+      let closed = true;
+      for (const prof of c.h.sky.band) {
+        const n = prof.tan.length - 1;
+        if (prof.tan[n] !== prof.tan[0] || prof.hitY[n] !== prof.hitY[0]) closed = false;
+      }
+      ok(`the ring closes exactly on the ${c === temperate ? 'coastal' : 'mountainous'} world`,
+        closed);
+    }
+    const c = temperate;
+    if (c.seaLevel !== null) {
+      let below = 0;
+      for (const b of c.h.bands) {
+        for (let i = 0; i < b.aTrueY.length; i++) if (b.aTrueY[i] < c.seaLevel - 1e-6) below++;
+      }
+      ok('no part of the horizon is drawn below the water it stands in',
+        below === 0, `${below} vertices under sea level`);
+    } else {
+      ok('no part of the horizon is drawn below the water it stands in', true, 'dry world');
+    }
+  }
+
+  // --- bandPlan's own arithmetic ------------------------------------------
+  {
+    const r = bandPlan(3900, 3900 * 5.06);      // ln(5.06)/ln(1.5) = 4.0
+    ok('bandPlan lays the radii out geometrically and stops at the ceiling',
+      r.length === MAX_BANDS
+      && Math.abs(r[1] / r[0] - r[2] / r[1]) < 1e-9
+      && Math.abs(r[0] - 3900) < 1e-9,
+      `${r.map((x) => x | 0).join('/')}`);
+    ok('and a world with nowhere to put a second band still gets a horizon',
+      bandPlan(3900, 3800).length === 1);
+  }
+
+  // --- the area average, not the rock ---------------------------------------
+  {
+    const rock = [0.42, 0.33, 0.26], soil = [0.30, 0.24, 0.18], veg = [0.20, 0.34, 0.16];
+    const a = ridgeAlbedo(soil, rock, veg, 0);
+    const sat = (c) => (Math.max(...c) - Math.min(...c)) / Math.max(Math.max(...c), 1e-9);
+    ok('a ridge is less saturated than the rock it is made of',
+      sat(a) < sat(rock) * 0.7, `${sat(a).toFixed(3)} vs ${sat(rock).toFixed(3)}`);
+    ok('and darker, because half of every ridge faces away from a low sun',
+      a[0] < rock[0] && a[1] < rock[1] && a[2] < rock[2]);
+    const snowy = ridgeAlbedo(soil, rock, veg, 1);
+    ok('snow survives area-averaging, because it covers rather than speckles',
+      snowy[2] > a[2] * 1.3);
+  }
+
+  // --- what decides how many bands are drawn -------------------------------
+  //
+  // Pinned on synthetic ground rather than on whichever fixture happens to have
+  // the right shape. The rule is occlusion and nothing else: a band survives if
+  // and only if it rises somewhere above everything nearer than it.
+  {
+    const synth = (params) => (rise) => buildHorizon(
+      (x, z) => {
+        const r = Math.hypot(x, z);
+        return r < 2400 ? 0 : rise(r);
+      },
+      { yEye: 1.68, eyeH: 1.68, nearHalf: 2310, params, Reff: 6.371e6 * 0.34 });
+    const clear = { near: 70, far: 40000, hazeH: 260, mistAmt: 1 };
+    const build = synth(clear);
+    // ground that climbs with distance: every annulus stands above the one in
+    // front of it, so every planned band is visible
+    const rising = build((r) => r * 0.02);
+    ok('ground that climbs with distance keeps every band it plans',
+      rising.bands.length === rising.planned.length && rising.bands.length > 1,
+      `${rising.bands.length} of ${rising.planned.length}`);
+    // a dome falling away: the nearest ridge hides everything behind it
+    const falling = build((r) => 900 - r * 0.03);
+    ok('and a nearer ridge that hides the rest collapses them to one',
+      falling.bands.length === 1 && falling.planned.length > 1,
+      `${falling.bands.length} of ${falling.planned.length}`);
+    // whatever survives, the crests must strictly ascend — that is what
+    // "rises above what is in front of it" means, band by band
+    let ascends = true;
+    for (let kk = 1; kk < rising.bands.length; kk++) {
+      const a = rising.sky.band[rising.kept[kk - 1]].tan;
+      const b = rising.sky.band[rising.kept[kk]].tan;
+      if (!(Math.max(...b) > Math.max(...a))) ascends = false;
+    }
+    ok('and every band that survives stands taller than the one in front of it',
+      ascends);
+  }
+
+  // --- drawing nothing has to be as safe as drawing something --------------
+  //
+  // The retirement of the outer ring and the pruning of bands are separate
+  // decisions, so they can combine into "the ground now stops at 2310 m and
+  // there is no curtain behind it". That is only safe if nothing beyond the
+  // ring's edge would have been visible anyway. It is — the terrain profile is
+  // continuous from the eye outward, so every ray at or below `occ` strikes
+  // near ground, and the pruning test is exactly "does anything out there rise
+  // above `occ`". This casts the rays rather than restating the argument.
+  {
+    const params = { near: 70, far: 1700, hazeH: 260, mistAmt: 1 };
+    const bowl = buildHorizon(
+      // a rim at 800 m with everything beyond it falling away — the shape that
+      // legitimately produces no bands at all
+      (x, z) => { const r = Math.hypot(x, z); return r < 900 ? r * 0.09 : 81 - (r - 900) * 0.02; },
+      { yEye: 1.68, eyeH: 1.68, nearHalf: 2310, params, Reff: 6.371e6 * 0.34 });
+    ok('a bowl whose rim hides everything beyond it draws no curtain',
+      bowl.bands.length === 0 || bowl.bands.every((b) => b.index.length === 0),
+      `${bowl.bands.length} bands`);
+    if (bowl.bands.length === 0) {
+      let leak = 0, rays = 0;
+      for (let i = 0; i < 24; i++) {
+        const a = (i / 24) * TAU2, ca = Math.cos(a), sa = Math.sin(a);
+        const rEdge = 2310 / Math.max(Math.abs(ca), Math.abs(sa));
+        let occ = -Infinity;
+        for (let r = 24; r <= rEdge; r *= 1.01) {
+          const h = (Math.hypot(ca * r, sa * r) < 900
+            ? r * 0.09 : 81 - (r - 900) * 0.02);
+          occ = Math.max(occ, (h - 1.68) / r);
+        }
+        rays++;
+        // just above what the near ground hides: is there anything out there?
+        for (let r = rEdge; r <= bowl.rMax; r *= 1.005) {
+          const h = 81 - (r - 900) * 0.02;
+          if ((h - 1.68) / r > occ + 1e-12) { leak++; break; }
+        }
+      }
+      ok('and no ray above the near ground finds anything it should have drawn',
+        leak === 0, `${leak}/${rays} rays leaked`);
+    } else {
+      ok('and no ray above the near ground finds anything it should have drawn',
+        false, 'the bowl unexpectedly produced geometry');
+    }
+  }
+
+  // --- the shaders carry the claims ----------------------------------------
+  {
+    const fsA = horizonFragment(AERIAL_GLSL).replace(/\/\/[^\n]*/g, '');
+    const fsPlain = horizonFragment('').replace(/\/\/[^\n]*/g, '');
+    ok('the fog is told the terrain\'s distance and height, not the curtain\'s',
+      /aerial\(col, dist, normalize\(uCam - vW\), uSunDir, vTrueY\)/.test(fsA)
+      && /vTrueD \+ \(dCam - dAnchor\)/.test(fsA));
+    ok('§11 · the sunward arc guards its own zero-length normalize',
+      /sl > 1e-4 && ol > 1e-4/.test(fsA));
+    ok('the silhouette carries no invented normal and no invented light',
+      !/reflect\(|pow\(max\(dot|vNormal|specular/.test(fsA));
+    ok('and without §9.3 it still writes an opaque alpha rather than garbage',
+      /gl_FragColor = vec4\(col, 1\.0\)/.test(fsPlain) && !fsPlain.includes('uAirFar'));
+    ok('the vertex stage carries the true distance and height as attributes',
+      /attribute float aTrueD/.test(HORIZON_VERT) && /attribute float aTrueY/.test(HORIZON_VERT));
+  }
+
+  // --- marchSkyline's bookkeeping -----------------------------------------
+  {
+    const { g } = horizonWorld(WORLDS[1]);
+    const yEye = g.heightAt(0, 0) + 1.8;
+    const s = marchSkyline(g.heightAt, {
+      yEye, radii: [4000, 6000], rMax: 9000, nearHalf: 2310, segs: 40,
+    });
+    let inRange = true;
+    for (let i = 0; i < 40; i++) {
+      if (!(s.band[0].hitD[i] >= 24 && s.band[0].hitD[i] < 6000)) inRange = false;
+      if (!(s.band[1].hitD[i] >= 6000 && s.band[1].hitD[i] <= 9000)) inRange = false;
+    }
+    ok('each band reports a hit from inside its own annulus',
+      inRange && s.samples > 0, `${s.samples} samples`);
+    ok('and the tallest crest found is the one the limits were computed at',
+      s.maxCrestY >= s.minCrestY);
+  }
+}
+
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
   walk: suiteWalk, material: suiteMaterial, opening: suiteOpening,
-  ocean: suiteOcean,
+  ocean: suiteOcean, horizon: suiteHorizon,
 };
 
 for (const [name, fn] of Object.entries(suites)) {

@@ -31,6 +31,10 @@ import { findLandingSite } from './terrain.js';
 import { solveLandingSite } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
 import { AERIAL_GLSL, aerialParams, airFor } from './aerial.js';
+import {
+  NO_LIMIT, buildHorizon, ridgeAlbedo, saturationRadius, HORIZON_VERT,
+  horizonFragment,
+} from './horizon.js';
 import { MATERIAL_GLSL, materialPalette, worldBias } from './material.js';
 import {
   EXTINCTION as EXTINCTION_V, OCEAN_GLSL, buildWaves, significantHeight, waveUniforms,
@@ -160,6 +164,17 @@ const MAT = PARAM('mat') === '1';
  * a sine is symmetric about its own mean and the sea is not.
  */
 const SEA = PARAM('sea') === '1';
+
+/**
+ * §M2 act 6 — far ridges as pure silhouette in haze. Default-off (§7.4).
+ *
+ * Concentric curtains whose crest line is the *measured* skyline of this
+ * world's own height field — the maximum elevation angle along each azimuth,
+ * reprojected onto a convenient radius. See `src/horizon.js` for why measuring
+ * it matters rather than generating it, and for the arithmetic that decides
+ * whether the outermost terrain ring is still contributing anything.
+ */
+const RIDGE = PARAM('ridge') === '1';
 
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
@@ -794,6 +809,15 @@ export class SurfaceScale {
     set(u.mist, air.mist);
     set(u.horizonSun, air.horizonSun);
     set(u.anti, air.anti);
+    // The far ridges' sunward arc is the same reading of the same air, so it
+    // follows the same clock. Left fixed at the 13.5° it was built at, the
+    // horizon would still be catching golden hour at midnight — and it is the
+    // widest object in the frame, so it is the last place to leave a stale
+    // colour that only a dusk capture could reveal.
+    if (this._uRidgeWarm) {
+      this._uRidgeWarm.value.set(air.horizonSun[0] * lum, air.horizonSun[1] * lum,
+        air.horizonSun[2] * lum);
+    }
   }
 
   /**
@@ -966,6 +990,31 @@ export class SurfaceScale {
       { size: EXT * 3.3, res: 104, hole: EXT * 0.48 },
       { size: EXT * 10, res: 72, hole: EXT * 1.58 },
     ];
+
+    // §M2 act 6 · the outermost ring is retired only where the air says it is
+    // invisible, and the air is asked rather than assumed.
+    //
+    // Ring 2 spans 2212 m to 9899 m at the corners, at 194 m per quad, running
+    // the full terrain fragment shader — noise octaves, four triplanar layers
+    // under ?mat=1, a shadow lookup under ?paint=1 — across the whole horizon
+    // band. Under §9.3's `fogFar` it contributes almost nothing: on a temperate
+    // world the fog fraction has already reached 0.987 at its inner edge.
+    //
+    // `saturationRadius()` is that judgement computed. A thin-atmosphere world
+    // sees 17 km and keeps the ring; an airless one has no extinction at all
+    // and keeps it too. Only where the arithmetic says the ring is invisible do
+    // the curtains take its place, which is what makes this cheaper *and*
+    // better rather than one at the expense of the other.
+    this._ridgeStats = null;
+    if (RIDGE) {
+      const ap = aerialParams(pp, this.atmo, 1);
+      const probeY = this.amp * 0.55;
+      const sat = saturationRadius(ap, probeY, ap.hazeH);
+      const ring2Corner = rings[2].size * 0.5 * Math.SQRT2;
+      this._ridgeStats = { sat, ring2Corner, dropped: sat < ring2Corner, probeY };
+      if (sat < ring2Corner) rings.length = 2;
+    }
+
     this.terrain = new THREE.Group();
     for (let ri = 0; ri < rings.length; ri++) {
       const { size, res, hole } = rings[ri];
@@ -996,6 +1045,112 @@ export class SurfaceScale {
     // different shape: an occluder that is not resolved at the map's scale is
     // not an occluder.
     if (PAINT) markCaster(this.terrain.children[0]);
+
+    if (RIDGE) this._buildHorizon(rings);
+  }
+
+  /**
+   * §M2 act 6 · the far ridges.
+   *
+   * Anchored at the spawn rather than at the terrain's origin, because §9.7's
+   * opening frame is composed from the spawn and the silhouette is the largest
+   * thing in it. The cost is a parallax error that grows as the walker leaves
+   * the anchor; at the haze fractions these bands live at — 0.99 and above on a
+   * temperate world — a bearing error is not a visible quantity, and the honest
+   * fix (resampling on the move) would hitch the frame for 18k height
+   * evaluations. Recorded as a limit rather than hidden as a choice.
+   */
+  _buildHorizon(rings) {
+    const t0 = performance.now();     // logged only — never read into generation (§2.3)
+    const outer = rings[rings.length - 1];
+    const ap = aerialParams(this.pp, this.atmo, 1);
+    const sp = this.spawn;
+    const yEye = sp.y + EYE;
+
+    const h = buildHorizon(this._heightFn, {
+      yEye,
+      eyeH: EYE,
+      required: this._ridgeStats.dropped,
+      ox: sp.x, oz: sp.z,
+      eyeR: Math.hypot(sp.x, sp.z),
+      // the curtain must clear the *corner* of the outermost ring that is still
+      // being drawn, not its edge — a circle inscribed in a square leaves four
+      // wedges of terrain outside it, and each one would be occluded by the
+      // thing that is supposed to stand behind it
+      nearHalf: outer.size * 0.5,
+      params: ap,
+      Reff: this.ground.Rworld * 0.34,
+      seaLevel: this.seaLevel,
+    });
+    this._horizon = h;
+    if (!h.bands.length) {
+      // Two ways to get here, and both are the right answer rather than a
+      // failure to build one. Either the ring is still there and the world has
+      // curved away inside its corner — a band past that would be a mountain
+      // range over the horizon — or every planned band was pruned because the
+      // near ground already stands taller than anything behind it. Neither
+      // leaves a hole: a ray above what the near ground hides finds nothing to
+      // draw, which is exactly the pruning test.
+      console.info(`[§M2.6] horizon · nothing visible beyond ${h.r0 | 0} m `
+        + `(limit ${Math.min(h.sat, h.geo) | 0} m) — no bands`);
+      return;
+    }
+
+    const snow = this.pp.iceCap < 1.5 || this.pp.typeId === 3 ? (this.pp.typeId === 3 ? 1 : 0.5) : 0;
+    const toArr = (c) => [c.r, c.g, c.b];
+    const alb = ridgeAlbedo(toArr(this.pp.colA), toArr(this.pp.colB), toArr(this.pp.colC), snow);
+    const warm = AERIAL ? airFor(this._air?.T ?? this.ctx.system?.temp ?? 5778, 13.5).horizonSun
+      : [this.horizonColor.r, this.horizonColor.g, this.horizonColor.b];
+    this._uRidgeWarm = { value: new THREE.Vector3(warm[0], warm[1], warm[2]) };
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uSunDir: this.uSunDir,
+        uCam: this.uCam,
+        // the *same* uniform objects the terrain holds, not copies — `_syncAerial`
+        // writes each air colour once, and a horizon graded by yesterday's air
+        // while the ground uses today's is a seam that only appears at dusk
+        ...(AERIAL ? this._aerialUniforms() : {}),
+        uRidge: { value: new THREE.Vector3(alb[0], alb[1], alb[2]) },
+        // held so `_syncAerial` can walk it with the sun — see the note there
+        uRidgeWarm: this._uRidgeWarm,
+        uHorizon: { value: this.horizonColor },
+        uCentre: { value: new THREE.Vector2(sp.x, sp.z) },
+      },
+      vertexShader: HORIZON_VERT,
+      fragmentShader: horizonFragment(AERIAL ? AERIAL_GLSL : ''),
+      side: THREE.DoubleSide,
+    });
+    this.horizonMat = mat;
+
+    this.horizon = new THREE.Group();
+    let tris = 0;
+    for (const b of h.bands) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(b.position, 3));
+      geo.setAttribute('aH', new THREE.BufferAttribute(b.aH, 1));
+      geo.setAttribute('aTrueD', new THREE.BufferAttribute(b.aTrueD, 1));
+      geo.setAttribute('aTrueY', new THREE.BufferAttribute(b.aTrueY, 1));
+      geo.setIndex(new THREE.BufferAttribute(b.index, 1));
+      geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(sp.x, sp.y, sp.z), b.radius * 1.6);
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.frustumCulled = false;
+      // behind everything that is real, in front of the sky. Depth still
+      // decides — this only spares the fragments a terrain that will overdraw
+      // them anyway, which on a horizon band is most of them.
+      mesh.renderOrder = 0;
+      mesh.userData.noCast = true;
+      this.horizon.add(mesh);
+      tris += b.index.length / 3;
+    }
+    this.scene.add(this.horizon);
+
+    const st = this._ridgeStats;
+    console.info(`[§M2.6] horizon · ${h.bands.length} band${h.bands.length > 1 ? 's' : ''} `
+      + `${h.radii.map((r) => (r | 0)).join('/')} m → ${h.rMax | 0} m · ${tris} tris · `
+      + `${h.sky.samples} height samples · ${(performance.now() - t0) | 0} ms · `
+      + `saturation ${st.sat < NO_LIMIT ? `${st.sat | 0} m` : 'none'} vs ring2 corner `
+      + `${st.ring2Corner | 0} m → outer ring ${st.dropped ? 'retired' : 'kept'}`);
   }
 
   _gridWithHole(size, res, hole) {
