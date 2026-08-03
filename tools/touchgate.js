@@ -188,6 +188,104 @@ ok('a half-pushed thumb writes half a unit of movement',
 ok('screen-up is forward, and lifting releases the axis',
   stick.fwd > 0.9 && stick.after === 0);
 
+// --- the clauses §M7 does not name, and the ones that actually broke -------
+//
+// Every check above passed while the layer was swallowing every touch on three
+// of the six scales. Area, position and fade are what §M7's gate enumerates,
+// and a layer can satisfy all of them and still not work — so these test that
+// the controls *do something*, which is the clause nobody wrote down.
+
+// 1 · the zones must not take the glass from a scale that steers itself.
+//     cosmic, galaxy and system drive OrbitControls off the canvas.
+{
+  const perScale = await page.evaluate(async (origin) => {
+    const out = {};
+    const zones = [...document.querySelectorAll('#tt .zone')];
+    const tt = document.getElementById('tt');
+    for (const kind of ['cosmic', 'surface']) {
+      tt.classList.toggle('walk', kind === 'surface');
+      out[kind] = zones.map((z) => getComputedStyle(z).pointerEvents);
+    }
+    return out;
+  }, site.origin);
+  ok('the zones release the glass on scales that steer themselves',
+    perScale.cosmic.every((v) => v === 'none'),
+    `cosmic: pointer-events ${perScale.cosmic.join(', ')} — OrbitControls needs the canvas`);
+  ok('and take it on scales that have no controller under them',
+    perScale.surface.every((v) => v === 'auto'),
+    `surface: pointer-events ${perScale.surface.join(', ')}`);
+}
+
+// 2 · double-tap is the primary verb of the whole universe, and touch never
+//     fires dblclick on its own
+{
+  const wired = await page.evaluate(() => {
+    let dbl = 0, single = 0;
+    const app = window.AEON;
+    const rd = app._dblclick, rc = app._click;
+    app._dblclick = () => { dbl++; };
+    app._click = () => { single++; };
+    document.getElementById('tt').classList.add('walk');
+    const z = document.querySelector('#tt .zone.r');
+    const tap = (x, y, id) => {
+      z.dispatchEvent(new PointerEvent('pointerdown', { pointerId: id, clientX: x, clientY: y, bubbles: true, pointerType: 'touch' }));
+      z.dispatchEvent(new PointerEvent('pointerup', { pointerId: id, clientX: x, clientY: y, bubbles: true, pointerType: 'touch' }));
+    };
+    tap(300, 500, 21);
+    tap(302, 501, 22);
+    app._dblclick = rd; app._click = rc;
+    return { dbl, single };
+  });
+  ok('two taps in the same place dive, as they do on a desktop',
+    wired.dbl === 1,
+    `${wired.single} select + ${wired.dbl} dive — touch-action:none means a`
+    + ' touch never fires dblclick, so it has to be synthesised');
+}
+
+// 3 · pinch has to reach the scale, or there is no zoom on glass
+{
+  const zoomed = await page.evaluate(() => {
+    let wheels = 0;
+    const s = window.AEON.active();
+    const real = s.onWheel;
+    s.onWheel = () => { wheels++; };
+    document.getElementById('tt').classList.add('walk');
+    const z = document.querySelector('#tt .zone.r');
+    const pd = (id, x, y, t) => z.dispatchEvent(new PointerEvent(t, { pointerId: id, clientX: x, clientY: y, bubbles: true, pointerType: 'touch' }));
+    pd(31, 150, 500, 'pointerdown'); pd(32, 250, 500, 'pointerdown');
+    pd(31, 120, 500, 'pointermove'); pd(32, 300, 500, 'pointermove');
+    pd(31, 100, 500, 'pointermove');
+    pd(31, 100, 500, 'pointerup'); pd(32, 300, 500, 'pointerup');
+    s.onWheel = real;
+    return wheels;
+  });
+  ok('a pinch reaches the scale as altitude', zoomed > 0,
+    `${zoomed} wheel events from one pinch`);
+}
+
+// 4 · every verb the seven-button row had is still reachable
+{
+  const verbs = await page.evaluate(() => {
+    const t = window.AEON.hud.touch;
+    const all = {};
+    for (const k of ['cosmic', 'galaxy', 'system', 'planet', 'surface', 'clouds']) {
+      all[k] = t._verbs(k).map((v) => v.label);
+    }
+    return all;
+  });
+  const every = new Set(Object.values(verbs).flat());
+  const owed = ['somewhere wondrous', 'atlas', 'tour', 'fly me down', 'shuttle',
+    'skiff', 'third person', 'fly', 'ascend'];
+  const missing = owed.filter((v) => !every.has(v));
+  ok('every verb the old seven-button row had is still reachable',
+    missing.length === 0,
+    missing.length ? 'missing: ' + missing.join(', ')
+      : `${every.size} verbs across six scales, one button at rest`);
+  ok('and the primary verb on a scale you cannot fly is the roll of the dice',
+    verbs.cosmic[0] === 'somewhere wondrous',
+    `cosmic primary: ${verbs.cosmic[0]} — the old layer buried it in a panel`);
+}
+
 // --- H kills everything, including the thumb layer -------------------------
 await page.evaluate(() => window.AEON.hud.toggleChrome());
 await page.waitForTimeout(200);
