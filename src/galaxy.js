@@ -511,13 +511,46 @@ export class GalaxyScale {
     core.scale.setScalar(R * 0.16);
     core.renderOrder = 4;
     this.scene.add(core);
+    // The spheroid's unresolved light: the stars too faint to be worth a point
+    // sprite, summed into one soft disc. It is an **LOD stand-in**, and it has
+    // to retire like one.
+    //
+    // It did not. At a distance the galaxy is small in frame and the glow reads
+    // as a halo; fly in and the same sprite is still `R * 1.1` across, so it
+    // floods the whole frame with an additive tan wash. Two things are wrong
+    // with that at once, and the second is an invariant:
+    //
+    //   · it double-counts light — the stars it stands in for are being drawn
+    //     as points at that range, so their brightness is added twice;
+    //   · §2.8 says "in vacuum the background is true #000 and blacks are never
+    //     lifted", and a full-frame additive wash is exactly a lifted black.
+    //
+    // Measured at a third of the default framing: 23.3% of the frame reached
+    // true #000 at distance and 0.4% up close. So it fades out as the stars it
+    // represents become resolvable, which is the same rule §M3's grass rings
+    // follow and the same reason.
     const glow = new THREE.Sprite(new THREE.SpriteMaterial({
       map: tex, color: new THREE.Color(0.16, 0.13, 0.095),
       blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
+      transparent: true, opacity: 1,
     }));
     glow.scale.setScalar(R * 1.1);
     glow.renderOrder = 0;
     this.scene.add(glow);
+    this.haloGlow = glow;
+  }
+
+  /**
+   * How much of the unresolved-light stand-in survives at this camera distance.
+   *
+   * 1 beyond two galaxy radii, 0 inside one. Inside a radius you are among the
+   * stars it was standing in for, and they are all being drawn.
+   */
+  _glowFade() {
+    const R = Math.max(this.params.radius, 1e-6);
+    const d = this.camera.position.length() / R;
+    const t = Math.min(Math.max((d - 1.0) / 1.0, 0), 1);
+    return t * t * (3 - 2 * t);
   }
 
   _buildBackdrop() {
@@ -558,6 +591,8 @@ export class GalaxyScale {
     if (this.coreSprites) for (const { sp, c } of this.coreSprites) sp.position.copy(c);
     if (this.playing) this._updateSupernovae(dt);
     this.uniforms.uTime.value = this.time;
+    // retire the unresolved-light stand-in as its stars become resolvable
+    if (this.haloGlow) this.haloGlow.material.opacity = this._glowFade();
     if (this.nebulaMesh) {
       // world-size → pixel-size conversion for the nebula sprites
       this.nebulaMesh.material.uniforms.uProj.value =
