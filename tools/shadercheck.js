@@ -168,6 +168,7 @@ for (const flags of passes) {
 
   let complete = true;
   let visited = [];
+  const collected = [];
 
   if (stationMode) {
     console.log(`shadercheck · visiting each scale by deep link · ${label}`);
@@ -180,6 +181,14 @@ for (const flags of passes) {
       try {
         await page.goto(url, { waitUntil: 'domcontentloaded' });
         await page.evaluate(SETTLE, stationFrames);
+        // Harvest before the next navigation. `addInitScript` re-runs on every
+        // goto, so `window.__AEON_SHADERS` is a *fresh* array per station —
+        // reading it once at the end reports the last station's shaders and
+        // calls it the whole run. That is the same false green the flight
+        // produces when it times out, arrived at from the other direction.
+        collected.push(...await page.evaluate(() => (window.__AEON_SHADERS || []).map(s => ({
+          kind: s.kind, ok: s.ok, info: s.info, source: s.source,
+        }))));
         // a scale that reports a different kind than the link asked for is a
         // redirect, not a visit — record what actually loaded
         visited.push(await page.evaluate(() => window.AEON?.active?.()?.kind ?? null) || name);
@@ -205,9 +214,10 @@ for (const flags of passes) {
         .concat(window.AEON ? [window.AEON.active().kind] : []));
   }
 
-  const shaders = await page.evaluate(() => (window.__AEON_SHADERS || []).map(s => ({
-    kind: s.kind, ok: s.ok, info: s.info, source: s.source,
-  })));
+  const shaders = stationMode ? collected
+    : await page.evaluate(() => (window.__AEON_SHADERS || []).map(s => ({
+      kind: s.kind, ok: s.ok, info: s.info, source: s.source,
+    })));
 
   renderer = await page.evaluate(() => {
     const gl = document.createElement('canvas').getContext('webgl2');

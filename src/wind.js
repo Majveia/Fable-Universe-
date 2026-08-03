@@ -407,6 +407,8 @@ export function turbulenceAt(W, x, z, t) {
  * `ground.heightAt`, and in the shader it is a bake over the render target's
  * own span. One definition, sampled two ways (§2.7).
  */
+export const GRAD_STENCIL = 15;
+
 export function coupleTerrain(heightAt, x, z, fwd) {
   const h = heightAt(x, z);
   const hs = 0.25 * (heightAt(x + 58, z) + heightAt(x - 58, z)
@@ -418,18 +420,107 @@ export function coupleTerrain(heightAt, x, z, fwd) {
   const shelter = Math.exp(-Math.max(hUp - h, 0) / 23);
   speedup *= lerp(0.42, 1, shelter);
 
-  // the gradient, by central difference at the same 7 m the reference uses
-  const e = 7;
+  // The gradient, by central difference. The reference uses ±7 m; here the
+  // stencil is one texel of the height bake, because a finer difference on a
+  // 14.6 m table reads interpolation rather than terrain.
+  const e = GRAD_STENCIL;
   const gx = (heightAt(x + e, z) - heightAt(x - e, z)) / (2 * e);
   const gz = (heightAt(x, z + e) - heightAt(x, z - e)) / (2 * e);
   const slope = Math.hypot(gx, gz);
-  let cx = -gz, cz = gx;                 // along the contour, either way
-  const cl = Math.hypot(cx, cz) || 1;
-  cx /= cl; cz /= cl;
-  if (cx * fwd[0] + cz * fwd[1] < 0) { cx = -cx; cz = -cz; }
-
-  return { speedup, contour: [cx, cz], slope, crest, shelter };
+  const nl = slope || 1;
+  return { speedup, upslope: [gx / nl, gz / nl], slope, crest, shelter };
 }
+
+/**
+ * Deflect a flow direction around a slope.
+ *
+ * The reference picks a *signed* contour — `contour = perp(grad)`, flipped so
+ * it points downwind — and mixes the flow toward it. That has a defect: a
+ * contour line has no sign, and the `dot(contour, fwd) < 0` test is bistable
+ * exactly where the slope faces along the wind, which is common. Two texels
+ * with nearly identical gradients then deflect 180° apart, and the field grows
+ * a seam wherever a hillside happens to face upwind.
+ *
+ * Damping the up-slope *component* has no sign to choose. Air prefers to go
+ * around a slope rather than over it, so remove the part of the flow that
+ * climbs, in proportion to how steep it is:
+ *
+ *     dir' = normalize(dir − w · n · (dir · n))
+ *
+ * At `w = 0` nothing happens; at `w = 1` the flow is purely along the contour,
+ * and which way along it follows from the flow rather than from a coin toss.
+ * Continuous everywhere, one fewer branch, and the same physics the reference
+ * was reaching for.
+ */
+export function deflect(dirX, dirZ, upslope, slope) {
+  const w = Math.min(Math.max(slope * 2.1, 0), 0.58);
+  const d = dirX * upslope[0] + dirZ * upslope[1];
+  let ox = dirX - w * upslope[0] * d;
+  let oz = dirZ - w * upslope[1] * d;
+  const l = Math.hypot(ox, oz) || 1;
+  return [ox / l, oz / l, w];
+}
+
+// ---------------------------------------------------------------------------
+// the ground, as the shader can read it
+//
+// The coupling above wants `heightAt` inside a fragment shader, and AEON has no
+// GLSL height function at surface scale — heights live in vertex positions and
+// in `ground.heightAt` on the CPU. So the ground is baked once into a texture.
+//
+// Two things make that honest rather than a shortcut. It is the **same
+// function**, tabulated: `ground.js` owns the one definition of walkable ground
+// and this samples it rather than re-deriving it, so there is nothing else for
+// it to disagree with. And the resolution is chosen against what the coupling
+// varies by rather than against what looks generous — the crest filter is a
+// ±58 m stencil and the shelter lookup is 48 m upwind, so a 14.6 m texel is a
+// quarter of the finest term.
+//
+// It also bounds the gradient stencil. The reference reads its contour
+// deflection off a ±7 m difference; on a 14.6 m table that is reading
+// interpolation rather than terrain, so the stencil widens to one texel. Stated
+// here because it is a real loss of detail accepted for a real reason.
+
+/** height-bake resolution over ±extent — see the note above on why not higher */
+export const HEIGHT_RES = 192;
+
+/**
+ * Bake the walkable ground into a table the wind can read.
+ *
+ * The cost is why the resolution is not higher: `heightAt` runs at roughly
+ * 4.6 µs in the browser (measured — `src/horizon.js` does 16k samples in 74 ms),
+ * so 192² is about 170 ms at load. 512² would be 1.2 s against §5's 2.5 s to
+ * interactive, for detail the coupling cannot use.
+ */
+export function bakeHeight(heightAt, extent, res = HEIGHT_RES) {
+  const data = new Float32Array(res * res);
+  const step = (extent * 2) / (res - 1);
+  for (let j = 0; j < res; j++) {
+    const z = -extent + j * step;
+    for (let i = 0; i < res; i++) {
+      data[j * res + i] = heightAt(-extent + i * step, z);
+    }
+  }
+  return { data, res, extent, texel: step };
+}
+
+/** the same bilinear lookup the shader performs — the CPU mirror of the bake */
+export function sampleBake(bake, x, z) {
+  const { data, res, extent } = bake;
+  const u = ((x + extent) / (extent * 2)) * (res - 1);
+  const v = ((z + extent) / (extent * 2)) * (res - 1);
+  const cu = Math.min(Math.max(u, 0), res - 1);
+  const cv = Math.min(Math.max(v, 0), res - 1);
+  const i0 = Math.floor(cu), j0 = Math.floor(cv);
+  const i1 = Math.min(i0 + 1, res - 1), j1 = Math.min(j0 + 1, res - 1);
+  const fx = cu - i0, fz = cv - j0;
+  const a = data[j0 * res + i0], b = data[j0 * res + i1];
+  const c = data[j1 * res + i0], d = data[j1 * res + i1];
+  return (a + (b - a) * fx) * (1 - fz) + (c + (d - c) * fx) * fz;
+}
+
+/** a `heightAt` backed by a bake, so the coupling can be tested as it renders */
+export const bakedHeight = (bake) => (x, z) => sampleBake(bake, x, z);
 
 /**
  * The whole field at a point — the CPU mirror `WIND_GLSL` must match.
@@ -455,11 +546,8 @@ export function windAt(W, x, z, t, height, heightAt = null) {
   if (heightAt) {
     const c = coupleTerrain(heightAt, x, z, m.fwd);
     speedup = c.speedup;
-    const w = Math.min(Math.max(c.slope * 2.1, 0), 0.58);
-    dirX = lerp(dirX, c.contour[0], w);
-    dirZ = lerp(dirZ, c.contour[1], w);
-    const dl = Math.hypot(dirX, dirZ) || 1;
-    dirX /= dl; dirZ /= dl;
+    const d = deflect(dirX, dirZ, c.upslope, c.slope);
+    dirX = d[0]; dirZ = d[1];
   }
 
   const spd = Math.hypot(vx, vz) * speedup * (1 + g.gust * 1.35);
@@ -651,13 +739,17 @@ export const WIND_FIELD_GLSL = /* glsl */`
       float hUp = wTerrainH(p - m.fwd * 48.0);
       speedup *= mix(0.42, 1.0, exp(-max(hUp - h, 0.0) / 23.0));
 
-      float e = 7.0;
+      float e = ${GRAD_STENCIL.toFixed(1)};
       vec2 grad = vec2(wTerrainH(p + vec2(e, 0.0)) - wTerrainH(p - vec2(e, 0.0)),
                        wTerrainH(p + vec2(0.0, e)) - wTerrainH(p - vec2(0.0, e))) / (2.0 * e);
       float slope = length(grad);
-      vec2 contour = normalize(vec2(-grad.y, grad.x) + vec2(1e-6));
-      if (dot(contour, m.fwd) < 0.0) contour = -contour;
-      dir = normalize(mix(dir, contour, clamp(slope * 2.1, 0.0, 0.58)) + vec2(1e-6));
+      // Damp the up-slope component rather than mixing toward a signed contour.
+      // A contour line has no sign, and choosing one on dot(contour, fwd) is
+      // bistable exactly where a hillside faces upwind — see deflect() in
+      // src/wind.js for the seam that produces.
+      vec2 n = grad / max(slope, 1e-6);
+      float w = clamp(slope * 2.1, 0.0, 0.58);
+      dir = normalize(dir - w * n * dot(dir, n) + vec2(1e-9));
     }
 
     float spd = length(v) * speedup * (1.0 + g.x * 1.35);

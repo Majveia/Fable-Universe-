@@ -52,8 +52,9 @@ import {
 import {
   CELL_ADV, LANE, PROFILE_NORM, RHO_EARTH, SURFACE_FRACTION, SWING_DIR,
   SWING_SPEED, TURB_FALLOFF, TURB_OCTAVES, WIND_GLSL, airDensity, baseWindSpeed,
-  cellAt, gustAt, hashi, makeWind, meanFlow, noise1, noise3, turbulenceAt,
-  windAt, windForceScale, windProfile,
+  GRAD_STENCIL, bakeHeight, bakedHeight, cellAt, coupleTerrain, deflect, gustAt, hashi,
+  makeWind, meanFlow, noise1, noise3, turbulenceAt, windAt, windForceScale,
+  windProfile,
 } from '../src/wind.js';
 
 let failures = 0;
@@ -3284,6 +3285,79 @@ function suiteWind() {
     }
     ok('both noises stay inside [-1, 1]', nlo >= -1 && nhi <= 1,
       `${nlo.toFixed(3)}…${nhi.toFixed(3)}`);
+  }
+
+  // --- the height bake ------------------------------------------------------
+  //
+  // The claim act 2 makes is not "a texture is close enough to a function" —
+  // it is that *the coupling terms* computed off the bake match the ones
+  // computed off the ground, at a resolution chosen against what those terms
+  // actually vary by. So the terms are what get compared, not the heights.
+  {
+    const g = makeGround(WORLDS[1].pp, WORLDS[1].dir);
+    const bake = bakeHeight(g.heightAt, 1400);
+    const baked = bakedHeight(bake);
+
+    ok('the bake resolves finer than the coupling\'s finest stencil',
+      bake.texel * 3 < 48 && bake.texel * 3 < 58,
+      `${bake.texel.toFixed(1)} m per texel vs a 48 m shelter lookup`);
+
+    // heights first, so a failure downstream can be attributed
+    let hWorst = 0, hN = 0;
+    for (let x = -1300; x <= 1300; x += 37) {
+      for (let z = -1300; z <= 1300; z += 41) {
+        hWorst = Math.max(hWorst, Math.abs(baked(x, z) - g.heightAt(x, z))); hN++;
+      }
+    }
+    // bilinear on a table is exact at the nodes and worst mid-cell; the bound
+    // is the terrain's own curvature over a texel, not an arbitrary tolerance
+    ok('and reproduces the ground to within its own interpolation error',
+      hWorst < g.amp * 0.05, `worst ${hWorst.toFixed(2)} m over ${hN} samples `
+      + `(amp ${g.amp.toFixed(0)} m)`);
+
+    // now the terms that matter
+    let sWorst = 0, dWorst = 0, n = 0;
+    const fwd = [0.6, 0.8];
+    for (let x = -1200; x <= 1200; x += 53) {
+      for (let z = -1200; z <= 1200; z += 59) {
+        const a = coupleTerrain(g.heightAt, x, z, fwd);
+        const b = coupleTerrain(baked, x, z, fwd);
+        sWorst = Math.max(sWorst, Math.abs(a.speedup - b.speedup));
+        // Compare the *deflection*, which is what enters the field. It is
+        // continuous by construction now — see `deflect()` on why mixing
+        // toward a signed contour was not.
+        const da = deflect(fwd[0], fwd[1], a.upslope, a.slope);
+        const db = deflect(fwd[0], fwd[1], b.upslope, b.slope);
+        dWorst = Math.max(dWorst, Math.abs(da[0] - db[0]) + Math.abs(da[1] - db[1]));
+        n++;
+      }
+    }
+    ok('§6 M3 · the speed-up and shelter survive the bake',
+      sWorst < 0.25, `worst Δspeedup ${sWorst.toFixed(3)} over ${n} samples`);
+    ok('and the deflection it actually applies survives it too',
+      dWorst < 0.35, `worst Δdeflection ${dWorst.toFixed(3)} of a 0.58 maximum`);
+
+    // the coupling has to actually do something, or agreeing is meaningless
+    let lo = Infinity, hi = -Infinity;
+    for (let x = -1200; x <= 1200; x += 31) {
+      for (let z = -1200; z <= 1200; z += 37) {
+        const c = coupleTerrain(baked, x, z, fwd);
+        lo = Math.min(lo, c.speedup); hi = Math.max(hi, c.speedup);
+      }
+    }
+    ok('and the terrain genuinely speeds the wind over crests and shelters its lee',
+      hi > 1.3 && lo < 0.8, `speedup spans ${lo.toFixed(2)}–${hi.toFixed(2)}`);
+
+    // §2.3 — the bake is a tabulation, so it inherits determinism
+    const again = bakeHeight(g.heightAt, 1400);
+    let same = again.data.length === bake.data.length;
+    for (let i = 0; same && i < bake.data.length; i++) if (again.data[i] !== bake.data[i]) same = false;
+    ok('§2.3 · two bakes of the same ground are bit-identical', same);
+
+    // the gradient stencil is one texel, not the reference's 7 m
+    ok('the gradient stencil is one texel, because a finer one reads interpolation',
+      Math.abs(GRAD_STENCIL - bake.texel) < 2,
+      `stencil ${GRAD_STENCIL} m · texel ${bake.texel.toFixed(1)} m`);
   }
 
   // --- the GLSL carries the same constants and the same shape --------------
