@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RNG, arand, galaxyName, hash, starName } from './rng.js';
-import { makeNebulaSprites, softDotTexture, galaxyAtlasTexture, makeVolumetricNebula } from './nebula.js';
+import { bulgeTexture, makeNebulaSprites, softDotTexture, galaxyAtlasTexture, makeVolumetricNebula } from './nebula.js';
 import { COSMO } from './cosmology.js';
 import { CollisionSim, COLLISION_NOTE } from './collision.js';
 
@@ -291,13 +291,16 @@ export class GalaxyScale {
         this.starData = this.sim.starData;
         this.scene.add(this.sim.points);
         this.uniforms = { uTime: { value: 0 }, uVrot: { value: 0 } }; // sky compat
-        const coreTex = softDotTexture();
+        const coreTex = bulgeTexture();
         this.coreSprites = [this.sim.c1, this.sim.c2].map((c, i) => {
           const sp = new THREE.Sprite(new THREE.SpriteMaterial({
             map: coreTex, color: i === 0 ? new THREE.Color(0.65, 0.55, 0.4) : new THREE.Color(0.42, 0.5, 0.65),
             blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
           }));
-          sp.scale.setScalar(P.radius * (i === 0 ? 0.28 : 0.2));
+          // the same r^¼ profile as the single-galaxy nucleus, for the same
+          // reason — two Gaussians clipping into each other was worse, not
+          // better, than one
+          sp.scale.setScalar(P.radius * (i === 0 ? 0.46 : 0.34));
           this.scene.add(sp);
           return { sp, c };
         });
@@ -504,11 +507,23 @@ export class GalaxyScale {
   _buildCore() {
     const R = this.params.radius;
     const tex = softDotTexture();
+    // The nucleus, on a de Vaucouleurs r^¼ profile rather than a Gaussian.
+    //
+    // A Gaussian is flat near its centre, so an additive sprite at `R * 0.16`
+    // clipped across a disc a sixth of the galaxy wide and the core read as a
+    // white hole with nothing in it. The r^¼ law is a cusp with faint wings:
+    // the saturated part is small, the falloff around it stays readable, and
+    // the bulge stars — 22% of everything drawn, and already there — carry the
+    // extended light the old sprite was standing in for.
+    //
+    // §9.6 rules that the sun disc is "painted 3× oversize and never blown
+    // out". Same principle one scale up: brightness reads as a bright *small*
+    // thing with a gradient, not as a large flat maximum.
     const core = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: tex, color: new THREE.Color(0.85, 0.7, 0.5),
+      map: bulgeTexture(), color: new THREE.Color(0.85, 0.7, 0.5),
       blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
     }));
-    core.scale.setScalar(R * 0.16);
+    core.scale.setScalar(R * 0.30);
     core.renderOrder = 4;
     this.scene.add(core);
     // The spheroid's unresolved light: the stars too faint to be worth a point
