@@ -85,3 +85,38 @@ export const COSMO = {
 
   E,
 };
+
+// ---------------------------------------------------------------------------
+// epochs
+
+export const A_START = 0.048;     // z ≈ 20 — where the *simulation* begins
+
+/**
+ * Where the *camera arrives*. §M1's opening frame, and a composition choice
+ * rather than a physical one — the same kind of choice §9.7 makes when it
+ * forces the spawn sun into an 8–18° band.
+ *
+ * The universe used to open at `A_START`, and at `A_START` there is no cosmic
+ * web to look at. Measured on the seed's own mode set: σ(δ) = 0.094 and
+ * **0.0%** of the volume is overdense — a 9% ripple on a uniform grid, which is
+ * what it looked like, a field of speckle. The web becomes legible where σ(δ)
+ * crosses 1, at a ≈ 0.7, and reads best around the present day:
+ *
+ *     a      σ(δ)    |δ|>1
+ *     0.048  0.094    0.0%     ← what the opening frame was showing
+ *     0.25   0.486    3.8%
+ *     0.45   0.851   24.4%
+ *     1.0    1.541   52.5%     ← A_OPEN
+ *     2.5    2.022   62.7%     (saturating; nodes eat the filaments)
+ *
+ * So you arrive at the universe as it is *now*, with a web in it, and the
+ * deep-time lever still runs both ways — scrub back and watch it un-form,
+ * which is the thing the old opening was trying to show and buried under
+ * nineteen seconds of waiting. The tour still resets to `A_START` to replay
+ * formation from the beginning, because there the wait is the point.
+ *
+ * It is free on the default path: the linear/Zel'dovich field is analytic in
+ * D(a), so arriving at a = 1 is one uniform rather than a simulation to
+ * fast-forward.
+ */
+export const A_OPEN = 1.0;
