@@ -27,6 +27,7 @@ import {
   SUN_BAND, frameAt, macroHeight, scoreComposition, solveLandingSite,
 } from '../src/landing.js';
 import { makeGround } from '../src/ground.js';
+import { GAIT, Walker, gravityOf, replay } from '../src/avatar.js';
 import {
   AERIAL_ALPHA_IS_CLARITY, AERIAL_GLSL, EARTH_AIR, HAZE_FRACTION, REFERENCE_AIR,
   REFERENCE_PARAMS, aerial, aerialParams, airFor, molarMass, scaleHeight,
@@ -1446,17 +1447,21 @@ const only = process.argv[2];
 // the relief ramp pass unseen, and those are the terms most likely to be
 // tuned.
 
+// Two pinned worlds, shared by the `ground` and `walk` suites. Module scope
+// rather than one copy each: the walk suite asserts that a body never
+// penetrates *this* ground, which is only a meaningful claim while both suites
+// are talking about the same terrain.
+const WORLDS = [
+  { label: 'coastal shelf', relief: 24.4, sum: -10717.5872,
+    dir: [0.31, 0.62, 0.72],
+    pp: { seed: 0x5eed1337, typeId: 1, noiseSeed: 424242, oceanLevel: 0.012, radiusE: 1.04 } },
+  { label: 'mountainous world', relief: 764.6, sum: 189612.3066,
+    dir: [0.1, 0.9, 0.42],
+    pp: { seed: 0x5eed1337, typeId: 0, noiseSeed: 7777, oceanLevel: -1, radiusE: 0.55 } },
+];
+
 function suiteGround() {
   console.log('\nground — the one definition of the walkable ground (§2.7, §2.3)');
-
-  const WORLDS = [
-    { label: 'coastal shelf', relief: 24.4, sum: -10717.5872,
-      dir: [0.31, 0.62, 0.72],
-      pp: { seed: 0x5eed1337, typeId: 1, noiseSeed: 424242, oceanLevel: 0.012, radiusE: 1.04 } },
-    { label: 'mountainous world', relief: 764.6, sum: 189612.3066,
-      dir: [0.1, 0.9, 0.42],
-      pp: { seed: 0x5eed1337, typeId: 0, noiseSeed: 7777, oceanLevel: -1, radiusE: 0.55 } },
-  ];
 
   for (const w of WORLDS) {
     const g = makeGround(w.pp, w.dir);
@@ -1511,10 +1516,300 @@ function suiteGround() {
 }
 
 
+// ---------------------------------------------------------------------------
+// suite: walk
+//
+// §M4's gate is mostly about feel — "input→visible response ≤ 2 frames", "no
+// frame where control fights the camera" — and no test scores feel. The physics
+// underneath it is not about feel at all, and all of it is decidable: a
+// ballistic arc has a closed form, a coyote window is an exact number of
+// frames, a capsule either penetrates the height field or it does not.
+//
+// So this is the part of M4 that can be settled without a GPU, and it is
+// settled here rather than by looking at it. Every check computes the answer a
+// second, independent way — against `v0·t − ½g·t²`, against `makeGround()`'s
+// own height field, against an analytic step count — rather than against a
+// snapshot of the controller, which would only prove it had not changed.
+
+function suiteWalk() {
+  console.log('\nwalk — §M4\'s controller, before it enters the render loop');
+
+  const flat = () => new Walker({ heightAt: () => 0, gravity: 9.80665 });
+  const still = () => ({ move: { x: 0, y: 0 } });
+  const DT = 1 / 120;
+
+  // --- gravity comes from the world, not from a constant --------------------
+  {
+    ok('gravity is GM/R² from the world\'s own mass and radius',
+      Math.abs(gravityOf({ massE: 1, radiusE: 1 }) - 9.80665) < 1e-9
+      && Math.abs(gravityOf({ massE: 0.107, radiusE: 0.532 }) - 3.711) < 0.02,
+      `Earth ${gravityOf({ massE: 1, radiusE: 1 }).toFixed(3)}`
+      + ` · Mars ${gravityOf({ massE: 0.107, radiusE: 0.532 }).toFixed(3)} m/s²`
+      + ' (measured 3.721)');
+  }
+
+  // --- the ballistic arc, against its closed form ---------------------------
+  {
+    const w = flat();
+    w.place(0, 0);
+    // hold jump for the whole flight so the variable-height cut never fires
+    const t = replay(w, () => ({ move: { x: 0, y: 0 }, jump: true }), DT, 260);
+    const v0 = Math.sqrt(2 * 9.80665 * GAIT.jumpHeight);
+    let worst = 0, apex = 0, apexT = 0;
+    // The impulse is applied and integrated inside the same step, so the state
+    // recorded as frame 0 is already one dt into the flight. Comparing frame i
+    // against t = i·dt rather than (i+1)·dt reports 26 mm of "integration
+    // error" that is entirely the test's own indexing.
+    for (let i = 0; i < t.length && !(t[i].grounded && i > 4); i++) {
+      const tt = (i + 1) * DT;
+      const want = v0 * tt - 0.5 * 9.80665 * tt * tt;
+      worst = Math.max(worst, Math.abs(t[i].y - want));
+      if (t[i].y > apex) { apex = t[i].y; apexT = tt; }
+    }
+    // Trapezoidal integration is *exact* under constant acceleration, so this
+    // is a real equality and not a tolerance on a first-order scheme. Euler
+    // would land 27 mm low by the end of the arc.
+    ok('a jump follows v₀t − ½gt² exactly, not approximately',
+      worst < 1e-12, `largest deviation over the whole arc: ${(worst * 1e6).toFixed(3)} µm`);
+    ok('and it reaches the height it was asked for',
+      Math.abs(apex - GAIT.jumpHeight) < 0.01,
+      `apex ${apex.toFixed(3)} m at t = ${apexT.toFixed(2)} s (asked for ${GAIT.jumpHeight})`);
+  }
+
+  // --- the same jump on a smaller world -------------------------------------
+  {
+    const moon = new Walker({ heightAt: () => 0, gravity: gravityOf({ massE: 0.0123, radiusE: 0.273 }) });
+    moon.place(0, 0);
+    const t = replay(moon, () => ({ move: { x: 0, y: 0 }, jump: true }), DT, 900);
+    const apex = Math.max(...t.map((s) => s.y));
+    // v₀ is solved from the world's own g, so the *height* is the constant and
+    // the launch speed is what changes. On the Moon that is the same 0.55 m,
+    // reached far more slowly — which is right, and is why there is no
+    // per-world jump constant anywhere in the controller.
+    ok('a low-gravity world gets the same jump height, taken more slowly',
+      Math.abs(apex - GAIT.jumpHeight) < 0.01,
+      `g = ${moon.gravity.toFixed(3)} m/s² → apex ${apex.toFixed(3)} m`);
+  }
+
+  // --- variable height ------------------------------------------------------
+  {
+    const held = flat(); held.place(0, 0);
+    const apexHeld = Math.max(...replay(held, () => ({ move: { x: 0, y: 0 }, jump: true }), DT, 260).map((s) => s.y));
+    const tapped = flat(); tapped.place(0, 0);
+    const apexTap = Math.max(...replay(tapped, (i) => ({ move: { x: 0, y: 0 }, jump: i < 6 }), DT, 260).map((s) => s.y));
+    ok('releasing the button early cuts the rise',
+      apexTap < apexHeld * 0.65 && apexTap > 0.02,
+      `held ${apexHeld.toFixed(3)} m · tapped ${apexTap.toFixed(3)} m`);
+
+    // and the cut must not be able to *speed up* a fall
+    const late = flat(); late.place(0, 0);
+    const tl = replay(late, (i) => ({ move: { x: 0, y: 0 }, jump: i < 40 }), DT, 260);
+    const th = replay(flat(), () => ({ move: { x: 0, y: 0 }, jump: true }), DT, 260);
+    ok('and releasing during the fall changes nothing',
+      Math.abs(tl[200].y - th[200].y) < 1e-9,
+      'a bare velocity cut would have made the descent faster');
+  }
+
+  // --- coyote time, in exact frames ----------------------------------------
+  {
+    // a cliff at x = 0: ground 0 behind, -50 ahead
+    const cliff = (x) => (x < 0 ? 0 : -50);
+    // What distinguishes a jump that fired from one that did not is the *peak*
+    // reached after leaving the edge, not the state at the end of the fall —
+    // both bodies are at the bottom of a 50 m drop by then, and the first
+    // version of this check read exactly that and called it a failure.
+    const peakAfterEdge = (delayFrames) => {
+      const w = new Walker({ heightAt: (x) => cliff(x), gravity: 9.80665 });
+      w.place(-2, 0);
+      let off = -1, peak = -Infinity;
+      for (let i = 0; i < 600; i++) {
+        const airborne = off >= 0;
+        const sinceOff = airborne ? (i - off) * DT : 0;
+        w.step(DT, {
+          // walk east until the ground goes, then press jump after the delay
+          move: { x: 0, y: airborne ? 0 : 1 },
+          // held from the press onward, so the variable-height cut does not
+          // confound the measurement — a two-frame tap peaks at 0.15 m rather
+          // than 0.55 m, which is the cut working, not the window failing
+          jump: airborne && sinceOff >= delayFrames * DT,
+          sprint: false,
+        }, -Math.PI / 2);
+        if (off < 0 && !w.grounded) off = i;
+        if (off >= 0) peak = Math.max(peak, w.pos.y);
+        if (off >= 0 && i - off > 200) break;
+      }
+      return peak;
+    };
+    // walk east: forward at yaw 0 is −Z, so +X is yaw −π/2
+    const early = peakAfterEdge(2);    // 0.017 s after the edge — inside
+    const late = peakAfterEdge(40);    // 0.33 s after — well outside 0.12 s
+    ok('a jump just after walking off an edge still fires',
+      early > 0.2,
+      `coyote window ${GAIT.coyote}s · rose ${early.toFixed(3)} m above the edge`);
+    ok('and one long after the edge does not',
+      late < 0.001 && late < early - 0.2,
+      `same press ${(40 * DT).toFixed(2)}s later peaks at ${late.toFixed(3)} m —`
+      + ' the window is a property of the body, not of the input');
+  }
+
+  // --- the capsule never gets inside the ground -----------------------------
+  {
+    const g = makeGround(WORLDS[0].pp, WORLDS[0].dir);
+    const w = new Walker({ heightAt: g.heightAt, gravity: 9.80665 });
+    w.place(0, 0);
+    let worst = 0, frames = 0;
+    // a long traverse with turns, jumps and sprints — the whole route, not a
+    // straight line, because a straight line never meets a slope side-on
+    const t = replay(w, (i) => ({
+      move: { x: Math.sin(i * 0.004), y: 1 },
+      jump: i % 190 === 0,
+      sprint: (i % 400) < 200,
+    }), 1 / 60, 6000, 0);
+    for (const s of t) {
+      frames++;
+      const floor = g.heightAt(s.x, s.z);
+      worst = Math.min(worst, s.y - floor);
+    }
+    ok('§M4 · the body never penetrates the height field',
+      worst > -GAIT.skin - 1e-6,
+      `deepest the feet ever got below the ground over ${frames} frames:`
+      + ` ${(worst * 1000).toFixed(3)} mm`);
+
+    // and it stays finite — a NaN in a controller is a body that vanishes
+    ok('and every position on the route is finite',
+      t.every((s) => Number.isFinite(s.x) && Number.isFinite(s.y) && Number.isFinite(s.z)));
+  }
+
+  // --- the slope limit actually limits ---------------------------------------
+  {
+    // a 70° ramp rising to the east — steeper than the 50° limit
+    const ramp = (x) => (x <= 0 ? 0 : x * Math.tan(70 * Math.PI / 180));
+    const w = new Walker({ heightAt: (x) => ramp(x), gravity: 9.80665 });
+    w.place(-3, 0);
+    replay(w, () => ({ move: { x: 0, y: 1 }, sprint: true }), 1 / 60, 900, -Math.PI / 2);
+    ok('a slope past the limit cannot be walked up',
+      w.pos.y < 2.0,
+      `after 15 s of sprinting into a 70° face the body is ${w.pos.y.toFixed(2)} m up`);
+
+    // ...but a gentle one can
+    const easy = new Walker({ heightAt: (x) => (x <= 0 ? 0 : x * Math.tan(20 * Math.PI / 180)), gravity: 9.80665 });
+    easy.place(-3, 0);
+    replay(easy, () => ({ move: { x: 0, y: 1 } }), 1 / 60, 900, -Math.PI / 2);
+    ok('and a walkable one is walked up',
+      easy.pos.y > 5,
+      `20° slope, 15 s → ${easy.pos.y.toFixed(2)} m up`);
+  }
+
+  // --- step-up: a kerb is not a cliff ---------------------------------------
+  {
+    const kerb = (x, h) => (x < 0 ? 0 : h);
+    const cross = (h) => {
+      const w = new Walker({ heightAt: (x) => kerb(x, h), gravity: 9.80665 });
+      w.place(-2, 0);
+      replay(w, () => ({ move: { x: 0, y: 1 } }), 1 / 60, 300, -Math.PI / 2);
+      return w.pos.x;
+    };
+    ok('a step inside the step-up height is walked over without jumping',
+      cross(0.3) > 0.5, `0.30 m kerb → reached x = ${cross(0.3).toFixed(2)}`);
+    ok('and a wall above it is not',
+      cross(3.0) < 0.35, `3.0 m wall → stopped at x = ${cross(3.0).toFixed(2)}`);
+  }
+
+  // --- analog input stays analog --------------------------------------------
+  {
+    const speedFor = (mag) => {
+      const w = flat(); w.place(0, 0);
+      replay(w, () => ({ move: { x: 0, y: mag } }), 1 / 60, 400, 0);
+      return Math.hypot(w.vel.x, w.vel.z);
+    };
+    const half = speedFor(0.5), full = speedFor(1);
+    ok('a half-pushed stick walks at half speed',
+      Math.abs(half / full - 0.5) < 0.02,
+      `${half.toFixed(3)} vs ${full.toFixed(3)} m/s — the old touch layer`
+      + ' synthesised keystrokes and threw this away');
+
+    // and a stick in the corner is not faster than a stick pushed straight
+    const w = flat(); w.place(0, 0);
+    replay(w, () => ({ move: { x: 1, y: 1 } }), 1 / 60, 400, 0);
+    const diag = Math.hypot(w.vel.x, w.vel.z);
+    ok('and a diagonal is not faster than a straight line',
+      Math.abs(diag - full) < 0.02, `diagonal ${diag.toFixed(3)} m/s`);
+  }
+
+  // --- the gait clock is one clock ------------------------------------------
+  {
+    const w = flat(); w.place(0, 0);
+    const SEC = 20;
+    replay(w, () => ({ move: { x: 0, y: 1 } }), 1 / 60, 60 * SEC, 0);
+    const spd = GAIT.walk;
+    // stepFreq = 0.58 + 0.34·v cycles/s, two footfalls per cycle; the first
+    // fractions of a second are spent accelerating, so allow one step of slack
+    const want = (0.58 + 0.34 * spd) * 2 * SEC;
+    ok('footfalls come out at the analytic rate for the speed walked',
+      Math.abs(w.steps - want) < 4,
+      `${w.steps} footfalls in ${SEC}s · analytic ${want.toFixed(1)}`);
+
+    // The head bob cannot drift from the footsteps because it is computed from
+    // the same phase. Assert the coupling rather than the values: bob is at
+    // twice the step rate, so it returns to its own sign every half-step.
+    ok('head bob, sway and footfall all derive from one phase',
+      Math.abs(w.bobY) < 0.02 && Math.abs(w.bobX) < 0.02 && w.stepFreq > 0,
+      `bob ±${Math.abs(w.bobY).toFixed(4)} m at ${w.stepFreq.toFixed(2)} steps/s`);
+
+    const idle = flat(); idle.place(0, 0);
+    replay(idle, still, 1 / 60, 300, 0);
+    ok('and standing still produces no footsteps at all',
+      idle.steps === 0 && idle.stepFreq === 0);
+  }
+
+  // --- §2.3 · the same trace twice is the same trajectory -------------------
+  {
+    const g = makeGround(WORLDS[0].pp, WORLDS[0].dir);
+    const trace = (i) => ({
+      move: { x: Math.sin(i * 0.011), y: Math.cos(i * 0.007) },
+      jump: i % 97 === 0,
+      sprint: (i % 300) < 150,
+    });
+    const once = () => {
+      const w = new Walker({ heightAt: g.heightAt, gravity: 9.80665 });
+      w.place(12, -30);
+      const t = replay(w, trace, 1 / 60, 3000, 0.7);
+      let sum = 0;
+      for (const s of t) sum += s.x + s.y * 3 + s.z * 7 + s.vy * 11;
+      return sum;
+    };
+    const a = once(), b = once();
+    ok('§2.3 · the same trace at the same dt is bit-identical',
+      a === b, `checksum ${a.toFixed(6)} twice`);
+
+    // Determinism is not frame-rate independence, and conflating them is how a
+    // controller ends up with dt-dependent branches. What has to hold is that
+    // the *trajectory* is close at different dt, not identical.
+    const at = (dt, frames) => {
+      const w = new Walker({ heightAt: g.heightAt, gravity: 9.80665 });
+      w.place(12, -30);
+      replay(w, (i) => trace(Math.floor(i * dt * 60)), dt, frames, 0.7);
+      return w.pos;
+    };
+    const p60 = at(1 / 60, 1200), p120 = at(1 / 120, 2400);
+    const drift = Math.hypot(p60.x - p120.x, p60.z - p120.z);
+    ok('and halving the timestep lands in the same place, not a different one',
+      drift < 1.0, `20 s of walking: ${drift.toFixed(3)} m apart at 60 vs 120 Hz`);
+  }
+
+  // --- the constitution's own numbers ---------------------------------------
+  {
+    ok('§6 M4 · eye height 1.68 m and FOV 52, which the reference also uses',
+      GAIT.eye === 1.68 && GAIT.fov === 52,
+      'hoshi-no-tani.html:181-185 agrees to the digit');
+  }
+}
+
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
+  walk: suiteWalk,
 };
 
 for (const [name, fn] of Object.entries(suites)) {
