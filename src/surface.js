@@ -33,7 +33,7 @@ import { PAINT_GLSL, lightFor } from './paint.js';
 import { AERIAL_GLSL, aerialParams, airFor } from './aerial.js';
 import { GAIT, Walker, gravityOf } from './avatar.js';
 import { CameraRig } from './camera.js';
-import { attachKeyboard, input, jumpHeld, tickInput } from './input.js';
+import { attachKeyboard, input, jumpHeld } from './input.js';
 import { makeGround } from './ground.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
 import { qInt } from './quality.js';
@@ -1348,7 +1348,6 @@ export class SurfaceScale {
       w.grounded = true;
     }
 
-    tickInput(dt);
     w.step(dt, {
       move: input.move,
       jump: jumpHeld(),

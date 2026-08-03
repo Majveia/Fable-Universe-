@@ -25,6 +25,7 @@ import { advance as advanceClock, resetClock } from './clock.js';
 import { Bench, BENCH_ON, BENCH_SEED } from './bench.js';
 import { Q, pixelRatio } from './quality.js';
 import { paintForScale } from './print.js';
+import { pinIdleClock, tickInput } from './input.js';
 
 const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE, planet: PLANET_NOTE };
 const HINTS = {
@@ -128,6 +129,10 @@ class App {
     }, 1400);
 
     // the instrument, if this run is a measurement (§5) — null otherwise
+    // a pinned timestep pins the chrome's idle clock too, so a capture of
+    // frame N shows the same HUD on every machine
+    pinIdleClock(this.fixedDt);
+
     this.bench = Bench.maybe(this);
 
     this.renderer.setAnimationLoop(() => this._frame());
@@ -423,7 +428,11 @@ class App {
         case 'Period': case 'Equal': s.speedUp?.(); break;
         case 'BracketLeft': s.scrub?.(-1); break;
         case 'BracketRight': s.scrub?.(1); break;
-        case 'KeyH': document.querySelectorAll('.hud').forEach(el => el.style.visibility = el.style.visibility === 'hidden' ? '' : 'hidden'); break;
+        // One toggle, not a walk over `.hud` setting each element's visibility
+        // independently — that version could desync, and it missed `#touch`
+        // entirely, so the one key whose whole job is "show me the world with
+        // nothing on it" left the controls sitting on the frame it had cleared.
+        case 'KeyH': this.hud.toggleChrome(); break;
         case 'KeyM': this.hud.setMuted(this.audio.toggleMute()); break;
         // the scale speaks first: on a planet, B is the shuttle, not the log
         case 'KeyB': if (!s.onKey?.('KeyB')) this.hud.toggleLog(); break;
@@ -814,7 +823,8 @@ class App {
     // cannot tell a nondeterministic universe from a slow one. See tools/repeat.js.
     this.frames++;
     this.bench?.frameStart();
-    const real = Math.min(this.clock.getDelta(), 0.1);
+    const raw = this.clock.getDelta();
+    const real = Math.min(raw, 0.1);
     const dt = this.fixedDt || real;
     advanceClock(dt);
     this.zoom.update(dt);
@@ -830,6 +840,21 @@ class App {
     this.post.render(dt);
     this.zoom.render();
     this.hud.tick(dt);
+    // The input layer's own clock, once per frame and at the *end* of it, so a
+    // one-shot press survives long enough for the scale that ran this frame to
+    // read it. It lives here rather than in the walk path because the idle
+    // timer the HUD fades on has to run on all six scales, not only the one
+    // with a body in it — which is how the first version of this managed to
+    // never fade at all above the ground.
+    //
+    // It gets the *uncapped* delta, unlike everything else in this function.
+    // §3 asks the chrome to fade "after 4 s", and 4 s means four seconds of a
+    // person not touching anything — not four seconds of simulation. The 0.1 s
+    // cap above exists so a hitch cannot teleport the world, and applying it
+    // here instead made the fade take twenty times too long on a slow
+    // rasteriser, which is exactly when a stalled HUD is least welcome.
+    // `?dt=` still pins it, so a capture stays reproducible.
+    tickInput(this.fixedDt || raw);
 
     this._statT -= dt;
     if (this._statT <= 0) {

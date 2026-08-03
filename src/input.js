@@ -107,9 +107,47 @@ export const input = {
     look.x = 0; look.y = 0;
     return d;
   },
-  /** seconds since anything at all happened — the HUD's idle timer reads this */
-  idle: 0,
+  /**
+   * Seconds since anything at all happened — what the chrome fades on.
+   *
+   * A *timestamp difference*, not an accumulation of frame deltas, and the
+   * distinction is not academic. Summing `dt` makes the answer depend on when
+   * frames happen to land: on a slow rasteriser the frame after a tap adds its
+   * whole 4.5 s duration to a timer that was reset 150 ms ago, and the chrome
+   * flickers back out immediately. "Time since the user last did something" is
+   * a property of the clock, so it is read from the clock.
+   *
+   * §2.3 is untouched: this feeds one CSS class and nothing that generates
+   * anything. Under a pinned `?dt=` it switches to accumulation so a capture
+   * stays reproducible — see `tickInput`.
+   */
+  get idle() {
+    return pinnedDt ? simIdle : (now() - lastActivity) / 1000;
+  },
+  set idle(v) {
+    simIdle = v;
+    lastActivity = now() - v * 1000;
+  },
 };
+
+const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+let lastActivity = now();
+let simIdle = 0;
+let pinnedDt = 0;
+
+/**
+ * Pin the idle clock to a fixed timestep, so a `?dt=`-pinned capture renders
+ * the same chrome on every machine (§7.3's pixel diff, §7.7's re-shoot).
+ */
+export function pinIdleClock(dt) {
+  pinnedDt = dt || 0;
+}
+
+/** something happened: restart the idle clock, whichever one is running */
+function wake() {
+  lastActivity = now();
+  simIdle = 0;
+}
 
 // ---------------------------------------------------------------------------
 // sources
@@ -145,7 +183,7 @@ function setAction(action, on) {
  */
 export function setAnalog(v) {
   analogHold = v;
-  input.idle = 0;
+  wake();
   recomputeAxis();
 }
 
@@ -153,12 +191,12 @@ export function setAnalog(v) {
 export function addLook(dx, dy) {
   look.x += dx;
   look.y += dy;
-  input.idle = 0;
+  wake();
 }
 
 /** set an action from a non-keyboard source — a touch button, a gamepad face */
 export function setSource(action, on) {
-  input.idle = 0;
+  wake();
   setAction(action, on);
 }
 
@@ -186,7 +224,7 @@ export function attachKeyboard(target = window) {
   attached = true;
 
   target.addEventListener('keydown', (e) => {
-    input.idle = 0;
+    wake();
     if (e.repeat) return;
     keys.add(e.code);
     setAction(CODE_TO_ACTION.get(e.code), true);
@@ -195,6 +233,13 @@ export function attachKeyboard(target = window) {
     keys.delete(e.code);
     setAction(CODE_TO_ACTION.get(e.code), false);
   });
+  // A pointer that moves is input, whether or not it is bound to anything —
+  // the chrome must not fade out from under a hand that is using it. Capturing
+  // and passive so it can never interfere with a drag it is only observing.
+  window.addEventListener('pointermove', wake, { capture: true, passive: true });
+  window.addEventListener('pointerdown', wake, { capture: true, passive: true });
+  window.addEventListener('wheel', wake, { capture: true, passive: true });
+
   // A key is held by the *window*, not by the page. Without these two, alt-tab
   // with W down and you come back to a body that has been walking the whole
   // time — and the keyup that would have stopped it went to another window.
@@ -204,9 +249,13 @@ export function attachKeyboard(target = window) {
   });
 }
 
-/** the per-frame tick: ages the idle timer and clears one-shot presses */
+/**
+ * The per-frame tick: clears one-shot presses, and ages the *simulated* idle
+ * clock when one is pinned. Unpinned, idle comes from the wall clock and this
+ * has nothing to add to it.
+ */
 export function tickInput(dt) {
-  input.idle += dt;
+  if (pinnedDt) simIdle += dt;
   pressed.clear();
 }
 
