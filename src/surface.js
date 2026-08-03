@@ -31,6 +31,7 @@ import { findLandingSite } from './terrain.js';
 import { solveLandingSite } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
 import { AERIAL_GLSL, aerialParams, airFor } from './aerial.js';
+import { MATERIAL_GLSL, materialPalette, worldBias } from './material.js';
 import { GAIT, Walker, gravityOf } from './avatar.js';
 import { CameraRig } from './camera.js';
 import { attachKeyboard, input, jumpHeld } from './input.js';
@@ -133,6 +134,20 @@ const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === 
  */
 const SOLVE = PARAM('solve') === '1';
 
+/**
+ * §M2 act 4 — four-layer triplanar materials. Default-off (§7.4).
+ *
+ * It has two jobs. The first is the one §M2 states: ground you can name from a
+ * still, which the slope/altitude colour ramp it replaces cannot give, because
+ * the same lerp produces every surface and none of them has an identity.
+ *
+ * The second is to unblock `?paint=1`. §9.2's ramp was flattening the terrain
+ * (docs/plans/M2.md §24.4) partly because its three stops were three points on
+ * one line through one colour. `material.js` gives each of four layers its own
+ * hue path, so the ramp has somewhere to go.
+ */
+const MAT = PARAM('mat') === '1';
+
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
 const EYE = 1.8;
@@ -172,6 +187,7 @@ const TERRAIN_FRAG = /* glsl */`
   ${NOISE_GLSL}
   ${PAINT ? SHADOW_GLSL + PAINT_GLSL : ''}
   ${AERIAL ? AERIAL_GLSL : ''}
+  ${MAT ? MATERIAL_GLSL : ''}
 
   uniform float uSea;    // sea level in world y, or -1e9 for a dry world
 
@@ -194,6 +210,23 @@ const TERRAIN_FRAG = /* glsl */`
                   snoise(vec3(vW.xz * 1.4 + 6.0, uSeed + 13.0))) * 0.1 * bumpF;
     nb = normalize(nb);
 
+    ${MAT ? /* glsl */`
+    // §M2 act 4 · four layers, one blend law, triplanar so nothing smears.
+    //
+    // near = the detail LOD: 1 underfoot, 0 past 30 m. §M2 asks for
+    // "generated detail arrays inside 30 m" and this is that budget spent as a
+    // coherent branch instead of a texture upload — past 30 m the finest two
+    // octaves are sub-pixel, and every instruction on them buys nothing.
+    float near = 1.0 - smoothstep(6.0, 30.0, length(vW - uCam));
+    Ground gm = groundAt(vW, nb, uSea, uWet, near);
+    vec3 col = gm.mid;
+    float shore = 1.0 - smoothstep(uSea + 1.2, uSea + 7.0, vW.y);
+    // The glitter below wants to know where snow is. It used to ask a
+    // hand-rolled snow line; the rime weight is the same question answered by
+    // the blend that actually decides it, so the sparkle cannot land anywhere
+    // the snow is not.
+    float snowLine = gm.w.w;
+    ` : /* glsl */`
     // material bands, low to high: shore sand · meadow · soil · rock · snow
     float shore = 1.0 - smoothstep(uSea + 1.2, uSea + 7.0, vW.y);
     vec3 sand = mix(uColB, vec3(0.86, 0.76, 0.58), 0.6) * (0.9 + grain * 0.2);
@@ -212,6 +245,7 @@ const TERRAIN_FRAG = /* glsl */`
     float snowLine = smoothstep(0.45, 0.72, hgt + micro * 0.1) * (1.0 - cliff * 0.85);
     col = mix(col, vec3(0.92, 0.95, 1.0), max(uSnow, smoothstep(0.62, 0.85, hgt) * 0.9) * snowLine);
     col *= 0.8 + 0.3 * detail * micro + 0.12 * grain;
+    `}
 
     // rain darkens and deepens the ground, pooling colour into the low spots
     col *= mix(1.0, 0.66, uWet);
@@ -230,9 +264,20 @@ const TERRAIN_FRAG = /* glsl */`
     sf.N = nb;
     sf.V = normalize(uCam - vW);
     sf.L = uSunDir;
+    ${MAT ? /* glsl */`
+    // The stops are the *material's* now, not three points on one line through
+    // one colour — which is what act 4 was the blocker for. Each of the four
+    // layers carries its own hue path (cool toward the shadow tint, warm toward
+    // the sun, and for vegetation warm toward yellow-green), so the ramp has
+    // somewhere to go instead of returning one colour at every band.
+    sf.shade = gm.shade;
+    sf.mid   = gm.mid;
+    sf.lit   = gm.lit;
+    ` : /* glsl */`
     sf.shade = mix(col * 0.55, uPaintShadowTint * dot(col, vec3(0.33)), 0.28);
     sf.mid   = col;
     sf.lit   = mix(col * 1.22, uPaintSun * dot(col, vec3(0.42)), 0.20);
+    `}
     sf.soft  = 0.10;
     // the painterly wobble: the band edge is drawn, not computed, and it is
     // keyed in metres so it keeps its shape at every distance
@@ -676,6 +721,57 @@ export class SurfaceScale {
     set(u.anti, air.anti);
   }
 
+  /**
+   * §M2 act 4's uniform block: four layers × three stops, plus the four scalars
+   * the blend law reads.
+   *
+   * The stops come from `materialPalette()`, which derives them from the
+   * world's own three palette colours and the star's own light — so a world
+   * around an M dwarf gets rock lit by an M dwarf, and nothing here is a
+   * literal (§9.1).
+   */
+  _materialUniforms() {
+    if (this._matU) return this._matU;
+    const T = this.ctx.system?.temp ?? 5778;
+    const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
+    const pal = materialPalette(this.pp, lightFor(T, Math.max(elev, 0.5)));
+    const bias = worldBias(this.pp);
+    const v3 = (c) => new THREE.Vector3(c[0], c[1], c[2]);
+
+    // |sin(latitude)| at the landing site. The frame's `dir` is the landing
+    // point on the unit sphere, so its y *is* the sine of the latitude — the
+    // snow line follows the world's geometry rather than a per-world roll.
+    const lat = Math.abs(this.landingDir?.y ?? 0);
+
+    this._matPal = pal;
+    this._matU = {
+      uMatShade: { value: pal.map((m) => v3(m.shade)) },
+      uMatMid: { value: pal.map((m) => v3(m.mid)) },
+      uMatLit: { value: pal.map((m) => v3(m.lit)) },
+      uMatGrain: { value: pal.map((m) => m.grain) },
+      uMatLat: { value: lat },
+      uMatCold: { value: bias.cold },
+      uMatRain: { value: bias.rain },
+      // The relief the altitude term is a fraction of. `amp` is the landform's
+      // own scale, so a flat world's snow line is not pinned to a mountain
+      // world's metres.
+      uMatRelief: { value: Math.max(this.amp, 1) },
+    };
+    return this._matU;
+  }
+
+  /** the materials are lit by the star too, so their stops move with the sun */
+  _syncMaterial() {
+    if (!MAT || !this._matU) return;
+    const T = this.ctx.system?.temp ?? 5778;
+    const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
+    const pal = materialPalette(this.pp, lightFor(T, Math.max(elev, 0.5)));
+    for (let i = 0; i < 4; i++) {
+      this._matU.uMatShade.value[i].set(...pal[i].shade);
+      this._matU.uMatLit.value[i].set(...pal[i].lit);
+    }
+  }
+
   /** the sun climbs, so the beam it sends reddens less — re-derive as it moves */
   _syncPaintLight() {
     if (!PAINT || !this._paintLight) return;
@@ -739,6 +835,7 @@ export class SurfaceScale {
         uSunDir: this.uSunDir, uSunColor: this.uSunColor,
         ...(PAINT ? this._paintUniforms() : {}),
         ...(AERIAL ? this._aerialUniforms() : {}),
+        ...(MAT ? this._materialUniforms() : {}),
         uColA: { value: pp.colA }, uColB: { value: pp.colB }, uColC: { value: pp.colC },
         uHorizon: { value: this.horizonColor },
         uCam: this.uCam,
@@ -1551,6 +1648,7 @@ export class SurfaceScale {
     if (this.megafauna) this.megafauna.update(dt, this.uSunDir.value.y);
     this._syncPaintLight();
     this._syncAerial();
+    this._syncMaterial();
     if (this.sunShadow) {
       this.sunShadow.update(this.app.renderer, this.scene, this.camera,
         this.uSunDir.value, (x, z) => this.heightAt(x, z));

@@ -32,6 +32,9 @@ import {
 } from '../src/avatar.js';
 import { BINDINGS, JUMP_CODE, input, setAnalog } from '../src/input.js';
 import {
+  LAYERS, MATERIAL_GLSL, blend, materialPalette, moistureAt, snowLine, worldBias,
+} from '../src/material.js';
+import {
   AERIAL_ALPHA_IS_CLARITY, AERIAL_GLSL, EARTH_AIR, HAZE_FRACTION, REFERENCE_AIR,
   REFERENCE_PARAMS, aerial, aerialParams, airFor, molarMass, scaleHeight,
   surfaceTemp,
@@ -1879,11 +1882,365 @@ function suiteWalk() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// suite: material
+//
+// §M2 act 4's gate: "at 1.68 m eye height, no visible tiling within 40 m in any
+// biome; every material nameable from a still."
+//
+// The second clause needs eyes. The first does not — tiling is periodicity, and
+// periodicity is what an autocorrelation finds. So the claim the gate actually
+// makes about repetition is measured here rather than looked at, over the real
+// height field, at the eye height the gate names.
+//
+// Everything else is the blend law, which is where the properties that make a
+// four-layer material a material rather than four lerps actually live: the
+// weights sum to one, they are continuous, and every layer is reachable.
+
+function suiteMaterial() {
+  console.log('\nmaterial — §M2 act 4, four layers over one blend law');
+
+  const LIGHT = REFERENCE_LIGHT;
+  const PP = {
+    seed: 0x5eed1337, typeId: 1, noiseSeed: 424242, oceanLevel: 0.012, radiusE: 1.04,
+    colA: [0.32, 0.24, 0.16], colB: [0.55, 0.52, 0.49], colC: [0.22, 0.35, 0.18],
+  };
+
+  // --- the weights are a partition, everywhere ------------------------------
+  {
+    let worstSum = 0, negatives = 0, n = 0;
+    for (let s = 0; s <= 1.0001; s += 0.05) {
+      for (let a = 0; a <= 1.0001; a += 0.05) {
+        for (let l = 0; l <= 1.0001; l += 0.125) {
+          for (let m = 0; m <= 1.0001; m += 0.125) {
+            const w = blend({ slope: s, alt: a, lat: l, moist: m });
+            const sum = w[0] + w[1] + w[2] + w[3];
+            worstSum = Math.max(worstSum, Math.abs(sum - 1));
+            if (w.some((v) => v < 0)) negatives++;
+            n++;
+          }
+        }
+      }
+    }
+    ok('the four weights are a partition of unity everywhere',
+      worstSum < 1e-12 && negatives === 0,
+      `${n} points across slope × altitude × latitude × moisture ·`
+      + ` worst |Σw − 1| = ${worstSum.toExponential(1)}`);
+  }
+
+  // --- and continuous, which is what stops a seam appearing between them ----
+  {
+    // A discontinuity in the blend is a hard line across the ground that no
+    // amount of texture detail hides — and it is the failure mode of the
+    // obvious implementation, a chain of step()s.
+    let worst = 0, where = null;
+    const at = (s, a, m) => blend({ slope: s, alt: a, lat: 0.4, moist: m });
+    for (let s = 0; s <= 1; s += 0.002) {
+      for (const [a, m] of [[0.2, 0.7], [0.6, 0.3], [0.85, 0.5]]) {
+        const d = at(s, a, m).reduce((acc, v, i) => acc + Math.abs(v - at(s + 0.002, a, m)[i]), 0);
+        if (d > worst) { worst = d; where = `slope ${s.toFixed(3)}, alt ${a}`; }
+      }
+    }
+    ok('and continuous in slope — no step() seam across the ground',
+      worst < 0.02, `largest Σ|Δw| over a 0.002 slope step: ${worst.toFixed(4)} at ${where}`);
+
+    // Continuity, measured the scale-free way rather than against a chosen
+    // epsilon. Halve the step and a smooth ramp halves its largest jump; a
+    // step() does not move at all, because its discontinuity is the same size
+    // however finely you sample it. The first version of this check picked
+    // 0.02 out of the air and failed a snow line that was behaving perfectly.
+    const maxJump = (h) => {
+      let worst = 0;
+      const p = { slope: 0.2, lat: 0.4, moist: 0.5 };
+      for (let a = 0; a <= 1; a += h) {
+        const d = blend({ ...p, alt: a }).reduce(
+          (acc, v, i) => acc + Math.abs(v - blend({ ...p, alt: a + h })[i]), 0);
+        worst = Math.max(worst, d);
+      }
+      return worst;
+    };
+    const j1 = maxJump(0.004), j2 = maxJump(0.002);
+    ok('and continuous across the snow line — halving the step halves the jump',
+      Math.abs(j2 / j1 - 0.5) < 0.06,
+      `Σ|Δw| ${j1.toFixed(4)} at h=0.004 → ${j2.toFixed(4)} at h=0.002`
+      + ` (ratio ${(j2 / j1).toFixed(3)}; a step() would hold at 1.0)`);
+  }
+
+  // --- every layer is reachable, or it is not a four-layer material ---------
+  {
+    const best = [0, 0, 0, 0];
+    for (let s = 0; s <= 1.0001; s += 0.05) {
+      for (let a = 0; a <= 1.0001; a += 0.05) {
+        for (let l = 0; l <= 1.0001; l += 0.1) {
+          for (let m = 0; m <= 1.0001; m += 0.1) {
+            const w = blend({ slope: s, alt: a, lat: l, moist: m });
+            for (let i = 0; i < 4; i++) best[i] = Math.max(best[i], w[i]);
+          }
+        }
+      }
+    }
+    ok('every one of the four layers dominates somewhere',
+      best.every((b) => b > 0.5),
+      LAYERS.map((nm, i) => `${nm} ${best[i].toFixed(2)}`).join(' · '));
+  }
+
+  // --- each of the four inputs actually moves the blend ---------------------
+  //
+  // §M2 names slope × altitude × latitude × moisture. A blend that ignored one
+  // of them would still pass every check above.
+  {
+    const base = { slope: 0.3, alt: 0.5, lat: 0.4, moist: 0.5 };
+    const move = (k, lo, hi) => {
+      const a = blend({ ...base, [k]: lo }), b = blend({ ...base, [k]: hi });
+      return a.reduce((acc, v, i) => acc + Math.abs(v - b[i]), 0);
+    };
+    const d = {
+      slope: move('slope', 0.05, 0.9), alt: move('alt', 0.1, 0.95),
+      lat: move('lat', 0.05, 0.95), moist: move('moist', 0.05, 0.95),
+    };
+    ok('§M2 · all four of slope, altitude, latitude and moisture move it',
+      Object.values(d).every((v) => v > 0.2),
+      Object.entries(d).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(' · '));
+  }
+
+  // --- the snow line is a real latitude effect, not a decoration ------------
+  {
+    ok('a pole is white at a height an equator is bare at',
+      snowLine(0.05, 0) > 0.75 && snowLine(0.98, 0) < 0.05,
+      `snow line: ${snowLine(0.05, 0).toFixed(2)} of relief at the equator,`
+      + ` ${snowLine(0.98, 0).toFixed(2)} at the pole`);
+
+    const eq = blend({ slope: 0.15, alt: 0.55, lat: 0.05, moist: 0.5 });
+    const pole = blend({ slope: 0.15, alt: 0.55, lat: 0.95, moist: 0.5 });
+    ok('and the same ground takes rime at the pole and not at the equator',
+      pole[3] > 0.6 && eq[3] < 0.05,
+      `rime weight ${eq[3].toFixed(3)} → ${pole[3].toFixed(3)} at 0.55 of relief`);
+  }
+
+  // --- moisture behaves like water, not like a slider ----------------------
+  {
+    const relief = 400;
+    const shore = moistureAt(2, 0, relief, 0);
+    const ridge = moistureAt(380, 0, relief, 0);
+    ok('ground near the waterline is wetter than the ridge above it',
+      shore > ridge + 0.25, `${shore.toFixed(3)} at the shore → ${ridge.toFixed(3)} on the ridge`);
+
+    ok('a dry world has no shore term at all',
+      moistureAt(2, null, relief, 0) < shore,
+      'sea = null is a world with no waterline, not a waterline at zero');
+
+    ok('and rain wets everything',
+      moistureAt(200, 0, relief, 1) > moistureAt(200, 0, relief, 0) + 0.2,
+      'the weather is an input, so a storm changes the ground it falls on');
+  }
+
+  // --- the gate's own clause: no visible tiling within 40 m -----------------
+  //
+  // Tiling is periodicity, and periodicity is what an autocorrelation finds.
+  // Sampled over the real height field, along the ground, at the eye height
+  // §M2 names — so this is the gate's sentence rather than a proxy for it.
+  {
+    const g = makeGround(WORLDS[0].pp, WORLDS[0].dir);
+    const bias = worldBias(WORLDS[0].pp);
+    const relief = 400;
+    const STEP = 0.25;                 // metres between samples
+    const N = Math.round(40 / STEP);   // a 40 m transect
+
+    // What a walker actually sees is the blended colour, so that is what is
+    // tested — not the height field underneath it, which is a different claim.
+    const pal = materialPalette(PP, LIGHT);
+    const sample = (x, z) => {
+      const h = g.heightAt(x, z);
+      const e = 0.5;
+      const dx = g.heightAt(x + e, z) - g.heightAt(x - e, z);
+      const dz = g.heightAt(x, z + e) - g.heightAt(x, z - e);
+      const ny = 2 * e / Math.hypot(dx, 2 * e, dz);
+      const jit = g.fbm2(x * 0.041, z * 0.041, 3) * 0.55
+        + g.fbm2(x * 0.127 + 11, z * 0.127 + 11, 2) * 0.28
+        + g.fbm2(x * 0.39 + 31, z * 0.39 + 31, 1) * 0.13;
+      const moist = clamp01v(moistureAt(h, g.seaLevel, relief, 0, bias.rain) + jit * 0.20);
+      const w = blend({
+        slope: 1 - clamp01v(ny), alt: clamp01v(h / relief),
+        lat: bias.lat, moist, jit, cold: bias.cold,
+      });
+      let c = 0;
+      for (let i = 0; i < 4; i++) c += w[i] * (0.2126 * pal[i].mid[0] + 0.7152 * pal[i].mid[1] + 0.0722 * pal[i].mid[2]);
+      return c * (1 + jit * 0.30);
+    };
+
+    // "No visible tiling" is a statement about *repetition*, so it is tested as
+    // one directly rather than through a spectrum. A spectral statistic cannot
+    // tell a field that repeats every 24 m from one that merely has 24 m
+    // features — both put a bump in the autocorrelation there, and two earlier
+    // versions of this check failed the material for having a texture.
+    //
+    // The direct question: is there any shift under 40 m that maps the material
+    // onto itself? Normalised so 0 is a perfect tile and 1 is uncorrelated.
+    // "No visible tiling" is a statement about *repetition*, so it is tested as
+    // one directly rather than through a spectrum. A spectral statistic cannot
+    // tell a field that repeats every 24 m from one that merely has 24 m
+    // features — both put a bump in the autocorrelation there, and two earlier
+    // versions of this check failed the material for having a texture.
+    //
+    // The direct question: is there a shift that maps the material onto itself?
+    // `D` is the mean squared difference under a shift, normalised so 0 is a
+    // perfect tile and 1 is uncorrelated.
+    //
+    // Shifts under 5 m are reported but not gated, and the reason is not a
+    // convenience. At half a metre the field matches itself almost exactly —
+    // that is what *continuous* means, and ground that failed this would be
+    // noise rather than terrain. Two patches only read as a repeat once they
+    // are far enough apart to be seen as two, which at 1.68 m eye height is a
+    // few metres. So the gate is the far band and the near one is context.
+    let far = 1, farAt = null, near = 1;
+    const GRID = 56, SPAN = 0.6;   // a 33 m patch of ground, sampled every 60 cm
+    for (const [ox, oz, label] of [[0, 0, 'origin'], [180, -240, 'the hills'], [-320, 410, 'the shore']]) {
+      const f = [];
+      for (let i = 0; i < GRID * 2; i++) {
+        const row = [];
+        for (let j = 0; j < GRID * 2; j++) row.push(sample(ox + i * SPAN, oz + j * SPAN));
+        f.push(row);
+      }
+      let mean = 0, n = 0;
+      for (let i = 0; i < GRID; i++) for (let j = 0; j < GRID; j++) { mean += f[i][j]; n++; }
+      mean /= n;
+      let varf = 0;
+      for (let i = 0; i < GRID; i++) for (let j = 0; j < GRID; j++) varf += (f[i][j] - mean) ** 2;
+      varf /= n;
+
+      for (let si = 1; si < GRID; si++) {
+        for (let sj = 0; sj < GRID; sj++) {
+          const dist = Math.hypot(si, sj) * SPAN;
+          if (dist < 0.5 || dist > 40) continue;
+          let acc = 0;
+          for (let i = 0; i < GRID; i++) {
+            for (let j = 0; j < GRID; j++) acc += (f[i + si][j + sj] - f[i][j]) ** 2;
+          }
+          const D = acc / n / (2 * varf);
+          if (dist >= 5) { if (D < far) { far = D; farAt = `${dist.toFixed(1)} m (${label})`; } }
+          else near = Math.min(near, D);
+        }
+      }
+    }
+    ok('§M2 gate · no shift between 5 m and 40 m maps the material onto itself',
+      far > 0.40,
+      `closest self-match over three 33 m patches: ${far.toFixed(3)} at ${farAt}`
+      + ` — 0.000 would be a perfect tile, 1.0 uncorrelated`
+      + ` (under 5 m it reaches ${near.toFixed(3)}, which is the ground being continuous)`);
+  }
+
+  // --- the stops are a hue path, which is the thing §9.2 needs --------------
+  //
+  // This is act 4's other job. §9.2's ramp was flattening the terrain because
+  // shade, mid and lit were three points on one line through one colour — a
+  // brightness ramp wearing a hue ramp's clothes (docs/plans/M2.md §24.4).
+  {
+    const pal = materialPalette(PP, LIGHT);
+    ok('four materials, each with a name §8 axis 5 can use',
+      pal.length === 4 && pal.every((m, i) => m.name === LAYERS[i]),
+      pal.map((m) => m.name).join(' · '));
+
+    // Hue, as the angle of the (r−g, g−b) vector: a pure brightness ramp holds
+    // it fixed, which is exactly the failure being tested for.
+    const hue = (c) => Math.atan2(c[1] - c[2], c[0] - c[1]);
+    const spread = pal.map((m) => {
+      const a = hue(m.shade), b = hue(m.lit);
+      let d = Math.abs(a - b);
+      if (d > Math.PI) d = 2 * Math.PI - d;
+      return d;
+    });
+    ok('§9.2 · every material\'s stops travel in hue, not only in brightness',
+      spread.every((d) => d > 0.04),
+      pal.map((m, i) => `${m.name} ${(spread[i] * 180 / Math.PI).toFixed(1)}°`).join(' · '));
+
+    // and the direction is the one §9.1 describes: shade cool, lit warm
+    const warmth = (c) => c[0] - c[2];
+    ok('and they travel the right way — shade toward the shadow, lit toward the sun',
+      pal.every((m) => warmth(m.lit) > warmth(m.shade)),
+      pal.map((m) => `${m.name} ${(warmth(m.lit) - warmth(m.shade)).toFixed(3)}`).join(' · '));
+
+    // Snow is the one that must break the brightness rule: it is lit by the
+    // sky, so its shade is *more* saturated than its mid, not less.
+    const sat = (c) => Math.max(...c) - Math.min(...c);
+    const rime = pal[3];
+    ok('snow\'s shade is more saturated than its mid, because the sky lights it',
+      sat(rime.shade) > sat(rime.mid),
+      `sat ${sat(rime.mid).toFixed(3)} mid → ${sat(rime.shade).toFixed(3)} shade`);
+  }
+
+  // --- why act 4 does NOT un-hold ?paint=1, measured ----------------------
+  //
+  // §24.4 held §9.2 back on the theory that its three stops were three points
+  // on one line through one colour, and that real material stops would fix it.
+  // Half of that was right — the stops are real now, and the check above proves
+  // they travel in hue. It did not fix it, and this is why.
+  //
+  // §9.2's ramp bands at t = 0.17 and t = 0.58, where t is the half-Lambert
+  // wrap `ndl·0.62 + 0.46`. What decides whether those edges are visible is not
+  // the colours on either side of them — it is whether the terrain's *own* t
+  // ever crosses them.
+  {
+    const g = makeGround(WORLDS[0].pp, WORLDS[0].dir);
+    const spread = (elevDeg) => {
+      const s = elevDeg * Math.PI / 180;
+      const sun = [Math.cos(s), Math.sin(s), 0];
+      const ts = [];
+      for (let x = -200; x <= 200; x += 7) {
+        for (let z = -200; z <= 200; z += 7) {
+          const e = 0.6;
+          const dx = g.heightAt(x + e, z) - g.heightAt(x - e, z);
+          const dz = g.heightAt(x, z + e) - g.heightAt(x, z - e);
+          const l = Math.hypot(-dx, 2 * e, -dz);
+          const ndl = (-dx / l) * sun[0] + (2 * e / l) * sun[1] + (-dz / l) * sun[2];
+          ts.push(clamp01v(ndl * 0.62 + 0.46));
+        }
+      }
+      ts.sort((a, b) => a - b);
+      const lo = ts[Math.floor(0.02 * ts.length)], hi = ts[Math.floor(0.98 * ts.length)];
+      return { lo, hi, width: hi - lo };
+    };
+
+    const at24 = spread(24), at13 = spread(13.5);
+    ok('the terrain\'s own ramp coordinate spans far less than one band',
+      at24.width < 0.15 && at13.width < 0.15,
+      `t spans ${at24.width.toFixed(3)} at 24° and ${at13.width.toFixed(3)} at 13.5°,`
+      + ` against band edges 0.41 apart — this smooth ground can only ever`
+      + ' occupy a sliver of the ramp');
+
+    ok('§24.4 · at a high sun every pixel lands in one band, whatever the stops',
+      at24.lo > 0.58,
+      `t ∈ [${at24.lo.toFixed(3)}, ${at24.hi.toFixed(3)}] at 24° — entirely above`
+      + ' the upper edge, so ramp3 returns `lit` everywhere and the frame is flat');
+
+    ok('and §9.7\'s golden-hour band is what puts an edge inside the terrain',
+      at13.lo < 0.58 && at13.hi > 0.58,
+      `t ∈ [${at13.lo.toFixed(3)}, ${at13.hi.toFixed(3)}] at 13.5° — the 0.58 edge`
+      + ' falls inside it. "Golden hour is not a mood; it is the geometry the'
+      + ' light model is tuned for" (§9.7), and this is that sentence as a number');
+  }
+
+  // --- the GLSL carries the same law, not a second copy of it --------------
+  {
+    const code = MATERIAL_GLSL.replace(/\/\/[^\n]*/g, '');
+    const shared = ['0.82 - 0.86', '0.26, 0.62', '0.06 + 1.55', '1.85 * above', '1.30 * moist'];
+    ok('§2.7 · the GLSL blend carries the same constants as the CPU law',
+      shared.every((c) => code.includes(c)), shared.join(' · '));
+    ok('and it is triplanar, which is what makes the 40 m clause hold on a cliff',
+      /pow\(abs\(n\), vec3\(4\.0\)\)/.test(code) && code.includes('p.yz') && code.includes('p.xy'),
+      'a single projection smears on anything steep, and a smear is the most'
+      + ' visible repetition a landscape has');
+    ok('and it returns three stops rather than one colour',
+      /struct Ground \{ vec3 shade; vec3 mid; vec3 lit;/.test(code));
+  }
+}
+
+function clamp01v(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
-  walk: suiteWalk,
+  walk: suiteWalk, material: suiteMaterial,
 };
 
 for (const [name, fn] of Object.entries(suites)) {

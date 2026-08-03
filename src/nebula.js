@@ -154,6 +154,49 @@ export function softDotTexture(size = 128) {
   return new THREE.CanvasTexture(cv);
 }
 
+/**
+ * A galactic bulge's surface brightness, as a sprite profile.
+ *
+ * `softDotTexture` is a Gaussian, and a Gaussian is the wrong shape for a
+ * nucleus in a way that shows: it is *flat* near the centre, so scaled up and
+ * added to itself it clips across a wide disc and the core becomes a white
+ * hole with no gradient in it. A bulge is not flat near the centre. It follows
+ * de Vaucouleurs' r^¼ law —
+ *
+ *     I(r) = I_e · exp(−7.669 · ((r/R_e)^¼ − 1))
+ *
+ * — which is a sharp cusp with long faint wings, and that is exactly the shape
+ * that keeps a small saturated nucleus surrounded by a readable falloff instead
+ * of one big saturated disc.
+ *
+ * `reFrac` is the effective radius as a fraction of the sprite, and it is the
+ * only knob: smaller concentrates the light, larger spreads it. The 1908 law
+ * supplies the rest.
+ */
+export function bulgeTexture(size = 256, reFrac = 0.22) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = size;
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  // normalised so the centre is 1; the law's own dynamic range does the rest
+  const peak = Math.exp(-7.669 * (0 - 1));
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = (x + 0.5) / size - 0.5, dy = (y + 0.5) / size - 0.5;
+      const r = Math.sqrt(dx * dx + dy * dy) * 2;   // 0 at centre, 1 at edge
+      let a = Math.exp(-7.669 * (Math.pow(Math.max(r, 1e-4) / reFrac, 0.25) - 1)) / peak;
+      // a hard edge on an additive sprite is a visible square, so take the
+      // last tenth of the radius to zero
+      a *= Math.max(1 - Math.max(r - 0.9, 0) / 0.1, 0);
+      const i = (y * size + x) * 4;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = 255;
+      img.data[i + 3] = Math.min(Math.max(a, 0), 1) * 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return new THREE.CanvasTexture(cv);
+}
+
 /** fuzzy inclined-disk blob — a distant galaxy seen from afar */
 export function galaxyAtlasTexture(size = 128) {
   const cv = document.createElement('canvas');
@@ -185,6 +228,8 @@ const NEB_VERT = /* glsl */`
   uniform float uProj;   // drawingBufferHeight * cot(fov/2) / 2
   varying float vHue;
   varying float vSpin;
+  varying float vNear;
+  varying float vSeed;
 
   void main() {
     float omega = uVrot / max(aR, 14.0);
@@ -193,7 +238,14 @@ const NEB_VERT = /* glsl */`
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
     vHue = aHue;
     vSpin = aSpin;
-    gl_PointSize = clamp(aSize * uProj / -mv.z, 1.0, 2000.0);
+    float px = clamp(aSize * uProj / -mv.z, 1.0, 2000.0);
+    gl_PointSize = px;
+    // How big this cloud is on screen, which is what decides how much detail
+    // it has to carry. One texture lookup stretched over 600 px is a blur
+    // however good the texture is, so the fragment adds structure of its own
+    // in proportion to how far it is being magnified.
+    vNear = clamp((px - 90.0) / 340.0, 0.0, 1.0);
+    vSeed = aSpin * 7.31 + aHue * 13.7;
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -203,6 +255,23 @@ const NEB_FRAG = /* glsl */`
   uniform sampler2D uMap;
   varying float vHue;
   varying float vSpin;
+  varying float vNear;
+  varying float vSeed;
+
+  // Cheap value noise. The sprite is already a texture lookup and a few adds;
+  // this has to stay in the same budget, so it is two octaves of hashed
+  // gradient rather than anything principled.
+  float h21(vec2 p) {
+    vec3 q = fract(vec3(p.xyx) * 0.1031);
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.x + q.y) * q.z);
+  }
+  float vn(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(h21(i), h21(i + vec2(1, 0)), f.x),
+               mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), f.x), f.y);
+  }
 
   void main() {
     // rotate the sprite per-instance so clouds don't look stamped
@@ -210,10 +279,32 @@ const NEB_FRAG = /* glsl */`
     float cs = cos(vSpin), sn = sin(vSpin);
     vec2 uv = vec2(c.x * cs - c.y * sn, c.x * sn + c.y * cs) + 0.5;
     float a = texture2D(uMap, uv).a;
-    // Hα crimson → OIII teal emission mix
+
+    // Structure that arrives as the cloud fills more of the screen. Two
+    // octaves, domain-warped by the first, so what appears is filament rather
+    // than grain — a magnified HII region is ragged, not smooth.
+    float fil = 0.0;
+    if (vNear > 0.01) {
+      vec2 q = uv * 9.0 + vSeed;
+      float w = vn(q) - 0.5;
+      float n = vn(q * 2.7 + w * 1.9) * 0.62 + vn(q * 6.1 - w * 1.1) * 0.38;
+      fil = (n - 0.42) * 2.0;
+      // it thins the cloud rather than brightening it: gas is patchy, and
+      // adding light where there is none makes a fog instead of a filament
+      a *= clamp(1.0 + fil * vNear * 1.15, 0.0, 1.9);
+    }
+
+    // Hα crimson → OIII teal emission mix.
+    //
+    // The mix used to be one number for the whole cloud, which is why they
+    // read as tinted cotton. In a real HII region the OIII sits where the
+    // ionising stars are and Hα in the cooler shell around it, so the ratio
+    // varies *inside* the cloud — and that variation is most of what makes it
+    // look like gas.
     vec3 ha  = vec3(0.9, 0.16, 0.22);
     vec3 o3  = vec3(0.15, 0.75, 0.72);
-    vec3 col = mix(ha, o3, vHue);
+    float hue = clamp(vHue + fil * vNear * 0.42, 0.0, 1.0);
+    vec3 col = mix(ha, o3, hue);
     gl_FragColor = vec4(col * a * 0.34, 1.0);
   }
 `;

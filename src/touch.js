@@ -1,34 +1,38 @@
 // The thumb layer — CLAUDE.md §M7, and `docs/plans/WORLDS.md` §5.
 //
 // What this replaces is `hud.js:133-280`: a fixed 92 px rosette, a spring
-// slider and seven buttons, all of which work by *synthesising keystrokes*:
+// slider and seven buttons, all of which worked by *synthesising keystrokes*:
 //
 //     window.dispatchEvent(new KeyboardEvent('keydown', { code }))   hud.js:161
 //
-// So a thumb that has a magnitude and a direction arrives at the controller as
-// four booleans and a boost flag. That is the whole reason walking on glass
-// feels like nothing, and no amount of restyling the stick would have fixed it:
-// the analog part was gone at the first hop. `src/input.js` gives it somewhere
-// to go, and this writes there directly.
+// So a thumb that has a magnitude and a direction arrived at the controller as
+// four booleans and a boost flag. That is why walking on glass felt like
+// nothing, and no amount of restyling the stick would have fixed it: the analog
+// part was gone at the first hop. `src/input.js` gives it somewhere to go.
 //
 // ---------------------------------------------------------------------------
-// Nothing at rest
+// The mistake the first version made, and the rule that comes out of it
 //
-// §M7's gate: controls ≤ 14% of screen area, entirely within the bottom 30%,
-// never co-present with keyboard hints, faded after 3 s idle, one-handed
-// reachable. The old layer measured about 7.3% of a 390×844 screen and dimmed
-// to opacity 0.22 after 4 s — inside the area budget, over on the timing, and
-// never actually gone.
+// It covered the bottom 62% of the glass with two `pointer-events: auto` zones
+// and left them there on every scale. Three of the six — cosmic, galaxy and
+// system — steer with `OrbitControls`, which listens on the *canvas*. So the
+// zones swallowed every touch those scales needed and never forwarded them:
+// no orbiting, no pinch-zoom, and no double-tap to dive, on exactly the scales
+// where looking around *is* the interaction. The layer was a wall.
 //
-// This one is *invisible at rest*. The left half of the glass is a stick that
-// materialises exactly where the thumb lands and dissolves when it lifts; the
-// right half is look-drag. Neither exists as pixels until it is touched, so
-// the resting frame is 0% obscured, which is the number §3 is really asking
-// for when it says minimalism is a property of the chrome.
+// **A touch layer must add a control the scale does not have, never intercept
+// one it does.** So the zones are scale-aware now: they only take the glass
+// where there is no camera controller under it, and everywhere else the canvas
+// keeps its events and the layer contributes chrome alone.
 //
-// The one persistent element is a single context button, because a control
-// that is invisible *and* has no discoverable affordance is not minimal, it is
-// hidden. It carries the current scale's one meaningful verb.
+// ---------------------------------------------------------------------------
+// Nothing at rest, and one button that blooms
+//
+// §M7 wants controls ≤14% of the screen, inside the bottom 30%, faded after 3 s.
+// The old layer answered with seven permanent buttons. This answers with one:
+// tap it for the scale's main verb, hold it and the scale's other verbs fan out
+// on an arc inside the same thumb sweep. Seven affordances, one at rest, and
+// none of them a row of icons the eye has to parse.
 
 import { input, setAnalog, setSource } from './input.js';
 
@@ -36,8 +40,9 @@ const CSS = `
 #tt { position:fixed; inset:0; z-index:22; pointer-events:none;
   opacity:1; transition:opacity .45s ease; }
 #tt.idle { opacity:0; }
-#tt .zone { position:absolute; bottom:0; height:62%; pointer-events:auto;
+#tt .zone { position:absolute; bottom:0; height:62%; pointer-events:none;
   touch-action:none; }
+#tt.walk .zone { pointer-events:auto; }
 #tt .zone.l { left:0; width:46%; }
 #tt .zone.r { right:0; width:54%; }
 /* the stick exists only while a thumb is down, and only where it landed */
@@ -49,25 +54,43 @@ const CSS = `
 #tt .nub { width:34px; height:34px; margin:-17px 0 0 -17px;
   background:rgba(255,255,255,.19); border:1px solid rgba(255,255,255,.34); }
 #tt.live .ring, #tt.live .nub { opacity:1; }
-#tt .ctx { position:absolute; right:16px;
-  bottom:calc(22px + env(safe-area-inset-bottom));
-  width:44px; height:44px; border-radius:50%; pointer-events:auto;
-  border:1px solid rgba(255,255,255,.18); background:rgba(12,16,22,.30);
+
+#tt .ctx, #tt .fan b {
+  position:absolute; border-radius:50%; pointer-events:auto;
+  border:1px solid rgba(255,255,255,.18); background:rgba(12,16,22,.34);
   backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
-  color:rgba(255,255,255,.92); font:inherit; font-size:17px; touch-action:none; }
-#tt .ctx:active { background:rgba(158,203,255,.26); }
+  color:rgba(255,255,255,.92); font:inherit; touch-action:none;
+  display:flex; align-items:center; justify-content:center; }
+#tt .ctx { right:16px; bottom:calc(22px + env(safe-area-inset-bottom));
+  width:46px; height:46px; font-size:18px; }
+#tt .ctx:active { background:rgba(158,203,255,.28); }
+#tt .fan { position:absolute; right:16px;
+  bottom:calc(22px + env(safe-area-inset-bottom));
+  width:46px; height:46px; pointer-events:none; }
+#tt .fan b { width:40px; height:40px; font-size:15px; left:3px; top:3px;
+  opacity:0; transform:translate(0,0) scale(.6);
+  transition:opacity .18s ease, transform .22s cubic-bezier(.2,1.3,.4,1); }
+#tt.fanned .fan { pointer-events:auto; }
+#tt.fanned .fan b { opacity:1; }
+#tt .fan b:active { background:rgba(158,203,255,.28); }
+#tt .cap { position:absolute; right:74px;
+  bottom:calc(30px + env(safe-area-inset-bottom));
+  font-size:10px; letter-spacing:.22em; text-transform:uppercase;
+  color:rgba(255,255,255,.55); white-space:nowrap; pointer-events:none;
+  opacity:0; transition:opacity .25s ease; }
+#tt.fanned .cap, #tt.hint .cap { opacity:1; }
 `;
 
 /**
- * `radius` is how far the thumb travels for full deflection. Deliberately
- * smaller than the old 92 px rosette's 38 px throw looks: a thumb pivots at the
- * knuckle and 52 px is about the arc it makes without the hand moving, which is
- * what "one-handed reachable" means in practice.
+ * How far the thumb travels for full deflection. Smaller than the old 92 px
+ * rosette's throw looks, because a thumb pivots at the knuckle and 52 px is
+ * about the arc it makes without the hand moving — which is what "one-handed
+ * reachable" means in practice.
  */
 const STICK = { radius: 52, dead: 6 };
 
-/** radians per pixel — the same number `camera.js` gives the mouse */
-const LOOK_PER_PX = 0.0031;
+/** which scales have no camera controller of their own under the glass */
+const WALK_SCALES = new Set(['surface', 'planet', 'clouds', 'blackhole']);
 
 export class TouchLayer {
   constructor(app) {
@@ -80,29 +103,29 @@ export class TouchLayer {
     root.id = 'tt';
     // `.hud` so `H` kills it. The old `#touch` had no such class, so the one
     // key whose entire job is "show me the world with nothing on it" left the
-    // controls sitting on top of the frame it had just cleared.
+    // controls sitting on the frame it had just cleared.
     root.className = 'hud';
     root.innerHTML = `
       <div class="zone l"></div>
       <div class="zone r"></div>
       <div class="ring"></div><div class="nub"></div>
-      <button class="ctx" title="go"></button>`;
+      <div class="cap"></div>
+      <div class="fan"></div>
+      <button class="ctx"></button>`;
     document.body.appendChild(root);
 
     this.root = root;
     this.ring = root.querySelector('.ring');
     this.nub = root.querySelector('.nub');
     this.ctx = root.querySelector('.ctx');
-    this._idle = 0;
+    this.fan = root.querySelector('.fan');
+    this.cap = root.querySelector('.cap');
     this._ctxT = 0;
+    this._kind = null;
 
     this._bindStick(root.querySelector('.zone.l'));
     this._bindLook(root.querySelector('.zone.r'));
-    this.ctx.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      this._idle = 0;
-      this._context();
-    });
+    this._bindPrimary();
   }
 
   // -------------------------------------------------------------- stick ---
@@ -122,7 +145,6 @@ export class TouchLayer {
       id = e.pointerId;
       try { zone.setPointerCapture(id); } catch { /* synthetic pointers */ }
       ox = e.clientX; oy = e.clientY;
-      this._idle = 0;
       show(ox, oy);
       setAnalog({ x: 0, y: 0 });
     });
@@ -143,7 +165,6 @@ export class TouchLayer {
       this.nub.style.left = `${ox + dx}px`;
       this.nub.style.top = `${oy + dy}px`;
       const m = Math.hypot(dx, dy);
-      this._idle = 0;
       if (m < STICK.dead) { setAnalog({ x: 0, y: 0 }); return; }
       // Magnitude is *kept*, not thresholded. Screen up is forward, so dy is
       // negated; this is the one line that makes a half-pushed thumb walk at
@@ -169,13 +190,13 @@ export class TouchLayer {
 
   _bindLook(zone) {
     const live = new Map();
-    let pinch = null;
+    let pinch = null, lastTap = null;
 
     zone.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       live.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now(), moved: 0 });
       if (live.size === 2) pinch = this._pinchDist(live);
-      this._idle = 0;
+      this.app.active().onPointerDown?.(e);
     });
 
     zone.addEventListener('pointermove', (e) => {
@@ -184,9 +205,8 @@ export class TouchLayer {
       const dx = e.clientX - p.x, dy = e.clientY - p.y;
       p.moved += Math.hypot(dx, dy);
       p.x = e.clientX; p.y = e.clientY;
-      this._idle = 0;
 
-      // two fingers is altitude, everywhere — the same gesture main.js already
+      // two fingers is altitude, everywhere — the same gesture main.js
       // synthesises into a wheel, kept so a pinch keeps meaning one thing
       if (live.size >= 2) {
         const d = this._pinchDist(live);
@@ -198,22 +218,32 @@ export class TouchLayer {
       }
       const s = this.app.active();
       if (s.rig) s.rig.look(dx, dy);
-      else if (s.onPointerMove) {
-        // scales that still steer themselves get a synthetic drag rather than
-        // a second implementation of looking around
-        s.onPointerMove({ clientX: e.clientX, clientY: e.clientY });
-      }
+      else s.onPointerMove?.(e);
     });
 
     const end = (e) => {
       const p = live.get(e.pointerId);
       live.delete(e.pointerId);
       if (live.size < 2) pinch = null;
+      this.app.active().onPointerUp?.(e);
       if (!p) return;
-      // a tap that did not travel is a selection, not a look
-      if (p.moved < 8 && performance.now() - p.t < 400) {
-        this.app._click?.({ clientX: p.x, clientY: p.y, pointerType: 'touch' });
+      if (p.moved >= 8 || performance.now() - p.t >= 400) return;
+
+      // A tap that did not travel is a selection — and two of them in the same
+      // place is the dive. Synthesised here for the same reason `main.js:390`
+      // synthesises it on the canvas: `touch-action: none` means a touch never
+      // fires `dblclick`, and without this the primary verb of the whole
+      // universe — double-tap to fall into something — does not exist on glass.
+      const now = performance.now();
+      const ev = { clientX: p.x, clientY: p.y, pointerType: 'touch' };
+      if (lastTap && now - lastTap.t < 500
+        && Math.hypot(p.x - lastTap.x, p.y - lastTap.y) < 34) {
+        lastTap = null;
+        this.app._dblclick(ev);
+        return;
       }
+      lastTap = { t: now, x: p.x, y: p.y };
+      this.app._click(ev);
     };
     zone.addEventListener('pointerup', end);
     zone.addEventListener('pointercancel', end);
@@ -224,14 +254,107 @@ export class TouchLayer {
     return Math.hypot(a.x - b.x, a.y - b.y);
   }
 
-  // ------------------------------------------------------------ context ---
+  // ------------------------------------------------------------ the verbs --
 
-  /** the one verb this scale has, so the button is never a menu */
-  _context() {
-    const s = this.app.active();
-    if (s.kind === 'surface') { s.onKey?.('KeyE'); return; }
-    if (s.kind === 'planet') { s.onKey?.('KeyG') || this.app.tour.start(); return; }
-    this.app.tour.active ? this.app.tour.stop() : this.app.tour.start();
+  /**
+   * Every verb the old seven-button row had, and the two it never had, keyed by
+   * scale. The first entry is the primary — what a tap does. The rest fan out
+   * on a hold.
+   *
+   * `?` is deliberately absent: a control that needs a legend has already lost,
+   * and the legend is one summon gesture away in the HUD.
+   */
+  _verbs(kind) {
+    const app = this.app;
+    const tour = { icon: '➤', label: 'tour', run: () => (app.tour.active ? app.tour.stop() : app.tour.start()) };
+    const wondrous = { icon: '✦', label: 'somewhere wondrous', run: () => app.hud._wondrous() };
+    const atlas = { icon: '◈', label: 'atlas', run: () => app.hud.toggleAtlas() };
+    const up = { icon: '↑', label: 'ascend', run: () => app.popTo(app.stack.length - 2) };
+
+    switch (kind) {
+      case 'cosmic':
+      case 'galaxy':
+      case 'system':
+        // Nothing to fly here — you fall into things by double-tapping them.
+        // So the primary is the roll of the dice, which is the verb this scale
+        // actually wants and the one the old layer buried in a panel.
+        return [wondrous, tour, atlas, ...(kind === 'cosmic' ? [] : [up])];
+      case 'planet':
+        return [
+          { icon: '⛯', label: 'fly me down', run: () => app.active().onKey?.('KeyG') },
+          { icon: '⇋', label: 'shuttle', run: () => app.active().onKey?.('KeyB') },
+          wondrous, atlas, up,
+        ];
+      case 'surface':
+        return [
+          { icon: '⛵', label: 'skiff', run: () => app.active().onKey?.('KeyE') },
+          { icon: '◉', label: 'third person', run: () => app.active().onKey?.('KeyC') },
+          { icon: '✈', label: 'fly', run: () => app.active().onKey?.('KeyF') },
+          wondrous, up,
+        ];
+      case 'clouds':
+        return [wondrous, atlas, up];
+      default:
+        return [tour, wondrous, atlas, up];
+    }
+  }
+
+  _bindPrimary() {
+    let held = null, moved = 0, start = null;
+
+    const openFan = () => {
+      const v = this._verbs(this.app.active()?.kind).slice(1);
+      this.fan.innerHTML = '';
+      // An arc up and to the left of the thumb — the sweep a right hand makes
+      // without the palm leaving the phone. Laid out from the primary outward
+      // so the nearest button is the one most likely to be wanted.
+      v.forEach((verb, i) => {
+        const a = (Math.PI * 0.5) + (i + 1) * (Math.PI * 0.5) / (v.length + 1);
+        const r = 78;
+        const btn = document.createElement('b');
+        btn.textContent = verb.icon;
+        btn.style.transform = `translate(${Math.cos(a) * r}px, ${-Math.sin(a) * r}px) scale(1)`;
+        btn.addEventListener('pointerdown', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          verb.run();
+          closeFan();
+        });
+        btn.addEventListener('pointerenter', () => { this.cap.textContent = verb.label; });
+        this.fan.appendChild(btn);
+      });
+      this.root.classList.add('fanned');
+      this.cap.textContent = 'hold · release to close';
+    };
+    const closeFan = () => {
+      this.root.classList.remove('fanned');
+      this.cap.textContent = '';
+    };
+    this._closeFan = closeFan;
+
+    this.ctx.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      moved = 0;
+      start = { x: e.clientX, y: e.clientY };
+      held = setTimeout(openFan, 260);
+    });
+    this.ctx.addEventListener('pointermove', (e) => {
+      if (!start) return;
+      moved = Math.max(moved, Math.hypot(e.clientX - start.x, e.clientY - start.y));
+    });
+    const release = () => {
+      if (held) { clearTimeout(held); held = null; }
+      start = null;
+      if (this.root.classList.contains('fanned')) return;   // a fan button took it
+      const v = this._verbs(this.app.active()?.kind)[0];
+      if (moved < 12) v?.run();
+    };
+    this.ctx.addEventListener('pointerup', release);
+    this.ctx.addEventListener('pointercancel', release);
+    // a tap anywhere else closes an open fan
+    window.addEventListener('pointerdown', (e) => {
+      if (this.root.classList.contains('fanned') && !this.fan.contains(e.target)
+        && e.target !== this.ctx) closeFan();
+    }, true);
   }
 
   tick(dt) {
@@ -239,13 +362,30 @@ export class TouchLayer {
     // a wheel, a gamepad — so none of them has to know this layer exists, and
     // it is wall time rather than the frame loop's capped `dt`.
     this._idle = input.idle;
-    this.root.classList.toggle('idle', this._idle > 3);
+    const fanned = this.root.classList.contains('fanned');
+    this.root.classList.toggle('idle', this._idle > 3 && !fanned);
 
     if ((this._ctxT += dt) > 0.4) {
       this._ctxT = 0;
-      const s = this.app.active();
-      this.ctx.textContent = s.kind === 'surface' ? (s.traveler?.riding ? '✕' : '⛵')
-        : s.kind === 'planet' ? '⛯' : '➤';
+      const kind = this.app.active()?.kind;
+      if (kind !== this._kind) {
+        this._kind = kind;
+        // The zones only take the glass where nothing else is steering.
+        // cosmic, galaxy and system drive OrbitControls off the canvas, and a
+        // layer that swallows their touches is a layer that breaks them.
+        this.root.classList.toggle('walk', WALK_SCALES.has(kind));
+        this._closeFan?.();
+      }
+      const v = this._verbs(kind)[0];
+      if (v && this.ctx.textContent !== v.icon) {
+        this.ctx.textContent = v.icon;
+        this.ctx.title = v.label;
+        // name the verb briefly whenever it changes, then get out of the way
+        this.cap.textContent = v.label;
+        this.root.classList.add('hint');
+        clearTimeout(this._hintT);
+        this._hintT = setTimeout(() => this.root.classList.remove('hint'), 2200);
+      }
     }
   }
 
@@ -258,10 +398,10 @@ export class TouchLayer {
  * §M7 and §M0's unfinished item: the two control layers must never be mounted
  * at once.
  *
- * `hud.js:124` reads `matchMedia('(pointer: coarse)')` exactly once, at
- * construction, with no change listener — so a hybrid laptop that is touched
- * after load gets the thumb layer *and* keeps every keyboard listener live,
- * which is the case §M0 asked to close and did not.
+ * `hud.js:124` read `matchMedia('(pointer: coarse)')` exactly once, at
+ * construction, with no change listener — so a hybrid laptop touched after load
+ * got the thumb layer *and* kept every keyboard listener live, which is the
+ * case §M0 asked to close and did not.
  */
 export function coarsePointer() {
   return !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
