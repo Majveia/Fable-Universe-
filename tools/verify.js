@@ -27,6 +27,11 @@ import {
   SUN_BAND, frameAt, macroHeight, scoreComposition, solveLandingSite,
 } from '../src/landing.js';
 import { makeGround } from '../src/ground.js';
+import {
+  AERIAL_ALPHA_IS_CLARITY, AERIAL_GLSL, EARTH_AIR, HAZE_FRACTION, REFERENCE_AIR,
+  REFERENCE_PARAMS, aerial, aerialParams, airFor, molarMass, scaleHeight,
+  surfaceTemp,
+} from '../src/aerial.js';
 
 let failures = 0;
 let checks = 0;
@@ -975,56 +980,10 @@ function suitePrint() {
 // floor is. Plus §9.3's NaN guard, which is the one line in the function that
 // exists because of a bug rather than because of an effect.
 
-/** sRGB hex → linear, the same conversion §9.1 asks for at load */
-function hexLinear(h) {
-  const v = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
-  return v.map((c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)));
-}
-
-const AIR = {
-  haze: hexLinear('#A9BCC7'),
-  mist: hexLinear('#D6DDD4'),
-  horizonSun: hexLinear('#FBE2AE'),
-  anti: hexLinear('#C8D4D6'),
-};
-
-/**
- * §9.3, exactly as the reference computes it. `V` points from the surface
- * *toward the camera* — `normalize(uCamPos - P)`, the reference's convention at
- * every one of its ten call sites — and `sun` points at the sun, both unit. Get
- * that backwards and the Mie term inverts: fog goes cold toward the sun and
- * warm away from it, which still looks like fog and is the wrong image.
- * Returns the composited colour and the fog fraction §9.3 wants in alpha —
- * the reference smuggles it out through a mutable global, which is a GLSL
- * convenience rather than a design, so this returns it.
- */
-function aerial(col, dist, V, sun, worldY, {
-  fogNear = 70, fogFar = 1700, fogMul = 1,
-} = {}) {
-  const ss = (e0, e1, x) => {
-    const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
-    return t * t * (3 - 2 * t);
-  };
-  const mix3 = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
-
-  // a poisoned depth must not poison the colour
-  dist = dist === dist ? Math.min(dist, 1e6) : 1e6;
-
-  const d = Math.max(dist - fogNear, 0);
-  const hf = 1 + (Math.exp(-Math.max(worldY - 6, 0) / 260) - 1) * 0.72;
-  let f = 1 - Math.exp(-Math.pow(d / fogFar, 1.28) * 3.1 * hf * fogMul);
-
-  const vs = -(V[0] * sun[0] + V[1] * sun[1] + V[2] * sun[2]);
-  const mie = Math.pow(Math.min(Math.max(vs, 0), 1), 3.4);
-  let fc = mix3(AIR.haze, AIR.horizonSun, mie * 0.88);
-  fc = mix3(fc, AIR.anti, Math.min(Math.max(vs, -1), 0) * -0.32);
-
-  const pool = ss(46, 8, worldY) * ss(120, 420, dist);
-  fc = mix3(fc, AIR.mist, pool * 0.45);
-  f = Math.min(Math.max(f + pool * 0.16, 0), 1);
-
-  return { col: mix3(col, fc, f), fog: f, fc };
-}
+// `aerial()` used to be defined here, which meant the suite proved a copy
+// correct and shipped something else. It lives in `src/aerial.js` now, next to
+// the GLSL it is the reference for, and this file tests the shipped function.
+const AIR = REFERENCE_AIR;
 
 function suiteAerial() {
   console.log('\naerial — §9.3, before it enters a shader (M2 act 2)');
@@ -1127,6 +1086,124 @@ function suiteAerial() {
     }
     ok('the fog fraction is smooth enough to serve as the post chain\'s depth',
       worst < 0.02, `largest step over a 10 m increment: ${worst.toFixed(4)}`);
+  }
+
+  // -------------------------------------------------------------------------
+  // §16.3 · the three constants that could not port as literals
+  //
+  // Each of these is a recommendation in docs/plans/M2.md that was signed off
+  // as prose. Prose does not fail. These are the same three claims written so
+  // that a wrong one is a red line rather than a paragraph nobody re-read.
+
+  // a · extinction lengths scale with how much air there is, not with the
+  //     world's size — and the airless case has to fall out of the formula
+  {
+    const EARTHLIKE = { Teq: 255, massE: 1, radiusE: 1, typeId: 1 };
+    const thick = aerialParams(EARTHLIKE, 1, 1);
+    ok('§16.3a · a temperate world reproduces the reference\'s extinction lengths',
+      Math.abs(thick.near - 70) < 1e-9 && Math.abs(thick.far - 1700) < 1e-9,
+      `near ${thick.near.toFixed(1)} m · far ${thick.far.toFixed(1)} m`);
+
+    const thin = aerialParams(EARTHLIKE, 0.25, 1);
+    ok('thinner air sees further, in exact proportion',
+      Math.abs(thin.far - 1700 / 0.25) < 1e-6,
+      `atmo 0.25 → far ${thin.far.toFixed(0)} m (${(thin.far / thick.far).toFixed(2)}×)`);
+
+    // The check the parameterisation exists to pass: no branch, no special
+    // case, the fog simply is not there.
+    const airless = aerialParams({ ...EARTHLIKE, typeId: 0 }, 0, 1);
+    const P = airless;
+    let worstAirless = 0;
+    for (let d = 0; d <= 4000; d += 25) {
+      worstAirless = Math.max(worstAirless, aerial(GREY, d, toward, SUN, 6, P).fog);
+    }
+    ok('§16.3a · an airless world has no fog, with no special case for it',
+      worstAirless < 1e-6,
+      `strongest fog anywhere inside 4 km: ${worstAirless.toExponential(2)}`);
+
+    // and the resonance's mood multiplier is the same lever, not a second one
+    const moody = aerialParams(EARTHLIKE, 1, 1.7);
+    ok('the resonance\'s hazeX rides the same term as the atmosphere',
+      Math.abs(moody.far * 1.7 - thick.far) < 1e-6,
+      `hazeX 1.7 → far ${moody.far.toFixed(0)} m`);
+  }
+
+  // b · the air colours come from the star, and the reference is the fixture
+  {
+    const fix = airFor(5778, 13.5);
+    const worst = Math.max(...Object.keys(REFERENCE_AIR).map((k) =>
+      Math.max(...fix[k].map((v, i) => Math.abs(v - REFERENCE_AIR[k][i])))));
+    ok('§16.3b · the transfer reproduces §9.1\'s air for a G-type star at 13.5°',
+      worst < 1 / 255,
+      `largest channel error across haze, mist, horizon-sun and anti: ${(worst * 255).toFixed(3)}/255`);
+
+    // an M dwarf must move it, or the transfer is a lookup table
+    const dwarf = airFor(3200, 13.5);
+    const warmth = (c) => c[0] - c[2];
+    ok('and a cooler star reddens the air rather than leaving it alone',
+      warmth(dwarf.haze) > warmth(fix.haze) + 0.02,
+      `haze r−b: ${warmth(fix.haze).toFixed(4)} at 5778 K → ${warmth(dwarf.haze).toFixed(4)} at 3200 K`);
+  }
+
+  // c · 260 m is a haze scale height, and haze is a fixed fraction of the air
+  {
+    const H = scaleHeight(EARTH_AIR.T, EARTH_AIR.M, EARTH_AIR.g);
+    ok('§16.3c · Earth\'s dry-air scale height comes out of RT/(Mg)',
+      Math.abs(H - 8435) < 25, `H = ${H.toFixed(0)} m (measured: 8.4–8.5 km)`);
+
+    ok('the greenhouse puts Earth\'s surface 33 K above its equilibrium',
+      Math.abs(surfaceTemp(255, 1) - 288.15) < 0.4,
+      `Teq 255 K → ${surfaceTemp(255, 1).toFixed(1)} K surface`);
+
+    const earth = aerialParams({ Teq: 255, massE: 1, radiusE: 1, typeId: 1 }, 1, 1);
+    ok('§16.3c · a temperate world reproduces the reference\'s 260 m haze layer',
+      Math.abs(earth.hazeH - 260) < 0.5,
+      `hazeH = ${earth.hazeH.toFixed(2)} m · fraction ${HAZE_FRACTION.toFixed(6)}`);
+
+    // the scaling, not the value: a heavier world holds its haze closer down
+    const heavy = aerialParams({ Teq: 255, massE: 4, radiusE: 1.5, typeId: 1 }, 1, 1);
+    const gRatio = 4 / (1.5 * 1.5);
+    ok('haze depth follows gravity inversely, as a scale height must',
+      Math.abs(heavy.hazeH * gRatio - earth.hazeH) < 1e-6,
+      `g = ${gRatio.toFixed(2)} g⊕ → hazeH ${heavy.hazeH.toFixed(1)} m`);
+
+    ok('a gas giant\'s hydrogen holds a far deeper column than a rocky world\'s air',
+      molarMass(6) < molarMass(1) / 10
+      && aerialParams({ Teq: 130, massE: 300, radiusE: 11, typeId: 6 }, 1, 1).hazeH > earth.hazeH,
+      `μ = ${molarMass(6)} vs ${molarMass(1)} kg/mol`);
+  }
+
+  // The GLSL is generated from the same constants as the CPU function above,
+  // rather than transcribed beside it. §11 names exactly this drift — two
+  // definitions, free to move apart — as a trap that "will look like a
+  // rendering bug and cost a day."
+  {
+    const shares = [
+      ['the fog exponent', '1.28'],
+      ['the fog gain', '3.1'],
+      ['the height mix', '0.72'],
+    ];
+    ok('§2.7 · the GLSL carries the same curve constants as the CPU reference',
+      shares.every(([, v]) => AERIAL_GLSL.includes(v)),
+      shares.map(([n, v]) => `${n} ${v}`).join(' · '));
+    // Strip the commentary first. The first version of this check grepped the
+    // whole string and failed on the comment that *explains* the rule, which
+    // is a test of the prose rather than of the code.
+    const code = AERIAL_GLSL.replace(/\/\/[^\n]*/g, '');
+    ok('the GLSL never writes a descending smoothstep, which GLSL leaves undefined',
+      !/smoothstep\(\s*46\.0\s*,\s*8\.0/.test(code)
+      && code.includes('1.0 - smoothstep(8.0, 46.0, worldY)'));
+    ok('and it returns the fog fraction rather than hiding it in a global',
+      /vec4 aerial\(/.test(code) && !/gFogAmt/.test(code));
+
+    // The encoding, asserted rather than assumed. An opaque material that has
+    // never heard of §9.3 writes a = 1, and under "alpha is fog" that reads as
+    // maximally distant — the heaviest watercolour wash in the frame poured
+    // over the nearest tree. Inverted, the same 1 means "clear", which is what
+    // it already meant. See src/aerial.js's note.
+    ok('alpha carries clarity, so an unported material defaults to no fog',
+      AERIAL_ALPHA_IS_CLARITY && code.includes('1.0 - f)'),
+      'a = 1 - fog · an opaque material writing 1 reads as sharp, not as far');
   }
 }
 

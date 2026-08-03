@@ -59,6 +59,13 @@ export const PRINT_SHADER = {
     uGrain: { value: 1 },
     uVignette: { value: 1 },
     uRes: { value: new THREE.Vector2(1, 1) },
+    // `?fogview=1` — output the distance the print actually read, instead of
+    // the picture. §9.3's alpha trick is the one part of act 2 whose failure
+    // mode is invisible: a chain that quietly dropped alpha still renders a
+    // perfectly good frame, just one where step 5 softens nothing. This is the
+    // same instrument `?shdebug=1` is for the shadow term, and it is what makes
+    // "the fog fraction survives to the print" a measurement rather than a hope.
+    uFogView: { value: 0 },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -72,7 +79,7 @@ export const PRINT_SHADER = {
     uniform sampler2D tDiffuse;
     uniform sampler2D uBloom;
     uniform float uBloomAmt;
-    uniform float uPaint, uExposure, uGrain, uVignette;
+    uniform float uPaint, uExposure, uGrain, uVignette, uFogView;
     uniform vec2 uRes;
     varying vec2 vUv;
 
@@ -97,6 +104,33 @@ export const PRINT_SHADER = {
     vec3 tonemap(vec3 x, float paint) {
       x = max(x, vec3(0.0));
       return mix(tonemapVacuum(x), tonemapPrint(x), paint);
+    }
+
+    // §9.4 steps 1–4, as one function, because step 5 has to run the softened
+    // tap through exactly the same curve the sharp pixel took. Two copies of a
+    // grade is the same fault §2.7 names for the height field: they look
+    // identical until one of them is edited.
+    vec3 grade(vec3 c, float paint) {
+      c = tonemap(c * uExposure, paint);
+
+      // §9.4 step 2 — shadows to violet, highlights to cream.
+      // The reference annotates this "the single biggest lever." It is.
+      float l = luma(c);
+      vec3 shadowPush = mix(vec3(0.90, 0.95, 1.16), vec3(1.0), smoothstep(0.0, 0.34, l));
+      vec3 highPush   = mix(vec3(1.0), vec3(1.055, 1.012, 0.925), smoothstep(0.44, 0.98, l));
+      c *= mix(vec3(1.0), shadowPush, 0.85 * paint) * mix(vec3(1.0), highPush, 0.9 * paint);
+
+      // §9.4 step 3 — the lift, and §2.8's whole argument in one line: it is
+      // scaled by uPaint, so in vacuum it is exactly zero and black stays black
+      vec3 lift = vec3(0.017, 0.021, 0.036) * paint;
+      c = c * (1.0 - lift) + lift;
+
+      // §9.4 step 4 — a gentle S, then saturation in the midtones only
+      c = mix(c, c * c * (3.0 - 2.0 * c), 0.16 * paint);
+      l = luma(c);
+      float satBoost = 1.0 + 0.16 * paint
+        * smoothstep(0.10, 0.42, l) * (1.0 - smoothstep(0.62, 0.96, l));
+      return mix(vec3(l), c, satBoost);
     }
 
     vec3 toSRGB(vec3 c) {
@@ -148,26 +182,48 @@ export const PRINT_SHADER = {
       bl = mix(vec3(0.0), bl, vec3(equal(bl, bl)));
       c += max(bl, vec3(0.0)) * uBloomAmt;
 
-      c = tonemap(c * uExposure, uPaint);
+      c = grade(c, uPaint);
 
-      // §9.4 step 2 — shadows to violet, highlights to cream.
-      // The reference annotates this "the single biggest lever." It is.
-      float l = luma(c);
-      vec3 shadowPush = mix(vec3(0.90, 0.95, 1.16), vec3(1.0), smoothstep(0.0, 0.34, l));
-      vec3 highPush   = mix(vec3(1.0), vec3(1.055, 1.012, 0.925), smoothstep(0.44, 0.98, l));
-      c *= mix(vec3(1.0), shadowPush, 0.85 * uPaint) * mix(vec3(1.0), highPush, 0.9 * uPaint);
+      // ─── §9.4 step 5 · watercolour softening, tied to distance ───────────
+      //
+      // This is the step §9.3's alpha channel exists to make possible, and the
+      // one act 1 had to defer twice for want of a distance to read.
+      //
+      // "Wet-in-wet, *not* bokeh" is the whole specification. A depth-of-field
+      // blur is an optical defect of a lens; this is pigment spreading into
+      // damp paper, so the radius stays small and fixed and it is the *amount*
+      // that grows with distance. A far ridge does not go out of focus — it
+      // goes soft, which is a different thing and reads as air rather than as
+      // a camera.
+      //
+      // The tap is graded once, after averaging, rather than each sample being
+      // graded and then averaged. The two differ only in the second order, and
+      // the alternative is five tonemap-plus-grade evaluations per pixel for a
+      // wash whose entire purpose is to lose detail.
+      // Alpha carries clarity, 1 - fog — src/aerial.js explains why it is
+      // stored inverted. An opaque material that knows nothing about §9.3
+      // writes 1, which reads here as "no fog": sharp, and correct.
+      float fog = 1.0 - clamp(src.a, 0.0, 1.0);
+      if (uFogView > 0.5) { gl_FragColor = vec4(vec3(fog), 1.0); return; }
+      float wet = 0.42 * fog;
+      if (wet > 0.002) {
+        vec2 px = 1.6 / max(uRes, vec2(1.0));
+        vec3 t = texture2D(tDiffuse, vUv + vec2( px.x,  px.y)).rgb
+               + texture2D(tDiffuse, vUv + vec2(-px.x,  px.y)).rgb
+               + texture2D(tDiffuse, vUv + vec2( px.x, -px.y)).rgb
+               + texture2D(tDiffuse, vUv + vec2(-px.x, -px.y)).rgb;
+        // §11's firewall again: a NaN four texels away must not spread here
+        t = mix(vec3(0.0), t, vec3(equal(t, t)));
+        vec3 soft = grade(t * 0.25, uPaint);
+        c = mix(c, soft, wet * uPaint);
 
-      // §9.4 step 3 — the lift, and §2.8's whole argument in one line: it is
-      // scaled by uPaint, so in vacuum it is exactly zero and black stays black
-      vec3 lift = vec3(0.017, 0.021, 0.036) * uPaint;
-      c = c * (1.0 - lift) + lift;
-
-      // §9.4 step 4 — a gentle S, then saturation in the midtones only
-      c = mix(c, c * c * (3.0 - 2.0 * c), 0.16 * uPaint);
-      l = luma(c);
-      float satBoost = 1.0 + 0.16 * uPaint
-        * smoothstep(0.10, 0.42, l) * (1.0 - smoothstep(0.62, 0.96, l));
-      c = mix(vec3(l), c, satBoost);
+        // §9.4 step 5b — chroma bleed at 0.09 + 0.17·wet. "Paint runs, pixels
+        // do not": the *colour* is taken from the spread tap while the
+        // luminance stays exactly where it was, so edges keep their drawing
+        // and only the pigment wanders across them.
+        float bleed = (0.09 + 0.17 * wet) * uPaint;
+        c = mix(c, vec3(luma(c)) + (soft - vec3(luma(soft))), bleed);
+      }
 
       // §9.4 step 6 — paper tooth: two octaves, ±3% grain plus 1% fibre
       vec2 gp = vUv * uRes / 2.4;

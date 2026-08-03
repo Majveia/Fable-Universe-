@@ -30,6 +30,7 @@ import { addInterior } from './interior.js';
 import { findLandingSite } from './terrain.js';
 import { solveLandingSite } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
+import { AERIAL_GLSL, aerialParams, airFor } from './aerial.js';
 import { makeGround } from './ground.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
 import { qInt } from './quality.js';
@@ -54,6 +55,19 @@ const M2 = PARAM('m2') === '1';
  * defect as no flag at all.
  */
 const PAINT = PARAM('paint') === '1' || (M2 && PARAM('paint') !== '0');
+
+/**
+ * §9.3's aerial perspective, act 2. Separable both ways for the same reason
+ * `?paint=` is: `?m2=1&aerial=0` is the print over the old one-line fog, and
+ * `?aerial=1` is the depth cue without the print. One flag for three changes is
+ * the same defect as no flag at all (§7.4).
+ *
+ * It also writes the fog fraction into the alpha channel, which is what §9.4
+ * step 5 spends on distance-graded softening — so with `?aerial=0` the print
+ * has no distance to read and that step is inert. That is the intended
+ * behaviour of the flag, not a gap in it.
+ */
+const AERIAL = PARAM('aerial') === '1' || (M2 && PARAM('aerial') !== '0');
 
 /** `?shdebug=1` — output the shadow term itself, so it can be looked at */
 const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');
@@ -109,6 +123,7 @@ const TERRAIN_FRAG = /* glsl */`
   varying vec3 vN;
   ${NOISE_GLSL}
   ${PAINT ? SHADOW_GLSL + PAINT_GLSL : ''}
+  ${AERIAL ? AERIAL_GLSL : ''}
 
   uniform float uSea;    // sea level in world y, or -1e9 for a dry world
 
@@ -214,8 +229,22 @@ const TERRAIN_FRAG = /* glsl */`
 
     // aerial perspective
     float dist = length(vW - uCam);
+    ${AERIAL ? /* glsl */`
+    // §9.3. The alpha is not decoration: it is this pixel's distance, and
+    // §9.4 step 5 spends it on the watercolour softening. Anything that
+    // overwrites it — a blend mode, a pass that ignores it — turns every
+    // pixel's "distance" into a lie the print then acts on.
+    //
+    // Night is handled on the uniform rather than here. The air's radiance
+    // falls with the sun, but the air itself does not go away, so dimming the
+    // four colours in _syncAerial keeps a midnight valley reading as depth.
+    // Mixing the fog *fraction* toward zero instead would have deleted the
+    // depth cue at exactly the hour the light stops carrying it.
+    gl_FragColor = aerial(lit, dist, normalize(uCam - vW), uSunDir, vW.y);
+    ` : /* glsl */`
     lit = mix(lit, uHorizon * max(dusk, 0.08), 1.0 - exp(-dist * 0.0007));
     gl_FragColor = vec4(lit, 1.0);
+    `}
   }
 `;
 
@@ -276,7 +305,13 @@ const SKY_FRAG = /* glsl */`
       stars = vec3(0.9, 0.88, 1.0) * exp(-sd2 * sd2 * 3.5) * (h - 0.994) / 0.006 * dark;
     }
 
-    gl_FragColor = vec4(sky + sun + stars, 1.0);
+    // The one surface that has to declare its distance rather than inherit it.
+    // Alpha is clarity (src/aerial.js): the sky is at infinity, so it is the
+    // least clear thing in the frame and §9.4 step 5 gives it the full wash.
+    // That is a decision, not an accident — a painted four-stop gradient is
+    // exactly what wet-in-wet softening should be strongest on, and the sun
+    // disc is already 3× oversize and deliberately soft-edged (§9.6).
+    gl_FragColor = vec4(sky + sun + stars, ${AERIAL ? '0.0' : '1.0'});
   }
 `;
 
@@ -318,6 +353,7 @@ const OCEAN_FRAG = /* glsl */`
   varying vec3 vW;
   varying vec3 vN;
   ${NOISE_GLSL}
+  ${AERIAL ? AERIAL_GLSL : ''}
 
   void main() {
     // three bands of chop riding the swell, all drifting downwind
@@ -347,8 +383,14 @@ const OCEAN_FRAG = /* glsl */`
     col += vec3(0.9, 0.95, 1.0) * crest * 0.18 * (0.25 + 0.75 * day);
 
     float dist = length(vW - uCam);
+    ${AERIAL ? /* glsl */`
+    // The ocean plane runs to EXT*24, so without a real extinction curve its
+    // far edge was the one place the old one-line fog visibly failed to close.
+    gl_FragColor = aerial(col, dist, normalize(uCam - vW), uSunDir, vW.y);
+    ` : /* glsl */`
     col = mix(col, uHorizon * max(day, 0.08), 1.0 - exp(-dist * 0.0007));
     gl_FragColor = vec4(col, 1.0);
+    `}
   }
 `;
 
@@ -500,6 +542,67 @@ export class SurfaceScale {
     };
   }
 
+  /**
+   * §9.3's uniform block. One object, shared by every surface-scale material,
+   * so the terrain and the ocean can never disagree about how far away the
+   * horizon is — which is what "one shared chunk" in `M2.md` §16.2 buys.
+   *
+   * The three lengths come from `aerialParams()` and are physics (§16.3): a
+   * property of this world's air, not of AEON's 1400 m tile.
+   */
+  _aerialUniforms() {
+    if (this._airU) return this._airU;
+    const T = this.ctx.system?.temp ?? 5778;
+    const p = aerialParams(this.pp, this.atmo, 1);
+    const v = (c) => ({ value: new THREE.Vector3(c[0], c[1], c[2]) });
+    const air = airFor(T, 13.5);
+    this._air = {
+      T,
+      u: {
+        haze: v(air.haze), mist: v(air.mist),
+        horizonSun: v(air.horizonSun), anti: v(air.anti),
+      },
+    };
+    this._airU = {
+      uAirHaze: this._air.u.haze,
+      uAirMist: this._air.u.mist,
+      uAirHorizonSun: this._air.u.horizonSun,
+      uAirAnti: this._air.u.anti,
+      uAirNear: { value: p.near },
+      uAirFar: { value: p.far },
+      uAirHazeH: { value: p.hazeH },
+      uAirMistAmt: { value: p.mistAmt },
+    };
+    return this._airU;
+  }
+
+  /**
+   * The air, as the sun moves. Two things change and they are not the same
+   * thing: the *hue* follows the beam's path length through the air, so the
+   * haze reddens as the sun drops; the *radiance* follows how much light is in
+   * the air at all, which is what makes midnight fog dark instead of absent.
+   *
+   * Doing the second in the fragment shader — mixing the fog fraction toward
+   * zero at dusk — would have removed the depth cue at exactly the hour §9.7
+   * tunes the whole light model for.
+   */
+  _syncAerial() {
+    if (!AERIAL || !this._air) return;
+    const y = Math.min(Math.max(this.uSunDir.value.y, -1), 1);
+    const elev = (Math.asin(y) * 180) / Math.PI;
+    const air = airFor(this._air.T, Math.max(elev, 0.5));
+    // Civil twilight is about −6°: below it the air is lit by scattered light
+    // it no longer receives directly, and 0.06 is where the reference's own
+    // night floor sits rather than zero — air is never a black wall.
+    const lum = 0.06 + 0.94 * Math.min(Math.max((y + 0.10) / 0.28, 0), 1);
+    const u = this._air.u;
+    const set = (t, c) => t.value.set(c[0] * lum, c[1] * lum, c[2] * lum);
+    set(u.haze, air.haze);
+    set(u.mist, air.mist);
+    set(u.horizonSun, air.horizonSun);
+    set(u.anti, air.anti);
+  }
+
   /** the sun climbs, so the beam it sends reddens less — re-derive as it moves */
   _syncPaintLight() {
     if (!PAINT || !this._paintLight) return;
@@ -562,6 +665,7 @@ export class SurfaceScale {
       uniforms: {
         uSunDir: this.uSunDir, uSunColor: this.uSunColor,
         ...(PAINT ? this._paintUniforms() : {}),
+        ...(AERIAL ? this._aerialUniforms() : {}),
         uColA: { value: pp.colA }, uColB: { value: pp.colB }, uColC: { value: pp.colC },
         uHorizon: { value: this.horizonColor },
         uCam: this.uCam,
@@ -830,6 +934,10 @@ export class SurfaceScale {
     this.ocean = new THREE.Mesh(geo, new THREE.ShaderMaterial({
       uniforms: {
         uSunDir: this.uSunDir, uSunColor: this.uSunColor,
+        // the same objects the terrain holds, not a copy — §16.2's "one shared
+        // chunk" is only true if the uniforms are shared too, and `_syncAerial`
+        // writes each colour once for every material that reads it
+        ...(AERIAL ? this._aerialUniforms() : {}),
         uHorizon: { value: this.horizonColor },
         uDeep: { value: this.pp.typeId === 2 ? this.pp.colA : new THREE.Color(0.02, 0.1, 0.2) },
         uCam: this.uCam,
@@ -1296,6 +1404,7 @@ export class SurfaceScale {
     if (this.weather) this.weather.update(dt, this.uSunDir.value.y);
     if (this.megafauna) this.megafauna.update(dt, this.uSunDir.value.y);
     this._syncPaintLight();
+    this._syncAerial();
     if (this.sunShadow) {
       this.sunShadow.update(this.app.renderer, this.scene, this.camera,
         this.uSunDir.value, (x, z) => this.heightAt(x, z));

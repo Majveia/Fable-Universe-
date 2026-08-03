@@ -152,6 +152,8 @@ export class Post {
       renderer.toneMapping = THREE.NoToneMapping;
       this.printPass = new ShaderPass(PRINT_SHADER);
       this.printPass.uniforms.uGrain.value = ditherOff ? 0 : 1;
+      // §9.3's alpha, made visible — see the uniform's note in print.js
+      this.printPass.uniforms.uFogView.value = PARAM('fogview') === '1' ? 1 : 0;
       this.printPass.uniforms.uBloom.value = this.bloom.texture;
       this.composer.addPass(this.printPass);
     } else {
