@@ -1054,11 +1054,18 @@ export class SurfaceScale {
    *
    * Anchored at the spawn rather than at the terrain's origin, because §9.7's
    * opening frame is composed from the spawn and the silhouette is the largest
-   * thing in it. The cost is a parallax error that grows as the walker leaves
-   * the anchor; at the haze fractions these bands live at — 0.99 and above on a
-   * temperate world — a bearing error is not a visible quantity, and the honest
-   * fix (resampling on the move) would hitch the frame for 18k height
-   * evaluations. Recorded as a limit rather than hidden as a choice.
+   * thing in it. Walking away costs a bearing error, and at the haze fractions
+   * these bands live at — 0.99 and above on a temperate world — a bearing error
+   * is not a visible quantity.
+   *
+   * **Altitude is the sharper case and it is not covered.** `F` puts the walker
+   * in flight, and from several hundred metres up the real skyline moves both
+   * outward and down while this curtain stays where a 1.68 m eye put it. The
+   * fix is an incremental re-march on a frame budget — `marchSkyline` is
+   * per-azimuth and resumable, so N columns a frame retires the error without
+   * the ~80 ms hitch a rebuild costs — and it belongs with M4's camera, which
+   * is where the flying eye is actually specified. Until then `?ridge=1` is
+   * honest on foot and approximate in flight (docs/plans/M2.md §27.7).
    */
   _buildHorizon(rings) {
     const t0 = performance.now();     // logged only — never read into generation (§2.3)
