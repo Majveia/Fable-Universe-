@@ -43,8 +43,8 @@ const PARAM = (k) => {
   catch { return null; }
 };
 
-/** M2 — the print and the rebuilt bloom. Default-off (§7.4). */
-const M2 = PARAM('m2') === '1';
+/** M2 — the print and the rebuilt bloom. **Default-on**; `?m2=0` goes back. */
+const M2 = PARAM('m2') !== '0';
 
 /**
  * §9.2's light model, act 3. It rides M2 because it is the same milestone, but
@@ -73,14 +73,16 @@ const PAINT = PARAM('paint') === '1' || (M2 && PARAM('paint') !== '0');
 const AERIAL = PARAM('aerial') === '1' || (M2 && PARAM('aerial') !== '0');
 
 /**
- * §M4 — the body, the camera rig and the shared input axis. Default-off (§7.4).
+ * §M4 — the body, the camera rig and the shared input axis. **Default-on**;
+ * `?m4=0` restores the old inline walk.
  *
- * It rides its own flag rather than M2's because it changes what the frame
- * *is* rather than how it is printed: eye height moves 1.80 → 1.68 m and the
- * field of view 62 → 52, which are §6 M4's numbers and the reference's, and
- * which move every existing capture. Behind the flag nothing does.
+ * It keeps its own flag rather than riding M2's because it changes what the
+ * frame *is* rather than how it is printed: eye height moves 1.80 → 1.68 m and
+ * the field of view 62 → 52, which are §6 M4's numbers and the reference's.
+ * Both move every existing capture, which is why the flip is this commit and
+ * not the one that built them (§7.4).
  */
-const M4 = PARAM('m4') === '1';
+const M4 = PARAM('m4') !== '0';
 
 /** `?shdebug=1` — output the shadow term itself, so it can be looked at */
 const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');

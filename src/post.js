@@ -64,8 +64,18 @@ const PARAM = (k) => {
 /** M1 — the ordered dither. Default-off (§7.4); see docs/plans/M1.md §5. */
 const M1 = PARAM('m1') === '1';
 
-/** M2 — the print (§9.4), which replaces ACES. Default-off; docs/plans/M2.md */
-const M2 = PARAM('m2') === '1';
+/**
+ * M2 — the print (§9.4), which replaces ACES.
+ *
+ * **Default-on**, and `?m2=0` is the way back. §7.4 says flipping a default is
+ * a separate commit and this is that commit; docs/plans/M2.md §24 records what
+ * is still owed for it.
+ *
+ * §2.4 makes a URL a permanent address, so the parameter had to keep meaning
+ * what it meant rather than disappear: every saved `?m2=1` link still resolves
+ * to the same frame it always did.
+ */
+const M2 = PARAM('m2') !== '0';
 
 /**
  * How deep the M2 bloom chain goes, and therefore how far light travels. Each

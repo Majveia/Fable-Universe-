@@ -13,13 +13,14 @@ const PARAM = (k) => {
 
 /**
  * §M7 — the invisible thumb layer, and the HUD cut to §3's three persistent
- * elements. Default-off (§7.4).
+ * elements. **Default-on**; `?m7=0` restores the old rosette and the seven
+ * resident elements.
  *
  * The two halves ride one flag because they are one claim: §8 axis 7 asks
  * whether you could delete the HUD entirely and lose no orientation, and that
  * is not answerable while the controls are part of what is on screen.
  */
-const M7 = PARAM('m7') === '1';
+const M7 = PARAM('m7') !== '0';
 
 /**
  * The three that stay (§3: "hairline type, ≤3 persistent elements"). Everything

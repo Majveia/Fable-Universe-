@@ -76,6 +76,17 @@ class App {
     this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: 'high-performance' });
     this.renderer.setClearColor(0x000000, 1);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // ACES, and the one place it is still allowed to exist.
+    //
+    // Every document in this repo forbids it by name — v1 §"Print" ("Never
+    // ACES"), v2 §9.4 step 1 ("Not ACES. Not Reinhard.") and v2 §3 row 3
+    // ("Never ACES, in either regime") — and the universe rendered through it
+    // at every scale for its entire life, which M0's audit routed to M2 as the
+    // largest single gap between the constitution and the pixels.
+    //
+    // `Post` now sets `NoToneMapping` and runs §9.4's print instead. This
+    // assignment survives only as the `?m2=0` fallback: a saved link that asks
+    // for the old frame still gets it, exactly (§2.4).
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
     // §5's quality table, chosen once and never moved again (§11)

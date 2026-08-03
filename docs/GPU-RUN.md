@@ -42,6 +42,28 @@ Expect **20–40 minutes**. Most of it is the 600-frame bench, three times.
 
 ---
 
+## What is owed, as of the default flip
+
+The print, the light model, the shadow pass, §9.3's aerial perspective, §M4's
+body and camera and §M7's thumb layer are **on by default** now. Two things
+were supposed to happen before that and did not, because neither is possible
+without a GPU — see `docs/plans/M2.md` §24.3:
+
+1. **`?bench=1` on real silicon, all three tiers.** §5's budgets are unmeasured
+   for everything above, and they now describe the frame a visitor sees rather
+   than an experiment behind a flag.
+2. **A blind side-by-side against `docs/reference/hoshi-no-tani.html`** on the
+   same route (§8), scored without knowing which is which.
+
+And one thing no instrument can settle: **§9.2's band edges need a human to
+look at them.** They are meant to be visible. §11 lists deleting them as the
+archetypal physically-based reflex, and if they read as a bug to you, they read
+as a bug.
+
+Rolling back is `?m2=0&m4=0&m7=0` in a URL, or one line in `src/main.js`.
+
+---
+
 ## What it does, in order
 
 | step | what it proves |
