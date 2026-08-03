@@ -35,6 +35,10 @@ import {
   LAYERS, MATERIAL_GLSL, blend, materialPalette, moistureAt, snowLine, worldBias,
 } from '../src/material.js';
 import {
+  DEPTH_BANDS, EXTINCTION, OCEAN_GLSL, WAVE_COUNT, buildWaves, fresnel,
+  gerstner, peakOmega, significantHeight, transmission, whitecap,
+} from '../src/ocean.js';
+import {
   AERIAL_ALPHA_IS_CLARITY, AERIAL_GLSL, EARTH_AIR, HAZE_FRACTION, REFERENCE_AIR,
   REFERENCE_PARAMS, aerial, aerialParams, airFor, molarMass, scaleHeight,
   surfaceTemp,
@@ -2315,11 +2319,216 @@ function suiteMaterial() {
 
 function clamp01v(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
 
+// ---------------------------------------------------------------------------
+// suite: ocean
+//
+// §M2 act 5. Unusually decidable for a piece of rendering: almost every claim
+// it makes is a physical law with a closed form, so what a GPU would be needed
+// for is how it *looks*, and everything about whether it is right can be
+// settled here.
+//
+// The dispersion relation is the load-bearing one. ω² = gk means every
+// wavelength travels at its own speed, which is why a sum of them never
+// repeats — and it is the difference between a sea and a corrugated sheet
+// scrolling past.
+
+function suiteOcean() {
+  console.log('\nocean — §M2 act 5, Gerstner on a real spectrum');
+
+  const G = 9.80665;
+  const waves = buildWaves(10, 0.7, 20250601);
+
+  // --- the spectrum belongs to the wind that raised it ----------------------
+  {
+    ok('§M2 · 8–12 waves are summed', waves.length === WAVE_COUNT
+      && WAVE_COUNT >= 8 && WAVE_COUNT <= 12, `${WAVE_COUNT} waves`);
+
+    // Pierson–Moskowitz: a 10 m/s wind raises 2.1 m of fully developed sea
+    ok('significant wave height follows Pierson–Moskowitz',
+      Math.abs(significantHeight(10) - 2.141) < 0.01
+      && Math.abs(significantHeight(20) / significantHeight(10) - 4) < 1e-9,
+      `H_s = ${significantHeight(10).toFixed(2)} m at 10 m/s, and ∝ U²`);
+
+    // and the sea a calm raises is not the sea a gale raises
+    const calm = buildWaves(4, 0, 7), gale = buildWaves(22, 0, 7);
+    const amp = (ws) => ws.reduce((a, w) => a + w.amp, 0);
+    ok('so a gale raises a bigger sea than a calm, without anything wired to it',
+      amp(gale) > amp(calm) * 8,
+      `Σamp ${amp(calm).toFixed(3)} m at 4 m/s → ${amp(gale).toFixed(2)} m at 22 m/s`);
+  }
+
+  // --- the dispersion relation, which is why the sea never loops ------------
+  {
+    let worst = 0;
+    for (const w of waves) worst = Math.max(worst, Math.abs(w.omega * w.omega - G * w.k) / (G * w.k));
+    ok('every wave obeys ω² = gk, so each wavelength travels at its own speed',
+      worst < 1e-12, `worst relative error over ${waves.length} waves: ${worst.toExponential(1)}`);
+
+    // The periods are mutually irrational in practice, so the sum has no period
+    // a viewer could sit through. Measured as the spread of phase-speed ratios
+    // rather than asserted.
+    const c = waves.map((w) => w.omega / w.k).sort((a, b) => a - b);
+    ok('and the phase speeds span a wide range, so the sum does not repeat',
+      c[c.length - 1] / c[0] > 3,
+      `${c[0].toFixed(2)}–${c[c.length - 1].toFixed(2)} m/s across the set`);
+  }
+
+  // --- Gerstner is not a heightfield: crests sharpen, troughs flatten -------
+  {
+    // Sample one wavelength of the biggest wave alone and check the asymmetry.
+    const one = [waves.reduce((a, b) => (a.amp > b.amp ? a : b))];
+    const N = 512, lam = 2 * Math.PI / one[0].k;
+    const ys = [];
+    for (let i = 0; i < N; i++) ys.push(gerstner(one, (i / N) * lam, 0, 0).y);
+    const mean = ys.reduce((a, b) => a + b, 0) / N;
+    const above = ys.filter((y) => y > mean).length / N;
+    ok('a Gerstner crest is narrower than its trough — the sea is not a sine',
+      above < 0.47,
+      `${(100 * above).toFixed(1)}% of the surface is above its own mean`
+      + ' (a sine would be exactly 50%)');
+  }
+
+  // --- foam comes from the surface folding, not from a guess ----------------
+  {
+    // Below the steepness limit the map never folds anywhere.
+    const gentle = buildWaves(6, 0, 11, 0.35);
+    let minJ = Infinity;
+    for (let i = 0; i < 60; i++) {
+      for (let j = 0; j < 60; j++) {
+        minJ = Math.min(minJ, gerstner(gentle, i * 3.1, j * 2.7, i * 0.13).jacobian);
+      }
+    }
+    ok('a gentle sea never folds through itself',
+      minJ > 0, `smallest Jacobian over 3600 samples: ${minJ.toFixed(3)}`);
+
+    // Past it, it folds. Stated on a *single* wave, because that is where the
+    // law is unambiguous: a Gerstner wave self-intersects exactly when its
+    // steepness A·k exceeds 1. Spread a budget of 1.9 over twelve directions
+    // and no single axis reaches the limit — which is a fact about direction
+    // spreading, not about the criterion, and an earlier version of this check
+    // mistook one for the other.
+    const one = (q) => [{ k: 0.5, amp: q / 0.5, omega: Math.sqrt(9.80665 * 0.5), dir: 0, phase: 0 }];
+    const foldsAt = (q) => {
+      let minJ = Infinity;
+      for (let i = 0; i < 400; i++) minJ = Math.min(minJ, gerstner(one(q), i * 0.05, 0, 0).jacobian);
+      return minJ;
+    };
+    ok('and one past A·k = 1 folds, which is what a whitecap is',
+      foldsAt(0.9) > 0 && foldsAt(1.15) < 0,
+      `min Jacobian ${foldsAt(0.9).toFixed(3)} at A·k = 0.9 →`
+      + ` ${foldsAt(1.15).toFixed(3)} at 1.15 — foam is drawn where the surface`
+      + ' genuinely overturned, not where a shader guessed');
+
+    // and the shipped sea sits under that limit, so it folds only where phases
+    // happen to pile up rather than everywhere at once
+    const steep = waves.reduce((a, w) => a + w.amp * w.k, 0);
+    // A fully developed sea has H_s ∝ U² and λ_peak ∝ U², so its steepness is
+    // roughly constant with wind and sits near 0.1 — the dominant swell does
+    // not break, which is why the open ocean is not white. An earlier version
+    // of this check expected 0.5–1.0 and was wrong about the sea, not the code.
+    ok('the shipped sea is far below the folding limit, as a real one is',
+      steep > 0.05 && steep < 0.2,
+      `Σ A·k = ${steep.toFixed(3)} · H_s 2.14 m over an 83 m peak wavelength`);
+
+    // which is exactly why the fold cannot be the only source of foam
+    ok('so whitecaps need the crest-shear term too, or a gale is glassy',
+      whitecap(3, 0.9, 0.9) < 0.01 && whitecap(18, 0.9, 0.9) > 0.4
+      && whitecap(18, -0.1, 0.0) === 1,
+      `coverage ${whitecap(3, 0.9, 0.9).toFixed(2)} at 3 m/s →`
+      + ` ${whitecap(18, 0.9, 0.9).toFixed(2)} at 18 m/s on the same crest,`
+      + ' and 1.00 anywhere the surface actually overturned');
+  }
+
+  // --- Beer–Lambert is why the sea is blue ---------------------------------
+  {
+    const t1 = transmission(1, false), t10 = transmission(10, false);
+    ok('red is absorbed an order of magnitude faster than blue',
+      EXTINCTION[0] / EXTINCTION[2] > 15,
+      `k = ${EXTINCTION.join(', ')} per metre — this one fact is the entire`
+      + ' reason the sea is blue');
+    ok('so a metre of water is nearly neutral and ten metres is not',
+      t1[0] / t1[2] > 0.6 && t10[0] / t10[2] < 0.05,
+      `red/blue transmission ${(t1[0] / t1[2]).toFixed(2)} at 1 m →`
+      + ` ${(t10[0] / t10[2]).toExponential(1)} at 10 m`);
+    ok('transmission is 1 at the surface and monotone below it', (() => {
+      if (Math.abs(transmission(0, false)[2] - 1) > 1e-12) return false;
+      let prev = 2;
+      for (let d = 0; d <= 30; d += 0.25) {
+        const v = transmission(d, false)[1];
+        if (v > prev + 1e-12) return false;
+        prev = v;
+      }
+      return true;
+    })());
+  }
+
+  // --- the depth bands are discrete, which is the art direction -------------
+  {
+    const seen = new Set();
+    for (let d = 0; d <= DEPTH_BANDS * 4; d += 0.05) seen.add(transmission(d)[1].toFixed(9));
+    ok(`§M2 · depth is graded in ${DEPTH_BANDS} discrete bands, not smoothly`,
+      seen.size <= DEPTH_BANDS + 1 && seen.size > 1,
+      `${seen.size} distinct values over the sampled range — §11 warns this`
+      + ' looks like quantisation to a PBR reflex, and it is the point');
+  }
+
+  // --- Fresnel: a mirror at the far shore, a window at your feet -----------
+  {
+    ok('Schlick gives water its 2% head-on and near-total grazing reflectance',
+      Math.abs(fresnel(1) - 0.02) < 1e-9 && fresnel(0.02) > 0.85,
+      `R(0°) = ${fresnel(1).toFixed(3)} · R(88°) = ${fresnel(0.035).toFixed(3)}`);
+    let mono = true, prev = -1;
+    for (let c = 1; c >= 0; c -= 0.01) { const f = fresnel(c); if (f < prev) mono = false; prev = f; }
+    ok('and it rises monotonically toward the horizon', mono);
+  }
+
+  // --- §2.3 ----------------------------------------------------------------
+  {
+    const sum = (ws) => ws.reduce((a, w) => a + w.amp * 7 + w.k * 13 + w.dir * 3 + w.phase, 0);
+    ok('§2.3 · the same wind and seed raise the same sea',
+      sum(buildWaves(12, 1.1, 4242)) === sum(buildWaves(12, 1.1, 4242)));
+    ok('and a different seed raises a different one',
+      sum(buildWaves(12, 1.1, 4242)) !== sum(buildWaves(12, 1.1, 4243)));
+  }
+
+  // --- Nyquist against the mesh, which cost a capture to learn -------------
+  {
+    // A geometric wave shorter than twice the quad it displaces does not
+    // render as a small wave. It aliases, and the aliasing tracks the grid —
+    // twelve waves down to 26 m on a 240 m mesh drew a sea of long white
+    // diagonal slashes. The vertex shader carries what the mesh can resolve;
+    // the fragment's normal perturbation carries the chop.
+    const quad = 37;
+    const limited = buildWaves(10, 0.7, 20250601, 0.86, quad * 2.2);
+    const shortest = Math.min(...limited.map((w) => w.lam));
+    ok('no geometric wave is shorter than two quads of the mesh it rides',
+      shortest >= quad * 2,
+      `shortest λ = ${shortest.toFixed(1)} m on a ${quad} m grid`
+      + ` — unlimited it reaches ${Math.min(...waves.map((w) => w.lam)).toFixed(1)} m`);
+
+    ok('and the set still spans the swell, rather than collapsing to one wave',
+      Math.max(...limited.map((w) => w.lam)) / shortest > 2.5,
+      `${shortest.toFixed(0)}–${Math.max(...limited.map((w) => w.lam)).toFixed(0)} m`);
+  }
+
+  // --- the GLSL carries the same constants ---------------------------------
+  {
+    const code = OCEAN_GLSL.replace(/\/\/[^\n]*/g, '');
+    ok('§2.7 · the GLSL sums the same wave count and bands the same depth',
+      code.includes(`i < ${WAVE_COUNT}`) && code.includes(`${DEPTH_BANDS}.0`));
+    ok('and it computes the Jacobian rather than faking foam',
+      /jac = jxx \* jzz - jxz \* jxz/.test(code));
+    ok('and the glitter is quantised, not a specular lobe',
+      /floor\(clamp\(lobe/.test(code));
+  }
+}
+
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
   walk: suiteWalk, material: suiteMaterial, opening: suiteOpening,
+  ocean: suiteOcean,
 };
 
 for (const [name, fn] of Object.entries(suites)) {

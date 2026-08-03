@@ -32,6 +32,9 @@ import { solveLandingSite } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
 import { AERIAL_GLSL, aerialParams, airFor } from './aerial.js';
 import { MATERIAL_GLSL, materialPalette, worldBias } from './material.js';
+import {
+  EXTINCTION as EXTINCTION_V, OCEAN_GLSL, buildWaves, significantHeight, waveUniforms,
+} from './ocean.js';
 import { GAIT, Walker, gravityOf } from './avatar.js';
 import { CameraRig } from './camera.js';
 import { attachKeyboard, input, jumpHeld } from './input.js';
@@ -147,6 +150,16 @@ const SOLVE = PARAM('solve') === '1';
  * hue path, so the ramp has somewhere to go.
  */
 const MAT = PARAM('mat') === '1';
+
+/**
+ * §M2 act 5 — the sea. Default-off (§7.4).
+ *
+ * Twelve Gerstner waves on a Pierson–Moskowitz spectrum, Beer–Lambert depth in
+ * discrete bands, quantised glitter, and foam where the surface genuinely
+ * overturns. What it replaces is two crossed sine waves, which have no crests:
+ * a sine is symmetric about its own mean and the sea is not.
+ */
+const SEA = PARAM('sea') === '1';
 
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
@@ -411,8 +424,11 @@ const SKY_FRAG = /* glsl */`
 const OCEAN_VERT = /* glsl */`
   uniform float uTime;
   uniform vec2 uWind;
+  uniform float uHsHalf;      // half the significant wave height, for the crest term
   varying vec3 vW;
   varying vec3 vN;
+  varying vec2 vQ;            // the undisplaced point — Gerstner's parameter domain
+  ${SEA ? OCEAN_GLSL : ''}
 
   // two long swells travel with the wind; the mesh actually heaves
   float swell(vec2 p, float t) {
@@ -422,12 +438,23 @@ const OCEAN_VERT = /* glsl */`
 
   void main() {
     vec3 w = (modelMatrix * vec4(position, 1.0)).xyz;
+${SEA ? /* glsl */`
+    // §M2 act 5. The horizontal displacement is what sharpens a crest, and the
+    // Jacobian that comes with it is the only place foam is allowed to be.
+    vec3 nrm; float jac;
+    vQ = w.xz;
+    vec3 d = gerstner(vQ, uTime, nrm, jac);
+    w += d;
+    vN = nrm;
+` : /* glsl */`
     float h = swell(w.xz, uTime);
     w.y += h;
     float e = 2.0;
     float hx = swell(w.xz + vec2(e, 0.0), uTime) - h;
     float hz = swell(w.xz + vec2(0.0, e), uTime) - h;
     vN = normalize(vec3(-hx / e, 1.0, -hz / e));
+    vQ = w.xz;
+`}
     vW = w;
     gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
   }
@@ -443,10 +470,15 @@ const OCEAN_FRAG = /* glsl */`
   uniform float uTime;
   uniform float uSeed;
   uniform vec2 uWind;
+  uniform float uWindSpeed;
+  uniform float uSeaFloor;    // ground height under this point, for depth
+  uniform float uHsHalf;
   varying vec3 vW;
   varying vec3 vN;
+  varying vec2 vQ;
   ${NOISE_GLSL}
   ${AERIAL ? AERIAL_GLSL : ''}
+  ${SEA ? OCEAN_GLSL : ''}
 
   void main() {
     // three bands of chop riding the swell, all drifting downwind
@@ -460,8 +492,50 @@ const OCEAN_FRAG = /* glsl */`
       snoise(vec3(p + 40.0 - drift * 0.017, uTime * 0.17)) * 0.1 +
       snoise(vec3(p * 5.1 + 9.0, uTime * 0.4)) * 0.04));
     vec3 view = normalize(uCam - vW);
-    float fres = pow(1.0 - max(dot(view, n), 0.0), 3.0);
     float day = smoothstep(-0.15, 0.25, uSunDir.y);
+${SEA ? /* glsl */`
+    // §M2 act 5 · Schlick rather than a tuned power. R0 = 0.02 is water's own
+    // number, and it is why a lake is a window at your feet and a mirror at
+    // the far shore.
+    float fres = waterFresnel(max(dot(view, n), 0.0));
+    // Beer–Lambert through however much water is under this point, banded.
+    // Red is gone by two metres and blue survives to fifty; that asymmetry is
+    // the whole reason the sea is blue, and picking a blue colour instead
+    // keeps the result and throws away the reason.
+    vec3 sky = uHorizon * day;
+    vec3 col = mix(waterBody(max(vW.y - uSeaFloor, 0.0), sky), sky, fres);
+
+    // Foam where the surface actually overturned, plus the crest shear that
+    // makes every whitecap anyone has seen — see ocean.js for why the fold
+    // alone leaves a gale glassy.
+    //
+    // And then broken into patches, which is the part the criterion cannot
+    // supply. Whitecaps are not a ribbon along every crest: a wave breaks
+    // where the short waves riding it happen to pile up, so a third of a crest
+    // goes white and the rest does not. Applied unpatched it drew a continuous
+    // line down every wave in the frame, which is what the first capture of
+    // this act showed — the criterion was right and the distribution was not.
+    // Evaluated per *pixel*, from Gerstner's own parameter domain, rather than
+    // interpolated off the vertices. The foam band on an 81 m wave is about
+    // 20 m wide and the quads are 37 m: a varying cannot resolve it, and what
+    // came out instead was a thin diagonal sliver stretched across every
+    // triangle. Twelve waves in the fragment is the price of the crest being
+    // where the crest is.
+    vec3 fn; float fjac;
+    vec3 fd = gerstner(vQ, uTime, fn, fjac);
+    // 'patch' is a reserved word in GLSL — it compiles fine in the CPU twin and
+    // fails only in the driver, which is precisely the class of defect §M0's
+    // compile gate exists to catch and the reason it checks the assembled string.
+    float foamPatch = snoise(vec3(vW.xz * 0.021 - drift * 0.02, uTime * 0.11)) * 0.5 + 0.5;
+    foamPatch *= snoise(vec3(vW.xz * 0.078 + 17.0 - drift * 0.05, uTime * 0.23)) * 0.5 + 0.5;
+    float foam = whitecap(uWindSpeed, fjac, fd.y / max(uHsHalf, 1e-4))
+      * smoothstep(0.10, 0.42, foamPatch);
+    // the leading edge of a breaking crest is bright and its wake is thin
+    col = mix(col, vec3(0.90, 0.94, 0.96) * (0.30 + 0.70 * day), foam * 0.72);
+
+    col += uSunColor * glitter(n, view, uSunDir, 0.35) * day * (1.0 - foam);
+` : /* glsl */`
+    float fres = pow(1.0 - max(dot(view, n), 0.0), 3.0);
     vec3 col = mix(uDeep * (0.25 + 0.75 * day), uHorizon * day, fres * 0.85);
 
     // the glitter path: a lane of broken suns stretched toward the star
@@ -474,6 +548,7 @@ const OCEAN_FRAG = /* glsl */`
     float crest = smoothstep(0.985, 0.955, n.y) * smoothstep(0.4, 0.9,
       snoise(vec3(vW.xz * 0.4 - drift * 0.05, uTime * 0.6)) * 0.5 + 0.5);
     col += vec3(0.9, 0.95, 1.0) * crest * 0.18 * (0.25 + 0.75 * day);
+`}
 
     float dist = length(vW - uCam);
     ${AERIAL ? /* glsl */`
@@ -758,6 +833,40 @@ export class SurfaceScale {
       uMatRelief: { value: Math.max(this.amp, 1) },
     };
     return this._matU;
+  }
+
+  /**
+   * §M2 act 5's wave set, from the wind this world already has.
+   *
+   * Nothing is tuned here. The wind speed picks the significant wave height
+   * through Pierson–Moskowitz and the peak wavelength through the dispersion
+   * relation, so a world with a strong wind has a big sea because it has a
+   * strong wind — not because a number was raised to match.
+   */
+  _seaUniforms() {
+    if (this._seaU) return this._seaU;
+    // The world's own wind direction, and a speed from its weather. §M3 will
+    // replace this scalar with the shared field; the waves already read a
+    // direction and a speed, so that is a substitution rather than a rewrite.
+    const dir = Math.atan2(this.wind.y, this.wind.x);
+    const speed = 4 + (hash(this.pp.seed, 0x53ea) % 1000) / 1000 * 12;
+    // Nyquist against the mesh: nothing shorter than two quads.
+    const waves = buildWaves(speed, dir, this.pp.seed >>> 0, 0.86,
+      (this._seaQuad ?? 37) * 2.2);
+    const packed = waveUniforms(waves);
+    this._seaU = {
+      uWave: { value: packed.data },
+      uWavePhase: { value: packed.phase },
+      uExtinction: { value: new THREE.Vector3(...EXTINCTION_V) },
+      uDeepCol: { value: new THREE.Color(0.015, 0.055, 0.11) },
+      uShallowCol: { value: new THREE.Color(0.10, 0.30, 0.32) },
+      uWindSpeed: { value: speed },
+      uHsHalf: { value: significantHeight(speed) * 0.5 },
+      // one sample of the ground under the sea plane; the depth term wants the
+      // floor, and a flat sea over varying ground is what makes a shoreline
+      uSeaFloor: { value: (this.seaLevel ?? 0) - 14 },
+    };
+    return this._seaU;
   }
 
   /** the materials are lit by the star too, so their stops move with the sun */
@@ -1098,8 +1207,18 @@ export class SurfaceScale {
   }
 
   _buildOcean() {
-    // enough vertices that the swell can actually lift them
-    const geo = new THREE.PlaneGeometry(EXT * 24, EXT * 24, 140, 140);
+    // Enough vertices that the swell can actually lift them — and, under
+    // §M2 act 5, enough that it can lift them *without aliasing*. A geometric
+    // wave shorter than twice its quad turns into diagonal slashes tracking
+    // the grid, so the plane shrank and the grid grew: 240 m per quad became
+    // 37 m, which resolves the peak wavelength an 8 m/s wind raises.
+    //
+    // The plane could shrink because §9.3's fog now closes long before its
+    // edge — extinction saturates by about 8 km and this reaches 11.2.
+    const span = SEA ? EXT * 8 : EXT * 24;
+    const segs = SEA ? 300 : 140;
+    const geo = new THREE.PlaneGeometry(span, span, segs, segs);
+    this._seaQuad = span / segs;
     geo.rotateX(-Math.PI / 2);
     this.ocean = new THREE.Mesh(geo, new THREE.ShaderMaterial({
       uniforms: {
@@ -1108,6 +1227,7 @@ export class SurfaceScale {
         // chunk" is only true if the uniforms are shared too, and `_syncAerial`
         // writes each colour once for every material that reads it
         ...(AERIAL ? this._aerialUniforms() : {}),
+        ...(SEA ? this._seaUniforms() : {}),
         uHorizon: { value: this.horizonColor },
         uDeep: { value: this.pp.typeId === 2 ? this.pp.colA : new THREE.Color(0.02, 0.1, 0.2) },
         uCam: this.uCam,
