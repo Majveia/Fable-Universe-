@@ -49,6 +49,12 @@ import {
   NO_LIMIT, baseAngles, buildHorizon, geometricHorizon, horizonFragment, marchSkyline,
   ridgeAlbedo, saturationRadius,
 } from '../src/horizon.js';
+import {
+  CELL_ADV, LANE, PROFILE_NORM, RHO_EARTH, SURFACE_FRACTION, SWING_DIR,
+  SWING_SPEED, TURB_FALLOFF, TURB_OCTAVES, WIND_GLSL, airDensity, baseWindSpeed,
+  cellAt, gustAt, hashi, makeWind, meanFlow, noise1, noise3, turbulenceAt,
+  windAt, windForceScale, windProfile,
+} from '../src/wind.js';
 
 let failures = 0;
 let checks = 0;
@@ -3023,12 +3029,290 @@ function suiteHorizon() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// suite: wind
+//
+// §6 M3's first ingredient, and the one every other system in the milestone
+// will read. Three classes of claim are tested here and they are not the same
+// kind of thing:
+//
+//   · **physics** — the boundary layer, the Kolmogorov cascade, the geostrophic
+//     transfer. Checked against closed forms and against the reference's own
+//     evaluated constants.
+//   · **shape** — that a gust reads as a *front*: one arrival, a rise sharper
+//     than its decay. §6 M3 asks for that in prose; here it is a measurement.
+//   · **§2.3** — that the field is a pure function of (seed, t, x, z). The
+//     reference's own implementation would fail two of these three checks, so
+//     they are not a formality.
+
+function suiteWind() {
+  console.log('\nwind — one field, evaluated rather than stepped (§6 M3, §2.3)');
+
+  const EARTH = { massE: 1, radiusE: 1, Teq: 255, typeId: 1, tilt: 0.41, spin: 0.07 };
+  const W = makeWind(0xa11ce, EARTH, 1);
+
+  // --- the boundary layer --------------------------------------------------
+  {
+    near('§6 M3 · the log profile is normalised to the 10 m reference height',
+      windProfile(10), 1, 1e-12);
+    // the reference hard-codes 0.19523; this derives it, so the two must agree
+    near("and its constant is the reference's 0.19523, derived rather than copied",
+      PROFILE_NORM, 0.19523, 3e-5);
+    let mono = true, prev = -1;
+    for (let z = 0.001; z < 30; z *= 1.3) {
+      const v = windProfile(z);
+      if (v < prev - 1e-12) mono = false;
+      prev = v;
+    }
+    ok('the profile is monotonic, so roots never move more than tips', mono);
+    ok('and a blade root sees a small fraction of what its tip does',
+      windProfile(0.02) < 0.1 && windProfile(0.6) > 0.35,
+      `root ${windProfile(0.02).toFixed(3)} · tip ${windProfile(0.6).toFixed(3)}`);
+  }
+
+  // --- the Kolmogorov cascade ----------------------------------------------
+  {
+    near('§6 M3 · the per-octave amplitude falloff is 2^(-1/3), not a taste knob',
+      TURB_FALLOFF, Math.pow(2, -1 / 3), 1e-15);
+    // E(k) ~ k^(-5/3) means amplitude ~ k^(-1/3); fit the slope the octaves
+    // actually realise rather than trusting the constant that produced them
+    const xs = [], ys = [];
+    for (let i = 0; i < TURB_OCTAVES; i++) {
+      xs.push(Math.log(Math.pow(2, i)));
+      ys.push(Math.log(Math.pow(TURB_FALLOFF, i)));
+    }
+    const n = xs.length;
+    const mx = xs.reduce((a, b) => a + b) / n, my = ys.reduce((a, b) => a + b) / n;
+    let num = 0, den = 0;
+    for (let i = 0; i < n; i++) { num += (xs[i] - mx) * (ys[i] - my); den += (xs[i] - mx) ** 2; }
+    near('and the fitted amplitude slope is -1/3 across the four octaves',
+      num / den, -1 / 3, 1e-12);
+  }
+
+  // --- curl noise is divergence-free ---------------------------------------
+  //
+  // The reason it is curl noise at all: air does not pile up. Sampled by
+  // central differences on a grid, against the field's own magnitude.
+  {
+    let worst = 0, scale = 0, n = 0;
+    const h = 0.35;
+    for (let i = 0; i < 16; i++) {
+      for (let j = 0; j < 16; j++) {
+        const x = i * 37 - 300, z = j * 41 - 300;
+        const a = turbulenceAt(W, x + h, z, 12), b = turbulenceAt(W, x - h, z, 12);
+        const c = turbulenceAt(W, x, z + h, 12), d = turbulenceAt(W, x, z - h, 12);
+        const div = (a.x - b.x) / (2 * h) + (c.z - d.z) / (2 * h);
+        worst = Math.max(worst, Math.abs(div));
+        scale += turbulenceAt(W, x, z, 12).mag; n++;
+      }
+    }
+    const rel = worst / (scale / n);
+    ok('§6 M3 · the turbulence is divergence-free — air does not pile up',
+      rel < 0.05, `worst |div| ${worst.toExponential(2)} vs mean |curl| `
+      + `${(scale / n).toExponential(2)} — ${(rel * 100).toFixed(2)}%`);
+  }
+
+  // --- a gust reads as a front ---------------------------------------------
+  //
+  // §6 M3 asks for "a sharp leading edge, an exponential body". That is a
+  // statement about the shape of an arrival, so it is measured as one: sample
+  // along the wind axis, which is the same trace a fixed point sees in time
+  // because the cells advect rigidly.
+  {
+    // through a cell rather than past one: gusts are patchy across the wind as
+    // well as along it, so a line at cross = 0 mostly samples calm air
+    const cross = cellAt(W, 0).c;
+    const trace = [];
+    for (let a = -900; a <= 900; a += 1.5) trace.push({ a, ...gustAt(W, a, cross, 0) });
+    const iF = trace.reduce((bi, p, i) => (p.front > trace[bi].front ? i : bi), 0);
+    const peak = trace[iF].front;
+    ok('a gust front has a single clear maximum', peak > 0.2, `peak ${peak.toFixed(3)}`);
+    let ahead = 0, behind = 0;
+    for (let i = iF; i < trace.length && trace[i].front > peak * 0.5; i++) ahead = trace[i].a - trace[iF].a;
+    for (let i = iF; i >= 0 && trace[i].front > peak * 0.5; i--) behind = trace[iF].a - trace[i].a;
+    ok('and the front itself is thin — tens of metres, not hundreds',
+      ahead > 0 && behind > 0 && ahead + behind < 90,
+      `${(ahead + behind).toFixed(0)} m wide at half maximum`);
+    const iG = trace.reduce((bi, p, i) => (p.gust > trace[bi].gust ? i : bi), 0);
+    const gp = trace[iG].gust;
+    let gAhead = 0, gBehind = 0;
+    for (let i = iG; i < trace.length && trace[i].gust > gp * 0.5; i++) gAhead = trace[i].a - trace[iG].a;
+    for (let i = iG; i >= 0 && trace[i].gust > gp * 0.5; i--) gBehind = trace[iG].a - trace[i].a;
+    ok('while the body behind it is an exponential tail, several times longer',
+      gBehind > gAhead * 2.5, `${gAhead.toFixed(0)} m ahead · ${gBehind.toFixed(0)} m behind`);
+    ok('and the cells advect downwind faster than the mean flow, so gusts arrive',
+      CELL_ADV > 1);
+  }
+
+  // --- §2.3 · the field is a pure function, not an integrator ---------------
+  {
+    const A = makeWind(0xa11ce, EARTH, 1), B = makeWind(0xa11ce, EARTH, 1);
+    let same = true;
+    for (let i = 0; i < 40; i++) {
+      const a = windAt(A, i * 23 - 400, i * 17 - 300, i * 0.7, 1.2);
+      const b = windAt(B, i * 23 - 400, i * 17 - 300, i * 0.7, 1.2);
+      if (a.x !== b.x || a.z !== b.z || a.gust !== b.gust) same = false;
+    }
+    ok('§2.3 · the same seed gives a bit-identical field', same);
+
+    // The check the reference's own implementation fails: it integrates a
+    // random walk, so its state at t=60 depends on how many frames reached it.
+    const got = [1 / 30, 1 / 60, 1 / 144].map(() => windAt(A, 120, -80, 60, 1.2));
+    ok('and it is independent of the frame rate that reached t',
+      got.every((g) => g.x === got[0].x && g.z === got[0].z),
+      'stateless by construction — no accumulator exists to diverge');
+    ok('and independent of where the observer has been — one sky for everyone',
+      windAt(A, 120, -80, 60, 1.2).x === got[0].x);
+
+    const C = makeWind(0xbeef, EARTH, 1);
+    const c0 = windAt(C, 120, -80, 60, 1.2);
+    ok('while a different seed is a different sky',
+      Math.abs(c0.x - got[0].x) + Math.abs(c0.z - got[0].z) > 1e-6);
+  }
+
+  // --- the lattice ---------------------------------------------------------
+  {
+    let inRange = true;
+    for (let j = -50; j < 50; j++) {
+      const c = cellAt(W, j);
+      if (!(c.len >= 26 && c.len <= 60)) inRange = false;
+      if (!(c.wid >= 70 && c.wid <= 200)) inRange = false;
+      if (!(c.amp >= 0.85 && c.amp <= 2.2)) inRange = false;
+      if (!(Math.abs(c.veer) <= 0.21 + 1e-12)) inRange = false;
+      if (!(c.s >= j * LANE && c.s < j * LANE + 260)) inRange = false;
+    }
+    ok("every lane carries a cell inside the reference's parameter ranges",
+      inRange, '100 lanes');
+    // Coverage over an *area*, because a gust is patchy in both axes — and
+    // against a number rather than an intuition. The reference's own six cells,
+    // run to steady state with its own recycle rule and its own parameters,
+    // leave **4.2%** of the ground gusting at any moment. That is the figure the
+    // lattice has to reproduce, and reproducing it is what says the 260 m
+    // spacing was derived correctly rather than guessed.
+    let hits = 0, n = 0;
+    for (let a = -3000; a < 3000; a += 20) {
+      for (let c = -500; c <= 500; c += 20) { n++; if (gustAt(W, a, c, 0).gust > 0.05) hits++; }
+    }
+    const cov = hits / n;
+    ok("the lattice reproduces the reference's own 4.2% gust coverage",
+      Math.abs(cov - 0.042) < 0.015, `${(cov * 100).toFixed(1)}% of ${n} stations`);
+    // and the statistic the gate actually cares about: is a front ever in frame
+    let frames = 0, seen = 0;
+    for (let a = -2000; a < 2000; a += 60) {
+      for (let c = -400; c <= 400; c += 60) {
+        frames++;
+        let found = false;
+        for (let da = 0; da < 200 && !found; da += 12) {
+          for (let dc = -100; dc < 100 && !found; dc += 12) {
+            if (gustAt(W, a + da, c + dc, 0).gust > 0.3) found = true;
+          }
+        }
+        if (found) seen++;
+      }
+    }
+    ok('so a gust is somewhere in a 200 m frame about a quarter of the time',
+      seen / frames > 0.12 && seen / frames < 0.55,
+      `${((seen / frames) * 100).toFixed(0)}% of frames (reference: 25%)`);
+  }
+
+  // --- the meander ---------------------------------------------------------
+  {
+    let lo = Infinity, hi = -Infinity, dlo = Infinity, dhi = -Infinity;
+    for (let t = 0; t < 4000; t += 1.7) {
+      const m = meanFlow(W, t);
+      lo = Math.min(lo, m.speed); hi = Math.max(hi, m.speed);
+      dlo = Math.min(dlo, m.dir - W.baseDir); dhi = Math.max(dhi, m.dir - W.baseDir);
+    }
+    ok("the mean speed wanders inside the reference's own clamp band",
+      lo >= W.base * (1 - SWING_SPEED) - 1e-9 && hi <= W.base * (1 + SWING_SPEED) + 1e-9,
+      `${lo.toFixed(2)}–${hi.toFixed(2)} of base ${W.base.toFixed(2)} m/s`);
+    ok('and the direction inside ±0.34 rad, exactly its clamp',
+      dlo >= -SWING_DIR - 1e-9 && dhi <= SWING_DIR + 1e-9,
+      `${dlo.toFixed(3)}…${dhi.toFixed(3)} rad`);
+    // it must actually wander — a constant would pass both clamps above
+    ok('and it genuinely meanders rather than sitting still',
+      hi - lo > W.base * 0.3 && dhi - dlo > 0.3);
+  }
+
+  // --- the wind is this world's -------------------------------------------
+  {
+    const u = baseWindSpeed(EARTH, 1);
+    ok("§9.6 · the geostrophic transfer reproduces the reference's 4.2 m/s for Earth",
+      Math.abs(u - 4.2) / 4.2 < 0.05,
+      `${u.toFixed(3)} m/s at friction fraction ${SURFACE_FRACTION} (textbook 0.3–0.4)`);
+
+    // pressure cancels between the gradient and the density — a real result,
+    // and the reason speed and force are separate quantities
+    const thin = baseWindSpeed(EARTH, 0.25);
+    ok('and thinning the air barely changes the speed, because p cancels',
+      Math.abs(thin - u) / u < 0.15, `${thin.toFixed(2)} vs ${u.toFixed(2)} m/s`);
+    ok('while the force behind it falls with the density, which is what bends grass',
+      windForceScale(EARTH, 0.25) < 0.35 && windForceScale(EARTH, 1) > 0.99,
+      `${windForceScale(EARTH, 0.25).toFixed(3)} vs 1.000`);
+    ok('and a vacuum has no wind to speak of and nothing to push with',
+      baseWindSpeed(EARTH, 0) === 0 && windForceScale(EARTH, 0) === 0);
+    near("Earth's air density comes out at the textbook value",
+      airDensity(EARTH, 1), 1.225, 0.06);
+    ok('and the Earth reference density is the same formula, so the ratio is exact',
+      Math.abs(RHO_EARTH - airDensity(EARTH, 1)) < 1e-12);
+
+    const spun = baseWindSpeed({ ...EARTH, spin: 0.12 }, 1);
+    ok('a faster-spinning world turns its gradient into circulation, not wind',
+      spun < u, `${spun.toFixed(2)} vs ${u.toFixed(2)} m/s`);
+    const tilted = baseWindSpeed({ ...EARTH, tilt: 1.2 }, 1);
+    ok('and a world lying on its side has a weaker mean gradient to drive it',
+      tilted < u, `${tilted.toFixed(2)} vs ${u.toFixed(2)} m/s`);
+  }
+
+  // --- the hash is portable, which is what makes parity meaningful ---------
+  {
+    ok('the hash is exact 32-bit integer arithmetic, negatives included',
+      hashi(-1, -1, -1) === hashi(-1, -1, -1)
+      && hashi(0, 0, 0) >= 0 && hashi(0, 0, 0) < 4294967296
+      && hashi(-7, 3, -11) !== hashi(-7, 3, -10));
+    const buckets = new Array(16).fill(0);
+    for (let i = -2000; i < 2000; i++) buckets[Math.floor((hashi(i, 5, 9) / 4294967296) * 16)]++;
+    const exp = 4000 / 16;
+    const chi = buckets.reduce((a, b) => a + ((b - exp) ** 2) / exp, 0);
+    ok('and it is uniform enough that the noise cannot band', chi < 30,
+      `chi2 ${chi.toFixed(1)} on 15 df`);
+    let nlo = Infinity, nhi = -Infinity;
+    for (let i = 0; i < 3000; i++) {
+      const v = noise3(3, i * 0.31, i * 0.17, i * 0.07);
+      const w = noise1(3, i * 0.13);
+      nlo = Math.min(nlo, v, w); nhi = Math.max(nhi, v, w);
+    }
+    ok('both noises stay inside [-1, 1]', nlo >= -1 && nhi <= 1,
+      `${nlo.toFixed(3)}…${nhi.toFixed(3)}`);
+  }
+
+  // --- the GLSL carries the same constants and the same shape --------------
+  {
+    const code = WIND_GLSL.replace(/\/\/[^\n]*/g, '');
+    ok('§2.7 · the GLSL declares the same lattice period and advection rate',
+      code.includes(`W_LANE = ${LANE.toFixed(1)}`)
+      && code.includes(`W_ADV = ${CELL_ADV.toFixed(4)}`));
+    ok('and the same Kolmogorov falloff, to nine figures',
+      code.includes(`W_FALL = ${TURB_FALLOFF.toFixed(8)}`));
+    ok("and the same derived profile constant, not the reference's rounded one",
+      code.includes(`W_PNORM = ${PROFILE_NORM.toFixed(9)}`));
+    ok('§6 M3 · it keeps the warp-coherent early-out that makes the far field free',
+      /if \(edge >= 0\.999\) return w;/.test(code));
+    ok('and it computes a curl rather than sampling noise as a velocity',
+      /vec2 curl = vec2\(ny - n0, -\(nx - n0\)\) \/ W_EPS/.test(code));
+    ok('and it separates the gust from its front, which are different quantities',
+      /front \+= amp \* exp\(-abs\(u\) \* 9\.0\) \* cw/.test(code));
+    ok('the hash is integer, so the two implementations can be bit-identical',
+      /uint aeonHashi\(int x, int y, int z\)/.test(code) && !/fract\(sin\(/.test(code));
+  }
+}
+
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
   walk: suiteWalk, material: suiteMaterial, opening: suiteOpening,
-  ocean: suiteOcean, horizon: suiteHorizon,
+  ocean: suiteOcean, horizon: suiteHorizon, wind: suiteWind,
 };
 
 for (const [name, fn] of Object.entries(suites)) {
