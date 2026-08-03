@@ -2992,6 +2992,16 @@ function suiteHorizon() {
       /gl_FragColor = vec4\(col, 1\.0\)/.test(fsPlain) && !fsPlain.includes('uAirFar'));
     ok('the vertex stage carries the true distance and height as attributes',
       /attribute float aTrueD/.test(HORIZON_VERT) && /attribute float aTrueY/.test(HORIZON_VERT));
+    // The cost claim, as a red line rather than a ratio. A silhouette that
+    // grows a noise octave or a texture lookup has stopped being a silhouette,
+    // and this is the assertion that says so before a capture has to.
+    {
+      const noise = /\b(fbm3?|snoise|noise3?|triNoise)\s*\(/g;
+      const tex = /\btexture(2D|Cube)?\s*\(/g;
+      ok('and the silhouette evaluates no noise and samples no texture',
+        (fsA.match(noise) || []).length === 0 && (fsA.match(tex) || []).length === 0,
+        `${(fsA.match(noise) || []).length} noise · ${(fsA.match(tex) || []).length} texture`);
+    }
   }
 
   // --- marchSkyline's bookkeeping -----------------------------------------

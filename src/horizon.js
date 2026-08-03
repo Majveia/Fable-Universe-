@@ -294,8 +294,11 @@ export function baseAngles(occ, tan, drop = BASE_DROP) {
  *
  * Two vertices per column, two triangles per segment: 220 segments is 442
  * vertices and 440 triangles per band. Four bands is 1760 triangles against
- * ring 2's ~9000, and the fragment shader they carry is a twentieth of the
- * terrain's.
+ * ring 2's ~9000, and the fragment shader they carry evaluates **no noise and
+ * samples no texture** — against the terrain fragment's 20 noise call sites and
+ * 6 shadow-map samples under `?mat=1&paint=1`, several of those triplanar and
+ * therefore three lookups each. That, rather than a ratio nobody measured, is
+ * why this is cheap: there is nothing in it to be expensive.
  */
 export function buildBand(prof, base, { radius, yEye, ox = 0, oz = 0 }) {
   const cols = prof.tan.length;

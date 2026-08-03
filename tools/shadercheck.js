@@ -18,6 +18,27 @@
 // compiles the build nobody is iterating on and reports green while every new
 // shader in the repo goes unchecked; that is exactly the failure mode §11 warns
 // about, one level up. `--flags` takes a comma-separated list of query strings.
+//
+// ---------------------------------------------------------------------------
+// Why there is a second traversal, and when to use it
+//
+// The bench route is a *flight*: it travels between scales continuously, which
+// is the right coverage model because §2.5 says that is how the universe is
+// actually entered. On real silicon it finishes well inside the timeout.
+//
+// On a software rasteriser it does not. Measured here, four passes each ran the
+// full 600 s and every one of them reported `scalesVisited: ["blackhole"]` —
+// 88 to 100 shaders compiled, zero failures, and the surface scale never
+// reached. A gate that returns "0 failed" about scales it never visited is
+// worse than no gate, which is why the tool already refuses to call that a
+// pass. But refusing is not the same as being usable, and on a container with
+// no GPU that left §M0's compile gate permanently unclosable.
+//
+// `--stations` is the second traversal: navigate straight to each scale's deep
+// link and wait for frames, rather than flying between them. It gives up the
+// transition shaders — which the flight covers and this cannot — and buys the
+// deep scales, which the flight cannot reach here and this does in seconds.
+// Neither subsumes the other, so both exist and the report says which ran.
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -76,6 +97,51 @@ function quote(source, info) {
 
 const timeoutMs = Number(arg('timeout', 600)) * 1000;
 const jsonPath = resolve(REPO, String(arg('json', 'docs/captures/shaders.json')));
+/** visit each scale by deep link instead of flying between them — see the note above */
+const stationMode = arg('stations', false) !== false;
+const stationSeed = Number(arg('seed', 20250601));
+const stationFrames = Number(arg('frames', 90));
+
+/**
+ * The itinerary, resolved in-page from the seed with the same pure generators
+ * the universe uses — lifted from `tools/capture.js` so the two tools cannot
+ * disagree about where the seed's rocky world is.
+ */
+const RESOLVE_ROUTE = (origin) => `
+  import { hash } from '${origin}/src/rng.js';
+  import { galaxyParams } from '${origin}/src/galaxy.js';
+  import { systemParams } from '${origin}/src/system.js';
+  const galaxySeed = hash(${stationSeed}, 0xbe0) >>> 0;
+  const gp = galaxyParams(galaxySeed);
+  for (let i = 0; i < 4096; i++) {
+    const starSeed = hash(gp.seed, i, 0x57a9) >>> 0;
+    const sp = systemParams(starSeed);
+    const rocky = sp.planets.findIndex(p => p.typeId <= 4);
+    const giant = sp.planets.findIndex(p => p.typeId >= 5);
+    if (rocky >= 0) { window.__route = { galaxySeed, starSeed, rocky, giant }; break; }
+  }
+`;
+
+const stations = (r) => {
+  const b = `seed=${stationSeed}`;
+  const list = [
+    ['cosmic-web', b],
+    ['galaxy', `${b}&g=${r.galaxySeed}`],
+    ['star-system', `${b}&g=${r.galaxySeed}&s=${r.starSeed}`],
+    ['planet-orbit', `${b}&g=${r.galaxySeed}&s=${r.starSeed}&pl=${r.rocky}&quad=1&ap=0`],
+    ['surface', `${b}&g=${r.galaxySeed}&s=${r.starSeed}&p=${r.rocky}`],
+    ['black-hole', `${b}&g=${r.galaxySeed}&bh=1`],
+  ];
+  if (r.giant >= 0) list.push(['cloud-deck', `${b}&g=${r.galaxySeed}&s=${r.starSeed}&p=${r.giant}&cl=1`]);
+  return list;
+};
+
+/** wait for N presented frames, so a slow rasteriser compiles the same set */
+const SETTLE = (n) => new Promise((res) => {
+  let i = 0;
+  const tick = () => (++i >= n ? res(true) : requestAnimationFrame(tick));
+  requestAnimationFrame(tick);
+});
 
 // Default: the shipped build, then every milestone flag at once. The second
 // pass is the one that matters today — src/print.js and the M1 cosmic shaders
@@ -100,24 +166,48 @@ for (const flags of passes) {
   page.on('pageerror', (e) => pageErrors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error') pageErrors.push('console: ' + m.text()); });
 
-  console.log(`shadercheck · flying the bench route · ${label}`);
-  await page.goto(`${site.origin}/index.html?bench=1&quad=1${flags ? '&' + flags : ''}`,
-    { waitUntil: 'load' });
-
   let complete = true;
-  try {
-    await page.waitForFunction('window.AEON_BENCH_DONE === true', null, { timeout: timeoutMs });
-  } catch {
-    complete = false;
-    console.warn(`shadercheck · route did not finish within ${timeoutMs / 1000}s — coverage is partial`);
+  let visited = [];
+
+  if (stationMode) {
+    console.log(`shadercheck · visiting each scale by deep link · ${label}`);
+    await page.goto(`${site.origin}/index.html?seed=${stationSeed}`, { waitUntil: 'load' });
+    await page.addScriptTag({ type: 'module', content: RESOLVE_ROUTE(site.origin) });
+    await page.waitForFunction('window.__route', null, { timeout: 60000 });
+    const route = await page.evaluate(() => window.__route);
+    for (const [name, q] of stations(route)) {
+      const url = `${site.origin}/index.html?${q}${flags ? '&' + flags : ''}`;
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        await page.evaluate(SETTLE, stationFrames);
+        // a scale that reports a different kind than the link asked for is a
+        // redirect, not a visit — record what actually loaded
+        visited.push(await page.evaluate(() => window.AEON?.active?.()?.kind ?? null) || name);
+      } catch (e) {
+        complete = false;
+        pageErrors.push(`station ${name}: ${e.message}`);
+      }
+    }
+    const want = stations(route).length;
+    if (visited.filter(Boolean).length < want) complete = false;
+  } else {
+    console.log(`shadercheck · flying the bench route · ${label}`);
+    await page.goto(`${site.origin}/index.html?bench=1&quad=1${flags ? '&' + flags : ''}`,
+      { waitUntil: 'load' });
+    try {
+      await page.waitForFunction('window.AEON_BENCH_DONE === true', null, { timeout: timeoutMs });
+    } catch {
+      complete = false;
+      console.warn(`shadercheck · route did not finish within ${timeoutMs / 1000}s — coverage is partial`);
+    }
+    visited = await page.evaluate(() =>
+      (window.AEON_BENCH?.scales || []).map(s => s.kind)
+        .concat(window.AEON ? [window.AEON.active().kind] : []));
   }
 
   const shaders = await page.evaluate(() => (window.__AEON_SHADERS || []).map(s => ({
     kind: s.kind, ok: s.ok, info: s.info, source: s.source,
   })));
-  const visited = await page.evaluate(() =>
-    (window.AEON_BENCH?.scales || []).map(s => s.kind)
-      .concat(window.AEON ? [window.AEON.active().kind] : []));
 
   renderer = await page.evaluate(() => {
     const gl = document.createElement('canvas').getContext('webgl2');
@@ -126,7 +216,8 @@ for (const flags of passes) {
   });
 
   await page.close();
-  runs.push({ label, flags, complete, shaders, pageErrors, scales: [...new Set(visited)].sort() });
+  runs.push({ label, flags, complete, shaders, pageErrors, mode: stationMode ? 'stations' : 'flight',
+    scales: [...new Set(visited.filter(Boolean))].sort() });
 }
 
 await browser.close();
