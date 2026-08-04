@@ -45,6 +45,7 @@ import { attachKeyboard, input, jumpHeld } from './input.js';
 import { makeGround } from './ground.js';
 import { makeWind } from './wind.js';
 import { GrassRing, WindField } from './flora.js';
+import { RINGS } from './meadow.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
 import { qArr, qInt } from './quality.js';
 
@@ -1096,17 +1097,31 @@ export class SurfaceScale {
 
     const grassMul = qArr('grass', 'grass');
     const segs = qArr('blades', 'blades');
-    this.meadow = [new GrassRing(0, this.windField, {
-      seed: hash(this.pp.seed, 0x9ea6),
-      seg: segs[0],
-      density: grassMul[0],
-      palette: { base: [this.pp.colC.r * 0.7, this.pp.colC.g * 0.8, this.pp.colC.b * 0.6],
-        tip: [this.pp.colC.r * 1.5, this.pp.colC.g * 1.4, this.pp.colC.b * 0.7] },
-    })];
+    const palette = {
+      base: [this.pp.colC.r * 0.7, this.pp.colC.g * 0.8, this.pp.colC.b * 0.6],
+      tip: [this.pp.colC.r * 1.5, this.pp.colC.g * 1.4, this.pp.colC.b * 0.7],
+    };
+    // All four rings. §9.5: they exist *only* to switch tessellation, so the
+    // only thing that differs between them here is `seg` and the row's own
+    // per-ring multiplier — the density is one continuous law across all of
+    // them, which is what `meadow.js`'s suite holds to 0.27%.
+    this.meadow = [];
+    for (let r = 0; r < RINGS.length; r++) {
+      this.meadow.push(new GrassRing(r, this.windField, {
+        seed: hash(this.pp.seed, 0x9ea6 + r),
+        seg: segs[r],
+        density: grassMul[r],
+        palette,
+      }));
+    }
     for (const ring of this.meadow) this.scene.add(ring.group);
+    this._frustum = new THREE.Frustum();
+    this._pm = new THREE.Matrix4();
 
+    const chunks = this.meadow.reduce((a, m) => a + m.chunks.length, 0);
     console.info(`[§M3] meadow · wind ${this.windSys.base.toFixed(2)} m/s at 10 m · `
-      + `force ${this.windSys.force.toFixed(3)} of Earth · ${this.meadow.length} ring · `
+      + `force ${this.windSys.force.toFixed(3)} of Earth · ${this.meadow.length} rings · `
+      + `${chunks} chunks · seg ${segs.join('/')} · density ${grassMul.join('/')} · `
       + `${this.windField.size}² field · ${(performance.now() - t0) | 0} ms`);
   }
 
@@ -2001,12 +2016,18 @@ export class SurfaceScale {
       // of them every frame, since the eye cannot follow a gust at 60 Hz any
       // better than at 20
       this.windField.update(this.uTime.value, this.body.x, this.body.z);
-      let blades = 0;
+      // one frustum, built once, shared by every ring — four rings each
+      // deriving the same six planes would be the same arithmetic four times
+      this._pm.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+      this._frustum.setFromProjectionMatrix(this._pm);
+      let blades = 0, drawn = 0;
       for (const ring of this.meadow) {
-        ring.update(this.body.x, this.body.z, this.body.y, this.uTime.value);
+        ring.update(this.body.x, this.body.z, this.body.y, this.uTime.value, this._frustum);
         blades += ring.blades;
+        drawn += ring.drawn;
       }
       this._bladeCount = blades;
+      this._grassDraws = drawn;
     }
     if (this.godrays) this.godrays.update(dt);
     if (this.rivers) this.rivers.update(dt);

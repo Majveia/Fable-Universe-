@@ -3503,6 +3503,93 @@ function suiteMeadow() {
       gaps === 0, `${RINGS.map((x) => `${x.near}-${x.far}`).join(', ')} m`);
   }
 
+  // --- §11 · no un-grassed annulus, from any standing position ------------
+  //
+  // The law-level test says each ring's grid reaches its own far distance. This
+  // is the stronger claim the bug was actually about: from *anywhere* the
+  // camera can stand inside its own chunk, is every point within a ring's band
+  // covered by a chunk that ring actually draws?
+  //
+  // A chunk is culled when its nearest corner is beyond `far`, which is safe by
+  // definition — every point in it is beyond `far` too. The failure mode is the
+  // other one: a point inside the band whose chunk lies outside the grid.
+  {
+    let bare = 0, probed = 0;
+    for (let r = 0; r < RINGS.length; r++) {
+      const { chunk, far } = RINGS[r];
+      const g = chunkGrid(r);
+      for (const [ox, oz] of [[0, 0], [0.5, 0.5], [0.97, 0.03], [0.5, 0.99]]) {
+        const camX = ox * chunk, camZ = oz * chunk;
+        const home = [Math.floor(camX / chunk), Math.floor(camZ / chunk)];
+        for (let a = 0; a < 32; a++) {
+          const th = (a / 32) * Math.PI * 2, ca = Math.cos(th), sa = Math.sin(th);
+          for (let d = 0.5; d <= far; d += Math.max(far / 60, 0.5)) {
+            probed++;
+            const px = camX + ca * d, pz = camZ + sa * d;
+            const gx = Math.floor(px / chunk) - home[0];
+            const gz = Math.floor(pz / chunk) - home[1];
+            if (Math.abs(gx) > g || Math.abs(gz) > g) { bare++; continue; }
+            // and the chunk that owns it must not be culled
+            if (chunkNearDist(Math.floor(px / chunk), Math.floor(pz / chunk),
+              chunk, camX, camZ) > far) bare++;
+          }
+        }
+      }
+    }
+    ok('§11 · no point inside a ring\'s band falls outside the chunks it draws',
+      bare === 0, `${probed} probes across 4 rings x 4 stances x 32 azimuths`);
+
+    // and the rings together leave no annulus between them
+    let gap = 0;
+    for (let d = 0.5; d <= RINGS[RINGS.length - 1].far; d += 0.5) {
+      if (!RINGS.some((x) => d >= x.near && d <= x.far)) gap++;
+    }
+    ok('and the four bands together cover every distance out to the far ring',
+      gap === 0, `0 to ${RINGS[RINGS.length - 1].far} m unbroken`);
+  }
+
+  // --- what frustum culling is worth, since act 3 dismissed it -------------
+  //
+  // Act 3 argued a frustum test was "a second, weaker answer to a question
+  // already asked" by the distance cull. That was wrong: distance and frustum
+  // answer different questions, and at a 52° FOV the second removes most of
+  // the disc. Measured here rather than asserted, because the first version of
+  // this claim was an assertion and it was false.
+  {
+    const fov = 52 * Math.PI / 180, aspect = 16 / 9;
+    // half-angle of the horizontal frustum, plus the diagonal slack a chunk's
+    // own radius buys it at the near edge
+    const half = Math.atan(Math.tan(fov / 2) * aspect);
+    let total = 0, kept = 0;
+    for (let r = 0; r < RINGS.length; r++) {
+      const { chunk, far } = RINGS[r];
+      const g = chunkGrid(r);
+      for (let cx = -g; cx <= g; cx++) {
+        for (let cz = -g; cz <= g; cz++) {
+          const dNear = chunkNearDist(cx, cz, chunk, 0, 0);
+          if (dNear > far) continue;
+          total++;
+          // camera looking down +x; a chunk is kept if any corner is within
+          // the half-angle, which is the conservative direction
+          let inside = false;
+          for (const [sx, sz] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+            const px = (cx + sx) * chunk, pz = (cz + sz) * chunk;
+            if (px <= 0 && Math.hypot(px, pz) > chunk) continue;
+            if (Math.abs(Math.atan2(pz, px)) <= half + chunk / Math.max(dNear, chunk)) {
+              inside = true; break;
+            }
+          }
+          if (inside) kept++;
+        }
+      }
+    }
+    const saved = 1 - kept / total;
+    ok('§5 · a frustum test removes most of the chunks a distance cull keeps',
+      saved > 0.4, `${kept} of ${total} chunks survive — ${(saved * 100).toFixed(0)}% culled`);
+    ok('and what survives is comfortably inside the 900 draw-call budget',
+      kept < 300, `${kept} grass draws at worst`);
+  }
+
   // --- the double thinning -------------------------------------------------
   {
     // (a) the shader can only ever remove — the property the nearest-corner

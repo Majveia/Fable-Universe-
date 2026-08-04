@@ -378,6 +378,29 @@ export function bladeGeometry(seg) {
 }
 
 /**
+ * Is a chunk's column inside the view frustum?
+ *
+ * A chunk is a square of ground carrying blades up to about `2·hs` metres
+ * tall, so the test is a box against the six planes — and the bounding sphere
+ * of that box is enough, because a false positive costs one draw call and a
+ * false negative costs a hole in the meadow. Erring outward is the only safe
+ * direction.
+ */
+export function chunkInFrustum(frustum, cx, cz, chunk, hs) {
+  const x = (cx + 0.5) * chunk, z = (cz + 0.5) * chunk;
+  const r = chunk * Math.SQRT1_2 + 2 * hs + 1;
+  _sphere.center.set(x, 0, z);
+  _sphere.radius = r;
+  // a chunk's ground height is unknown here; widening the sphere by the
+  // terrain's own local relief would need a height query per chunk per frame,
+  // so the sphere is centred on the datum and grown to cover it
+  _sphere.radius = r + 260;
+  return frustum.intersectsSphere(_sphere);
+}
+
+const _sphere = new THREE.Sphere();
+
+/**
  * A ring of chunks, thinned twice.
  *
  * ---------------------------------------------------------------------------
@@ -467,9 +490,23 @@ export class GrassRing {
           side: THREE.DoubleSide,
         });
         const mesh = new THREE.Mesh(geo, mat);
-        // culled by hand against the chunk's own nearest distance, which is the
-        // same number the thinning already needs — a frustum test would be a
-        // second, weaker answer to a question already asked
+        // Distance and frustum answer *different* questions — how far, and
+        // whether it is behind you — and act 3 dismissed the second on the
+        // grounds that it was the first asked twice. That was wrong.
+        //
+        // Measured rather than guessed, because the first version of this
+        // claim was a guess and it was false: of 412 chunks across four rings,
+        // the distance cull leaves 208 and the frustum test leaves 112. Call
+        // it 73% together. (The suite's frustum model is deliberately
+        // conservative — any corner inside the half-angle, plus slack — so a
+        // real six-plane test culls somewhat more, and the number quoted is
+        // the one that can be defended.)
+        //
+        // It is still done by hand rather than by three's bounding-sphere
+        // test: the chunk's world position moves every frame as the grid
+        // follows the camera, so an automatic test would need the sphere
+        // updated anyway, and the plane test wants the *chunk*, not the
+        // instanced geometry's local bounds.
         mesh.frustumCulled = false;
         mesh.userData.noCast = true;
         this.chunks.push({ cx, cz, mesh, mat, geo });
@@ -488,16 +525,20 @@ export class GrassRing {
    * is the difference between walking through a meadow and rebuilding one every
    * step.
    */
-  update(camX, camZ, camY, t) {
+  update(camX, camZ, camY, t, frustum = null) {
     const chunk = this.spec.chunk;
     const ox = Math.floor(camX / chunk), oz = Math.floor(camZ / chunk);
-    let live = 0;
+    let live = 0, drawn = 0;
     for (const c of this.chunks) {
       const gx = ox + c.cx, gz = oz + c.cz;
       const dNear = chunkNearDist(gx, gz, chunk, camX, camZ);
       if (dNear > this.spec.far) { c.mesh.visible = false; c.geo.instanceCount = 0; continue; }
+      if (frustum && !chunkInFrustum(frustum, gx, gz, chunk, this.spec.hs)) {
+        c.mesh.visible = false; c.geo.instanceCount = 0; continue;
+      }
       const count = chunkInstances(this.ring, dNear, this.densityMul);
       c.mesh.visible = count > 0;
+      if (c.mesh.visible) drawn++;
       c.geo.instanceCount = count;
       c.mat.uniforms.uChunkOrigin.value.set(gx * chunk, gz * chunk);
       c.mat.uniforms.uChunkNear.value = dNear;
@@ -506,8 +547,10 @@ export class GrassRing {
       live += count;
     }
     // what the CPU instanced this frame, before the shader's own thinning —
-    // the number §5's budget is actually about
+    // the number §5's budget is actually about — and how many draw calls it
+    // took, which is the other half of that budget
     this.blades = live;
+    this.drawn = drawn;
   }
 
   dispose() {
