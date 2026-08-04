@@ -252,12 +252,17 @@ for (const r of runs) {
 }
 
 const report = {
-  schema: 'aeon-shadercheck/2',
+  schema: 'aeon-shadercheck/3',
   when: new Date().toISOString(),
   renderer,
   softwareRasterizer: /swiftshader|llvmpipe|software|basic render/i.test(renderer),
   passes: runs.map(r => ({
     flags: r.flags,
+    // which traversal ran. The flight covers the transitions between scales and
+    // cannot reach the deep ones on a software rasteriser; stations reach every
+    // scale and cover no transitions. Neither subsumes the other, so a report
+    // that does not say which one ran is not a result.
+    mode: r.mode,
     complete: r.complete,
     shadersCompiled: r.shaders.length,
     failures: r.failures,
