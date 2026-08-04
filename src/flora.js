@@ -41,9 +41,12 @@
 
 import * as THREE from 'three';
 import {
-  HEIGHT_RES, WIND_FIELD_GLSL, WIND_NOISE_GLSL, WIND_SAMPLE_GLSL, WIND_SPAN,
-  bakeHeight, windUniforms,
+  HEIGHT_RES, WIND_MEAN_GLSL, WIND_NOISE_GLSL, WIND_PASS_GLSL, WIND_SAMPLE_GLSL,
+  WIND_SPAN, bakeHeight, windUniforms,
 } from './wind.js';
+import {
+  MEADOW_GLSL, RINGS, bladeRoots, chunkGrid, chunkInstances, chunkNearDist,
+} from './meadow.js';
 
 /**
  * How often the field is re-evaluated, in frames.
@@ -60,7 +63,14 @@ import {
  */
 export const WIND_PHASE = 3;
 
+// A RawShaderMaterial gets no preamble from three — not the attributes, not the
+// matrices, not `precision`. Everything it uses it declares. Omitting these two
+// is a compile error that only exists once the material is instantiated, which
+// is exactly the class of defect §M0's gate is for, and exactly the class the
+// bench-route traversal could not see because it never reached this scale.
 const FS_QUAD_VERT = /* glsl */`
+  in vec3 position;
+  in vec2 uv;
   out vec2 vUv;
   void main() {
     vUv = uv;
@@ -86,7 +96,8 @@ const FIELD_FRAG = /* glsl */`
   uniform vec2 uWindOrigin;
   ${WIND_NOISE_GLSL}
   ${HEIGHT_GLSL}
-  ${WIND_FIELD_GLSL}
+  ${WIND_MEAN_GLSL}
+  ${WIND_PASS_GLSL}
   void main() {
     vec2 p = uWindOrigin + (vUv - 0.5) * ${WIND_SPAN.toFixed(1)};
     outColor = windField(p, uWindTime);
@@ -207,9 +218,9 @@ export class WindField {
     };
   }
 
-  /** the GLSL a consumer includes, in dependency order */
+  /** the GLSL a *consumer* includes — the field's evaluator is not part of it */
   static get GLSL() {
-    return WIND_NOISE_GLSL + WIND_FIELD_GLSL + WIND_SAMPLE_GLSL;
+    return WIND_NOISE_GLSL + WIND_MEAN_GLSL + WIND_SAMPLE_GLSL;
   }
 
   /** a full-screen debug view of the field — `?windview=1` */
@@ -233,3 +244,274 @@ export class WindField {
     this.material.dispose();
   }
 }
+
+// ---------------------------------------------------------------------------
+// the blades — §9.5, act 3
+//
+// One ring's worth, and the law from `meadow.js` wired to real geometry. What
+// this act has to demonstrate before act 4 multiplies it by four is the *double
+// thinning*, because that is the budget:
+//
+//   · coarsely on the CPU, by lowering a chunk's instance count against a
+//     pre-shuffled buffer. Any prefix is a fair spatial sample, and a thinned
+//     blade costs nothing at all — not even a vertex shader invocation.
+//   · finely in the vertex shader, per blade, against its own true distance.
+//     The CPU deliberately over-draws from the chunk's NEAREST corner, so the
+//     shader can only ever remove.
+//
+// Removed blades collapse to their root rather than branching: every vertex
+// lands on the same point, the triangles have zero area, and the rasteriser
+// discards them before a fragment exists. A `return` would be a divergent
+// branch on twelve million vertices; this is a multiply.
+
+const BLADE_VERT = /* glsl */`
+  in vec3 position;
+  in vec2 aRoot;      // xz within the chunk
+  in float aRand;     // the blade's own number: thinning, phase, variation
+  in float aHeight;
+
+  uniform mat4 projectionMatrix;
+  uniform mat4 viewMatrix;
+  uniform vec2 uChunkOrigin;
+  uniform vec3 uCam;
+  uniform float uTime;
+  uniform float uHeightScale;
+  uniform float uWidth;
+  uniform float uForce;      // what the air can actually push with (rho U^2)
+
+  out float vTip;
+  out float vGust;
+  out float vRand;
+
+  // Only what it calls. A blade samples the field; it does not evaluate one, so
+  // the gust lattice and the four-octave curl cascade have no business in a
+  // shader that runs on every vertex of every blade. WIND_MEAN_GLSL is the
+  // part windSample()'s analytic fallback needs.
+  ${WIND_NOISE_GLSL}
+  ${HEIGHT_GLSL}
+  ${WIND_MEAN_GLSL}
+  ${WIND_SAMPLE_GLSL}
+  ${MEADOW_GLSL}
+
+  void main() {
+    vec2 world = uChunkOrigin + aRoot;
+    float ground = wTerrainH(world);
+    float d = length(vec3(world.x, ground, world.y) - uCam);
+
+    // the fine thinning. Collapsing is a multiply, not a branch — see the note
+    // in src/flora.js on why that matters at this vertex count.
+    float live = meadowKeep(d, aRand) ? 1.0 : 0.0;
+
+    vTip = position.y;
+    vRand = aRand;
+
+    // One sample, at one point, for every vertex of this blade. That is what
+    // makes the analytic-fallback branch inside windSample() warp-coherent, and
+    // §6 M3 calls that the single largest saving in this shader.
+    vec4 w = windSample(world, uTime);
+    vec2 flow = w.rg;
+    vGust = w.a;
+
+    float h = aHeight * uHeightScale * live;
+    // the logarithmic boundary layer: roots barely move, tips whip
+    float lean = windProfile(vTip * max(h, 0.05)) * uForce;
+    // quasi-static balance of the wind against the blade's own stiffness, so a
+    // blade bows rather than shearing — and bows most where it is thinnest
+    float bend = lean * vTip * vTip * 0.16;
+
+    vec3 p = vec3(world.x, ground, world.y);
+    vec2 across = normalize(vec2(-flow.y, flow.x) + vec2(1e-6));
+    p.xz += across * position.x * uWidth * live;
+    p.y += vTip * h;
+    p.xz += normalize(flow + vec2(1e-6)) * bend * h;
+    p.y -= bend * bend * h * 0.35;      // bowing shortens it, it does not stretch
+
+    gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+  }
+`;
+
+const BLADE_FRAG = /* glsl */`
+  precision highp float;
+  in float vTip;
+  in float vGust;
+  in float vRand;
+  out vec4 outColor;
+  uniform vec3 uBase;
+  uniform vec3 uTipCol;
+  uniform vec3 uSunColor;
+
+  void main() {
+    // Act 3 is the law and the motion. §9.5's blade detail — the rolled
+    // cross-section, the tussock clustering, the meadow mosaic, the wind flash
+    // — is act 5, and putting a sketch of it here would make act 5's before and
+    // after meaningless. A root-to-tip hue path and per-blade variation only.
+    vec3 col = mix(uBase, uTipCol, vTip * vTip);
+    col *= 0.86 + 0.28 * fract(vRand * 71.3);
+    // the wind flash: a gust front turns blades edge-on and they catch the sun
+    col += uSunColor * smoothstep(1.1, 2.2, vGust) * 0.12 * vTip;
+    outColor = vec4(col, 1.0);
+  }
+`;
+
+/**
+ * One blade: a tapered strip of `seg` segments, two vertices wide.
+ *
+ * `seg` is the *only* thing a ring boundary changes (§9.5), which is why it is
+ * a parameter here and a column in `quality.js` rather than a constant.
+ */
+export function bladeGeometry(seg) {
+  const pos = [];
+  const idx = [];
+  for (let i = 0; i <= seg; i++) {
+    const t = i / seg;
+    const w = (1 - t) * (1 - t * 0.35) * 0.5;   // tapers, and faster near the tip
+    pos.push(-w, t, 0, w, t, 0);
+  }
+  for (let i = 0; i < seg; i++) {
+    const a = i * 2;
+    idx.push(a, a + 1, a + 2, a + 2, a + 1, a + 3);
+  }
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  return g;
+}
+
+/**
+ * A ring of chunks, thinned twice.
+ *
+ * ---------------------------------------------------------------------------
+ * Why the blades are stratified *and* shuffled
+ *
+ * The reference shuffles its instance buffer so that any prefix is a fair
+ * spatial sample, which is what makes coarse thinning free. Generating the
+ * roots from `hash(seed, i)` would make the shuffle a no-op — a hash already
+ * decorrelates index from position, so every prefix is fair and the shuffle
+ * buys nothing. That would be shipping a line that looks load-bearing and is
+ * not.
+ *
+ * So the roots are **stratified**: one blade jittered inside each cell of a
+ * `g × g` grid, which covers the chunk far more evenly than uniform random —
+ * no clumps, no bald patches, which at 1100 blades/m² is the difference
+ * between ground and mange. Stratification makes index and position correlated
+ * by construction, so the shuffle is then doing exactly the job the reference
+ * describes: without it, a thinned chunk would lose whole rows.
+ */
+export class GrassRing {
+  constructor(ring, windField, opts = {}) {
+    const { seed = 1, seg = 4, density = 1, palette = null } = opts;
+    this.ring = ring;
+    this.spec = RINGS[ring];
+    this.wf = windField;
+    this.densityMul = density;
+    this.grid = chunkGrid(ring);
+    this.group = new THREE.Group();
+    this.chunks = [];
+
+    const n = this.spec.blades;
+    const chunk = this.spec.chunk;
+
+    const { root, rand, height } = bladeRoots(seed, n, chunk);
+    for (let i = 0; i < n; i++) height[i] *= this.spec.hs;
+
+    // One set of attribute buffers, shared by every chunk. Each chunk needs its
+    // own geometry object because `instanceCount` lives on the geometry rather
+    // than the mesh — but the buffers are shared, so the cost is a few objects
+    // and not a few hundred megabytes.
+    const shared = {
+      position: null,
+      index: null,
+      aRoot: new THREE.InstancedBufferAttribute(root, 2),
+      aRand: new THREE.InstancedBufferAttribute(rand, 1),
+      aHeight: new THREE.InstancedBufferAttribute(height, 1),
+    };
+    const proto = bladeGeometry(seg);
+    shared.position = proto.getAttribute('position');
+    shared.index = proto.getIndex();
+
+    const base = palette?.base ?? [0.24, 0.36, 0.20];
+    const tip = palette?.tip ?? [0.62, 0.71, 0.34];
+
+    for (let cx = -this.grid; cx <= this.grid; cx++) {
+      for (let cz = -this.grid; cz <= this.grid; cz++) {
+        const geo = new THREE.InstancedBufferGeometry();
+        geo.setAttribute('position', shared.position);
+        geo.setIndex(shared.index);
+        geo.setAttribute('aRoot', shared.aRoot);
+        geo.setAttribute('aRand', shared.aRand);
+        geo.setAttribute('aHeight', shared.aHeight);
+        geo.instanceCount = 0;
+
+        const mat = new THREE.RawShaderMaterial({
+          glslVersion: THREE.GLSL3,
+          uniforms: {
+            ...this.wf.sampleUniforms(),
+            uChunkOrigin: { value: new THREE.Vector2(0, 0) },
+            uCam: { value: new THREE.Vector3() },
+            uTime: { value: 0 },
+            uHeightScale: { value: 1 },
+            uWidth: { value: 0.028 },
+            uForce: { value: this.wf.wind.force },
+            uRingDn: { value: this.spec.dn },
+            uChunkNear: { value: this.spec.dn },
+            uDensityMul: { value: density },
+            uHeightTex: this.wf.uniforms.uHeightTex,
+            uHeightOrigin: this.wf.uniforms.uHeightOrigin,
+            uHeightSpan: this.wf.uniforms.uHeightSpan,
+            uBase: { value: new THREE.Vector3(...base) },
+            uTipCol: { value: new THREE.Vector3(...tip) },
+            uSunColor: { value: new THREE.Vector3(1, 0.92, 0.78) },
+          },
+          vertexShader: BLADE_VERT,
+          fragmentShader: BLADE_FRAG,
+          side: THREE.DoubleSide,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        // culled by hand against the chunk's own nearest distance, which is the
+        // same number the thinning already needs — a frustum test would be a
+        // second, weaker answer to a question already asked
+        mesh.frustumCulled = false;
+        mesh.userData.noCast = true;
+        this.chunks.push({ cx, cz, mesh, mat, geo });
+        this.group.add(mesh);
+      }
+    }
+    this.shared = shared;
+    this.blades = 0;
+  }
+
+  /**
+   * Re-seat the chunks around the camera and thin them.
+   *
+   * The grid follows the camera in whole chunks, so a chunk is re-homed rather
+   * than rebuilt — its blades are chunk-relative and its roots never move. That
+   * is the difference between walking through a meadow and rebuilding one every
+   * step.
+   */
+  update(camX, camZ, camY, t) {
+    const chunk = this.spec.chunk;
+    const ox = Math.floor(camX / chunk), oz = Math.floor(camZ / chunk);
+    let live = 0;
+    for (const c of this.chunks) {
+      const gx = ox + c.cx, gz = oz + c.cz;
+      const dNear = chunkNearDist(gx, gz, chunk, camX, camZ);
+      if (dNear > this.spec.far) { c.mesh.visible = false; c.geo.instanceCount = 0; continue; }
+      const count = chunkInstances(this.ring, dNear, this.densityMul);
+      c.mesh.visible = count > 0;
+      c.geo.instanceCount = count;
+      c.mat.uniforms.uChunkOrigin.value.set(gx * chunk, gz * chunk);
+      c.mat.uniforms.uChunkNear.value = dNear;
+      c.mat.uniforms.uCam.value.set(camX, camY, camZ);
+      c.mat.uniforms.uTime.value = t;
+      live += count;
+    }
+    // what the CPU instanced this frame, before the shader's own thinning —
+    // the number §5's budget is actually about
+    this.blades = live;
+  }
+
+  dispose() {
+    for (const c of this.chunks) { c.geo.dispose(); c.mat.dispose(); }
+  }
+}
+

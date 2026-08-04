@@ -1,28 +1,12 @@
 {
-  "schema": "aeon-shadercheck/2",
-  "when": "2026-08-04T00:11:20.846Z",
+  "schema": "aeon-shadercheck/3",
+  "when": "2026-08-04T01:02:06.636Z",
   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
   "softwareRasterizer": true,
   "passes": [
     {
-      "flags": "",
-      "complete": true,
-      "shadersCompiled": 200,
-      "failures": 0,
-      "warnings": 0,
-      "scalesVisited": [
-        "blackhole",
-        "cosmic",
-        "galaxy",
-        "planet",
-        "surface",
-        "system"
-      ],
-      "pageErrors": [],
-      "detail": []
-    },
-    {
-      "flags": "m2=1&paint=1&mat=1&sea=1&ridge=1",
+      "flags": "m3=1&m2=1",
+      "mode": "stations",
       "complete": true,
       "shadersCompiled": 204,
       "failures": 0,
@@ -39,9 +23,10 @@
       "detail": []
     },
     {
-      "flags": "ridge=1&m2=0",
+      "flags": "m3=1&m2=1&paint=1&mat=1&sea=1&ridge=1",
+      "mode": "stations",
       "complete": true,
-      "shadersCompiled": 262,
+      "shadersCompiled": 208,
       "failures": 0,
       "warnings": 0,
       "scalesVisited": [

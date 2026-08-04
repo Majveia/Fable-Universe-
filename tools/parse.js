@@ -21,9 +21,27 @@
 // `import` statement it detects ESM, declines to parse, and exits 0 — so a
 // broken module passes. Copying to .mjs makes it check for real, which is the
 // whole trick here.
+//
+// ---------------------------------------------------------------------------
+// The second pass: undeclared built-ins in a RawShaderMaterial
+//
+// `ShaderMaterial` gets a preamble from three — `position`, `uv`, `normal`,
+// `projectionMatrix`, `modelViewMatrix` and the rest are declared for you.
+// `RawShaderMaterial` gets nothing, deliberately, and everything it uses it
+// must declare itself.
+//
+// Forgetting one is a compile error that exists only after the material is
+// instantiated, so it is invisible to every static tool and to any capture that
+// does not reach the scale that builds it. It cost a full compile-gate run to
+// find (`vUv = uv;` in a full-screen quad), and that run only found it because
+// the gate had just been taught to reach the surface scale at all.
+//
+// This is the same check in two seconds instead of twenty minutes. It is a lint
+// and it is deliberately conservative: it only looks at files that mention
+// `RawShaderMaterial`, and only at template literals that write `gl_Position`.
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, copyFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, copyFileSync, readFileSync, rmSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -65,6 +83,51 @@ for (const f of files) {
 
 rmSync(tmp, { recursive: true, force: true });
 
+// ---------------------------------------------------------------------------
+// pass two — built-ins a RawShaderMaterial has to declare for itself
+
+/** what three injects for a ShaderMaterial and withholds from a Raw one */
+const BUILTINS = [
+  'position', 'uv', 'normal', 'tangent', 'color',
+  'projectionMatrix', 'modelViewMatrix', 'modelMatrix', 'viewMatrix',
+  'normalMatrix', 'cameraPosition', 'instanceMatrix',
+];
+
+let lint = 0, linted = 0;
+for (const f of files) {
+  const rel = relative(REPO, f);
+  const src = readFileSync(f, 'utf8');
+  if (!src.includes('RawShaderMaterial')) continue;
+  // every /* glsl */ template literal in the file that writes gl_Position
+  for (const m of src.matchAll(/\/\* glsl \*\/`([\s\S]*?)`;/g)) {
+    const body = m[1];
+    if (!body.includes('gl_Position')) continue;
+    linted++;
+    // strip comments and interpolations — an interpolated chunk may legitimately
+    // carry the declaration, and a comment is not a use
+    const code = body
+      .replace(/\/\/[^\n]*/g, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const interpolated = /\$\{/.test(body);
+    for (const name of BUILTINS) {
+      const used = new RegExp(`\\b${name}\\b`).test(code.replace(
+        new RegExp(`\\b(in|attribute|uniform|out|varying)\\s+\\w+\\s+${name}\\b`, 'g'), ''));
+      if (!used) continue;
+      const declared = new RegExp(`\\b(in|attribute|uniform)\\s+\\w+\\s+${name}\\b`).test(code);
+      if (declared) continue;
+      // an interpolated chunk might declare it; say so rather than failing
+      if (interpolated) continue;
+      lint++;
+      console.error(`\n─── ${rel} ───`);
+      console.error(`  RawShaderMaterial shader uses '${name}' without declaring it.`);
+      console.error('  three injects nothing for a Raw material — declare it, or the');
+      console.error('  program fails to compile the moment the material is built.');
+    }
+  }
+}
+
 console.log(`\nparse · ${files.length - failed}/${files.length} modules parse`
-  + (failed ? ` · ${failed} FAILED` : ''));
-process.exit(failed ? 1 : 0);
+  + (failed ? ` · ${failed} FAILED` : '')
+  + ` · ${linted} raw shaders linted`
+  + (lint ? ` · ${lint} MISSING DECLARATIONS` : ''));
+process.exit(failed || lint ? 1 : 0);

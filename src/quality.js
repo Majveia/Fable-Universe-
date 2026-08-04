@@ -131,6 +131,22 @@ export function qFloat(key, column) {
   return Number.isFinite(v) ? v : Q[column];
 }
 
+/**
+ * A per-ring knob: same contract, comma-separated in the URL.
+ *
+ * §M3's grass multipliers and blade segments are one number per ring rather
+ * than one number, because the rings do not scale together (see the table's own
+ * note). `?grass=1,1,0.5,0.5` overrides all four; a short list is padded from
+ * the row, so `?grass=2` raises the near ring and leaves the rest alone.
+ */
+export function qArr(key, column) {
+  const row = Q[column];
+  const raw = param(key);
+  if (!raw) return row.slice();
+  const given = String(raw).split(',').map(Number);
+  return row.map((d, i) => (Number.isFinite(given[i]) ? given[i] : d));
+}
+
 /** a boolean knob: `?k=0` forces off, `?k=1` forces on, else the row decides */
 export function qFlag(key, column) {
   const v = param(key);

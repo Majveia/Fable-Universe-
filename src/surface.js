@@ -43,8 +43,10 @@ import { GAIT, Walker, gravityOf } from './avatar.js';
 import { CameraRig } from './camera.js';
 import { attachKeyboard, input, jumpHeld } from './input.js';
 import { makeGround } from './ground.js';
+import { makeWind } from './wind.js';
+import { GrassRing, WindField } from './flora.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
-import { qInt } from './quality.js';
+import { qArr, qInt } from './quality.js';
 
 const PARAM = (k) => {
   try { return new URL(window.location.href).searchParams.get(k); }
@@ -175,6 +177,17 @@ const SEA = PARAM('sea') === '1';
  * whether the outermost terrain ring is still contributing anything.
  */
 const RIDGE = PARAM('ridge') === '1';
+
+/**
+ * §M3 — wind and grass. Default-off (§7.4).
+ *
+ * Act 3 wires the *first ring only*. The rings exist purely to switch blade
+ * tessellation (§9.5) and multiplying by four before the density law and the
+ * double thinning have been shown to work would mean debugging four things at
+ * once against §5's tightest budget. `?windview=1` shows the field on its own.
+ */
+const M3 = PARAM('m3') === '1';
+const WINDVIEW = PARAM('windview') === '1';
 
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
@@ -1047,6 +1060,54 @@ export class SurfaceScale {
     if (PAINT) markCaster(this.terrain.children[0]);
 
     if (RIDGE) this._buildHorizon(rings);
+    if (M3) this._buildMeadow();
+  }
+
+  /**
+   * §M3 acts 1–3 · the field, the ground it reads, and one ring of blades.
+   *
+   * The wind is built from this world's own numbers, so an airless moon gets a
+   * nominal breeze and nothing to push with (`wind.force`), and the grass
+   * simply does not bend. That falls out of `windForceScale()` rather than a
+   * branch here, which is the check that the parameterisation is right.
+   */
+  _buildMeadow() {
+    const t0 = performance.now();     // logged only — never read into generation (§2.3)
+    // `windSys`, not `wind`. `this.wind` is already a THREE.Vector2 — the
+    // prevailing direction, set at construction and read by grass.js's petals,
+    // weather.js's rain slant, the landform picker and a `uWind` vec2 uniform.
+    // Assigning the wind *system* over it did not throw: it made `s.wind.x`
+    // undefined, so three called uniform2fv on an object with no iterator and
+    // NaN propagated silently into two unrelated systems. §11's own trap, in a
+    // shape it does not list — a name collision rather than a bad number.
+    // the field inherits the world's existing prevailing direction, so the
+    // grass, the rain, the petals and the landform all agree — §6 M3's whole
+    // thesis is one field, and two directions would be two fields
+    this.windSys = makeWind(hash(this.pp.seed, 0x3117), this.pp, this.atmo,
+      { dir: Math.atan2(this.wind.x, this.wind.y) });
+    this.windField = new WindField(this.app.renderer, this.windSys, {
+      heightAt: this._heightFn,
+      extent: EXT,
+      size: qInt('wind', 'wind'),
+    });
+    // one pass before the first frame: a target nobody has written to is not
+    // slow, it is wrong, and every blade would read a zero velocity from it
+    this.windField.update(0, this.spawn.x, this.spawn.z, { force: true });
+
+    const grassMul = qArr('grass', 'grass');
+    const segs = qArr('blades', 'blades');
+    this.meadow = [new GrassRing(0, this.windField, {
+      seed: hash(this.pp.seed, 0x9ea6),
+      seg: segs[0],
+      density: grassMul[0],
+      palette: { base: [this.pp.colC.r * 0.7, this.pp.colC.g * 0.8, this.pp.colC.b * 0.6],
+        tip: [this.pp.colC.r * 1.5, this.pp.colC.g * 1.4, this.pp.colC.b * 0.7] },
+    })];
+    for (const ring of this.meadow) this.scene.add(ring.group);
+
+    console.info(`[§M3] meadow · wind ${this.windSys.base.toFixed(2)} m/s at 10 m · `
+      + `force ${this.windSys.force.toFixed(3)} of Earth · ${this.meadow.length} ring · `
+      + `${this.windField.size}² field · ${(performance.now() - t0) | 0} ms`);
   }
 
   /**
@@ -1934,6 +1995,18 @@ export class SurfaceScale {
     if (this.sunShadow) {
       this.sunShadow.update(this.app.renderer, this.scene, this.camera,
         this.uSunDir.value, (x, z) => this.heightAt(x, z));
+    }
+    if (this.windField) {
+      // the reference's interleave: one auxiliary pass a frame rather than all
+      // of them every frame, since the eye cannot follow a gust at 60 Hz any
+      // better than at 20
+      this.windField.update(this.uTime.value, this.body.x, this.body.z);
+      let blades = 0;
+      for (const ring of this.meadow) {
+        ring.update(this.body.x, this.body.z, this.body.y, this.uTime.value);
+        blades += ring.blades;
+      }
+      this._bladeCount = blades;
     }
     if (this.godrays) this.godrays.update(dt);
     if (this.rivers) this.rivers.update(dt);
