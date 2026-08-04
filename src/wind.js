@@ -274,12 +274,19 @@ const TAU = Math.PI * 2;
  * A world's wind. Holds no evolving state — only the constants that make this
  * world's weather this world's, so two calls at the same `t` cannot disagree.
  */
-export function makeWind(seed, world = {}, atmo = 1) {
+export function makeWind(seed, world = {}, atmo = 1, opts = {}) {
   const s = u32(seed);
   const base = baseWindSpeed(world, atmo);
-  // The prevailing direction is the world's, not 292°. It is the one place a
-  // seed may choose freely, because nothing physical fixes it at this scale.
-  const dir = (hashf(s, 0x1e, 0) * TAU);
+  // The prevailing direction is the world's, not 292°. Nothing physical fixes
+  // it at this scale, so a seed may choose — but if the caller already has one,
+  // that one wins, and it must.
+  //
+  // §6 M3's thesis is *one* field sampled by everything. A surface scale that
+  // already tells its rain which way to slant and its petals which way to
+  // stream has a prevailing wind; minting a second from a hash would put two
+  // winds in one world, and the failure would be a frame where the grass leans
+  // one way and the rain falls the other — visible, and impossible to attribute.
+  const dir = opts.dir ?? (hashf(s, 0x1e, 0) * TAU);
   return {
     seed: s,
     base,

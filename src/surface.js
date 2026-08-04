@@ -1073,8 +1073,19 @@ export class SurfaceScale {
    */
   _buildMeadow() {
     const t0 = performance.now();     // logged only — never read into generation (§2.3)
-    this.wind = makeWind(hash(this.pp.seed, 0x3117), this.pp, this.atmo);
-    this.windField = new WindField(this.app.renderer, this.wind, {
+    // `windSys`, not `wind`. `this.wind` is already a THREE.Vector2 — the
+    // prevailing direction, set at construction and read by grass.js's petals,
+    // weather.js's rain slant, the landform picker and a `uWind` vec2 uniform.
+    // Assigning the wind *system* over it did not throw: it made `s.wind.x`
+    // undefined, so three called uniform2fv on an object with no iterator and
+    // NaN propagated silently into two unrelated systems. §11's own trap, in a
+    // shape it does not list — a name collision rather than a bad number.
+    // the field inherits the world's existing prevailing direction, so the
+    // grass, the rain, the petals and the landform all agree — §6 M3's whole
+    // thesis is one field, and two directions would be two fields
+    this.windSys = makeWind(hash(this.pp.seed, 0x3117), this.pp, this.atmo,
+      { dir: Math.atan2(this.wind.x, this.wind.y) });
+    this.windField = new WindField(this.app.renderer, this.windSys, {
       heightAt: this._heightFn,
       extent: EXT,
       size: qInt('wind', 'wind'),
@@ -1094,8 +1105,8 @@ export class SurfaceScale {
     })];
     for (const ring of this.meadow) this.scene.add(ring.group);
 
-    console.info(`[§M3] meadow · wind ${this.wind.base.toFixed(2)} m/s at 10 m · `
-      + `force ${this.wind.force.toFixed(3)} of Earth · ${this.meadow.length} ring · `
+    console.info(`[§M3] meadow · wind ${this.windSys.base.toFixed(2)} m/s at 10 m · `
+      + `force ${this.windSys.force.toFixed(3)} of Earth · ${this.meadow.length} ring · `
       + `${this.windField.size}² field · ${(performance.now() - t0) | 0} ms`);
   }
 

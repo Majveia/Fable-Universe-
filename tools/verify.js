@@ -3175,6 +3175,16 @@ function suiteWind() {
     const c0 = windAt(C, 120, -80, 60, 1.2);
     ok('while a different seed is a different sky',
       Math.abs(c0.x - got[0].x) + Math.abs(c0.z - got[0].z) > 1e-6);
+
+    // §6 M3's thesis is ONE field. A scale that already has a prevailing wind
+    // — for its rain, its petals, its landform — must be able to hand it over,
+    // or the grass leans one way while the rain falls the other.
+    const given = makeWind(0xa11ce, EARTH, 1, { dir: 1.234 });
+    near('a caller\'s prevailing direction wins over the seed\'s',
+      given.baseDir, 1.234, 1e-12);
+    const m = meanFlow(given, 0);
+    ok('and the mean flow is built from it, not from a second one',
+      Math.abs(Math.atan2(m.fwd[0], m.fwd[1]) - (1.234 + (m.dir - 1.234))) < 1e-9);
   }
 
   // --- the lattice ---------------------------------------------------------
