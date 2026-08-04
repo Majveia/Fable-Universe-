@@ -495,22 +495,39 @@ export class GrassRing {
     });
     this.material = mat;
 
+    // ONE geometry for the ring too, for the same reason as the material — and
+    // this one was not a nicety.
+    //
+    // `instanceCount` lives on the geometry, so act 3 minted a geometry per
+    // chunk to carry it: 412 of them across four rings, and therefore 412
+    // vertex array objects the driver has to hold. Stacked with every other
+    // experimental flag the compile gate lost the browser outright at the
+    // surface station — a crash, not a timeout — and the control run proved it:
+    // the same flags without ?m3=1 complete all six scales.
+    //
+    // three calls `onBeforeRender` immediately before `renderBufferDirect`
+    // reads `instanceCount`, so the count can ride there with the two uniforms
+    // that were already riding there. Four geometries, four materials, 412
+    // draws — which is what it always should have been.
+    const geo = new THREE.InstancedBufferGeometry();
+    geo.setAttribute('position', shared.position);
+    geo.setIndex(shared.index);
+    geo.setAttribute('aRoot', shared.aRoot);
+    geo.setAttribute('aRand', shared.aRand);
+    geo.setAttribute('aHeight', shared.aHeight);
+    geo.instanceCount = 0;
+    this.geometry = geo;
+
     for (let cx = -this.grid; cx <= this.grid; cx++) {
       for (let cz = -this.grid; cz <= this.grid; cz++) {
-        const geo = new THREE.InstancedBufferGeometry();
-        geo.setAttribute('position', shared.position);
-        geo.setIndex(shared.index);
-        geo.setAttribute('aRoot', shared.aRoot);
-        geo.setAttribute('aRand', shared.aRand);
-        geo.setAttribute('aHeight', shared.aHeight);
-        geo.instanceCount = 0;
-
         const mesh = new THREE.Mesh(geo, mat);
         mesh.userData.origin = new THREE.Vector2(0, 0);
         mesh.userData.near = this.spec.dn;
+        mesh.userData.count = 0;
         mesh.onBeforeRender = () => {
           mat.uniforms.uChunkOrigin.value.copy(mesh.userData.origin);
           mat.uniforms.uChunkNear.value = mesh.userData.near;
+          geo.instanceCount = mesh.userData.count;
         };
         // Distance and frustum answer *different* questions — how far, and
         // whether it is behind you — and act 3 dismissed the second on the
@@ -531,7 +548,7 @@ export class GrassRing {
         // instanced geometry's local bounds.
         mesh.frustumCulled = false;
         mesh.userData.noCast = true;
-        this.chunks.push({ cx, cz, mesh, geo });
+        this.chunks.push({ cx, cz, mesh });
         this.group.add(mesh);
       }
     }
@@ -554,14 +571,14 @@ export class GrassRing {
     for (const c of this.chunks) {
       const gx = ox + c.cx, gz = oz + c.cz;
       const dNear = chunkNearDist(gx, gz, chunk, camX, camZ);
-      if (dNear > this.spec.far) { c.mesh.visible = false; c.geo.instanceCount = 0; continue; }
+      if (dNear > this.spec.far) { c.mesh.visible = false; continue; }
       if (frustum && !chunkInFrustum(frustum, gx, gz, chunk, this.spec.hs)) {
-        c.mesh.visible = false; c.geo.instanceCount = 0; continue;
+        c.mesh.visible = false; continue;
       }
       const count = chunkInstances(this.ring, dNear, this.densityMul);
       c.mesh.visible = count > 0;
       if (c.mesh.visible) drawn++;
-      c.geo.instanceCount = count;
+      c.mesh.userData.count = count;
       // per chunk, read back by its own onBeforeRender at draw time
       c.mesh.userData.origin.set(gx * chunk, gz * chunk);
       c.mesh.userData.near = dNear;
@@ -578,7 +595,7 @@ export class GrassRing {
   }
 
   dispose() {
-    for (const c of this.chunks) c.geo.dispose();
+    this.geometry.dispose();
     this.material.dispose();
   }
 }
