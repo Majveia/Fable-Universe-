@@ -63,6 +63,12 @@ import {
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
 } from '../src/meadow.js';
 import { QUALITY } from '../src/quality.js';
+import {
+  DIAGONAL, HOVER, Hover, MOUNT, Mount, STREAM, StreamGovernor, chordAt,
+  demandConst, demandRate, effectiveChord, floorAltitude, handMomentum,
+  maxSpeed, reachChords,
+} from '../src/vehicle.js';
+import { surfaceRadius, uvToDir } from '../src/tilebuild.js';
 
 let failures = 0;
 let checks = 0;
@@ -4006,12 +4012,454 @@ function suiteMeadow() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// suite: vehicle — §6 M5
+//
+// The milestone's one derived number is its speed bound, and the first
+// derivation of it was low by a factor of four. What caught that is the
+// independent second computation §7.3 asks for, and it is the centre of this
+// suite: `quadtree.js`'s own `visit()` walk, re-implemented here in plain
+// numbers, flown along real great circles, with the tiles it newly requires
+// *counted*. The bound is then checked against the count — not against the
+// formula it came from, which would only prove the algebra had not changed.
+//
+// This is a slow suite by the standards of the rest of the file (a few seconds:
+// each flight walks the whole tree 240 times). It earns it. Every other way of
+// establishing this number is a guess that ships.
+
+const QT = { R: 2600, maxDepth: 18, amp: 11, unitM: 2450.4 };
+const QT_HALF_ANG = Math.PI / 4;
+
+/** the required-tile set for one camera position — `quadtree.js:256`, in plain
+ *  numbers. Includes the four children a splitting node asks for, because those
+ *  are exactly the tiles that have to be *built*. */
+function qtRequired(cam, splitK, job, maxDepth = QT.maxDepth) {
+  const R = QT.R;
+  const camR = Math.hypot(cam[0], cam[1], cam[2]);
+  const cd = [cam[0] / camR, cam[1] / camR, cam[2] / camR];
+  const horizon = Math.acos(Math.min(R * 0.995 / Math.max(camR, R), 1));
+  const shellK = surfaceRadius(cd[0], cd[1], cd[2], job) / R;
+  const out = new Set();
+  const d3 = [0, 0, 0];
+  const visit = (f, d, i, j) => {
+    const span = 2 / (1 << d);
+    uvToDir(f, -1 + (i + 0.5) * span, -1 + (j + 0.5) * span, d3);
+    const ang = QT_HALF_ANG / (1 << d);
+    if (d >= 2 && (d3[0] * cd[0] + d3[1] * cd[1] + d3[2] * cd[2]) <
+      Math.cos(horizon + ang * 2.4 + Math.sqrt(2 * QT.amp / R) + 0.02)) return;
+    const sx = d3[0] * R * shellK - cam[0];
+    const sy = d3[1] * R * shellK - cam[1];
+    const sz = d3[2] * R * shellK - cam[2];
+    const dist = Math.max(Math.hypot(sx, sy, sz) - R * ang, 0.002);
+    out.add(f + ':' + d + ':' + i + ':' + j);
+    if (d < maxDepth && dist < R * ang * 2 * splitK) {
+      for (let q = 0; q < 4; q++) visit(f, d + 1, i * 2 + (q & 1), j * 2 + (q >> 1));
+    }
+  };
+  for (let f = 0; f < 6; f++) visit(f, 0, 0, 0);
+  return out;
+}
+
+/** fly a great circle at fixed altitude and speed; return tiles demanded/s */
+function qtFly({ start, twist, altU, vU, splitK, job, seconds = 2, dt = 1 / 60 }) {
+  const nrm = (v) => { const l = Math.hypot(...v); return v.map((q) => q / l); };
+  const a = nrm(start);
+  let t = Math.abs(a[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const dp = t[0] * a[0] + t[1] * a[1] + t[2] * a[2];
+  t = nrm([t[0] - dp * a[0], t[1] - dp * a[1], t[2] - dp * a[2]]);
+  const b = [a[1] * t[2] - a[2] * t[1], a[2] * t[0] - a[0] * t[2], a[0] * t[1] - a[1] * t[0]];
+  const ct = Math.cos(twist), st = Math.sin(twist);
+  t = nrm([t[0] * ct + b[0] * st, t[1] * ct + b[1] * st, t[2] * ct + b[2] * st]);
+
+  const pos = (s) => {
+    const ang = s / QT.R, ca = Math.cos(ang), sa = Math.sin(ang);
+    const dir = [a[0] * ca + t[0] * sa, a[1] * ca + t[1] * sa, a[2] * ca + t[2] * sa];
+    const r = surfaceRadius(dir[0], dir[1], dir[2], job) + altU;
+    return [dir[0] * r, dir[1] * r, dir[2] * r];
+  };
+  let prev = qtRequired(pos(0), splitK, job), tot = 0, frames = 0;
+  for (let s = 1; s * dt <= seconds; s++) {
+    const cur = qtRequired(pos(vU * s * dt), splitK, job);
+    for (const k of cur) if (!prev.has(k)) tot++;
+    frames++; prev = cur;
+  }
+  return tot / (frames * dt);
+}
+
+function suiteVehicle() {
+  console.log('\n--- vehicle (§6 M5) ---');
+  const job = { seed: 0x51ee7, ocean: 0.02, sea: true, R: QT.R, amp: QT.amp, res: 33, bathy: true };
+  const unitM = QT.unitM;
+
+  // --- the demand law, against the tree's own walk -------------------------
+  //
+  // The red line. If measured demand ever exceeds the model, the model is not a
+  // bound and the governor built on it is decoration.
+  {
+    const starts = [
+      [0.31, 0.42, 0.85], [0.90, -0.11, 0.42], [-0.20, 0.77, -0.61],
+      [0.58, 0.58, 0.58], [0.05, 0.99, 0.10], [-0.71, 0.02, 0.70],
+    ];
+    const twists = [0, 0.785];                    // square-on and diagonal
+    const alts = [150, 400, 1500];
+    const speeds = [200, 700];
+    const splitK = 6.5;
+
+    let worstSlack = Infinity, over = 0, n = 0, worstAt = '';
+    for (const start of starts) {
+      for (const twist of twists) {
+        for (const altM of alts) {
+          for (const vM of speeds) {
+            const meas = qtFly({
+              start, twist, altU: altM / unitM, vU: vM / unitM, splitK, job,
+            });
+            const pred = demandRate({
+              R: QT.R, maxDepth: QT.maxDepth, splitK,
+              alt: altM / unitM, speed: vM / unitM,
+            });
+            n++;
+            if (meas > pred) over++;
+            const slack = pred / Math.max(meas, 1e-9);
+            if (slack < worstSlack) { worstSlack = slack; worstAt = `alt ${altM} m · ${vM} m/s`; }
+          }
+        }
+      }
+    }
+    ok('§6 M5 · the model is a bound: measured demand never exceeds it',
+      over === 0, `${n} flights · ${over} exceeded · worst slack ${worstSlack.toFixed(2)}×`);
+    // and not a vacuous one — a bound ten times the truth is a bound that never
+    // governs anything
+    ok('and it is tight enough to be worth having',
+      worstSlack < 2.2, `worst slack ${worstSlack.toFixed(2)}× at ${worstAt}`);
+  }
+
+  // --- the constant is structure, not a fit --------------------------------
+  //
+  // `C/4(2·splitK+1)` came out 1.408 at splitK 6.5 and 1.422 at 5.2 — the same
+  // number at two thresholds, which is what says the parametrisation carries
+  // the splitK dependence and only one constant ever needed measuring. The day
+  // someone retunes splitK for glass (quadtree.js:607 already does) is the day
+  // a fitted constant would quietly stop being a bound.
+  {
+    const job2 = job;
+    const measureC = (splitK) => {
+      let worst = 0;
+      for (const start of [[0.31, 0.42, 0.85], [-0.71, 0.02, 0.70]]) {
+        for (const twist of [0, 0.785]) {
+          const altM = 150, vM = 400;
+          const meas = qtFly({
+            start, twist, altU: altM / unitM, vU: vM / unitM, splitK, job: job2,
+          });
+          const cEff = effectiveChord({
+            R: QT.R, maxDepth: QT.maxDepth, splitK, alt: altM / unitM,
+          });
+          worst = Math.max(worst, meas * cEff / (vM / unitM));
+        }
+      }
+      return worst;
+    };
+    const c65 = measureC(6.5) / (4 * reachChords(6.5));
+    const c52 = measureC(5.2) / (4 * reachChords(5.2));
+    ok('§6 M5 · the splitK dependence lives in the parametrisation, not the constant',
+      Math.abs(c65 - c52) / c65 < 0.05,
+      `C/4(2k+1) = ${c65.toFixed(3)} at k=6.5 · ${c52.toFixed(3)} at k=5.2`);
+    ok('and what is left over is √2 — a grid crossed on the diagonal',
+      Math.abs(c65 - DIAGONAL) / DIAGONAL < 0.06,
+      `${c65.toFixed(3)} against √2 = ${DIAGONAL.toFixed(3)}`);
+    ok('which is exactly the constant the model ships',
+      Math.abs(demandConst(6.5) - 4 * DIAGONAL * 14) < 1e-12,
+      `C = ${demandConst(6.5).toFixed(2)} at splitK 6.5`);
+  }
+
+  // --- the reach is one level up, which is where the second ×2 came from ---
+  {
+    ok('§6 M5 · a tile is required when its *parent* splits, so its reach is 2k+1',
+      reachChords(6.5) === 14 && reachChords(5.2) === 11.4);
+    // read straight off quadtree.js:275 — split while near < R·ang·(1+2·splitK),
+    // and R·ang at the parent's depth is one child chord
+    const splitK = 6.5, d = 12;
+    const parentAng = (Math.PI / 4) / (1 << (d - 1));
+    const childChord = chordAt(QT.R, d);
+    near('and R·ang at the parent is exactly one child chord',
+      QT.R * parentAng, childChord, 1e-12);
+    near('so the parent splits while its centre is within (2k+1) child chords',
+      QT.R * parentAng * (1 + 2 * splitK), reachChords(splitK) * childChord, 1e-12);
+  }
+
+  // --- the floor, which is the only reason a hover craft is possible -------
+  {
+    const g = { R: QT.R, maxDepth: QT.maxDepth, splitK: 6.5 };
+    const fl = floorAltitude(g);
+    near('§6 M5 · below the floor altitude the tree cannot refine further',
+      effectiveChord({ ...g, alt: fl * 0.5 }), chordAt(QT.R, QT.maxDepth), 1e-12);
+    near('and above it the resident chord tracks altitude',
+      effectiveChord({ ...g, alt: fl * 4 }), fl * 4 / reachChords(6.5), 1e-12);
+    ok('so the bound is strictly positive at zero altitude — it can never strand you',
+      maxSpeed({ ...g, alt: 0, workers: 1, tau: 0.04 }) > 0,
+      `${(maxSpeed({ ...g, alt: 0, workers: 4, tau: 0.0098 }) * unitM).toFixed(0)} m/s `
+      + `at the floor (4 workers, τ 9.8 ms) · floor at ${(fl * unitM).toFixed(0)} m`);
+    // monotone, or "climb to go faster" would not be true and the short-hop
+    // flyer would have no reason to exist
+    let mono = true, prev = -1;
+    for (let a = 0; a < 8000; a += 137) {
+      const v = maxSpeed({ ...g, alt: a / unitM, workers: 4, tau: 0.01 });
+      if (v < prev - 1e-12) mono = false;
+      prev = v;
+    }
+    ok('and it never decreases with altitude, so climbing is how you go fast', mono);
+  }
+
+  // --- the scaling, which is the whole reason τ and W are read at runtime --
+  {
+    const g = { R: QT.R, maxDepth: QT.maxDepth, splitK: 6.5, alt: 0.4 };
+    near('§6 M5 · twice the workers, twice the speed',
+      maxSpeed({ ...g, workers: 8, tau: 0.02 }),
+      maxSpeed({ ...g, workers: 4, tau: 0.02 }) * 2, 1e-12);
+    near('and twice the build time, half of it',
+      maxSpeed({ ...g, workers: 4, tau: 0.04 }),
+      maxSpeed({ ...g, workers: 4, tau: 0.02 }) * 0.5, 1e-12);
+    // the flight law that shipped before M5 is linear in altitude — the right
+    // shape — with a constant nobody checked. This records by how much.
+    const today = 0.8 * 0.4;                       // planetscale.js:1514, units/s
+    const bound = maxSpeed({ ...g, workers: 4, tau: 0.0098 });
+    ok('§11 · and the law that shipped before it is over the bound even unboosted',
+      today > bound,
+      `${(today * unitM).toFixed(0)} m/s against ${(bound * unitM).toFixed(0)} m/s `
+      + `· ×3.4 boost makes it ${(today * 3.4 / bound).toFixed(1)}× over`);
+  }
+
+  // --- the governor: soft, and inert until it isn't ------------------------
+  {
+    const gov = new StreamGovernor(null, { R: QT.R, maxDepth: 18, splitK: 6.5, workers: 4 });
+    gov.observe(0.0098);
+    const alt = 0.4;
+    const lim = gov.ceiling(alt);
+
+    ok('§6 M5 · a request well under the bound is passed through untouched',
+      gov.govern(alt, lim * 0.5) === lim * 0.5 && gov.pressure === 0);
+    ok('and the governor is inert right up to the knee',
+      Math.abs(gov.govern(alt, lim * STREAM.softAt) - lim * STREAM.softAt) < 1e-12);
+    const asked = lim * 4;
+    const got = gov.govern(alt, asked);
+    ok('and a request far over it is held under the bound',
+      got < lim && got > lim * STREAM.softAt,
+      `asked ${(asked * unitM).toFixed(0)} m/s · got ${(got * unitM).toFixed(0)} m/s `
+      + `· bound ${(lim * unitM).toFixed(0)}`);
+    ok('and it reports the pressure, so the craft can show what it is feeling',
+      gov.pressure > 0.5 && gov.pressure < 1);
+
+    // C¹ at the knee: a governor that steps is a governor you feel engage,
+    // which is the invisible-wall failure in a different costume
+    const h = lim * 1e-4;
+    const d1 = (gov.govern(alt, lim * STREAM.softAt) - gov.govern(alt, lim * STREAM.softAt - h)) / h;
+    const d2 = (gov.govern(alt, lim * STREAM.softAt + h) - gov.govern(alt, lim * STREAM.softAt)) / h;
+    ok('and the slope is continuous through the knee — no step in acceleration',
+      Math.abs(d1 - d2) < 0.02, `dv/dv ${d1.toFixed(4)} → ${d2.toFixed(4)}`);
+
+    // monotone: asking for more must never give you less
+    let mono = true, prevOut = -1;
+    for (let k = 0.1; k < 12; k += 0.05) {
+      const out = gov.govern(alt, lim * k);
+      if (out < prevOut - 1e-12) mono = false;
+      prevOut = out;
+    }
+    ok('and asking for more never returns less', mono);
+
+    // the queue's own back-pressure, which catches what altitude cannot see
+    const q = new StreamGovernor(
+      { stats: { pending: 700 }, cap: 900 },
+      { R: QT.R, maxDepth: 18, splitK: 6.5, workers: 4, tau: 0.0098 });
+    ok('§6 M5 · a full build queue slows the craft even under the altitude bound',
+      q.govern(alt, lim * 0.5) < lim * 0.5,
+      `pending 700 of 900 → ${(q.pressure * 100).toFixed(0)}% pressure`);
+    const idle = new StreamGovernor(
+      { stats: { pending: 0 }, cap: 900 },
+      { R: QT.R, maxDepth: 18, splitK: 6.5, workers: 4, tau: 0.0098 });
+    ok('and an empty one costs nothing at all — a governor that always drags is a top speed',
+      idle.govern(alt, lim * 0.5) === lim * 0.5);
+  }
+
+  // --- τ is measured, and one bad tile must not raise the speed limit ------
+  {
+    const gov = new StreamGovernor(null, { R: QT.R, maxDepth: 18, splitK: 6.5, workers: 4 });
+    ok('§6 M5 · τ starts pessimistic, so the first seconds of a descent are not over-driven',
+      gov.tau === STREAM.tau0 && STREAM.tau0 > 0.0098);
+    gov.observe(0.012);
+    near('the first real sample replaces the guess outright', gov.tau, 0.012, 1e-12);
+    for (let i = 0; i < 40; i++) gov.observe(0.012);
+    const before = gov.tau;
+    gov.observe(0.35);                        // one tile behind a collection
+    ok('and one slow tile moves it by a fraction, not to it',
+      gov.tau < before * 1.4 && gov.tau > before,
+      `${before.toFixed(4)} → ${gov.tau.toFixed(4)} after a 350 ms outlier`);
+    ok('and a nonsense sample is ignored rather than propagated',
+      gov.observe(0) === gov.tau && gov.observe(NaN) === gov.tau
+      && gov.observe(-1) === gov.tau);
+  }
+
+  // --- the hover craft ------------------------------------------------------
+  {
+    // a flat world, so the arithmetic has a closed form to be checked against
+    const flat = () => 0;
+    const h = new Hover({ groundAt: flat, gravity: 9.80665 });
+    h.place(0, 0);
+    near('§6 M5 · the skirt holds its ride height', h.pos.y, HOVER.ride, 1e-12);
+
+    // a short hop is ballistic, and the apex has a closed form
+    const dt = 1 / 240;
+    let apex = -1e9;
+    for (let i = 0; i < 480; i++) {
+      h.step(dt, { move: { x: 0, y: 0 }, hop: true }, 0, 60);
+      apex = Math.max(apex, h.pos.y);
+    }
+    const want = HOVER.ride + HOVER.hopV * HOVER.hopV / (2 * 9.80665);
+    near('and a held hop reaches the height v₀²/2g above it', apex, want, 2e-3);
+    // back on the skirt — but *on* the skirt is a breathing height, not a fixed
+    // one, so the window is the idle bob rather than an epsilon
+    ok('and lands back on the skirt rather than through it',
+      !h.airborne && Math.abs(h.pos.y - HOVER.ride) <= HOVER.bobAmp + 1e-6,
+      `settled ${(h.pos.y - HOVER.ride).toFixed(3)} m off the ride height, `
+      + `bob is ±${HOVER.bobAmp}`);
+
+    // a cut hop is lower, and the walker's rule is the one it uses
+    const h2 = new Hover({ groundAt: flat, gravity: 9.80665 });
+    h2.place(0, 0);
+    let apex2 = -1e9;
+    for (let i = 0; i < 480; i++) {
+      h2.step(dt, { move: { x: 0, y: 0 }, hop: i * dt < 0.05 }, 0, 60);
+      apex2 = Math.max(apex2, h2.pos.y);
+    }
+    ok('and releasing early gives a lower hop, on the walker\'s own rule',
+      apex2 < apex - 0.3 && apex2 > HOVER.ride,
+      `${(apex2 - HOVER.ride).toFixed(2)} m against ${(apex - HOVER.ride).toFixed(2)} m held`);
+
+    // low gravity: the same hop constant, a higher hop, no per-world tuning
+    const moon = new Hover({ groundAt: flat, gravity: 1.62 });
+    moon.place(0, 0);
+    let apexM = -1e9;
+    for (let i = 0; i < 1200; i++) {
+      moon.step(dt, { move: { x: 0, y: 0 }, hop: true }, 0, 60);
+      apexM = Math.max(apexM, moon.pos.y);
+    }
+    // v₀ scales as √g, so the height v₀²/2g is the same — the hop is a fixed
+    // *height*, and what a sixth of a gravity buys you is hang time
+    near('§2 · and one hop constant works on every world, because v₀ scales as √g',
+      apexM - HOVER.ride, want - HOVER.ride, 5e-3);
+
+    // the craft is governed by whatever top speed it is handed
+    const h3 = new Hover({ groundAt: flat, gravity: 9.80665 });
+    h3.place(0, 0);
+    for (let i = 0; i < 2000; i++) h3.step(1 / 120, { move: { x: 0, y: 1 } }, 0, 42);
+    ok('and it settles at the top speed it is given, whatever the governor says that is',
+      Math.abs(h3.speed() - 42) < 0.05, `${h3.speed().toFixed(3)} m/s against 42`);
+
+    // §2.3 — the same trace twice is the same path
+    const trace = (i) => ({ move: { x: Math.sin(i * 0.013), y: Math.cos(i * 0.007) }, hop: i % 320 < 20 });
+    const run = () => {
+      const c = new Hover({ groundAt: (x, z) => Math.sin(x * 0.01) * 12 + Math.cos(z * 0.013) * 9, gravity: 9.80665 });
+      c.place(0, 0);
+      // path length, not displacement: the trace deliberately turns, so where it
+      // *ends up* says nothing about how much arithmetic it did on the way
+      let path = 0, px = c.pos.x, pz = c.pos.z;
+      for (let i = 0; i < 3000; i++) {
+        c.step(1 / 120, trace(i), i * 0.0007, 55);
+        path += Math.hypot(c.pos.x - px, c.pos.z - pz);
+        px = c.pos.x; pz = c.pos.z;
+      }
+      return { s: c.state(), path };
+    };
+    const a1 = run(), a2 = run();
+    ok('§2.3 · the same trace at the same dt is bit-identical',
+      JSON.stringify(a1.s) === JSON.stringify(a2.s) && a1.path === a2.path);
+    ok('and it flew far enough for that to mean something',
+      a1.path > 400, `${a1.path.toFixed(0)} m of path over 25 s`);
+  }
+
+  // --- the handover: §2.5, and the clause that names velocity ---------------
+  {
+    const m = new Mount(0.35);
+    ok('§2.5 · a mount that has not begun contributes nothing', !m.active);
+    m.begin({ x: 0, y: 1.68, z: 0 }, { x: 10, y: 3.4, z: 4 }, { x: 30, y: 0, z: -4 });
+
+    // the offset must start at exactly the gap and end at exactly zero, with
+    // zero slope at both ends — a lerp is continuous in position and
+    // discontinuous in velocity, which is a jolt in the frame meant to hide one
+    const first = m.update(0);
+    near('and it opens at exactly the gap it has to close', first.x, -10, 1e-12);
+    let prevW = 1, slopes = [];
+    let last = null;
+    for (let i = 0; i < 40; i++) {
+      last = m.update(0.35 / 40);
+      slopes.push((last.x / -10) - prevW);
+      prevW = last.x / -10;
+    }
+    ok('and it closes completely', Math.abs(last.x) < 1e-9 && last.done && !m.active);
+    ok('§2.5 · with zero slope at both ends, so neither eye jumps',
+      Math.abs(slopes[0]) < 0.02 && Math.abs(slopes[slopes.length - 1]) < 0.02,
+      `opening slope ${slopes[0].toExponential(1)} · closing ${slopes[slopes.length - 1].toExponential(1)}`);
+    // and the weight never overshoots — an overshooting spring reads as the
+    // camera being yanked past the seat and pulled back
+    const m2 = new Mount(0.35);
+    m2.begin({ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 });
+    let over = false, prev = 1;
+    for (let i = 0; i < 60; i++) {
+      const w = m2.update(0.35 / 60).x / -1;
+      if (w > prev + 1e-12 || w < -1e-12) over = true;
+      prev = w;
+    }
+    ok('and never overshoots the seat', !over);
+
+    // momentum crosses, both ways, to the digit
+    const craft = { x: 41.5, y: -2.25, z: -18.75 };
+    const body = { x: 0, y: 0, z: 0 };
+    handMomentum(craft, body);
+    ok('§6 M5 · dismounting at speed leaves the body moving at the craft\'s velocity',
+      body.x === craft.x && body.y === craft.y && body.z === craft.z);
+    const back = { x: 0, y: 0, z: 0 };
+    handMomentum(body, back);
+    ok('and mounting hands it back, because it is the same physics either way',
+      back.x === craft.x && back.z === craft.z);
+    const damped = handMomentum(craft, { x: 0, y: 0, z: 0 }, 0.5);
+    near('and a caller that wants to bleed some can, without a second function',
+      damped.x, craft.x * 0.5, 1e-12);
+  }
+
+  // --- §2.6: forty kilometres is where float32 stops having centimetres ----
+  {
+    // The gate's route is 40 km. At that distance a float32 holds about 4 mm of
+    // resolution — and the *draw-unit* figure is worse: 40 km is 16.3 units on
+    // a 2600-unit globe, but the globe's own radius is what the position is
+    // measured from, so the number that matters is 2600 + relief.
+    const km40 = 40000 / unitM;
+    ok('§2.6 · 40 km is a small step on a globe measured from its centre',
+      km40 < 20, `${km40.toFixed(2)} draw units of a ${QT.R}-unit radius`);
+    const f32 = (x) => Math.fround(x);
+    const r = QT.R + 0.0009;                       // standing on the datum
+    const stepM = 0.01;                            // one centimetre
+    const stepU = stepM / unitM;
+    ok('and a float32 there cannot resolve a centimetre — §2.6 in one line',
+      f32(r + stepU) === f32(r),
+      `${QT.R} + ${stepU.toExponential(2)} rounds to the same float32`);
+    ok('while a double resolves it with eight digits to spare',
+      r + stepU !== r && (r + stepU) - r > stepU * 0.999);
+  }
+
+  // --- §2.4: a craft is a place, and places are URLs ------------------------
+  {
+    ok('§2.4 · the mount reach is a stated number, not a magic literal in a branch',
+      MOUNT.reach === 14 && MOUNT.dur > 0);
+    ok('§5 · and the governor exposes its own state, so the HUD never guesses',
+      'pressure' in new StreamGovernor(null, {}) && 'limit' in new StreamGovernor(null, {}));
+  }
+}
+
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
   walk: suiteWalk, material: suiteMaterial, opening: suiteOpening,
   ocean: suiteOcean, horizon: suiteHorizon, wind: suiteWind, meadow: suiteMeadow,
+  vehicle: suiteVehicle,
 };
 
 for (const [name, fn] of Object.entries(suites)) {

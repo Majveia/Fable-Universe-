@@ -66,6 +66,18 @@ export class QuadtreePlanet {
     this.cap = this._baseCap;
     this.stats = { drawn: 0, cached: 0, pending: 0, built: 6, maxDepth: 0, tris: 0 };
 
+    // How long a worker actually takes to build one tile, in seconds — the
+    // supply half of §6 M5's speed bound. Measured rather than assumed: it is
+    // 8.6–11.6 ms on a desktop core and several times that on glass, and a
+    // bound built on a constant would be wrong on every machine but one.
+    //
+    // §2.3 is untouched. This reads a clock, but no generated thing depends on
+    // it: the tile that comes back is the same tile whatever the stopwatch
+    // said. All it can ever change is how fast you are allowed to fly toward
+    // one. `onBuild` is where M5's governor listens; nothing else reads it.
+    this.lastBuildMs = 0;
+    this.onBuild = null;
+
     // worker pool
     const n = opts.workers
       ?? Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
@@ -73,10 +85,21 @@ export class QuadtreePlanet {
     this.idle = [];
     for (let w = 0; w < n; w++) {
       const wk = new Worker(new URL('./tilebuild.js', import.meta.url), { type: 'module' });
-      wk.onmessage = (e) => { wk._job = null; this.results.push(e.data); this.idle.push(wk); };
+      wk.onmessage = (e) => {
+        // the job went to an *idle* worker, so this round trip is the build
+        // plus the postMessage, with no queue wait folded in — which is what
+        // makes it the τ the bound wants rather than a symptom of the backlog
+        if (wk._t0) {
+          this.lastBuildMs = performance.now() - wk._t0;
+          wk._t0 = 0;
+          if (this.onBuild) this.onBuild(this.lastBuildMs / 1000);
+        }
+        wk._job = null; this.results.push(e.data); this.idle.push(wk);
+      };
       wk.onerror = (e) => {
         console.warn('AEON tile worker:', e.message);
         if (wk._job) { this.pending.delete(wk._job); wk._job = null; }
+        wk._t0 = 0;      // a failed build is not a measurement of anything
         this.idle.push(wk);
       };
       this.workers.push(wk);
@@ -335,6 +358,7 @@ export class QuadtreePlanet {
       const wk = this.idle.pop();
       this.pending.add(m.key);
       wk._job = m.key;
+      wk._t0 = performance.now();
       wk.postMessage({ ...this.job, key: m.key, face: m.face, depth: m.depth, i: m.i, j: m.j });
     }
 
