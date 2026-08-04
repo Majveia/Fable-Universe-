@@ -433,3 +433,37 @@ which is why it took real hardware to surface.
   changes that.
 - **The bloom rebuild**, M2 act 2 step 5, which is what actually fixes §2.8 in
   vacuum rather than stopping the dither from making it worse.
+
+---
+
+## What M5 needs from a GPU
+
+M5's speed bound is derived and its arithmetic is closed offline — the demand
+model is checked against a re-walk of `quadtree.js`'s own `visit()` over 72
+flights, and the bound is never exceeded (worst slack 1.03×). What no offline
+instrument can settle is whether it *works*, and there are three questions.
+`?m5=1` turns the governor on.
+
+1. **The gate's own clause — no pop-in on a 40 km traverse.** Fly the globe low
+   and fast with the governor on and off, same seed, same route. With it off the
+   prediction is specific: the ground under you stays a level coarse and then
+   snaps when the stream catches up. If that is *not* visible with the governor
+   off, the bound is solving a problem this hardware does not have, and that is
+   worth knowing too.
+2. **Does the governor read as air thickening or as a wall?** It is soft by
+   construction — inert below 0.72 of the bound, C¹ through the knee, and the
+   HUD says `throttle · held at …` with the builder count and the measured τ
+   when it engages. Whether that lands as honest or as the ship fighting you is
+   a judgement, and §8 axis 8 is the axis it would fail.
+3. **Should the bound govern at orbital altitude at all?** It comes out slightly
+   below the existing 1600 units/s clamp on a fast machine and well below it on
+   a slow one, because crossing the planet in four seconds genuinely churns the
+   whole tile set. But at orbit an unrefined tile subtends a few pixels. Fly an
+   orbit-to-ground descent with `?m5=1` and say whether the transit feels
+   throttled. If it does, the bound should be relaxed by projected size above
+   the atmosphere — and that is a change to the model, not to a constant.
+
+**τ is the number to report back.** `?m5=1` and the HUD's `throttle` row shows
+the measured tile-build time for that machine. It is 8.6–11.6 ms on a container
+CPU. The whole bound scales inversely with it, so one figure from real silicon
+and one from a phone would tell us more about M5 than any capture.
