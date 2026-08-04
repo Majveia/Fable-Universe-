@@ -45,8 +45,8 @@ import {
   WIND_SPAN, bakeHeight, windUniforms,
 } from './wind.js';
 import {
-  MEADOW_COLOUR_GLSL, MEADOW_GLSL, MEADOW_PART_GLSL, PALETTE_KEYS, RINGS,
-  bladeRoots, chunkGrid, chunkInstances, chunkNearDist, grassPalette,
+  MEADOW_COLOUR_GLSL, MEADOW_GLSL, MEADOW_PART_GLSL, PALETTE_KEYS, PART_RADIUS,
+  RINGS, bladeRoots, chunkGrid, chunkInstances, chunkNearDist, grassPalette,
 } from './meadow.js';
 
 /**
@@ -606,6 +606,7 @@ export class GrassRing {
         uWidth: { value: 0.028 },
         uCurl: { value: curved ? 0.55 : 0.0 },
         uWalker: { value: new THREE.Vector4(0, -1e6, 0, 0) },
+        uPartR: { value: PART_RADIUS },
         uForce: { value: this.wf.wind.force },
         uRingDn: { value: this.spec.dn },
         uChunkNear: { value: this.spec.dn },
@@ -728,6 +729,8 @@ export class GrassRing {
     // can see costing a uniform write per frame.
     if (walker && this.ring === 0) {
       this.material.uniforms.uWalker.value.set(walker.x, walker.y, walker.z, walker.push);
+      // a skiff's skirt is wider than a pair of boots — one shader, two callers
+      this.material.uniforms.uPartR.value = walker.radius ?? PART_RADIUS;
     } else {
       this.material.uniforms.uWalker.value.w = 0;
     }

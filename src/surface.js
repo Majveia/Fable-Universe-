@@ -47,7 +47,8 @@ import {
   CLOUD_SPEEDUP, CLOUD_VEER, makeWind, meanFlow, windAt,
 } from './wind.js';
 import { GrassRing, WindField } from './flora.js';
-import { RINGS } from './meadow.js';
+import { PART_RADIUS, RINGS } from './meadow.js';
+import { HOVER } from './vehicle.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
 import { qArr, qInt } from './quality.js';
 
@@ -129,6 +130,17 @@ const AERIAL = PARAM('aerial') === '1' || (M2 && PARAM('aerial') !== '0');
  * not the one that built them (§7.4).
  */
 const M4 = PARAM('m4') !== '0';
+
+/**
+ * §M5 — traversal. **Default-off** (§7.4): `?m5=1`.
+ *
+ * At this scale it is the continuous mount, the tested hover dynamics, the
+ * short hop, and what the craft disturbs — dust, spray and grass, all through
+ * the one wind field M3 act 6 established. The speed *governor* is planet
+ * scale's, not this one's: a 1400 m tile is a fixed mesh with nothing to
+ * stream, so there is nothing here to outrun.
+ */
+const M5 = PARAM('m5') === '1';
 
 /** `?shdebug=1` — output the shadow term itself, so it can be looked at */
 const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');
@@ -1923,7 +1935,12 @@ export class SurfaceScale {
     // link expects it to pause. So jump takes the scale-first path already
     // established for KeyB: this scale claims Space while it is walking, and
     // an unhandled press still falls through to `togglePlay`.
-    if (M4 && code === 'Space' && this.controls.enabled && !this.traveler?.riding) return true;
+    // …and under §M5 it claims it while *riding* too, because the short hop is
+    // the same button as the jump. That is deliberate: one thing a rider
+    // already knows, transferred rather than relearned. A press with neither a
+    // body nor a craft under it still falls through to `togglePlay`.
+    if (M4 && code === 'Space' && this.controls.enabled
+      && (M5 || !this.traveler?.riding)) return true;
     if (code === 'KeyF') { this.fly = !this.fly; return true; }
     if (code === 'KeyC') {
       const third = this.traveler.toggleView();
@@ -2092,14 +2109,36 @@ export class SurfaceScale {
       // through it.
       const w = this.walker;
       const foot = w ? 0.62 + 0.38 * Math.abs(Math.cos(w.stepPhase * Math.PI)) : 1;
-      const walker = {
-        x: this.body.x,
-        y: this.body.y - EYE,
-        z: this.body.z,
-        // nothing to part while flying, and nothing to part while still
-        push: (this.fly || this.traveler?.riding) ? 0
-          : 0.75 * foot * Math.min(1, Math.hypot(this.vel?.x ?? 0, this.vel?.z ?? 0) / 1.5 + 0.35),
-      };
+      const hv = M5 ? this.traveler?.hover : null;
+      const riding = !!this.traveler?.riding;
+      // §6 M5 · the craft parts the grass too, and it is the same function at a
+      // wider radius rather than a second one. What differs is the *cause*: a
+      // walker's push comes off the gait clock, a skiff's off its skirt — so it
+      // is steady where a footfall is periodic, and it fades as the craft rises
+      // out of ground effect, because a hovercraft two body-lengths up is not
+      // touching the meadow at all.
+      let walker;
+      if (riding && hv) {
+        const ride = Math.max(hv.pos.y - this.heightAt(hv.pos.x, hv.pos.z), 0);
+        const effect = Math.max(0, 1 - ride / (HOVER.ride * 2.2));
+        walker = {
+          x: hv.pos.x,
+          y: hv.pos.y - HOVER.ride,
+          z: hv.pos.z,
+          radius: 4.2,
+          push: 0.95 * effect * Math.min(1, hv.speed() / 12 + 0.45),
+        };
+      } else {
+        walker = {
+          x: this.body.x,
+          y: this.body.y - EYE,
+          z: this.body.z,
+          radius: PART_RADIUS,
+          // nothing to part while flying, and nothing to part while still
+          push: (this.fly || riding) ? 0
+            : 0.75 * foot * Math.min(1, Math.hypot(this.vel?.x ?? 0, this.vel?.z ?? 0) / 1.5 + 0.35),
+        };
+      }
       for (const ring of this.meadow) {
         ring.update(this.body.x, this.body.z, this.body.y, this.uTime.value,
           this._frustum, dusk, walker);
@@ -2164,6 +2203,13 @@ export class SurfaceScale {
       if (!this.inside) {
         this.body.x = Math.min(Math.max(this.body.x, -EXT * 0.48), EXT * 0.48);
         this.body.z = Math.min(Math.max(this.body.z, -EXT * 0.48), EXT * 0.48);
+        // and the craft owns the clamp too, or the body stops at the edge while
+        // the hover integrates on past it and the skiff flies out from under you
+        const hv = this.traveler?.hover;
+        if (hv && this.traveler.riding) {
+          if (hv.pos.x !== this.body.x) { hv.pos.x = this.body.x; hv.vel.x = 0; }
+          if (hv.pos.z !== this.body.z) { hv.pos.z = this.body.z; hv.vel.z = 0; }
+        }
       }
       if (M4 && !this.traveler?.riding) {
         // the body owns the tile clamp too, so the two cannot disagree
@@ -2176,6 +2222,9 @@ export class SurfaceScale {
       if (M4 && !this.traveler?.riding) {
         this.traveler.place(dt, null);
         this.rig.place(dt);
+        // §M5's handover runs after the rig, for the same reason it runs after
+        // the traveler's own arm: it closes a gap, it does not own a camera.
+        this.traveler.applyMount?.(dt, this.camera);
       } else {
         this.traveler.place(dt, this.camera);
       }

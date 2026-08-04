@@ -13,8 +13,15 @@
 import * as THREE from 'three';
 import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
+import { HOVER, Hover, MOUNT, Mount, handMomentum } from './vehicle.js';
+import { input, jumpHeld } from './input.js';
+import { GAIT, gravityOf } from './avatar.js';
 
 const EYE = 1.8;
+
+// §6 M5's half of this file. Default-off (§7.4), and the old path is left
+// intact underneath it — `?m5=0` is the rollback and it is the whole rollback.
+const M5 = new URL(window.location.href).searchParams.get('m5') === '1';
 
 export function addTraveler(s) {
   const r = new RNG(hash(s.pp.seed, 0x77a7e1e5));
@@ -106,10 +113,21 @@ export function addTraveler(s) {
   s.scene.add(wake);
   let wi = 0, wakeT = 0;
 
+  // §6 M5 — the dynamics the suite tests, rather than a second copy of them
+  // written inline. `ride` is the skiff's own keel height, not the walker's;
+  // gravity is the world's, so a moon hop hangs the way a moon hop should.
+  const hover = M5 ? new Hover({
+    groundAt: ground,
+    gravity: gravityOf(s.pp),
+    ride: 3.4,
+  }) : null;
+  const mount = M5 ? new Mount(MOUNT.dur) : null;
+
   const T = {
     third: false,
     riding: false,
     avatar, skiff,
+    hover, mount,
     _camSet: false,
     _face: skiff.rotation.y,
     _bank: 0,
@@ -117,22 +135,70 @@ export function addTraveler(s) {
 
     toggleView() {
       T.third = !T.third;
-      T._camSet = false;
+      // Under §M5 the view swap is a handover like any other: the eye is where
+      // it is, and the arm grows or retracts from there rather than cutting.
+      if (!M5) T._camSet = false;
       return T.third;
     },
 
-    /** E: mount if the skiff is close; step off if riding */
+    /**
+     * E: mount if the skiff is close; step off if riding.
+     *
+     * §2.5 — "if a feature can't be entered continuously, it isn't finished."
+     * The old path teleports the body onto the deck, and has since it was
+     * written; nobody noticed because the camera is behind the walker and the
+     * jump is short. Over forty kilometres it stops going unnoticed.
+     *
+     * So under §M5 both directions are a spring plus a momentum handover, and
+     * they are the same code because they are the same physics: whatever was
+     * moving keeps moving.
+     */
     tryMount() {
       if (T.riding) {
         T.riding = false;
-        // park it right here, settled on the ground
+        if (M5) {
+          const eye = { x: s.camera.position.x, y: s.camera.position.y, z: s.camera.position.z };
+          // step off where the craft is, carrying its velocity into the body
+          const w = s.walker;
+          if (w) {
+            w.pos.x = hover.pos.x;
+            w.pos.z = hover.pos.z;
+            w.pos.y = ground(hover.pos.x, hover.pos.z);
+            handMomentum(hover.vel, w.vel);
+            w.vel.y = 0;          // the skiff's bob is not a jump
+            w.grounded = true;
+          }
+          s.body.set(hover.pos.x, (w ? w.eyeY() : ground(hover.pos.x, hover.pos.z) + EYE), hover.pos.z);
+          s.vel.set(hover.vel.x, 0, hover.vel.z);
+          // the craft settles where it was left, keel down
+          skiff.position.set(hover.pos.x, ground(hover.pos.x, hover.pos.z) + 0.55, hover.pos.z);
+          skiff.rotation.z = 0;
+          wake.visible = false;
+          mount.begin(eye, { x: s.body.x, y: s.body.y, z: s.body.z }, s.vel);
+          return 'dismounted';
+        }
         skiff.position.y = ground(skiff.position.x, skiff.position.z) + 0.55;
         skiff.rotation.z = 0;
         wake.visible = false;
         return 'dismounted';
       }
       const d = Math.hypot(s.body.x - skiff.position.x, s.body.z - skiff.position.z);
-      if (d < 14) {
+      if (d < MOUNT.reach) {
+        if (M5) {
+          const eye = { x: s.camera.position.x, y: s.camera.position.y, z: s.camera.position.z };
+          T.riding = true;
+          T.third = true;
+          s.fly = false;
+          hover.place(skiff.position.x, skiff.position.z, T._face);
+          // and the walker's momentum goes with you — running at the skiff and
+          // boarding should not stop you dead
+          if (s.walker) handMomentum(s.walker.vel, hover.vel);
+          s.body.set(hover.pos.x, hover.pos.y + EYE, hover.pos.z);
+          s.vel.set(hover.vel.x, 0, hover.vel.z);
+          mount.begin(eye, { x: s.body.x, y: s.body.y, z: s.body.z }, s.vel);
+          T._camSet = true;    // the spring owns the gap now, not a snap
+          return 'mounted';
+        }
         T.riding = true;
         T.third = true;
         T._camSet = false;
@@ -147,6 +213,7 @@ export function addTraveler(s) {
 
     /** the skiff has the helm: banking hover flight, camera-relative */
     drive(dt) {
+      if (M5) return T._driveM5(dt);
       const boost = s.keys.has('ShiftLeft') || s.keys.has('ShiftRight');
       const speed = boost ? 190 : 85;
       const fwd = new THREE.Vector3(-Math.sin(s.yaw), 0, -Math.cos(s.yaw));
@@ -198,6 +265,91 @@ export function addTraveler(s) {
       wakeGeo.attributes.position.needsUpdate = true;
       wake.visible = sp > 18;
       wake.material.color.setHex(overSea ? 0xd8ecf2 : 0xcabfa8);
+    },
+
+    /**
+     * Dust over land, spray over water — and both drift *downwind* (§6 M5).
+     *
+     * The old wake rises straight up at 1.6 m/s on `arand()`, which is a
+     * plume in still air on a world that has weather. M3 act 6 established
+     * `s.sampleWind(x, z, height)` as the one reading every consumer agrees
+     * on — the grass, the clouds, the ocean and the god rays all take it — and
+     * a craft's wake joins that list rather than growing a fourth wind.
+     *
+     * It is sampled at the particle's own height, so the boundary layer does
+     * the work: what is kicked up near the ground barely moves, and what gets
+     * carried up rides the gust that is passing. That is also the cheapest
+     * possible demonstration that the field is shared, because over water the
+     * spray and the waves lean the same way.
+     */
+    _wake(dt, sp) {
+      wakeT -= dt;
+      const overSea = s.seaLevel !== null
+        && s.heightAt(hover.pos.x, hover.pos.z) < s.seaLevel;
+      const g = ground(hover.pos.x, hover.pos.z);
+      if (sp > 18 && wakeT <= 0 && !hover.airborne) {
+        wakeT = 0.05;
+        const inv = 1 / Math.max(sp, 1e-3);
+        wPos[wi * 3] = hover.pos.x - hover.vel.x * inv * 2.4 + (arand() - 0.5) * 1.4;
+        wPos[wi * 3 + 1] = g + 0.5;
+        wPos[wi * 3 + 2] = hover.pos.z - hover.vel.z * inv * 2.4 + (arand() - 0.5) * 1.4;
+        wAge[wi] = 0;
+        wi = (wi + 1) % NW;
+      }
+      for (let i = 0; i < NW; i++) {
+        if (wAge[i] >= 2) continue;
+        wAge[i] += dt;
+        const h = Math.max(wPos[i * 3 + 1] - g, 0.05);
+        const w = s.sampleWind
+          ? s.sampleWind(wPos[i * 3], wPos[i * 3 + 2], h)
+          : { x: 0, z: 0 };
+        // spray is heavier than dust and is thrown rather than lifted, so it
+        // rises slower and settles sooner
+        const lift = overSea ? 1.1 : 1.6;
+        wPos[i * 3] += w.x * dt;
+        wPos[i * 3 + 1] += lift * dt;
+        wPos[i * 3 + 2] += w.z * dt;
+      }
+      wakeGeo.attributes.position.needsUpdate = true;
+      wake.visible = sp > 18;
+      wake.material.color.setHex(overSea ? 0xd8ecf2 : 0xcabfa8);
+    },
+
+    /**
+     * §M5's helm. The dynamics live in `vehicle.js` and are exercised in Node
+     * by `tools/verify.js`; what is left here is the mesh, the wake and the
+     * bridge back to `s.body`/`s.vel`, which twenty other things read.
+     *
+     * The craft takes the same analog axis the walker does, so switching
+     * between them cannot change what the stick means — and `Space` is the
+     * short hop for the same reason it is the jump: one thing a rider already
+     * knows, transferred rather than relearned.
+     */
+    _driveM5(dt) {
+      const boost = input.down('sprint');
+      // The surface tile is a fixed mesh with nothing to stream, so there is
+      // nothing here to outrun and no governor — that is planet scale's
+      // problem (§6 M5, and `docs/plans/M5.md` §2). The ceiling here is the
+      // tile: 1400 m wide, so 190 m/s crosses it in seven seconds.
+      const top = boost ? 190 : 85;
+      hover.step(dt, { move: input.move, hop: jumpHeld() }, s.rig ? s.rig.yaw : s.yaw, top);
+
+      T._face = hover.face;
+      T._bank = hover.bank;
+      s.body.set(hover.pos.x, hover.pos.y + EYE, hover.pos.z);
+      s.vel.set(hover.vel.x, hover.vel.y, hover.vel.z);
+
+      skiff.position.set(hover.pos.x, hover.pos.y, hover.pos.z);
+      skiff.rotation.set(0, hover.face, hover.bank);
+
+      const sp = hover.speed();
+      engine.material.opacity = 0.3 + Math.min(sp / 190, 1) * 0.7;
+      keel.material.opacity = 0.35 + 0.2 * Math.sin(hover.t * 3.1)
+        // the skirt flares when it is carrying you rather than resting
+        + (hover.airborne ? 0.25 : 0);
+      // `_t` is advanced by `place()`, which also runs every frame — bumping it
+      // here too would run the figure's clock at twice speed while riding
+      T._wake(dt, sp);
     },
 
     /** after movement: seat the camera (and the figure) for this frame */
@@ -252,6 +404,27 @@ export function addTraveler(s) {
       const look = new THREE.Vector3().copy(s.body).addScaledVector(s.vel, 0.12);
       look.y = s.body.y + 0.35;
       camera.lookAt(look);
+      T.applyMount(dt, camera);
+    },
+
+    /**
+     * Close whatever gap a mount or dismount opened, after the frame's placer
+     * has had its say (§2.5).
+     *
+     * This runs *last* and adds an offset rather than overriding a position,
+     * because both placers are legitimate — the rig owns the lens on foot and
+     * the arm above owns it while riding — and a handover that fought either of
+     * them for ownership would be a third opinion about where the eye goes.
+     * The offset starts at exactly the gap, ends at exactly zero, and has zero
+     * slope at both ends, so neither the leaving nor the arriving camera takes
+     * a step in velocity.
+     */
+    applyMount(dt, camera) {
+      if (!M5 || !mount.active || !camera) return;
+      const o = mount.update(dt);
+      camera.position.x += o.x;
+      camera.position.y += o.y;
+      camera.position.z += o.z;
     },
   };
   return T;

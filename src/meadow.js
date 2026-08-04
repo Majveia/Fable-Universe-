@@ -421,7 +421,12 @@ export const PART_RADIUS = 1.2;
 
 export const MEADOW_PART_GLSL = /* glsl */`
   uniform vec4 uWalker;     // xyz position, w = the gait phase's push
-  const float PART_R = ${PART_RADIUS.toFixed(2)};
+  // The radius is a uniform rather than a constant because §6 M5 puts a second
+  // thing through the grass. A walker parts it at 1.2 m — §6 M3's own figure —
+  // and a hover skiff is the *same function* at its skirt's width. One shader,
+  // two callers, and the alternative was a second parting function that would
+  // have drifted from this one the first time either was touched.
+  uniform float uPartR;
 
   // How far this blade is pushed aside, and which way.
   //
@@ -434,10 +439,10 @@ export const MEADOW_PART_GLSL = /* glsl */`
   vec2 meadowPart(vec2 root, float tip) {
     vec2 away = root - uWalker.xz;
     float d = length(away);
-    if (d > PART_R) return vec2(0.0);
+    if (d > uPartR) return vec2(0.0);
     // vertical reach too: a blade is only parted if the walker is near its own
     // height, so grass on a bank above you is left alone
-    float amount = (1.0 - smoothstep(0.0, PART_R, d)) * uWalker.w;
+    float amount = (1.0 - smoothstep(0.0, uPartR, d)) * uWalker.w;
     // tips swing furthest, roots barely move — the same shape the wind uses,
     // because it is the same cantilever being bent
     return normalize(away + vec2(1e-5)) * amount * tip * tip;

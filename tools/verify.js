@@ -3912,10 +3912,23 @@ function suiteMeadow() {
   // of them.
   {
     const code = MEADOW_PART_GLSL.replace(/\/\/[^\n]*/g, '');
+    // §6 M5 made the radius a uniform, because a hover skiff parts the same
+    // grass with the same function at its skirt's width. The clause is
+    // unchanged and so is the walker's number — what moved is where it lives,
+    // so the test follows it there rather than being relaxed to suit.
     ok('§6 M3 · the parting radius is the gate\'s own 1.2 m',
-      PART_RADIUS === 1.2 && code.includes('PART_R = 1.20'));
+      PART_RADIUS === 1.2 && /uniform float uPartR;/.test(code),
+      'a uniform since §M5, defaulting to PART_RADIUS');
     ok('and it falls to nothing at the radius, so there is no edge to see',
-      /smoothstep\(0\.0, PART_R, d\)/.test(code) && /if \(d > PART_R\) return vec2\(0\.0\)/.test(code));
+      /smoothstep\(0\.0, uPartR, d\)/.test(code) && /if \(d > uPartR\) return vec2\(0\.0\)/.test(code));
+    // and the default is wired, so a caller that says nothing still gets a
+    // walker rather than a zero-radius no-op
+    {
+      const flora = readFileSync(new URL('../src/flora.js', import.meta.url), 'utf8');
+      ok('§6 M5 · and a caller that names no radius gets the walker\'s',
+        /uPartR: \{ value: PART_RADIUS \}/.test(flora)
+        && /uPartR\.value = walker\.radius \?\? PART_RADIUS/.test(flora));
+    }
     ok('and tips swing furthest while roots barely move — the same cantilever',
       /amount \* tip \* tip/.test(code));
     ok('and it pushes *away* from the walker rather than in a fixed direction',
@@ -4622,6 +4635,85 @@ function suiteVehicle() {
     const damped = handMomentum(craft, { x: 0, y: 0, z: 0 }, 0.5);
     near('and a caller that wants to bleed some can, without a second function',
       damped.x, craft.x * 0.5, 1e-12);
+  }
+
+  // --- the handover, end to end -------------------------------------------
+  //
+  // The tests above check `Mount` and `handMomentum` in isolation. This checks
+  // the thing §6 M5 actually asks for — that a body running at a craft, boarding
+  // it, flying, and stepping off never has a discontinuity in *velocity* — by
+  // running the two controllers through the swap the way `traveler.js` does.
+  {
+    const ground = (x, z) => Math.sin(x * 0.008) * 6 + Math.cos(z * 0.011) * 4;
+    const w = new Walker({ heightAt: ground, gravity: 9.80665 });
+    w.place(0, 0);
+    // run up to speed on foot
+    for (let i = 0; i < 400; i++) w.step(1 / 120, { move: { x: 0, y: 1 } }, 0);
+    const onFoot = { x: w.vel.x, z: w.vel.z };
+    ok('§6 M5 · the body is actually moving before it boards',
+      Math.hypot(onFoot.x, onFoot.z) > 2.5,
+      `${Math.hypot(onFoot.x, onFoot.z).toFixed(2)} m/s`);
+
+    // board: the craft inherits the body's momentum
+    const h = new Hover({ groundAt: ground, gravity: 9.80665 });
+    h.place(w.pos.x, w.pos.z, 0);
+    handMomentum(w.vel, h.vel);
+    near('and boarding hands the craft the body\'s velocity, to the digit',
+      Math.hypot(h.vel.x, h.vel.z), Math.hypot(onFoot.x, onFoot.z), 1e-12);
+
+    // fly it somewhere fast
+    for (let i = 0; i < 900; i++) h.step(1 / 120, { move: { x: 0.3, y: 1 } }, 0.4, 85);
+    const aboard = { x: h.vel.x, z: h.vel.z };
+    ok('and the craft reaches a speed the body never could',
+      Math.hypot(aboard.x, aboard.z) > 40,
+      `${Math.hypot(aboard.x, aboard.z).toFixed(1)} m/s aboard`);
+
+    // step off at speed: the body leaves with the craft's momentum
+    w.pos.x = h.pos.x; w.pos.z = h.pos.z; w.pos.y = ground(h.pos.x, h.pos.z);
+    handMomentum(h.vel, w.vel);
+    w.vel.y = 0;
+    near('§6 M5 · and stepping off at speed does not stop you dead',
+      Math.hypot(w.vel.x, w.vel.z), Math.hypot(aboard.x, aboard.z), 1e-12);
+
+    // …and the body then decelerates on its own terms rather than teleporting
+    const v0 = Math.hypot(w.vel.x, w.vel.z);
+    w.step(1 / 120, { move: { x: 0, y: 0 } }, 0);
+    const v1 = Math.hypot(w.vel.x, w.vel.z);
+    ok('and it sheds that speed by braking, not by being reset',
+      v1 < v0 && v1 > v0 * 0.85,
+      `${v0.toFixed(1)} → ${v1.toFixed(1)} m/s in one 120 Hz step`);
+  }
+
+  // --- the eye's path through a mount is continuous ------------------------
+  //
+  // §2.5's actual claim, as a trajectory rather than as a property of a curve:
+  // sample the eye either side of the handover frame and assert it never steps
+  // further in one frame than the craft could have carried it.
+  {
+    const m = new Mount(MOUNT.dur);
+    const from = { x: 0, y: 1.68, z: 0 };
+    const to = { x: 9, y: 5.08, z: 3 };            // the seat, 9.5 m away
+    const vel = { x: 24, y: 0, z: 0 };
+    m.begin(from, to, vel);
+    const dt = 1 / 120;
+    let prev = null, worst = 0;
+    for (let i = 0; i < 60 && m.active; i++) {
+      const o = m.update(dt);
+      // the new owner places the eye at the seat; the handover adds the offset
+      const eye = { x: to.x + o.x, y: to.y + o.y, z: to.z + o.z };
+      if (prev) worst = Math.max(worst, Math.hypot(eye.x - prev.x, eye.y - prev.y, eye.z - prev.z));
+      prev = eye;
+    }
+    // 9.5 m closed over 0.35 s is 27 m/s of closing speed, so a 120 Hz frame
+    // may move the eye about 23 cm. Anything much beyond that is a cut.
+    const gap = Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z);
+    const budget = 1.6 * gap / MOUNT.dur * dt;
+    ok('§2.5 · the eye never jumps during a mount — it is carried',
+      worst < budget,
+      `worst frame ${(worst * 100).toFixed(1)} cm against a ${(budget * 100).toFixed(1)} cm budget `
+      + `for a ${gap.toFixed(1)} m gap in ${MOUNT.dur * 1000} ms`);
+    ok('and the handover retires itself rather than lingering',
+      !m.active);
   }
 
   // --- §2.6: forty kilometres is where float32 stops having centimetres ----
