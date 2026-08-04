@@ -378,6 +378,29 @@ export function bladeGeometry(seg) {
 }
 
 /**
+ * Is a chunk's column inside the view frustum?
+ *
+ * A chunk is a square of ground carrying blades up to about `2·hs` metres
+ * tall, so the test is a box against the six planes — and the bounding sphere
+ * of that box is enough, because a false positive costs one draw call and a
+ * false negative costs a hole in the meadow. Erring outward is the only safe
+ * direction.
+ */
+export function chunkInFrustum(frustum, cx, cz, chunk, hs) {
+  const x = (cx + 0.5) * chunk, z = (cz + 0.5) * chunk;
+  const r = chunk * Math.SQRT1_2 + 2 * hs + 1;
+  _sphere.center.set(x, 0, z);
+  _sphere.radius = r;
+  // a chunk's ground height is unknown here; widening the sphere by the
+  // terrain's own local relief would need a height query per chunk per frame,
+  // so the sphere is centred on the datum and grown to cover it
+  _sphere.radius = r + 260;
+  return frustum.intersectsSphere(_sphere);
+}
+
+const _sphere = new THREE.Sphere();
+
+/**
  * A ring of chunks, thinned twice.
  *
  * ---------------------------------------------------------------------------
@@ -432,47 +455,100 @@ export class GrassRing {
     const base = palette?.base ?? [0.24, 0.36, 0.20];
     const tip = palette?.tip ?? [0.62, 0.71, 0.34];
 
+    // ONE material for the ring, not one per chunk.
+    //
+    // Act 4 built 412 chunks across four rings, each with its own
+    // RawShaderMaterial. three caches programs by source, so that was still one
+    // shader compile — but it was 412 uniform sets to allocate, hold and walk
+    // on dispose, and the surface scale became slow enough to tear down that
+    // the compile gate's *next* navigation timed out. The defect showed up as
+    // "the black-hole scale was never reached", which is a symptom three files
+    // away from its cause.
+    //
+    // The two uniforms that genuinely differ per chunk are written in
+    // `onBeforeRender`, which three calls immediately before the draw and
+    // before `setProgram` uploads anything — the standard way to say "same
+    // shader, different transform" without minting a material to hold it.
+    const mat = new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        ...this.wf.sampleUniforms(),
+        uChunkOrigin: { value: new THREE.Vector2(0, 0) },
+        uCam: { value: new THREE.Vector3() },
+        uTime: { value: 0 },
+        uHeightScale: { value: 1 },
+        uWidth: { value: 0.028 },
+        uForce: { value: this.wf.wind.force },
+        uRingDn: { value: this.spec.dn },
+        uChunkNear: { value: this.spec.dn },
+        uDensityMul: { value: density },
+        uHeightTex: this.wf.uniforms.uHeightTex,
+        uHeightOrigin: this.wf.uniforms.uHeightOrigin,
+        uHeightSpan: this.wf.uniforms.uHeightSpan,
+        uBase: { value: new THREE.Vector3(...base) },
+        uTipCol: { value: new THREE.Vector3(...tip) },
+        uSunColor: { value: new THREE.Vector3(1, 0.92, 0.78) },
+      },
+      vertexShader: BLADE_VERT,
+      fragmentShader: BLADE_FRAG,
+      side: THREE.DoubleSide,
+    });
+    this.material = mat;
+
+    // ONE geometry for the ring too, for the same reason as the material — and
+    // this one was not a nicety.
+    //
+    // `instanceCount` lives on the geometry, so act 3 minted a geometry per
+    // chunk to carry it: 412 of them across four rings, and therefore 412
+    // vertex array objects the driver has to hold. Stacked with every other
+    // experimental flag the compile gate lost the browser outright at the
+    // surface station — a crash, not a timeout — and the control run proved it:
+    // the same flags without ?m3=1 complete all six scales.
+    //
+    // three calls `onBeforeRender` immediately before `renderBufferDirect`
+    // reads `instanceCount`, so the count can ride there with the two uniforms
+    // that were already riding there. Four geometries, four materials, 412
+    // draws — which is what it always should have been.
+    const geo = new THREE.InstancedBufferGeometry();
+    geo.setAttribute('position', shared.position);
+    geo.setIndex(shared.index);
+    geo.setAttribute('aRoot', shared.aRoot);
+    geo.setAttribute('aRand', shared.aRand);
+    geo.setAttribute('aHeight', shared.aHeight);
+    geo.instanceCount = 0;
+    this.geometry = geo;
+
     for (let cx = -this.grid; cx <= this.grid; cx++) {
       for (let cz = -this.grid; cz <= this.grid; cz++) {
-        const geo = new THREE.InstancedBufferGeometry();
-        geo.setAttribute('position', shared.position);
-        geo.setIndex(shared.index);
-        geo.setAttribute('aRoot', shared.aRoot);
-        geo.setAttribute('aRand', shared.aRand);
-        geo.setAttribute('aHeight', shared.aHeight);
-        geo.instanceCount = 0;
-
-        const mat = new THREE.RawShaderMaterial({
-          glslVersion: THREE.GLSL3,
-          uniforms: {
-            ...this.wf.sampleUniforms(),
-            uChunkOrigin: { value: new THREE.Vector2(0, 0) },
-            uCam: { value: new THREE.Vector3() },
-            uTime: { value: 0 },
-            uHeightScale: { value: 1 },
-            uWidth: { value: 0.028 },
-            uForce: { value: this.wf.wind.force },
-            uRingDn: { value: this.spec.dn },
-            uChunkNear: { value: this.spec.dn },
-            uDensityMul: { value: density },
-            uHeightTex: this.wf.uniforms.uHeightTex,
-            uHeightOrigin: this.wf.uniforms.uHeightOrigin,
-            uHeightSpan: this.wf.uniforms.uHeightSpan,
-            uBase: { value: new THREE.Vector3(...base) },
-            uTipCol: { value: new THREE.Vector3(...tip) },
-            uSunColor: { value: new THREE.Vector3(1, 0.92, 0.78) },
-          },
-          vertexShader: BLADE_VERT,
-          fragmentShader: BLADE_FRAG,
-          side: THREE.DoubleSide,
-        });
         const mesh = new THREE.Mesh(geo, mat);
-        // culled by hand against the chunk's own nearest distance, which is the
-        // same number the thinning already needs — a frustum test would be a
-        // second, weaker answer to a question already asked
+        mesh.userData.origin = new THREE.Vector2(0, 0);
+        mesh.userData.near = this.spec.dn;
+        mesh.userData.count = 0;
+        mesh.onBeforeRender = () => {
+          mat.uniforms.uChunkOrigin.value.copy(mesh.userData.origin);
+          mat.uniforms.uChunkNear.value = mesh.userData.near;
+          geo.instanceCount = mesh.userData.count;
+        };
+        // Distance and frustum answer *different* questions — how far, and
+        // whether it is behind you — and act 3 dismissed the second on the
+        // grounds that it was the first asked twice. That was wrong.
+        //
+        // Measured rather than guessed, because the first version of this
+        // claim was a guess and it was false: of 412 chunks across four rings,
+        // the distance cull leaves 208 and the frustum test leaves 112. Call
+        // it 73% together. (The suite's frustum model is deliberately
+        // conservative — any corner inside the half-angle, plus slack — so a
+        // real six-plane test culls somewhat more, and the number quoted is
+        // the one that can be defended.)
+        //
+        // It is still done by hand rather than by three's bounding-sphere
+        // test: the chunk's world position moves every frame as the grid
+        // follows the camera, so an automatic test would need the sphere
+        // updated anyway, and the plane test wants the *chunk*, not the
+        // instanced geometry's local bounds.
         mesh.frustumCulled = false;
         mesh.userData.noCast = true;
-        this.chunks.push({ cx, cz, mesh, mat, geo });
+        this.chunks.push({ cx, cz, mesh });
         this.group.add(mesh);
       }
     }
@@ -488,30 +564,39 @@ export class GrassRing {
    * is the difference between walking through a meadow and rebuilding one every
    * step.
    */
-  update(camX, camZ, camY, t) {
+  update(camX, camZ, camY, t, frustum = null) {
     const chunk = this.spec.chunk;
     const ox = Math.floor(camX / chunk), oz = Math.floor(camZ / chunk);
-    let live = 0;
+    let live = 0, drawn = 0;
     for (const c of this.chunks) {
       const gx = ox + c.cx, gz = oz + c.cz;
       const dNear = chunkNearDist(gx, gz, chunk, camX, camZ);
-      if (dNear > this.spec.far) { c.mesh.visible = false; c.geo.instanceCount = 0; continue; }
+      if (dNear > this.spec.far) { c.mesh.visible = false; continue; }
+      if (frustum && !chunkInFrustum(frustum, gx, gz, chunk, this.spec.hs)) {
+        c.mesh.visible = false; continue;
+      }
       const count = chunkInstances(this.ring, dNear, this.densityMul);
       c.mesh.visible = count > 0;
-      c.geo.instanceCount = count;
-      c.mat.uniforms.uChunkOrigin.value.set(gx * chunk, gz * chunk);
-      c.mat.uniforms.uChunkNear.value = dNear;
-      c.mat.uniforms.uCam.value.set(camX, camY, camZ);
-      c.mat.uniforms.uTime.value = t;
+      if (c.mesh.visible) drawn++;
+      c.mesh.userData.count = count;
+      // per chunk, read back by its own onBeforeRender at draw time
+      c.mesh.userData.origin.set(gx * chunk, gz * chunk);
+      c.mesh.userData.near = dNear;
       live += count;
     }
     // what the CPU instanced this frame, before the shader's own thinning —
-    // the number §5's budget is actually about
+    // the number §5's budget is actually about — and how many draw calls it
+    // took, which is the other half of that budget
+    // per ring, and therefore written once rather than once per chunk
+    this.material.uniforms.uCam.value.set(camX, camY, camZ);
+    this.material.uniforms.uTime.value = t;
     this.blades = live;
+    this.drawn = drawn;
   }
 
   dispose() {
-    for (const c of this.chunks) { c.geo.dispose(); c.mat.dispose(); }
+    this.geometry.dispose();
+    this.material.dispose();
   }
 }
 

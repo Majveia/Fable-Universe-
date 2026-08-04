@@ -101,6 +101,17 @@ const jsonPath = resolve(REPO, String(arg('json', 'docs/captures/shaders.json'))
 const stationMode = arg('stations', false) !== false;
 const stationSeed = Number(arg('seed', 20250601));
 const stationFrames = Number(arg('frames', 90));
+/**
+ * Per-station navigation timeout, seconds.
+ *
+ * Playwright's default is 30 s, which is tuned for a page and not for a scale
+ * that has just built four rings of grass on a software rasteriser. The
+ * black-hole station timed out at exactly 30 s while the surface scale behind
+ * it was still tearing down — a real cost, but not a shader defect, and a gate
+ * that reports "not every scale was reached" because of it is telling the truth
+ * about the wrong thing.
+ */
+const stationNavMs = Number(arg('nav', 120)) * 1000;
 
 /**
  * The itinerary, resolved in-page from the seed with the same pure generators
@@ -179,7 +190,7 @@ for (const flags of passes) {
     for (const [name, q] of stations(route)) {
       const url = `${site.origin}/index.html?${q}${flags ? '&' + flags : ''}`;
       try {
-        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: stationNavMs });
         await page.evaluate(SETTLE, stationFrames);
         // Harvest before the next navigation. `addInitScript` re-runs on every
         // goto, so `window.__AEON_SHADERS` is a *fresh* array per station —
@@ -189,6 +200,16 @@ for (const flags of passes) {
         collected.push(...await page.evaluate(() => (window.__AEON_SHADERS || []).map(s => ({
           kind: s.kind, ok: s.ok, info: s.info, source: s.source,
         }))));
+        // the driver's name, taken from the first station that yields one —
+        // it cannot change between stations, and asking early avoids racing a
+        // navigation at the end of the run
+        if (renderer === 'none') {
+          renderer = await page.evaluate(() => {
+            const gl = document.createElement('canvas').getContext('webgl2');
+            const d = gl && gl.getExtension('WEBGL_debug_renderer_info');
+            return gl ? String(gl.getParameter(d ? d.UNMASKED_RENDERER_WEBGL : gl.RENDERER)) : 'none';
+          });
+        }
         // a scale that reports a different kind than the link asked for is a
         // redirect, not a visit — record what actually loaded
         visited.push(await page.evaluate(() => window.AEON?.active?.()?.kind ?? null) || name);
@@ -219,13 +240,27 @@ for (const flags of passes) {
       kind: s.kind, ok: s.ok, info: s.info, source: s.source,
     })));
 
-  renderer = await page.evaluate(() => {
-    const gl = document.createElement('canvas').getContext('webgl2');
-    const d = gl && gl.getExtension('WEBGL_debug_renderer_info');
-    return gl ? String(gl.getParameter(d ? d.UNMASKED_RENDERER_WEBGL : gl.RENDERER)) : 'none';
-  });
+  // The driver's name, best-effort and late-bound.
+  //
+  // This used to run unguarded after the station loop, and it crashed the whole
+  // gate: §2.4 makes every place a URL, so the app rewrites its address as
+  // scales change, and an evaluate racing a navigation loses its execution
+  // context. A gate that dies reporting nothing is worse than one that reports
+  // "renderer unknown" — the shaders were already collected by this point, and
+  // throwing them away over a cosmetic string is the wrong trade.
+  if (renderer === 'none') {
+    try {
+      renderer = await page.evaluate(() => {
+        const gl = document.createElement('canvas').getContext('webgl2');
+        const d = gl && gl.getExtension('WEBGL_debug_renderer_info');
+        return gl ? String(gl.getParameter(d ? d.UNMASKED_RENDERER_WEBGL : gl.RENDERER)) : 'none';
+      });
+    } catch (e) {
+      pageErrors.push(`renderer probe: ${e.message}`);
+    }
+  }
 
-  await page.close();
+  try { await page.close(); } catch { /* already gone with its context */ }
   runs.push({ label, flags, complete, shaders, pageErrors, mode: stationMode ? 'stations' : 'flight',
     scales: [...new Set(visited.filter(Boolean))].sort() });
 }
