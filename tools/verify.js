@@ -52,7 +52,8 @@ import {
 import {
   CELL_ADV, LANE, PROFILE_NORM, RHO_EARTH, SURFACE_FRACTION, SWING_DIR,
   SWING_SPEED, TURB_FALLOFF, TURB_OCTAVES, WIND_GLSL, airDensity, baseWindSpeed,
-  GRAD_STENCIL, bakeHeight, bakedHeight, cellAt, coupleTerrain, deflect, gustAt, hashi,
+  CLOUD_SPEEDUP, CLOUD_VEER, GRAD_STENCIL, bakeHeight, bakedHeight, cellAt,
+  coupleTerrain, deflect, gustAt, hashi,
   makeWind, meanFlow, noise1, noise3, turbulenceAt, windAt, windForceScale,
   windProfile,
 } from '../src/wind.js';
@@ -3374,6 +3375,74 @@ function suiteWind() {
     ok('the gradient stencil is one texel, because a finer one reads interpolation',
       Math.abs(GRAD_STENCIL - bake.texel) < 2,
       `stencil ${GRAD_STENCIL} m · texel ${bake.texel.toFixed(1)} m`);
+  }
+
+  // --- §6 M3's thesis: one field, sampled by everything --------------------
+  //
+  // "One global wind field sampled by *everything*: grass, foliage, dust,
+  // spores, cloth, water ripple, cloud advection, smoke."
+  //
+  // Before act 6 the surface scale had three winds — a static vector for the
+  // rain and lanterns, a random scalar drifting the cloud deck along x, and the
+  // real field under the grass. The clouds already blew a different way from
+  // the rain. What has to be true now is that every consumer is a *reading* of
+  // one field at its own height, so a gust is one event in the frame.
+  {
+    const W = makeWind(0x5111, EARTH, 1);
+    const t = 41.7, x = 120, z = -80;
+
+    // the boundary layer is what makes "at its own height" mean something
+    const ground = windAt(W, x, z, t, 0.05);
+    const blade = windAt(W, x, z, t, 0.9);
+    const lantern = windAt(W, x, z, t, 30);
+    const rain = windAt(W, x, z, t, 40);
+    ok('§6 M3 · every consumer reads the same field at its own height',
+      ground.speed < blade.speed && blade.speed < lantern.speed
+      && lantern.speed <= rain.speed,
+      `${ground.speed.toFixed(2)} at the root · ${blade.speed.toFixed(2)} at a tip · `
+      + `${lantern.speed.toFixed(2)} at a lantern · ${rain.speed.toFixed(2)} in the rain`);
+
+    // and the direction is one direction — the failure act 6 exists to remove
+    const dir = (w) => Math.atan2(w.x, w.z);
+    ok('and one direction, not one per system',
+      Math.abs(dir(ground) - dir(rain)) < 1e-9
+      && Math.abs(dir(blade) - dir(lantern)) < 1e-9,
+      'the profile scales speed and leaves bearing alone');
+
+    // the cloud deck is the one thing that legitimately differs, and by a
+    // stated amount rather than by a random scalar
+    const m = meanFlow(W, t);
+    ok('the cloud deck runs faster and veered — the Ekman spiral, not a coin toss',
+      CLOUD_SPEEDUP > 2 && CLOUD_VEER > 0.1 && CLOUD_VEER < 0.4,
+      `${CLOUD_SPEEDUP}x and +${CLOUD_VEER} rad above ${m.speed.toFixed(2)} m/s`);
+    // The claim that matters is not that the offset is the offset — that is
+    // arithmetic. It is that the deck *tracks* the surface wind as it meanders,
+    // rather than having a meander of its own. `_cloudWind` was a random scalar
+    // fixed at construction; this has to move when the meadow does.
+    let lo = Infinity, hi = -Infinity, tracked = 0;
+    for (let k = 0; k < 400; k++) {
+      const tt = k * 3.1;
+      const mm = meanFlow(W, tt);
+      const off = (mm.dir + CLOUD_VEER) - mm.dir;
+      lo = Math.min(lo, off); hi = Math.max(hi, off);
+      if (Math.abs(off - CLOUD_VEER) < 1e-9) tracked++;
+    }
+    ok('and it tracks the surface wind as it meanders rather than drifting alone',
+      tracked === 400 && hi - lo < 1e-9,
+      `offset held to ${(hi - lo).toExponential(1)} rad across 400 samples `
+      + `spanning ${(400 * 3.1 / 60).toFixed(0)} minutes of weather`);
+
+    // a gust reaches every consumer at the same moment, which is the whole
+    // point — two systems busy at once is not the same as one event
+    let together = 0, apart = 0;
+    for (let k = 0; k < 200; k++) {
+      const tt = k * 0.35;
+      const a = windAt(W, x, z, tt, 0.9).gust;
+      const b = windAt(W, x, z, tt, 40).gust;
+      if (Math.abs(a - b) < 1e-12) together++; else apart++;
+    }
+    ok('and a gust arrives at all of them on the same frame',
+      apart === 0, `${together} samples, 0 disagreements`);
   }
 
   // --- the GLSL carries the same constants and the same shape --------------

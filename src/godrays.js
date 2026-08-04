@@ -62,7 +62,13 @@ export function addGodRays(s) {
       motes.material.opacity = (0.05 + facing * facing * 0.4) * low * day * s.atmo;
       motes.position.set(s.camera.position.x, 0, s.camera.position.z);
       const P = geo.attributes.position.array;
-      const wx = (s.wind?.x ?? 0) * 2 * dt, wz = (s.wind?.y ?? 0) * 2 * dt;
+      // dust in a shaft of light is *in* the boundary layer and near the
+      // ground, so it gets the gusts — it is the finest-grained thing in the
+      // frame and the first place a front becomes visible
+      const w = s.sampleWind
+        ? s.sampleWind(s.camera.position.x, s.camera.position.z, 2.5)
+        : { x: (s.wind?.x ?? 0) * 4, z: (s.wind?.y ?? 0) * 4 };
+      const wx = w.x * 0.5 * dt, wz = w.z * 0.5 * dt;
       for (let i = 0; i < N; i++) {
         P[i * 3] += wx + Math.sin(t * 0.5 + i) * 0.05;
         P[i * 3 + 2] += wz;
