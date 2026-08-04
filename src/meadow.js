@@ -409,6 +409,41 @@ export const MEADOW_COLOUR_GLSL = /* glsl */`
   }
 `;
 
+/**
+ * §6 M3's last gate clause: *"the walker parts grass within 1.2 m."*
+ *
+ * The radius is the clause's own number, and it is not arbitrary — it is about
+ * a stride plus a shoulder, which is the distance at which a person walking
+ * through a meadow actually disturbs it. Anything much smaller reads as the
+ * grass being afraid of your feet; much larger and you push a bow-wave.
+ */
+export const PART_RADIUS = 1.2;
+
+export const MEADOW_PART_GLSL = /* glsl */`
+  uniform vec4 uWalker;     // xyz position, w = the gait phase's push
+  const float PART_R = ${PART_RADIUS.toFixed(2)};
+
+  // How far this blade is pushed aside, and which way.
+  //
+  // Two things make it read as being *walked through* rather than as a moving
+  // circle of flattened grass. It falls off smoothly to nothing at the radius,
+  // so there is no edge; and it is scaled by the gait phase, so a footfall
+  // pushes harder than the swing between them. The reference's single gait
+  // clock is what makes that free — the same phase drives the head bob, the
+  // footstep audio and this, so they cannot drift apart.
+  vec2 meadowPart(vec2 root, float tip) {
+    vec2 away = root - uWalker.xz;
+    float d = length(away);
+    if (d > PART_R) return vec2(0.0);
+    // vertical reach too: a blade is only parted if the walker is near its own
+    // height, so grass on a bank above you is left alone
+    float amount = (1.0 - smoothstep(0.0, PART_R, d)) * uWalker.w;
+    // tips swing furthest, roots barely move — the same shape the wind uses,
+    // because it is the same cantilever being bent
+    return normalize(away + vec2(1e-5)) * amount * tip * tip;
+  }
+`;
+
 export const MEADOW_GLSL = /* glsl */`
   uniform float uRingDn;      // this ring's quoted distance
   uniform float uChunkNear;   // the distance the CPU sized this chunk at
