@@ -780,6 +780,11 @@ src/quadtree.js     chunked-LOD cube-sphere: split/merge, LRU, streaming
 src/tilebuild.js    tile mesher — main-thread roots + Web Worker pool
 src/terrain.js      exact JS port of the GLSL height field
 src/surface.js      walkable surfaces: LOD rings, craters, moons in the sky
+src/horizon.js      far ridges as pure silhouette — the world's own skyline,
+                    measured by elevation angle and reprojected onto curtains
+src/ocean.js        Gerstner sea: a spectrum, Beer-Lambert depth, real foam
+src/material.js     four-layer triplanar ground, blended by slope and altitude
+src/aerial.js       §9.3 aerial perspective, and the fog fraction in alpha
 src/clouds.js       gas-giant cloud-deck cruise
 src/life.js         procedural creatures with gaits
 src/settlement.js   towers and beacons on inhabited worlds

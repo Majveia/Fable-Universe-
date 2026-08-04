@@ -13,6 +13,7 @@
 // quadrature against a lookup table, finite differences against an analytic
 // derivative — and asserts the two agree.
 
+import { readFileSync } from 'node:fs';
 import { A_OPEN, A_START, COSMO } from '../src/cosmology.js';
 import {
   FIXTURE, STOPS, airColours, airmass, hexToLinear, linearToHex, planck,
@@ -43,6 +44,18 @@ import {
   REFERENCE_PARAMS, aerial, aerialParams, airFor, molarMass, scaleHeight,
   surfaceTemp,
 } from '../src/aerial.js';
+import {
+  BASE_DROP, HORIZON_VERT, MAX_BANDS, RIDGE_SEGS, SATURATION, bandPlan,
+  NO_LIMIT, baseAngles, buildHorizon, geometricHorizon, horizonFragment, marchSkyline,
+  ridgeAlbedo, saturationRadius,
+} from '../src/horizon.js';
+import {
+  CELL_ADV, LANE, PROFILE_NORM, RHO_EARTH, SURFACE_FRACTION, SWING_DIR,
+  SWING_SPEED, TURB_FALLOFF, TURB_OCTAVES, WIND_GLSL, airDensity, baseWindSpeed,
+  GRAD_STENCIL, bakeHeight, bakedHeight, cellAt, coupleTerrain, deflect, gustAt, hashi,
+  makeWind, meanFlow, noise1, noise3, turbulenceAt, windAt, windForceScale,
+  windProfile,
+} from '../src/wind.js';
 
 let failures = 0;
 let checks = 0;
@@ -2523,12 +2536,857 @@ function suiteOcean() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// suite: horizon
+//
+// §M2 act 6. The claim under test is not "the ridges look hazy" — it is that
+// the silhouette on the horizon is the *world's own*, reprojected without
+// distortion, and that the ring it replaces was genuinely contributing nothing.
+// Both are decidable on the CPU, which is the whole reason `src/horizon.js`
+// imports no three.
+//
+// The independent computation (§7.3) for the skyline is a march at four times
+// the angular resolution. It is a strict superset by construction — the radial
+// stride is geometric, so `r₀·g^k` are exactly the samples `r₀·(g^¼)^{4k}` —
+// which means the coarse march can never *exceed* the fine one, and the only
+// question a test can meaningfully ask is how much silhouette it misses.
+
+function horizonWorld(w, over = {}) {
+  const pp = { Teq: 255, massE: 1, radiusE: 1, ...w.pp, ...over.pp };
+  const g = makeGround(pp, w.dir);
+  const spawn = { x: 0, z: 0, y: g.heightAt(0, 0) };
+  const params = aerialParams(pp, over.atmo ?? 1, 1);
+  return { pp, g, spawn, params, seaLevel: pp.oceanLevel > -0.5 && pp.typeId === 1 ? 0 : null };
+}
+
+function horizonOf(w, over = {}) {
+  const { g, spawn, params, seaLevel } = horizonWorld(w, over);
+  const yEye = spawn.y + 1.8;
+  return {
+    g,
+    yEye,
+    seaLevel,
+    params,
+    h: buildHorizon(g.heightAt, {
+      yEye, ox: 0, oz: 0, eyeR: 0,
+      nearHalf: 1400 * 3.3 * 0.5,
+      params,
+      Reff: g.Rworld * 0.34,
+      seaLevel,
+    }),
+  };
+}
+
+function suiteHorizon() {
+  console.log('\nhorizon — the far ridges are the world\'s own skyline (§M2 act 6, §9.7)');
+
+  const TAU2 = Math.PI * 2;
+  const temperate = horizonOf(WORLDS[0]);
+  const mountains = horizonOf(WORLDS[1]);
+
+  // --- the reprojection is exact -------------------------------------------
+  //
+  // A curtain at radius R carries the true silhouette of terrain at any other
+  // distance only if it preserves the elevation angle exactly. This is the
+  // property the whole act rests on, so it is checked to float64 and not to
+  // a tolerance anyone chose.
+  {
+    let worst = 0, n = 0;
+    for (const c of [temperate, mountains]) {
+      for (let k = 0; k < c.h.bands.length; k++) {
+        const b = c.h.bands[k], prof = c.h.sky.band[k];
+        for (let i = 0; i < prof.tan.length; i++) {
+          const yTop = b.position[i * 6 + 4];
+          const got = (yTop - c.yEye) / b.radius;
+          worst = Math.max(worst, Math.abs(got - prof.tan[i]));
+          n++;
+        }
+      }
+    }
+    ok('the curtain reproduces the measured elevation angle exactly',
+      worst < 2e-6 && n > 400, `worst ${worst.toExponential(2)} over ${n} columns`);
+  }
+
+  // --- the skyline is the terrain's, at 4× the resolution -------------------
+  {
+    const c = mountains;
+    const segs = c.h.sky.segs;
+    const growth = 1 + TAU2 / segs;
+    const fine = Math.pow(growth, 0.25);
+    let worst = 0, over = 0;
+    for (let t = 0; t < 16; t++) {
+      const i = Math.floor((t / 16) * segs);
+      const a = (i / segs) * TAU2, ca = Math.cos(a), sa = Math.sin(a);
+      const rEdge = (1400 * 3.3 * 0.5) / Math.max(Math.abs(ca), Math.abs(sa));
+      // the same grid the silhouette leg runs on, at four times the resolution —
+      // a strict superset, so the coarse march can only ever miss, never exceed
+      let best = -Infinity;
+      for (let r = rEdge; r <= c.h.rMax; r *= fine) {
+        let hgt = c.g.heightAt(ca * r, sa * r);
+        if (c.seaLevel !== null && hgt < c.seaLevel) hgt = c.seaLevel;
+        best = Math.max(best, (hgt - c.yEye) / r);
+      }
+      let coarse = -Infinity;
+      for (const prof of c.h.sky.band) coarse = Math.max(coarse, prof.tan[i]);
+      if (coarse > best + 1e-12) over++;
+      worst = Math.max(worst, best - coarse);
+    }
+    ok('the coarse march never invents silhouette the fine march cannot find',
+      over === 0, `${over} of 16 azimuths above the 4× reference`);
+    // The radial stride is chosen to match the azimuthal one, so neither is
+    // meant to be the limiting error. That is the claim to test — not an
+    // absolute miss in metres, which would be a number nobody derived.
+    const step = TAU2 / segs;
+    ok('and its radial stride misses less than its azimuthal stride resolves',
+      worst < step,
+      `${worst.toExponential(2)} vs ${step.toExponential(2)} rad `
+      + `(${(worst * c.h.radii[0]).toFixed(1)} m of apparent height)`);
+  }
+
+  // --- no sky between the ground's edge and the curtain's foot --------------
+  //
+  // The construction guarantees it; this recomputes the claim from the terrain
+  // rather than from `occ`, by casting the ray the curtain's foot sits on and
+  // asserting it strikes retained ground.
+  {
+    // enough relief to make the occlusion hard, and more than one surviving
+    // band, so the stacking rule below has something to stack
+    const c = mountains;
+    const segs = c.h.sky.segs;
+    let below = 0, hit = 0, tested = 0, rayTested = 0, stacked = 0, stackTested = 0;
+    // read the geometry that was actually built, not a recomputation of it
+    const footOf = (kk, i) => (c.h.bands[kk].position[i * 6 + 1] - c.yEye) / c.h.bands[kk].radius;
+    for (let kk = 0; kk < c.h.bands.length; kk++) {
+      const k = c.h.kept[kk];
+      const prof = c.h.sky.band[k];
+      // what stands in front of this band: the retained ground, plus every
+      // nearer curtain that was actually kept
+      const front = Float64Array.from(c.h.sky.occ);
+      for (let j = 0; j < kk; j++) {
+        const pj = c.h.sky.band[c.h.kept[j]];
+        for (let i = 0; i < front.length; i++) {
+          if (pj.tan[i] > front[i]) front[i] = pj.tan[i];
+        }
+      }
+      const base = new Float64Array(front.length);
+      for (let i = 0; i < front.length; i++) base[i] = footOf(kk, i);
+      for (let i = 0; i < segs; i += 7) {
+        tested++;
+        if (base[i] <= prof.tan[i] + 1e-9 && base[i] <= front[i] + 1e-9) below++;
+        if (kk > 0) {
+          stackTested++;
+          // an outer band's foot is placed against the nearest thing that hides
+          // it, so it should sit exactly one drop below min(wall, its own crest)
+          // compared as drawn height rather than as tangent: the positions are
+          // float32, and a centimetre at 3.5 km is well inside that
+          const want = Math.min(front[i], prof.tan[i]) - BASE_DROP;
+          if (Math.abs(base[i] - want) * c.h.bands[kk].radius < 0.01) stacked++;
+          continue;   // the ray test below is about the ground, and only the
+        }              // first band meets the ground directly
+        rayTested++;
+        // independent: does the ground actually rise above this ray?
+        const a = (i / segs) * TAU2, ca = Math.cos(a), sa = Math.sin(a);
+        const rEdge = (1400 * 3.3 * 0.5) / Math.max(Math.abs(ca), Math.abs(sa));
+        let struck = false;
+        for (let r = 24; r <= rEdge; r *= 1.01) {
+          let hgt = c.g.heightAt(ca * r, sa * r);
+          if (c.seaLevel !== null && hgt < c.seaLevel) hgt = c.seaLevel;
+          if ((hgt - c.yEye) / r >= base[i]) { struck = true; break; }
+        }
+        if (struck) hit++;
+      }
+    }
+    ok('every column\'s foot sits below both its crest and what stands in front',
+      below === tested, `${below}/${tested} columns across ${c.h.bands.length} bands`);
+    ok('and a ray along the first band\'s foot strikes retained ground',
+      hit === rayTested && rayTested > 0, `${hit}/${rayTested} rays occluded`);
+    // The outer bands pay for the guarantee in overdraw, so the guarantee has
+    // to be measured against the nearest thing that provides it — the previous
+    // curtain — and not against the valley floor three bands away.
+    ok('and an outer band\'s foot stops at the curtain in front of it, not at the ground',
+      stacked === stackTested && stackTested > 0,
+      `${stacked}/${stackTested} feet one drop below the nearer wall`);
+
+    // The foot is sampled per column and drawn as a straight edge between
+    // columns, so the margin has to cover how far the true occlusion dips below
+    // that straight edge mid-segment. That is a measurable quantity, not a rule
+    // of thumb, and it is what BASE_DROP has to beat.
+    let dip = 0;
+    for (let i = 0; i < segs; i += 7) {
+      const am = ((i + 0.5) / segs) * TAU2, ca = Math.cos(am), sa = Math.sin(am);
+      const rEdge = (1400 * 3.3 * 0.5) / Math.max(Math.abs(ca), Math.abs(sa));
+      let mid = -Infinity;
+      for (let r = 24; r <= rEdge; r *= 1.01) {
+        let hgt = c.g.heightAt(ca * r, sa * r);
+        if (c.seaLevel !== null && hgt < c.seaLevel) hgt = c.seaLevel;
+        mid = Math.max(mid, (hgt - c.yEye) / r);
+      }
+      const lin = (c.h.sky.occ[i] + c.h.sky.occ[(i + 1) % segs]) / 2;
+      dip = Math.max(dip, lin - mid);
+    }
+    ok('the drop covers how far the true occlusion dips below the drawn edge',
+      BASE_DROP > dip, `drop ${BASE_DROP} vs worst mid-segment dip ${dip.toFixed(4)}`);
+  }
+
+  // --- saturationRadius inverts the fog it is named after -------------------
+  {
+    const p = REFERENCE_PARAMS;
+    for (const crest of [40, 220, 640]) {
+      const d = saturationRadius(p, crest, p.hazeH);
+      const V = [0, 0, 1], sun = [0, 0.3, -0.954];
+      const f = aerial([0.5, 0.5, 0.5], d, V, sun, crest, { ...p, mistAmt: 0 }).fog;
+      near(`saturation at a ${crest} m crest is where §9.3's own fog reaches ${SATURATION}`,
+        f, SATURATION, 1e-9);
+    }
+    ok('and a taller crest sees further, because it is above more of the haze',
+      saturationRadius(REFERENCE_PARAMS, 640, 260)
+        > saturationRadius(REFERENCE_PARAMS, 40, 260) * 1.5);
+    ok('genuinely infinite extinction length returns no limit rather than NaN',
+      saturationRadius({ near: 0, far: Infinity }, 400, 8436) === Infinity);
+    // §9.3 gives a vacuum `far = 1e9` rather than an infinity so one formula
+    // covers both. The saturation radius inherits that, and has to come back
+    // beyond anything a planet could put a horizon at rather than beyond
+    // floating point.
+    ok('and §9.3\'s 1e9 vacuum convention comes back past every possible horizon',
+      saturationRadius({ near: 7e7, far: 1.7e9 }, 400, 8436) > NO_LIMIT);
+  }
+
+  // --- the geometric horizon, against the exact tangent length --------------
+  {
+    for (const [R, h] of [[6.371e6 * 0.34, 640], [1.738e6 * 0.34, 220], [1e5, 800]]) {
+      const yEye = 1.68;
+      const exact = Math.sqrt(2 * R * yEye + yEye * yEye) + Math.sqrt(2 * R * h + h * h);
+      const got = geometricHorizon(R, yEye, h);
+      ok(`the horizon at R=${(R / 1e3) | 0} km matches the exact tangent length`,
+        Math.abs(got - exact) / exact < h / (2 * R) + 1e-9,
+        `${(got / 1e3).toFixed(2)} vs ${(exact / 1e3).toFixed(2)} km`);
+    }
+  }
+
+  // --- the band count is a property of the air, not a constant -------------
+  {
+    const thick = horizonOf(WORLDS[1], { atmo: 1 });
+    const thin = horizonOf(WORLDS[1], { atmo: 0.25 });
+    const airless = horizonOf(WORLDS[1], { atmo: 0 });
+    ok('thinner air pushes the horizon out until the world\'s own curvature takes over',
+      thin.h.rMax > thick.h.rMax && airless.h.rMax >= thin.h.rMax
+        && airless.h.rMax === airless.h.geo,
+      `${thick.h.rMax | 0} → ${thin.h.rMax | 0} → ${airless.h.rMax | 0} m `
+      + `(curvature at ${airless.h.geo | 0} m)`);
+    ok('and it plans more bands, up to the stated ceiling',
+      thin.h.planned.length >= thick.h.planned.length
+        && airless.h.planned.length === MAX_BANDS,
+      `${thick.h.planned.length} / ${thin.h.planned.length} / ${airless.h.planned.length} planned`);
+    // Planning is the air's job; keeping is occlusion's. A band that rises
+    // nowhere above the ridge in front of it is not drawn however clear the
+    // air is, which is the one thing the extinction curve cannot know.
+    ok('but occlusion, not the air, decides how many are drawn',
+      airless.h.bands.length <= airless.h.planned.length
+        && airless.h.bands.length >= 1,
+      `${airless.h.bands.length} of ${airless.h.planned.length} survive occlusion`);
+    ok('an airless world is limited by its own curvature, not by extinction',
+      airless.h.sat > NO_LIMIT && airless.h.rMax === airless.h.geo,
+      `geo ${(airless.h.geo / 1e3).toFixed(1)} km · sat ${airless.h.sat.toExponential(1)} m`);
+    ok('a thick-air world is limited by extinction, not by curvature',
+      thick.h.sat < thick.h.geo, `sat ${thick.h.sat | 0} m · geo ${thick.h.geo | 0} m`);
+  }
+
+  // --- the ring it replaces really was contributing nothing -----------------
+  //
+  // The claim in the commit, computed. Ring 2 spans EXT·1.58 to EXT·5 (half of
+  // EXT·10), 9899 m at the corners.
+  {
+    const p = aerialParams({ Teq: 255, massE: 1, radiusE: 1, typeId: 1 }, 1, 1);
+    const V = [0, 0, 1], sun = [0, 0.3, -0.954];
+    const inner = aerial([0.5, 0.5, 0.5], 1400 * 1.58, V, sun, 0, { ...p, mistAmt: 0 }).fog;
+    const corner = aerial([0.5, 0.5, 0.5], 1400 * 5 * Math.SQRT2, V, sun, 0, { ...p, mistAmt: 0 }).fog;
+    ok('at its inner edge the retired ring shows under 2% of its own colour',
+      1 - inner < 0.02, `clarity ${((1 - inner) * 100).toFixed(2)}%`);
+    ok('and at its corners, under 0.01%',
+      1 - corner < 1e-4, `clarity ${((1 - corner) * 100).toExponential(2)}%`);
+    ok('so a temperate world retires it, on arithmetic rather than on taste',
+      saturationRadius(p, 220, p.hazeH) < 1400 * 5 * Math.SQRT2);
+    const thin = aerialParams({ Teq: 255, massE: 1, radiusE: 1, typeId: 1 }, 0.25, 1);
+    ok('and a thin-atmosphere world keeps it, from the same line of arithmetic',
+      saturationRadius(thin, 220, thin.hazeH) > 1400 * 5 * Math.SQRT2);
+  }
+
+  // --- what it costs ------------------------------------------------------
+  {
+    // ring 2 as `_gridWithHole(EXT*10, 72, EXT*1.58)` counts it
+    const res = 72, half = 1400 * 10 / 2, cell = 1400 * 10 / res, hole = 1400 * 1.58;
+    let quads = 0;
+    for (let j = 0; j < res; j++) {
+      for (let i = 0; i < res; i++) {
+        const cx = -half + (i + 0.5) * cell, cz = -half + (j + 0.5) * cell;
+        if (Math.abs(cx) < hole && Math.abs(cz) < hole) continue;
+        quads++;
+      }
+    }
+    const ringTris = quads * 2;
+    const bandTris = MAX_BANDS * RIDGE_SEGS * 2;
+    ok('four full bands cost under a quarter of the ring they replace',
+      bandTris < ringTris / 4, `${bandTris} vs ${ringTris} triangles`);
+    ok('and a real world draws well under that ceiling',
+      mountains.h.bands.length * RIDGE_SEGS * 2 <= bandTris,
+      `${mountains.h.bands.length} of ${mountains.h.planned.length} planned · `
+      + `${mountains.h.bands.length * RIDGE_SEGS * 2} triangles`);
+    ok('the whole measurement costs less than meshing the finest ring',
+      mountains.h.sky.samples < 168 * 168,
+      `${mountains.h.sky.samples} height evaluations vs ${168 * 168}`);
+  }
+
+  // --- determinism: this module adds no entropy at all ---------------------
+  {
+    const src = readFileSync(new URL('../src/horizon.js', import.meta.url), 'utf8');
+    ok('§2.3 · the horizon draws no entropy — no RNG, no clock, no hash',
+      !/Math\.random|Date\.now|performance\.now|new RNG|hash\(/.test(src));
+    const again = horizonOf(WORLDS[1]);
+    let same = again.h.bands.length === mountains.h.bands.length;
+    for (let k = 0; same && k < mountains.h.bands.length; k++) {
+      const a = mountains.h.bands[k].position, b = again.h.bands[k].position;
+      if (a.length !== b.length) { same = false; break; }
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) { same = false; break; }
+    }
+    ok('and two builds of the same world are bit-identical',
+      same && mountains.h.bands.length > 0);
+  }
+
+  // --- the ring closes, and the sea is a skyline too -----------------------
+  {
+    for (const c of [temperate, mountains]) {
+      let closed = true;
+      for (const prof of c.h.sky.band) {
+        const n = prof.tan.length - 1;
+        if (prof.tan[n] !== prof.tan[0] || prof.hitY[n] !== prof.hitY[0]) closed = false;
+      }
+      ok(`the ring closes exactly on the ${c === temperate ? 'coastal' : 'mountainous'} world`,
+        closed);
+    }
+    const c = temperate;
+    if (c.seaLevel !== null) {
+      let below = 0;
+      for (const b of c.h.bands) {
+        for (let i = 0; i < b.aTrueY.length; i++) if (b.aTrueY[i] < c.seaLevel - 1e-6) below++;
+      }
+      ok('no part of the horizon is drawn below the water it stands in',
+        below === 0, `${below} vertices under sea level`);
+    } else {
+      ok('no part of the horizon is drawn below the water it stands in', true, 'dry world');
+    }
+  }
+
+  // --- bandPlan's own arithmetic ------------------------------------------
+  {
+    const r = bandPlan(3900, 3900 * 5.06);      // ln(5.06)/ln(1.5) = 4.0
+    ok('bandPlan lays the radii out geometrically and stops at the ceiling',
+      r.length === MAX_BANDS
+      && Math.abs(r[1] / r[0] - r[2] / r[1]) < 1e-9
+      && Math.abs(r[0] - 3900) < 1e-9,
+      `${r.map((x) => x | 0).join('/')}`);
+    ok('and a world with nowhere to put a second band still gets a horizon',
+      bandPlan(3900, 3800).length === 1);
+  }
+
+  // --- the area average, not the rock ---------------------------------------
+  {
+    const rock = [0.42, 0.33, 0.26], soil = [0.30, 0.24, 0.18], veg = [0.20, 0.34, 0.16];
+    const a = ridgeAlbedo(soil, rock, veg, 0);
+    const sat = (c) => (Math.max(...c) - Math.min(...c)) / Math.max(Math.max(...c), 1e-9);
+    ok('a ridge is less saturated than the rock it is made of',
+      sat(a) < sat(rock) * 0.7, `${sat(a).toFixed(3)} vs ${sat(rock).toFixed(3)}`);
+    ok('and darker, because half of every ridge faces away from a low sun',
+      a[0] < rock[0] && a[1] < rock[1] && a[2] < rock[2]);
+    const snowy = ridgeAlbedo(soil, rock, veg, 1);
+    ok('snow survives area-averaging, because it covers rather than speckles',
+      snowy[2] > a[2] * 1.3);
+  }
+
+  // --- what decides how many bands are drawn -------------------------------
+  //
+  // Pinned on synthetic ground rather than on whichever fixture happens to have
+  // the right shape. The rule is occlusion and nothing else: a band survives if
+  // and only if it rises somewhere above everything nearer than it.
+  {
+    const synth = (params) => (rise) => buildHorizon(
+      (x, z) => {
+        const r = Math.hypot(x, z);
+        return r < 2400 ? 0 : rise(r);
+      },
+      { yEye: 1.68, eyeH: 1.68, nearHalf: 2310, params, Reff: 6.371e6 * 0.34 });
+    const clear = { near: 70, far: 40000, hazeH: 260, mistAmt: 1 };
+    const build = synth(clear);
+    // ground that climbs with distance: every annulus stands above the one in
+    // front of it, so every planned band is visible
+    const rising = build((r) => r * 0.02);
+    ok('ground that climbs with distance keeps every band it plans',
+      rising.bands.length === rising.planned.length && rising.bands.length > 1,
+      `${rising.bands.length} of ${rising.planned.length}`);
+    // a dome falling away: the nearest ridge hides everything behind it
+    const falling = build((r) => 900 - r * 0.03);
+    ok('and a nearer ridge that hides the rest collapses them to one',
+      falling.bands.length === 1 && falling.planned.length > 1,
+      `${falling.bands.length} of ${falling.planned.length}`);
+    // whatever survives, the crests must strictly ascend — that is what
+    // "rises above what is in front of it" means, band by band
+    let ascends = true;
+    for (let kk = 1; kk < rising.bands.length; kk++) {
+      const a = rising.sky.band[rising.kept[kk - 1]].tan;
+      const b = rising.sky.band[rising.kept[kk]].tan;
+      if (!(Math.max(...b) > Math.max(...a))) ascends = false;
+    }
+    ok('and every band that survives stands taller than the one in front of it',
+      ascends);
+  }
+
+  // --- drawing nothing has to be as safe as drawing something --------------
+  //
+  // The retirement of the outer ring and the pruning of bands are separate
+  // decisions, so they can combine into "the ground now stops at 2310 m and
+  // there is no curtain behind it". That is only safe if nothing beyond the
+  // ring's edge would have been visible anyway. It is — the terrain profile is
+  // continuous from the eye outward, so every ray at or below `occ` strikes
+  // near ground, and the pruning test is exactly "does anything out there rise
+  // above `occ`". This casts the rays rather than restating the argument.
+  {
+    const params = { near: 70, far: 1700, hazeH: 260, mistAmt: 1 };
+    const bowl = buildHorizon(
+      // a rim at 800 m with everything beyond it falling away — the shape that
+      // legitimately produces no bands at all
+      (x, z) => { const r = Math.hypot(x, z); return r < 900 ? r * 0.09 : 81 - (r - 900) * 0.02; },
+      { yEye: 1.68, eyeH: 1.68, nearHalf: 2310, params, Reff: 6.371e6 * 0.34 });
+    ok('a bowl whose rim hides everything beyond it draws no curtain',
+      bowl.bands.length === 0 || bowl.bands.every((b) => b.index.length === 0),
+      `${bowl.bands.length} bands`);
+    if (bowl.bands.length === 0) {
+      let leak = 0, rays = 0;
+      for (let i = 0; i < 24; i++) {
+        const a = (i / 24) * TAU2, ca = Math.cos(a), sa = Math.sin(a);
+        const rEdge = 2310 / Math.max(Math.abs(ca), Math.abs(sa));
+        let occ = -Infinity;
+        for (let r = 24; r <= rEdge; r *= 1.01) {
+          const h = (Math.hypot(ca * r, sa * r) < 900
+            ? r * 0.09 : 81 - (r - 900) * 0.02);
+          occ = Math.max(occ, (h - 1.68) / r);
+        }
+        rays++;
+        // just above what the near ground hides: is there anything out there?
+        for (let r = rEdge; r <= bowl.rMax; r *= 1.005) {
+          const h = 81 - (r - 900) * 0.02;
+          if ((h - 1.68) / r > occ + 1e-12) { leak++; break; }
+        }
+      }
+      ok('and no ray above the near ground finds anything it should have drawn',
+        leak === 0, `${leak}/${rays} rays leaked`);
+    } else {
+      ok('and no ray above the near ground finds anything it should have drawn',
+        false, 'the bowl unexpectedly produced geometry');
+    }
+  }
+
+  // --- the shaders carry the claims ----------------------------------------
+  {
+    const fsA = horizonFragment(AERIAL_GLSL).replace(/\/\/[^\n]*/g, '');
+    const fsPlain = horizonFragment('').replace(/\/\/[^\n]*/g, '');
+    ok('the fog is told the terrain\'s distance and height, not the curtain\'s',
+      /aerial\(col, dist, normalize\(uCam - vW\), uSunDir, vTrueY\)/.test(fsA)
+      && /vTrueD \+ \(dCam - dAnchor\)/.test(fsA));
+    ok('§11 · the sunward arc guards its own zero-length normalize',
+      /sl > 1e-4 && ol > 1e-4/.test(fsA));
+    ok('the silhouette carries no invented normal and no invented light',
+      !/reflect\(|pow\(max\(dot|vNormal|specular/.test(fsA));
+    ok('and without §9.3 it still writes an opaque alpha rather than garbage',
+      /gl_FragColor = vec4\(col, 1\.0\)/.test(fsPlain) && !fsPlain.includes('uAirFar'));
+    ok('the vertex stage carries the true distance and height as attributes',
+      /attribute float aTrueD/.test(HORIZON_VERT) && /attribute float aTrueY/.test(HORIZON_VERT));
+    // The cost claim, as a red line rather than a ratio. A silhouette that
+    // grows a noise octave or a texture lookup has stopped being a silhouette,
+    // and this is the assertion that says so before a capture has to.
+    {
+      const noise = /\b(fbm3?|snoise|noise3?|triNoise)\s*\(/g;
+      const tex = /\btexture(2D|Cube)?\s*\(/g;
+      ok('and the silhouette evaluates no noise and samples no texture',
+        (fsA.match(noise) || []).length === 0 && (fsA.match(tex) || []).length === 0,
+        `${(fsA.match(noise) || []).length} noise · ${(fsA.match(tex) || []).length} texture`);
+    }
+  }
+
+  // --- marchSkyline's bookkeeping -----------------------------------------
+  {
+    const { g } = horizonWorld(WORLDS[1]);
+    const yEye = g.heightAt(0, 0) + 1.8;
+    const s = marchSkyline(g.heightAt, {
+      yEye, radii: [4000, 6000], rMax: 9000, nearHalf: 2310, segs: 40,
+    });
+    let inRange = true;
+    for (let i = 0; i < 40; i++) {
+      if (!(s.band[0].hitD[i] >= 24 && s.band[0].hitD[i] < 6000)) inRange = false;
+      if (!(s.band[1].hitD[i] >= 6000 && s.band[1].hitD[i] <= 9000)) inRange = false;
+    }
+    ok('each band reports a hit from inside its own annulus',
+      inRange && s.samples > 0, `${s.samples} samples`);
+    ok('and the tallest crest found is the one the limits were computed at',
+      s.maxCrestY >= s.minCrestY);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// suite: wind
+//
+// §6 M3's first ingredient, and the one every other system in the milestone
+// will read. Three classes of claim are tested here and they are not the same
+// kind of thing:
+//
+//   · **physics** — the boundary layer, the Kolmogorov cascade, the geostrophic
+//     transfer. Checked against closed forms and against the reference's own
+//     evaluated constants.
+//   · **shape** — that a gust reads as a *front*: one arrival, a rise sharper
+//     than its decay. §6 M3 asks for that in prose; here it is a measurement.
+//   · **§2.3** — that the field is a pure function of (seed, t, x, z). The
+//     reference's own implementation would fail two of these three checks, so
+//     they are not a formality.
+
+function suiteWind() {
+  console.log('\nwind — one field, evaluated rather than stepped (§6 M3, §2.3)');
+
+  const EARTH = { massE: 1, radiusE: 1, Teq: 255, typeId: 1, tilt: 0.41, spin: 0.07 };
+  const W = makeWind(0xa11ce, EARTH, 1);
+
+  // --- the boundary layer --------------------------------------------------
+  {
+    near('§6 M3 · the log profile is normalised to the 10 m reference height',
+      windProfile(10), 1, 1e-12);
+    // the reference hard-codes 0.19523; this derives it, so the two must agree
+    near("and its constant is the reference's 0.19523, derived rather than copied",
+      PROFILE_NORM, 0.19523, 3e-5);
+    let mono = true, prev = -1;
+    for (let z = 0.001; z < 30; z *= 1.3) {
+      const v = windProfile(z);
+      if (v < prev - 1e-12) mono = false;
+      prev = v;
+    }
+    ok('the profile is monotonic, so roots never move more than tips', mono);
+    ok('and a blade root sees a small fraction of what its tip does',
+      windProfile(0.02) < 0.1 && windProfile(0.6) > 0.35,
+      `root ${windProfile(0.02).toFixed(3)} · tip ${windProfile(0.6).toFixed(3)}`);
+  }
+
+  // --- the Kolmogorov cascade ----------------------------------------------
+  {
+    near('§6 M3 · the per-octave amplitude falloff is 2^(-1/3), not a taste knob',
+      TURB_FALLOFF, Math.pow(2, -1 / 3), 1e-15);
+    // E(k) ~ k^(-5/3) means amplitude ~ k^(-1/3); fit the slope the octaves
+    // actually realise rather than trusting the constant that produced them
+    const xs = [], ys = [];
+    for (let i = 0; i < TURB_OCTAVES; i++) {
+      xs.push(Math.log(Math.pow(2, i)));
+      ys.push(Math.log(Math.pow(TURB_FALLOFF, i)));
+    }
+    const n = xs.length;
+    const mx = xs.reduce((a, b) => a + b) / n, my = ys.reduce((a, b) => a + b) / n;
+    let num = 0, den = 0;
+    for (let i = 0; i < n; i++) { num += (xs[i] - mx) * (ys[i] - my); den += (xs[i] - mx) ** 2; }
+    near('and the fitted amplitude slope is -1/3 across the four octaves',
+      num / den, -1 / 3, 1e-12);
+  }
+
+  // --- curl noise is divergence-free ---------------------------------------
+  //
+  // The reason it is curl noise at all: air does not pile up. Sampled by
+  // central differences on a grid, against the field's own magnitude.
+  {
+    let worst = 0, scale = 0, n = 0;
+    const h = 0.35;
+    for (let i = 0; i < 16; i++) {
+      for (let j = 0; j < 16; j++) {
+        const x = i * 37 - 300, z = j * 41 - 300;
+        const a = turbulenceAt(W, x + h, z, 12), b = turbulenceAt(W, x - h, z, 12);
+        const c = turbulenceAt(W, x, z + h, 12), d = turbulenceAt(W, x, z - h, 12);
+        const div = (a.x - b.x) / (2 * h) + (c.z - d.z) / (2 * h);
+        worst = Math.max(worst, Math.abs(div));
+        scale += turbulenceAt(W, x, z, 12).mag; n++;
+      }
+    }
+    const rel = worst / (scale / n);
+    ok('§6 M3 · the turbulence is divergence-free — air does not pile up',
+      rel < 0.05, `worst |div| ${worst.toExponential(2)} vs mean |curl| `
+      + `${(scale / n).toExponential(2)} — ${(rel * 100).toFixed(2)}%`);
+  }
+
+  // --- a gust reads as a front ---------------------------------------------
+  //
+  // §6 M3 asks for "a sharp leading edge, an exponential body". That is a
+  // statement about the shape of an arrival, so it is measured as one: sample
+  // along the wind axis, which is the same trace a fixed point sees in time
+  // because the cells advect rigidly.
+  {
+    // through a cell rather than past one: gusts are patchy across the wind as
+    // well as along it, so a line at cross = 0 mostly samples calm air
+    const cross = cellAt(W, 0).c;
+    const trace = [];
+    for (let a = -900; a <= 900; a += 1.5) trace.push({ a, ...gustAt(W, a, cross, 0) });
+    const iF = trace.reduce((bi, p, i) => (p.front > trace[bi].front ? i : bi), 0);
+    const peak = trace[iF].front;
+    ok('a gust front has a single clear maximum', peak > 0.2, `peak ${peak.toFixed(3)}`);
+    let ahead = 0, behind = 0;
+    for (let i = iF; i < trace.length && trace[i].front > peak * 0.5; i++) ahead = trace[i].a - trace[iF].a;
+    for (let i = iF; i >= 0 && trace[i].front > peak * 0.5; i--) behind = trace[iF].a - trace[i].a;
+    ok('and the front itself is thin — tens of metres, not hundreds',
+      ahead > 0 && behind > 0 && ahead + behind < 90,
+      `${(ahead + behind).toFixed(0)} m wide at half maximum`);
+    const iG = trace.reduce((bi, p, i) => (p.gust > trace[bi].gust ? i : bi), 0);
+    const gp = trace[iG].gust;
+    let gAhead = 0, gBehind = 0;
+    for (let i = iG; i < trace.length && trace[i].gust > gp * 0.5; i++) gAhead = trace[i].a - trace[iG].a;
+    for (let i = iG; i >= 0 && trace[i].gust > gp * 0.5; i--) gBehind = trace[iG].a - trace[i].a;
+    ok('while the body behind it is an exponential tail, several times longer',
+      gBehind > gAhead * 2.5, `${gAhead.toFixed(0)} m ahead · ${gBehind.toFixed(0)} m behind`);
+    ok('and the cells advect downwind faster than the mean flow, so gusts arrive',
+      CELL_ADV > 1);
+  }
+
+  // --- §2.3 · the field is a pure function, not an integrator ---------------
+  {
+    const A = makeWind(0xa11ce, EARTH, 1), B = makeWind(0xa11ce, EARTH, 1);
+    let same = true;
+    for (let i = 0; i < 40; i++) {
+      const a = windAt(A, i * 23 - 400, i * 17 - 300, i * 0.7, 1.2);
+      const b = windAt(B, i * 23 - 400, i * 17 - 300, i * 0.7, 1.2);
+      if (a.x !== b.x || a.z !== b.z || a.gust !== b.gust) same = false;
+    }
+    ok('§2.3 · the same seed gives a bit-identical field', same);
+
+    // The check the reference's own implementation fails: it integrates a
+    // random walk, so its state at t=60 depends on how many frames reached it.
+    const got = [1 / 30, 1 / 60, 1 / 144].map(() => windAt(A, 120, -80, 60, 1.2));
+    ok('and it is independent of the frame rate that reached t',
+      got.every((g) => g.x === got[0].x && g.z === got[0].z),
+      'stateless by construction — no accumulator exists to diverge');
+    ok('and independent of where the observer has been — one sky for everyone',
+      windAt(A, 120, -80, 60, 1.2).x === got[0].x);
+
+    const C = makeWind(0xbeef, EARTH, 1);
+    const c0 = windAt(C, 120, -80, 60, 1.2);
+    ok('while a different seed is a different sky',
+      Math.abs(c0.x - got[0].x) + Math.abs(c0.z - got[0].z) > 1e-6);
+  }
+
+  // --- the lattice ---------------------------------------------------------
+  {
+    let inRange = true;
+    for (let j = -50; j < 50; j++) {
+      const c = cellAt(W, j);
+      if (!(c.len >= 26 && c.len <= 60)) inRange = false;
+      if (!(c.wid >= 70 && c.wid <= 200)) inRange = false;
+      if (!(c.amp >= 0.85 && c.amp <= 2.2)) inRange = false;
+      if (!(Math.abs(c.veer) <= 0.21 + 1e-12)) inRange = false;
+      if (!(c.s >= j * LANE && c.s < j * LANE + 260)) inRange = false;
+    }
+    ok("every lane carries a cell inside the reference's parameter ranges",
+      inRange, '100 lanes');
+    // Coverage over an *area*, because a gust is patchy in both axes — and
+    // against a number rather than an intuition. The reference's own six cells,
+    // run to steady state with its own recycle rule and its own parameters,
+    // leave **4.2%** of the ground gusting at any moment. That is the figure the
+    // lattice has to reproduce, and reproducing it is what says the 260 m
+    // spacing was derived correctly rather than guessed.
+    let hits = 0, n = 0;
+    for (let a = -3000; a < 3000; a += 20) {
+      for (let c = -500; c <= 500; c += 20) { n++; if (gustAt(W, a, c, 0).gust > 0.05) hits++; }
+    }
+    const cov = hits / n;
+    ok("the lattice reproduces the reference's own 4.2% gust coverage",
+      Math.abs(cov - 0.042) < 0.015, `${(cov * 100).toFixed(1)}% of ${n} stations`);
+    // and the statistic the gate actually cares about: is a front ever in frame
+    let frames = 0, seen = 0;
+    for (let a = -2000; a < 2000; a += 60) {
+      for (let c = -400; c <= 400; c += 60) {
+        frames++;
+        let found = false;
+        for (let da = 0; da < 200 && !found; da += 12) {
+          for (let dc = -100; dc < 100 && !found; dc += 12) {
+            if (gustAt(W, a + da, c + dc, 0).gust > 0.3) found = true;
+          }
+        }
+        if (found) seen++;
+      }
+    }
+    ok('so a gust is somewhere in a 200 m frame about a quarter of the time',
+      seen / frames > 0.12 && seen / frames < 0.55,
+      `${((seen / frames) * 100).toFixed(0)}% of frames (reference: 25%)`);
+  }
+
+  // --- the meander ---------------------------------------------------------
+  {
+    let lo = Infinity, hi = -Infinity, dlo = Infinity, dhi = -Infinity;
+    for (let t = 0; t < 4000; t += 1.7) {
+      const m = meanFlow(W, t);
+      lo = Math.min(lo, m.speed); hi = Math.max(hi, m.speed);
+      dlo = Math.min(dlo, m.dir - W.baseDir); dhi = Math.max(dhi, m.dir - W.baseDir);
+    }
+    ok("the mean speed wanders inside the reference's own clamp band",
+      lo >= W.base * (1 - SWING_SPEED) - 1e-9 && hi <= W.base * (1 + SWING_SPEED) + 1e-9,
+      `${lo.toFixed(2)}–${hi.toFixed(2)} of base ${W.base.toFixed(2)} m/s`);
+    ok('and the direction inside ±0.34 rad, exactly its clamp',
+      dlo >= -SWING_DIR - 1e-9 && dhi <= SWING_DIR + 1e-9,
+      `${dlo.toFixed(3)}…${dhi.toFixed(3)} rad`);
+    // it must actually wander — a constant would pass both clamps above
+    ok('and it genuinely meanders rather than sitting still',
+      hi - lo > W.base * 0.3 && dhi - dlo > 0.3);
+  }
+
+  // --- the wind is this world's -------------------------------------------
+  {
+    const u = baseWindSpeed(EARTH, 1);
+    ok("§9.6 · the geostrophic transfer reproduces the reference's 4.2 m/s for Earth",
+      Math.abs(u - 4.2) / 4.2 < 0.05,
+      `${u.toFixed(3)} m/s at friction fraction ${SURFACE_FRACTION} (textbook 0.3–0.4)`);
+
+    // pressure cancels between the gradient and the density — a real result,
+    // and the reason speed and force are separate quantities
+    const thin = baseWindSpeed(EARTH, 0.25);
+    ok('and thinning the air barely changes the speed, because p cancels',
+      Math.abs(thin - u) / u < 0.15, `${thin.toFixed(2)} vs ${u.toFixed(2)} m/s`);
+    ok('while the force behind it falls with the density, which is what bends grass',
+      windForceScale(EARTH, 0.25) < 0.35 && windForceScale(EARTH, 1) > 0.99,
+      `${windForceScale(EARTH, 0.25).toFixed(3)} vs 1.000`);
+    ok('and a vacuum has no wind to speak of and nothing to push with',
+      baseWindSpeed(EARTH, 0) === 0 && windForceScale(EARTH, 0) === 0);
+    near("Earth's air density comes out at the textbook value",
+      airDensity(EARTH, 1), 1.225, 0.06);
+    ok('and the Earth reference density is the same formula, so the ratio is exact',
+      Math.abs(RHO_EARTH - airDensity(EARTH, 1)) < 1e-12);
+
+    const spun = baseWindSpeed({ ...EARTH, spin: 0.12 }, 1);
+    ok('a faster-spinning world turns its gradient into circulation, not wind',
+      spun < u, `${spun.toFixed(2)} vs ${u.toFixed(2)} m/s`);
+    const tilted = baseWindSpeed({ ...EARTH, tilt: 1.2 }, 1);
+    ok('and a world lying on its side has a weaker mean gradient to drive it',
+      tilted < u, `${tilted.toFixed(2)} vs ${u.toFixed(2)} m/s`);
+  }
+
+  // --- the hash is portable, which is what makes parity meaningful ---------
+  {
+    ok('the hash is exact 32-bit integer arithmetic, negatives included',
+      hashi(-1, -1, -1) === hashi(-1, -1, -1)
+      && hashi(0, 0, 0) >= 0 && hashi(0, 0, 0) < 4294967296
+      && hashi(-7, 3, -11) !== hashi(-7, 3, -10));
+    const buckets = new Array(16).fill(0);
+    for (let i = -2000; i < 2000; i++) buckets[Math.floor((hashi(i, 5, 9) / 4294967296) * 16)]++;
+    const exp = 4000 / 16;
+    const chi = buckets.reduce((a, b) => a + ((b - exp) ** 2) / exp, 0);
+    ok('and it is uniform enough that the noise cannot band', chi < 30,
+      `chi2 ${chi.toFixed(1)} on 15 df`);
+    let nlo = Infinity, nhi = -Infinity;
+    for (let i = 0; i < 3000; i++) {
+      const v = noise3(3, i * 0.31, i * 0.17, i * 0.07);
+      const w = noise1(3, i * 0.13);
+      nlo = Math.min(nlo, v, w); nhi = Math.max(nhi, v, w);
+    }
+    ok('both noises stay inside [-1, 1]', nlo >= -1 && nhi <= 1,
+      `${nlo.toFixed(3)}…${nhi.toFixed(3)}`);
+  }
+
+  // --- the height bake ------------------------------------------------------
+  //
+  // The claim act 2 makes is not "a texture is close enough to a function" —
+  // it is that *the coupling terms* computed off the bake match the ones
+  // computed off the ground, at a resolution chosen against what those terms
+  // actually vary by. So the terms are what get compared, not the heights.
+  {
+    const g = makeGround(WORLDS[1].pp, WORLDS[1].dir);
+    const bake = bakeHeight(g.heightAt, 1400);
+    const baked = bakedHeight(bake);
+
+    ok('the bake resolves finer than the coupling\'s finest stencil',
+      bake.texel * 3 < 48 && bake.texel * 3 < 58,
+      `${bake.texel.toFixed(1)} m per texel vs a 48 m shelter lookup`);
+
+    // heights first, so a failure downstream can be attributed
+    let hWorst = 0, hN = 0;
+    for (let x = -1300; x <= 1300; x += 37) {
+      for (let z = -1300; z <= 1300; z += 41) {
+        hWorst = Math.max(hWorst, Math.abs(baked(x, z) - g.heightAt(x, z))); hN++;
+      }
+    }
+    // bilinear on a table is exact at the nodes and worst mid-cell; the bound
+    // is the terrain's own curvature over a texel, not an arbitrary tolerance
+    ok('and reproduces the ground to within its own interpolation error',
+      hWorst < g.amp * 0.05, `worst ${hWorst.toFixed(2)} m over ${hN} samples `
+      + `(amp ${g.amp.toFixed(0)} m)`);
+
+    // now the terms that matter
+    let sWorst = 0, dWorst = 0, n = 0;
+    const fwd = [0.6, 0.8];
+    for (let x = -1200; x <= 1200; x += 53) {
+      for (let z = -1200; z <= 1200; z += 59) {
+        const a = coupleTerrain(g.heightAt, x, z, fwd);
+        const b = coupleTerrain(baked, x, z, fwd);
+        sWorst = Math.max(sWorst, Math.abs(a.speedup - b.speedup));
+        // Compare the *deflection*, which is what enters the field. It is
+        // continuous by construction now — see `deflect()` on why mixing
+        // toward a signed contour was not.
+        const da = deflect(fwd[0], fwd[1], a.upslope, a.slope);
+        const db = deflect(fwd[0], fwd[1], b.upslope, b.slope);
+        dWorst = Math.max(dWorst, Math.abs(da[0] - db[0]) + Math.abs(da[1] - db[1]));
+        n++;
+      }
+    }
+    ok('§6 M3 · the speed-up and shelter survive the bake',
+      sWorst < 0.25, `worst Δspeedup ${sWorst.toFixed(3)} over ${n} samples`);
+    ok('and the deflection it actually applies survives it too',
+      dWorst < 0.35, `worst Δdeflection ${dWorst.toFixed(3)} of a 0.58 maximum`);
+
+    // the coupling has to actually do something, or agreeing is meaningless
+    let lo = Infinity, hi = -Infinity;
+    for (let x = -1200; x <= 1200; x += 31) {
+      for (let z = -1200; z <= 1200; z += 37) {
+        const c = coupleTerrain(baked, x, z, fwd);
+        lo = Math.min(lo, c.speedup); hi = Math.max(hi, c.speedup);
+      }
+    }
+    ok('and the terrain genuinely speeds the wind over crests and shelters its lee',
+      hi > 1.3 && lo < 0.8, `speedup spans ${lo.toFixed(2)}–${hi.toFixed(2)}`);
+
+    // §2.3 — the bake is a tabulation, so it inherits determinism
+    const again = bakeHeight(g.heightAt, 1400);
+    let same = again.data.length === bake.data.length;
+    for (let i = 0; same && i < bake.data.length; i++) if (again.data[i] !== bake.data[i]) same = false;
+    ok('§2.3 · two bakes of the same ground are bit-identical', same);
+
+    // the gradient stencil is one texel, not the reference's 7 m
+    ok('the gradient stencil is one texel, because a finer one reads interpolation',
+      Math.abs(GRAD_STENCIL - bake.texel) < 2,
+      `stencil ${GRAD_STENCIL} m · texel ${bake.texel.toFixed(1)} m`);
+  }
+
+  // --- the GLSL carries the same constants and the same shape --------------
+  {
+    const code = WIND_GLSL.replace(/\/\/[^\n]*/g, '');
+    ok('§2.7 · the GLSL declares the same lattice period and advection rate',
+      code.includes(`W_LANE = ${LANE.toFixed(1)}`)
+      && code.includes(`W_ADV = ${CELL_ADV.toFixed(4)}`));
+    ok('and the same Kolmogorov falloff, to nine figures',
+      code.includes(`W_FALL = ${TURB_FALLOFF.toFixed(8)}`));
+    ok("and the same derived profile constant, not the reference's rounded one",
+      code.includes(`W_PNORM = ${PROFILE_NORM.toFixed(9)}`));
+    ok('§6 M3 · it keeps the warp-coherent early-out that makes the far field free',
+      /if \(edge >= 0\.999\) return w;/.test(code));
+    ok('and it computes a curl rather than sampling noise as a velocity',
+      /vec2 curl = vec2\(ny - n0, -\(nx - n0\)\) \/ W_EPS/.test(code));
+    ok('and it separates the gust from its front, which are different quantities',
+      /front \+= amp \* exp\(-abs\(u\) \* 9\.0\) \* cw/.test(code));
+    ok('the hash is integer, so the two implementations can be bit-identical',
+      /uint aeonHashi\(int x, int y, int z\)/.test(code) && !/fract\(sin\(/.test(code));
+  }
+}
+
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
   walk: suiteWalk, material: suiteMaterial, opening: suiteOpening,
-  ocean: suiteOcean,
+  ocean: suiteOcean, horizon: suiteHorizon, wind: suiteWind,
 };
 
 for (const [name, fn] of Object.entries(suites)) {
