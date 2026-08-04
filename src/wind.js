@@ -621,7 +621,7 @@ export const WIND_NOISE_GLSL = /* glsl */`
  * supplied by the height bake (act 2) or stubbed to a constant, which disables
  * the coupling exactly as passing no `heightAt` does on the CPU.
  */
-export const WIND_FIELD_GLSL = /* glsl */`
+export const WIND_MEAN_GLSL = /* glsl */`
   uniform int   uWindSeed;
   uniform float uWindBase;       // 10 m mean speed, m/s
   uniform float uWindBaseDir;    // radians, the direction the air travels toward
@@ -663,6 +663,18 @@ export const WIND_FIELD_GLSL = /* glsl */`
     return m;
   }
 
+`;
+
+/**
+ * The evaluator: the gust lattice, the turbulence cascade, the terrain
+ * coupling, and `windField()` itself. Only the render-target pass includes
+ * this — a blade *samples* the field and does not evaluate one, and putting
+ * four octaves of curl noise into a shader that runs on every vertex of every
+ * blade would be a hundred and fifty lines of dead code on twelve million
+ * invocations. It expects `wTerrainH(vec2)` to exist; supply it from a height
+ * bake, or stub it and set `uWindCouple` to 0.
+ */
+export const WIND_PASS_GLSL = /* glsl */`
   // one lattice cell — a pure function of its lane index, so there is no state
   // to recycle and no dependence on where the observer has been
   void windCell(int j, out float s, out float c, out float len,
@@ -794,8 +806,11 @@ export const WIND_SAMPLE_GLSL = /* glsl */`
   }
 `;
 
-/** everything a material needs, in dependency order */
-export const WIND_GLSL = WIND_NOISE_GLSL + WIND_FIELD_GLSL + WIND_SAMPLE_GLSL;
+/** the whole thing, for the parity suite — a *consumer* wants less (see below) */
+export const WIND_GLSL = WIND_NOISE_GLSL + WIND_MEAN_GLSL + WIND_PASS_GLSL + WIND_SAMPLE_GLSL;
+
+/** what a material that only *reads* the field needs */
+export const WIND_CONSUMER_GLSL = WIND_NOISE_GLSL + WIND_MEAN_GLSL + WIND_SAMPLE_GLSL;
 
 /** the uniform block `WIND_FIELD_GLSL` expects, from a wind and a time */
 export function windUniforms(W, t = 0, couple = false) {

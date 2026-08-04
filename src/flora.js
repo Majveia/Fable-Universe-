@@ -41,8 +41,8 @@
 
 import * as THREE from 'three';
 import {
-  HEIGHT_RES, WIND_FIELD_GLSL, WIND_NOISE_GLSL, WIND_SAMPLE_GLSL, WIND_SPAN,
-  bakeHeight, windUniforms,
+  HEIGHT_RES, WIND_MEAN_GLSL, WIND_NOISE_GLSL, WIND_PASS_GLSL, WIND_SAMPLE_GLSL,
+  WIND_SPAN, bakeHeight, windUniforms,
 } from './wind.js';
 import {
   MEADOW_GLSL, RINGS, bladeRoots, chunkGrid, chunkInstances, chunkNearDist,
@@ -63,7 +63,14 @@ import {
  */
 export const WIND_PHASE = 3;
 
+// A RawShaderMaterial gets no preamble from three — not the attributes, not the
+// matrices, not `precision`. Everything it uses it declares. Omitting these two
+// is a compile error that only exists once the material is instantiated, which
+// is exactly the class of defect §M0's gate is for, and exactly the class the
+// bench-route traversal could not see because it never reached this scale.
 const FS_QUAD_VERT = /* glsl */`
+  in vec3 position;
+  in vec2 uv;
   out vec2 vUv;
   void main() {
     vUv = uv;
@@ -89,7 +96,8 @@ const FIELD_FRAG = /* glsl */`
   uniform vec2 uWindOrigin;
   ${WIND_NOISE_GLSL}
   ${HEIGHT_GLSL}
-  ${WIND_FIELD_GLSL}
+  ${WIND_MEAN_GLSL}
+  ${WIND_PASS_GLSL}
   void main() {
     vec2 p = uWindOrigin + (vUv - 0.5) * ${WIND_SPAN.toFixed(1)};
     outColor = windField(p, uWindTime);
@@ -210,9 +218,9 @@ export class WindField {
     };
   }
 
-  /** the GLSL a consumer includes, in dependency order */
+  /** the GLSL a *consumer* includes — the field's evaluator is not part of it */
   static get GLSL() {
-    return WIND_NOISE_GLSL + WIND_FIELD_GLSL + WIND_SAMPLE_GLSL;
+    return WIND_NOISE_GLSL + WIND_MEAN_GLSL + WIND_SAMPLE_GLSL;
   }
 
   /** a full-screen debug view of the field — `?windview=1` */
@@ -275,9 +283,13 @@ const BLADE_VERT = /* glsl */`
   out float vGust;
   out float vRand;
 
+  // Only what it calls. A blade samples the field; it does not evaluate one, so
+  // the gust lattice and the four-octave curl cascade have no business in a
+  // shader that runs on every vertex of every blade. WIND_MEAN_GLSL is the
+  // part windSample()'s analytic fallback needs.
   ${WIND_NOISE_GLSL}
   ${HEIGHT_GLSL}
-  ${WIND_FIELD_GLSL}
+  ${WIND_MEAN_GLSL}
   ${WIND_SAMPLE_GLSL}
   ${MEADOW_GLSL}
 
