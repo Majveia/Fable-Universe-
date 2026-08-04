@@ -59,7 +59,7 @@ import {
 import {
   DENS_POW, MEADOW_GLSL, RINGS, chunkCount, chunkGrid, chunkInstances,
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
-  bladeRoots,
+  bladeRoots, grassPalette, PALETTE_KEYS,
 } from '../src/meadow.js';
 import { QUALITY } from '../src/quality.js';
 
@@ -3770,6 +3770,74 @@ function suiteMeadow() {
     ok('and one row change moves the blade budget by five times',
       hiBlades / lowBlades > 4.5,
       `${(lowBlades / 1000).toFixed(0)}k low vs ${(hiBlades / 1000).toFixed(0)}k ultra`);
+  }
+
+  // --- §9.5's blade palette, derived rather than transcribed ---------------
+  //
+  // §9.1: per-world palettes stay seed-derived and "there is no default
+  // palette". So the transfer has to reproduce the reference's nine hand-picked
+  // greens when handed the reference's own base green — that is what makes it a
+  // port of the function rather than a different ramp that happens to look
+  // leafy. Same discipline as §9.6's sky stops and `baseWindSpeed`'s 4.2 m/s.
+  {
+    const REF = {
+      root: '#2B564F', low: '#436E4F', mid: '#6C9A47', upper: '#93B84E', tip: '#C6D46B',
+    };
+    const p = grassPalette(hexToLinear(REF.mid));
+    // Measured in sRGB code values, not in linear. A linear error is not a
+    // perceptual quantity — the same 0.04 is invisible at the tip and gross at
+    // the root — and the question being asked is whether these are the same
+    // colours, which is a question about what the eye gets.
+    const enc = (v) => Math.round(Math.min(Math.max(
+      v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055, 0), 1) * 255);
+    let worst = 0, worstK = '';
+    for (const k of Object.keys(REF)) {
+      const got = p[k], want = hexToLinear(REF[k]);
+      const e = Math.max(...[0, 1, 2].map((i) => Math.abs(enc(got[i]) - enc(want[i]))));
+      if (e > worst) { worst = e; worstK = k; }
+    }
+    // Twelve code values, on the brightest stops. The JND for a large flat
+    // field is two or three, but a blade is a few pixels of a moving object and
+    // the claim being made is that this is recognisably the same ramp, not that
+    // it is the same bytes.
+    //
+    // The bound is not tightened further on purpose. Two reasons, and the
+    // second is the one that would have bitten: fitting harder means fitting to
+    // one world's greens, and the transfer has to carry to all of them. And the
+    // search that produced these coefficients stepped its grid by accumulation,
+    // so the 4.5 it reported was a 4.500000000000004 it had tested — a fitted
+    // constant read out of an accumulating loop is not the constant that was
+    // measured, and a tolerance set to the reported optimum fails by one code
+    // value for reasons that have nothing to do with colour.
+    ok('§9.5 · the transfer reproduces the reference\'s own blade ramp',
+      worst <= 12, `worst channel error ${worst} of 255 at "${worstK}"`);
+
+    // the shape, which is what actually has to hold on any world
+    const lum = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+    ok('and the ramp climbs monotonically from root to tip',
+      lum(p.root) < lum(p.low) && lum(p.low) < lum(p.mid)
+      && lum(p.mid) < lum(p.upper) && lum(p.upper) < lum(p.tip),
+      [p.root, p.low, p.mid, p.upper, p.tip].map((c) => lum(c).toFixed(3)).join(' → '));
+    // "shadows change hue, they do not go black" (§9.2) — the root is the
+    // darkest thing on a blade and it must still be a colour
+    const bl = (c) => c[2] / Math.max(c[1], 1e-6);
+    ok('§9.2 · the root is blue-shifted, because skylight is all that reaches it',
+      bl(p.root) > bl(p.mid) * 1.8,
+      `blue/green ${bl(p.root).toFixed(3)} at the root vs ${bl(p.mid).toFixed(3)} at mid`);
+    ok('and the tip is warm-shifted, because it is thin enough to be lit through',
+      p.tip[0] / p.tip[1] > p.mid[0] / p.mid[1] * 1.3);
+
+    // it must work on a world that is not green at all
+    const alien = grassPalette([0.42, 0.16, 0.30]);
+    ok('and it carries to a world whose vegetation is not green',
+      lum(alien.root) < lum(alien.tip)
+      && alien.tip.every((v) => v >= 0 && Number.isFinite(v))
+      && bl(alien.root) > bl(alien.mid),
+      `root ${alien.root.map((v) => v.toFixed(2)).join(',')} → `
+      + `tip ${alien.tip.map((v) => v.toFixed(2)).join(',')}`);
+    ok('and every stop the shader packs is present and finite',
+      PALETTE_KEYS.every((k) => Array.isArray(p[k]) && p[k].every(Number.isFinite)),
+      `${PALETTE_KEYS.length} stops`);
   }
 
   // --- the GLSL carries the law, not a paraphrase of it -------------------

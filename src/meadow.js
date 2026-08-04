@@ -205,6 +205,81 @@ export function shuffledIndices(seed, n) {
   return idx;
 }
 
+// ---------------------------------------------------------------------------
+// the colour of a blade — §9.5, act 5
+
+const mix3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const lum3 = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+const scale3 = (c, k) => [c[0] * k, c[1] * k, c[2] * k];
+
+/**
+ * §9.5's blade palette, derived from the world's own vegetation colour.
+ *
+ * The reference gives nine greens as hex literals. §9.1 is explicit that per-
+ * world palettes stay seed-derived and *"there is no default palette"* — so
+ * what ports is the **shape** of that ramp, not its values, exactly as §9.6
+ * ruled for the sky's four stops.
+ *
+ * The shape, read off the reference's own numbers: a blade runs from a dark,
+ * blue-shifted, desaturated root to a bright, yellow-shifted tip. Its root
+ * (`#2B564F`) is 0.30 of the mid-green's luminance and rotated toward teal; its
+ * tip (`#C6D46B`) is 2.1× and rotated toward yellow. That is a luminance ramp
+ * and a hue rotation, and both are things a base colour can be put through.
+ *
+ * Why teal at the root specifically, since it looks arbitrary: the base of a
+ * sward is shadowed by everything above it and lit almost entirely by skylight,
+ * which is blue. The root is not painted teal — it is painted *unlit*, and the
+ * only light down there is the sky's.
+ */
+export function grassPalette(base) {
+  // Two poles to rotate between, each normalised to the base's own luminance so
+  // that rotating hue never changes how bright the ramp is — the luminance ramp
+  // is the other axis and they must not interfere.
+  //
+  // The coefficients are calibrated, and §9.6 is the precedent for that:
+  // *"the stops above are that transfer's output for a G-type star at 13.5°.
+  // That is the port: not the values, the function that produced them."* The
+  // structure is the physics; the numbers are set so a temperate green
+  // reproduces the reference's own nine hand-picked colours, and then carry to
+  // any world's vegetation. `suiteMeadow` holds them to that.
+  const L = Math.max(lum3(base), 1e-4);
+  const norm = (c) => scale3(c, L / Math.max(lum3(c), 1e-4));
+  // skylight is blue and it is nearly all the light a root gets
+  const cool = norm([base[0] * 0.40, base[1] * 0.95, base[2] * 4.5]);
+  // a tip is thin enough to be lit through, so it runs warm
+  const warm = norm([base[0] * 1.9, base[1] * 0.7, base[2] * 0.8]);
+
+  const stop = (k, rot) => scale3(rot < 0 ? mix3(base, cool, -rot) : mix3(base, warm, rot), k);
+
+  return {
+    // the vertical path: five stops, root to tip
+    root: stop(0.30, -0.62),
+    low: stop(0.52, -0.30),
+    mid: stop(1.00, 0.00),
+    upper: stop(1.52, 0.26),
+    tip: stop(2.10, 0.52),
+    // what light coming *through* a blade looks like — §9.2's transmission
+    trans: stop(2.55, 0.66),
+    // the sheen a laid-over blade catches on a gust front
+    sheen: mix3(stop(2.4, 0.30), [1, 1, 1], 0.45),
+    // straw on the exposed shoulders
+    dry: mix3(stop(1.7, 0.72), [0.62, 0.50, 0.24], 0.45),
+    // the four-colour meadow mosaic: two cooler, two warmer, all near the base
+    patchA: stop(1.18, 0.22),
+    patchB: stop(0.86, -0.18),
+    patchC: stop(1.34, 0.10),
+    patchD: stop(0.74, -0.34),
+    // the deep interior of the sward, where nothing direct reaches
+    hollow: stop(0.22, -0.48),
+  };
+}
+
+/** the order `MEADOW_COLOUR_GLSL` expects them in, so a caller cannot mis-pack */
+export const PALETTE_KEYS = [
+  'root', 'low', 'mid', 'upper', 'tip', 'trans', 'sheen', 'dry',
+  'patchA', 'patchB', 'patchC', 'patchD', 'hollow',
+];
+
 /**
  * A chunk's blades: stratified, then shuffled. Both, and for different reasons.
  *
@@ -261,6 +336,79 @@ export function ringAt(d) {
  * is the only reason the exponent is 1.5 rather than something chosen purely
  * for how the far field looks.
  */
+export const MEADOW_COLOUR_GLSL = /* glsl */`
+  uniform vec3 uPal[${13}];   // grassPalette(), packed in PALETTE_KEYS order
+  #define P_ROOT   uPal[0]
+  #define P_LOW    uPal[1]
+  #define P_MID    uPal[2]
+  #define P_UPPER  uPal[3]
+  #define P_TIP    uPal[4]
+  #define P_TRANS  uPal[5]
+  #define P_SHEEN  uPal[6]
+  #define P_DRY    uPal[7]
+  #define P_PATCHA uPal[8]
+  #define P_PATCHB uPal[9]
+  #define P_PATCHC uPal[10]
+  #define P_PATCHD uPal[11]
+  #define P_HOLLOW uPal[12]
+
+  // Three ramps, not one. §9.2's paint() wants a shade, a mid and a lit stop
+  // per surface, and a blade's three are genuinely different curves: the lit
+  // face runs the full root-to-tip path, the mid stays nearer the base, and the
+  // shade never leaves the cool end — which is §9.2's "shadows change hue, they
+  // do not go black" expressed as a palette rather than as a clamp.
+  struct Blade { vec3 shade; vec3 mid; vec3 lit; vec3 trans; float dry; };
+
+  Blade bladeColour(float t, vec3 tint, float var) {
+    Blade b;
+    // the vertical hue path
+    b.lit = mix(P_LOW, P_MID, smoothstep(0.00, 0.26, t));
+    b.lit = mix(b.lit, P_UPPER, smoothstep(0.20, 0.66, t));
+    b.lit = mix(b.lit, P_TIP, smoothstep(0.80, 1.00, t));
+    b.mid = mix(P_ROOT, P_MID, smoothstep(0.05, 0.80, t));
+    b.shade = mix(P_ROOT * 0.82, P_LOW, smoothstep(0.15, 0.95, t));
+
+    // the meadow mosaic — four patch colours on two independent fields, so the
+    // drifts read as different sizes of the same thing rather than as one
+    // pattern at one scale
+    b.lit = mix(b.lit, P_PATCHC, smoothstep(0.35, 0.85, tint.x) * 0.45);
+    b.lit = mix(b.lit, P_PATCHA, smoothstep(0.65, 0.15, tint.x) * 0.35);
+    b.mid = mix(b.mid, P_PATCHB, smoothstep(0.30, 0.80, tint.y) * 0.40);
+    b.shade = mix(b.shade, P_HOLLOW, smoothstep(0.40, 0.90, tint.y) * 0.35);
+
+    // straw on the exposed shoulders, and only up the blade — a dry patch is
+    // dry at the tip first
+    b.dry = smoothstep(0.68, 0.99, tint.z) * smoothstep(0.45, 0.98, t);
+    b.lit = mix(b.lit, P_DRY, b.dry * 0.60);
+    b.mid = mix(b.mid, P_DRY * 0.72, b.dry * 0.42);
+
+    // no two blades in a meadow are the same green
+    float vj = 0.84 + 0.34 * var;
+    b.lit *= vj; b.mid *= vj * 0.98; b.shade *= 0.92 + 0.20 * var;
+    b.lit = mix(b.lit, P_PATCHD, smoothstep(0.72, 1.0, var) * 0.30);
+
+    b.trans = P_TRANS;
+    return b;
+  }
+
+  // §9.5's tier rule, as a number: "once a blade is two or three pixels wide,
+  // everything varying across its width is sub-pixel and should be dropped by
+  // tier." Sub-pixel detail does not resolve — it sparkles, and a meadow that
+  // sparkles reads as television static rather than as grass. Everything that
+  // varies ACROSS a blade retires on this; everything that varies ALONG one
+  // stays, because a blade is several pixels tall much further out than it is
+  // pixels wide.
+  float meadowNearK(float d) { return 1.0 - smoothstep(55.0, 240.0, d); }
+
+  // And the same argument one step further out. At a few hundred metres full
+  // contrast against the ground behind is what makes distant grass crawl as the
+  // camera moves; converging toward the sward mean keeps the texture and takes
+  // the edge energy out of it, which is what a painter does at that depth.
+  vec3 meadowSettle(vec3 col, vec3 swardMean, float d) {
+    return mix(col, mix(col, swardMean, 0.62), smoothstep(90.0, 430.0, d) * 0.42);
+  }
+`;
+
 export const MEADOW_GLSL = /* glsl */`
   uniform float uRingDn;      // this ring's quoted distance
   uniform float uChunkNear;   // the distance the CPU sized this chunk at
