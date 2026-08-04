@@ -62,6 +62,8 @@
 //   · `K · wpx` across that boundary lands within 15%, which is the trade being
 //     approximately honoured rather than exactly.
 
+import { hash } from './rng.js';
+
 /** the exponent, and the reason it is exactly this: `x·x·inversesqrt(x)` */
 export const DENS_POW = 1.5;
 
@@ -202,6 +204,44 @@ export function shuffledIndices(seed, n) {
   }
   return idx;
 }
+
+/**
+ * A chunk's blades: stratified, then shuffled. Both, and for different reasons.
+ *
+ * **Stratified** because uniform-random roots clump. At ring 0's 1100 blades/m²
+ * a Poisson scatter leaves visible bald patches and visible clots, and the
+ * ground between them is what the eye finds. One blade jittered inside each
+ * cell of a `g × g` grid covers the chunk evenly at the same count.
+ *
+ * **Shuffled** because stratification correlates index with position — cell
+ * `k` is at row `k/g`. Without a shuffle, drawing the first 30% of the buffer
+ * would draw the first 30% of the *rows* and leave two-thirds of the chunk
+ * bare. The shuffle is what makes any prefix a fair sample, and that is the
+ * whole reason coarse thinning is free.
+ *
+ * Generating roots from `hash(seed, i)` instead would make the shuffle a no-op
+ * — a hash already decorrelates index from position — which would be shipping
+ * a line that looks load-bearing and is not.
+ */
+export function bladeRoots(seed, n, chunk) {
+  const g = Math.ceil(Math.sqrt(n));
+  const cell = chunk / g;
+  const order = shuffledIndices(hash(seed, 0x91a5), n);
+  const root = new Float32Array(n * 2);
+  const rand = new Float32Array(n);
+  const height = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const k = order[i];
+    root[i * 2] = ((k % g) + frac01(hash(seed, k, 0x11))) * cell;
+    root[i * 2 + 1] = (Math.floor(k / g) + frac01(hash(seed, k, 0x22))) * cell;
+    rand[i] = frac01(hash(seed, k, 0x33));
+    height[i] = 0.42 + frac01(hash(seed, k, 0x44)) * 0.58;
+  }
+  return { root, rand, height, cells: g, cell };
+}
+
+/** a hash's top 24 bits as a float in [0,1) — enough for a root offset */
+export const frac01 = (h) => (h >>> 8) / 16777216;
 
 /** which ring owns a distance — the overlaps are soft, so this is the primary */
 export function ringAt(d) {

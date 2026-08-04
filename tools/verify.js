@@ -59,6 +59,7 @@ import {
 import {
   DENS_POW, MEADOW_GLSL, RINGS, chunkCount, chunkGrid, chunkInstances,
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
+  bladeRoots,
 } from '../src/meadow.js';
 import { QUALITY } from '../src/quality.js';
 
@@ -3581,6 +3582,66 @@ function suiteMeadow() {
     ok('and the gate\'s 800k blades is inside one ring\'s instance buffers',
       RINGS[0].blades + RINGS[1].blades + RINGS[2].blades + RINGS[3].blades > 800000,
       `${(RINGS.reduce((a, r) => a + r.blades, 0) / 1000).toFixed(0)}k per chunk set`);
+  }
+
+  // --- stratified, then shuffled, and both are load-bearing ---------------
+  {
+    const n = 8100, chunk = 9;
+    const { root, cells } = bladeRoots(4242, n, chunk);
+
+    // (a) stratification: every cell of the g x g grid holds exactly one blade,
+    // which is what uniform-random roots cannot promise
+    const seen = new Uint8Array(cells * cells);
+    let dup = 0, out = 0;
+    for (let i = 0; i < n; i++) {
+      const x = root[i * 2], z = root[i * 2 + 1];
+      if (x < 0 || x > chunk || z < 0 || z > chunk) out++;
+      const cx = Math.min(cells - 1, Math.floor((x / chunk) * cells));
+      const cz = Math.min(cells - 1, Math.floor((z / chunk) * cells));
+      if (seen[cz * cells + cx]) dup++;
+      seen[cz * cells + cx] = 1;
+    }
+    ok('§9.5 · the roots are stratified — one blade per cell, none clumped',
+      dup === 0 && out === 0, `${cells}x${cells} cells, ${dup} collisions`);
+
+    // (b) and shuffled, so a prefix is not the first rows. Without the shuffle
+    // this is the test that fails, and it fails badly.
+    let worstChi = 0;
+    const G = 9;
+    for (const frac of [0.1, 0.3, 0.7]) {
+      const take = Math.floor(n * frac);
+      const grid = new Array(G * G).fill(0);
+      for (let i = 0; i < take; i++) {
+        const gx = Math.min(G - 1, Math.floor((root[i * 2] / chunk) * G));
+        const gz = Math.min(G - 1, Math.floor((root[i * 2 + 1] / chunk) * G));
+        grid[gz * G + gx]++;
+      }
+      const exp = take / (G * G);
+      worstChi = Math.max(worstChi, grid.reduce((a, c) => a + ((c - exp) ** 2) / exp, 0));
+    }
+    // 80 degrees of freedom; the 99.9th percentile is about 125
+    ok('and any prefix of the shuffled buffer covers the whole chunk evenly',
+      worstChi < 125, `worst chi2 ${worstChi.toFixed(0)} on 80 df at 10/30/70% prefixes`);
+
+    // (c) demonstrate that the shuffle is doing the work, by removing it
+    const unshuffled = new Float32Array(n * 2);
+    const g2 = Math.ceil(Math.sqrt(n));
+    for (let i = 0; i < n; i++) {
+      unshuffled[i * 2] = ((i % g2) + 0.5) * (chunk / g2);
+      unshuffled[i * 2 + 1] = (Math.floor(i / g2) + 0.5) * (chunk / g2);
+    }
+    const take = Math.floor(n * 0.3);
+    let maxZ = 0;
+    for (let i = 0; i < take; i++) maxZ = Math.max(maxZ, unshuffled[i * 2 + 1]);
+    ok('while an unshuffled prefix would draw a third of the rows and no more',
+      maxZ < chunk * 0.4, `reaches ${maxZ.toFixed(1)} m of a ${chunk} m chunk`);
+
+    ok('§2.3 · and two chunks of the same seed are the same meadow',
+      (() => {
+        const b = bladeRoots(4242, n, chunk);
+        for (let i = 0; i < n * 2; i++) if (b.root[i] !== root[i]) return false;
+        return true;
+      })());
   }
 
   // --- the quality table's §M3 columns -------------------------------------
