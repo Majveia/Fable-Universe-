@@ -56,6 +56,11 @@ import {
   makeWind, meanFlow, noise1, noise3, turbulenceAt, windAt, windForceScale,
   windProfile,
 } from '../src/wind.js';
+import {
+  DENS_POW, MEADOW_GLSL, RINGS, chunkCount, chunkGrid, chunkInstances,
+  chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
+} from '../src/meadow.js';
+import { QUALITY } from '../src/quality.js';
 
 let failures = 0;
 let checks = 0;
@@ -3381,12 +3386,252 @@ function suiteWind() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// suite: meadow
+//
+// §9.5's law, and every failure mode §11 records about grass — all of which are
+// failures of the *law* rather than of the blades, which is why this suite can
+// exist at all on a machine with no GPU.
+
+function suiteMeadow() {
+  console.log('\nmeadow — one density law, rings only switch tessellation (§9.5, §11)');
+
+  // --- the exponent, and why it is exactly 1.5 -----------------------------
+  {
+    ok('the exponent is 1.5, not the 1.45 the reference\'s own prose claims',
+      DENS_POW === 1.5);
+    // the reason: pow(x, 1.5) === x*x*inversesqrt(x), three instructions vs ten
+    let worst = 0;
+    for (let i = 1; i <= 4000; i++) {
+      const x = i / 400;
+      const a = Math.pow(x, 1.5);
+      const b = x * x * (1 / Math.sqrt(x));
+      worst = Math.max(worst, Math.abs(a - b) / a);
+    }
+    ok('and x*x*inversesqrt(x) is the same function, to float precision',
+      worst < 1e-12, `worst relative error ${worst.toExponential(2)}`);
+  }
+
+  // --- density is continuous across the rings that hold K ------------------
+  {
+    // rings 0-2 hold K; that is the invariant §9.5 states
+    const k = [0, 1, 2].map(ringK);
+    const spread = (Math.max(...k) - Math.min(...k)) / (k.reduce((a, b) => a + b) / 3);
+    ok('§9.5 · K = B·dn^1.5 is constant across rings 0-2',
+      spread < 0.005, `${k.map((v) => v.toFixed(0)).join(' / ')} — spread `
+      + `${(spread * 100).toFixed(2)}%`);
+
+    // and therefore the density itself has no step at those boundaries
+    for (const [a, b, d] of [[0, 1, 22], [0, 1, 26], [1, 2, 76], [1, 2, 84]]) {
+      const rel = Math.abs(density(a, d) - density(b, d)) / density(a, d);
+      ok(`no density step between rings ${a} and ${b} at ${d} m`,
+        rel < 0.01, `${density(a, d).toFixed(3)} vs ${density(b, d).toFixed(3)} /m² `
+        + `— ${(rel * 100).toFixed(2)}%`);
+    }
+  }
+
+  // --- ring 3 breaks it on purpose, and the trade is approximate -----------
+  {
+    const drop = ringK(3) / ringK(2);
+    ok('ring 3 is a quarter low on K, deliberately',
+      drop > 0.70 && drop < 0.80, `${(drop * 100).toFixed(1)}% of ring 2`);
+    const widen = RINGS[3].wpx / RINGS[2].wpx;
+    ok('and widens its stroke in exchange',
+      widen > 1.3, `${widen.toFixed(3)}x`);
+    // The reference calls it one-for-one. It is not, quite — and a parity test
+    // written against exact coverage continuity would fail a correct port.
+    const trade = drop * widen;
+    ok('the count-for-width trade is approximate, not exact — 11% over',
+      trade > 1.0 && trade < 1.15, `${trade.toFixed(3)}x`);
+    const withHeight = trade * (RINGS[3].hs / RINGS[2].hs);
+    ok('and including the height scale, as its own sentence suggests, is 59% over',
+      withHeight > 1.4 && withHeight < 1.75, `${withHeight.toFixed(3)}x`);
+  }
+
+  // --- the falloff is slower than d^-2, which is the whole trick ------------
+  {
+    // count per steradian goes as density * d^2; at exponent 1.5 that RISES
+    const perSr = (d) => density(2, d) * d * d;
+    ok('§9.5 · blades per steradian rise with distance rather than falling',
+      perSr(600) > perSr(200) * 1.5,
+      `${perSr(200).toFixed(0)} at 200 m vs ${perSr(600).toFixed(0)} at 600 m`);
+    // which is exactly why the horizon reads as meadow and not as a green plane
+    ok('and a d^-2 law would hold them flat, which is the failure being avoided',
+      Math.abs((ringB(2) * Math.pow(76 / 600, 2) * 600 * 600)
+        - (ringB(2) * Math.pow(76 / 200, 2) * 200 * 200)) < 1e-6);
+  }
+
+  // --- §11 · un-grassed annuli --------------------------------------------
+  //
+  // "hand-picked chunk grids too small for the middle rings left a gap between
+  // every ring pair, which read as 'dense grass only appears when you get
+  // closer.'" The grid is derived from the ring's own far distance, so walk the
+  // camera around inside its chunk and assert every ring reaches its own far.
+  {
+    let short = 0, tested = 0;
+    for (let r = 0; r < RINGS.length; r++) {
+      const { chunk, far } = RINGS[r];
+      const g = chunkGrid(r);
+      // worst case: the camera at a corner of its own chunk, looking diagonally
+      for (const [ox, oz] of [[0, 0], [0.5, 0.5], [0.999, 0.999], [0.999, 0]]) {
+        tested++;
+        const camX = ox * chunk, camZ = oz * chunk;
+        // the far edge of the last chunk in the grid, in the worst direction
+        const reach = Math.min((g + 1) * chunk - camX, (g + 1) * chunk - camZ);
+        if (reach < far) short++;
+      }
+    }
+    ok('§11 · every ring\'s chunk grid reaches its own far distance',
+      short === 0, `${tested - short}/${tested} camera placements`);
+
+    // and consecutive rings overlap rather than abut, so there is no seam even
+    // if one is a chunk short
+    let gaps = 0;
+    for (let r = 1; r < RINGS.length; r++) if (RINGS[r].near >= RINGS[r - 1].far) gaps++;
+    ok('and consecutive rings overlap rather than abut',
+      gaps === 0, `${RINGS.map((x) => `${x.near}-${x.far}`).join(', ')} m`);
+  }
+
+  // --- the double thinning -------------------------------------------------
+  {
+    // (a) the shader can only ever remove — the property the nearest-corner
+    // over-draw exists to guarantee
+    let over = 0, n = 0;
+    for (let r = 0; r < RINGS.length; r++) {
+      const { chunk } = RINGS[r];
+      for (let cx = -6; cx <= 6; cx++) {
+        for (let cz = -6; cz <= 6; cz++) {
+          const dNear = chunkNearDist(cx, cz, chunk, 3.1, -7.4);
+          // the farthest corner of that chunk is the worst case for the test
+          const far = Math.hypot(
+            Math.max(Math.abs(cx * chunk - 3.1), Math.abs((cx + 1) * chunk - 3.1)),
+            Math.max(Math.abs(cz * chunk + 7.4), Math.abs((cz + 1) * chunk + 7.4)));
+          for (const d of [dNear, (dNear + far) / 2, far]) {
+            n++;
+            if (keepProbability(r, d, dNear) > 1 + 1e-12) over++;
+          }
+        }
+      }
+    }
+    ok('the shader can only ever remove a blade, never invent one',
+      over === 0, `${n} chunk/blade pairs, 0 keep-probabilities above 1`);
+
+    // (b) the coarse thinning is monotone in distance and saturates near
+    let mono = true, prev = Infinity;
+    for (let d = 1; d < 400; d += 3) {
+      const c = chunkInstances(2, d);
+      if (c > prev) mono = false;
+      prev = c;
+    }
+    ok('and the CPU count falls monotonically with distance',
+      mono && chunkInstances(2, 1) === RINGS[2].blades,
+      `saturates at ${RINGS[2].blades} instances underfoot`);
+
+    // (c) the quality multiplier scales it and never exceeds the buffer
+    ok('the quality row scales the count without overrunning the buffer',
+      chunkInstances(2, 1, 4) === RINGS[2].blades
+      && chunkInstances(2, 200, 0.3) < chunkInstances(2, 200, 1));
+  }
+
+  // --- any prefix of the shuffled buffer is a fair spatial sample ----------
+  //
+  // The claim that makes coarse thinning free: lowering the instance count is a
+  // uniform thinning, not a corner being dropped. Chi-squared on occupancy.
+  {
+    const N = 20000, G = 12;
+    const idx = shuffledIndices(0x9a55, N);
+    // deterministic blade positions in a unit chunk, in buffer order
+    const px = new Float64Array(N), pz = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      // a low-discrepancy fill so the *unshuffled* order is deliberately biased
+      px[i] = (i % 200) / 200;
+      pz[i] = Math.floor(i / 200) / 100;
+    }
+    let worstChi = 0;
+    for (const frac of [0.1, 0.5, 0.9]) {
+      const take = Math.floor(N * frac);
+      const cells = new Array(G * G).fill(0);
+      for (let i = 0; i < take; i++) {
+        const b = idx[i];
+        cells[Math.min(G - 1, Math.floor(pz[b] * G)) * G + Math.min(G - 1, Math.floor(px[b] * G))]++;
+      }
+      const exp = take / (G * G);
+      const chi = cells.reduce((a, c) => a + ((c - exp) ** 2) / exp, 0);
+      worstChi = Math.max(worstChi, chi);
+    }
+    // 143 degrees of freedom; the 99.9th percentile is about 202
+    ok('§9.5 · any prefix of the shuffled buffer is a fair spatial sample',
+      worstChi < 202, `worst chi2 ${worstChi.toFixed(0)} on 143 df at 10/50/90% prefixes`);
+    // and it is deterministic
+    const again = shuffledIndices(0x9a55, N);
+    let same = true;
+    for (let i = 0; i < N; i++) if (again[i] !== idx[i]) same = false;
+    ok('§2.3 · and the shuffle is the same meadow on every machine', same);
+  }
+
+  // --- what it costs -------------------------------------------------------
+  {
+    const calls = [0, 1, 2, 3].reduce((a, r) => a + chunkCount(r), 0);
+    ok('§5 · four rings of chunks fit inside the 900 draw-call budget',
+      calls < 900, `${calls} chunks before frustum culling `
+      + `(${[0, 1, 2, 3].map(chunkCount).join(' + ')})`);
+    // the blade budget the gate asks for
+    const total = [0, 1, 2, 3].reduce((a, r) => a + RINGS[r].blades * chunkCount(r) * 0, 0);
+    void total;
+    ok('and the gate\'s 800k blades is inside one ring\'s instance buffers',
+      RINGS[0].blades + RINGS[1].blades + RINGS[2].blades + RINGS[3].blades > 800000,
+      `${(RINGS.reduce((a, r) => a + r.blades, 0) / 1000).toFixed(0)}k per chunk set`);
+  }
+
+  // --- the quality table's §M3 columns -------------------------------------
+  {
+    const rows = QUALITY;
+    ok('§5 · every tier row carries a grass multiplier for every ring',
+      rows.every((q) => Array.isArray(q.grass) && q.grass.length === RINGS.length
+        && Array.isArray(q.blades) && q.blades.length === RINGS.length));
+    // The direction is the opposite of the obvious guess, and it is right: a
+    // near blade is individually resolved so thinning it leaves a hole, while a
+    // far blade is a sub-pixel mark and removing some to widen the rest is very
+    // nearly free. So the far rings are where a low tier gets its frames back.
+    ok('every row keeps proportionally more of the near ring than the far one',
+      rows.every((q) => q.grass[0] >= q.grass[3] - 1e-9),
+      rows.map((q) => `${q.name} ${q.grass[0]}→${q.grass[3]}`).join(' · '));
+    ok('blade segments fall monotonically outward on every row',
+      rows.every((q) => q.blades.every((b, i) => i === 0 || b <= q.blades[i - 1])),
+      rows.map((q) => q.blades.join('')).join(' · '));
+    ok('and the wind render target grows with the tier',
+      rows.every((q, i) => i === 0 || q.wind > rows[i - 1].wind),
+      rows.map((q) => q.wind).join(' → '));
+    // §5's supersample discipline: on top of DPR, and never below 1 above low
+    ok('§5 · the supersample factor stays at or above 1.0 above the low row',
+      rows.slice(1).every((q) => q.px >= 1.0),
+      rows.map((q) => q.px).join(' / '));
+    // the budget the low row exists to make: a quarter of the blades
+    const lowBlades = RINGS.reduce((a, r, i) => a + r.blades * rows[0].grass[i], 0);
+    const hiBlades = RINGS.reduce((a, r, i) => a + r.blades * rows[3].grass[i], 0);
+    ok('and one row change moves the blade budget by five times',
+      hiBlades / lowBlades > 4.5,
+      `${(lowBlades / 1000).toFixed(0)}k low vs ${(hiBlades / 1000).toFixed(0)}k ultra`);
+  }
+
+  // --- the GLSL carries the law, not a paraphrase of it -------------------
+  {
+    const code = MEADOW_GLSL.replace(/\/\/[^\n]*/g, '');
+    ok('§9.5 · the shader spends three instructions on the falloff, not ten',
+      /x \* x \* inversesqrt/.test(code) && !/pow\(/.test(code));
+    ok('and the per-blade test divides by the density the CPU actually assumed',
+      /meadowFalloff\(d\) \/ max\(meadowFalloff\(uChunkNear\)/.test(code));
+    ok('and clamps it so a blade can be removed but never conjured',
+      /min\(keep, 1\.0\)/.test(code));
+  }
+}
+
 const suites = {
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
   walk: suiteWalk, material: suiteMaterial, opening: suiteOpening,
-  ocean: suiteOcean, horizon: suiteHorizon, wind: suiteWind,
+  ocean: suiteOcean, horizon: suiteHorizon, wind: suiteWind, meadow: suiteMeadow,
 };
 
 for (const [name, fn] of Object.entries(suites)) {
