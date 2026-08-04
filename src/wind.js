@@ -128,6 +128,16 @@ export const TURB_K0 = 0.0118;
 export const TURB_EPS = 0.021;
 export const TURB_INTENSITY = 0.19;
 
+/**
+ * How much faster the cloud deck runs than the surface wind, and how far it is
+ * veered from it. The reference's own numbers (2.35 and 0.19 rad), and they are
+ * the Ekman spiral: above the friction layer the flow is geostrophic, so it is
+ * faster because the ground has stopped dragging on it and turned toward the
+ * pressure gradient it was always trying to follow.
+ */
+export const CLOUD_SPEEDUP = 2.35;
+export const CLOUD_VEER = 0.19;
+
 /** the render target's coverage, metres */
 export const WIND_SPAN = 440;
 

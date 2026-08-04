@@ -43,7 +43,9 @@ import { GAIT, Walker, gravityOf } from './avatar.js';
 import { CameraRig } from './camera.js';
 import { attachKeyboard, input, jumpHeld } from './input.js';
 import { makeGround } from './ground.js';
-import { makeWind } from './wind.js';
+import {
+  CLOUD_SPEEDUP, CLOUD_VEER, makeWind, meanFlow, windAt,
+} from './wind.js';
 import { GrassRing, WindField } from './flora.js';
 import { RINGS } from './meadow.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
@@ -1268,6 +1270,50 @@ export class SurfaceScale {
 
   heightAt(x, z) { return this._heightFn(x, z); }
 
+  /**
+   * §6 M3's thesis, as one method: *"one global wind field sampled by
+   * everything — grass, foliage, dust, spores, cloth, water ripple, cloud
+   * advection, smoke."*
+   *
+   * Before this, the surface scale had **three** winds. `this.wind`, a static
+   * Vector2 chosen once at construction, drove the rain, the lanterns and the
+   * god rays. `_cloudWind` was a separate random scalar that drifted the cloud
+   * deck along x only, at a speed unrelated to anything. And the grass, once
+   * M3 arrived, read a real field. So the clouds already blew a different way
+   * from the rain, and neither knew what the grass was doing.
+   *
+   * `heightAt` is deliberately optional and off by default here. The terrain
+   * coupling costs six height lookups per sample, which is right for a blade
+   * rooted in the ground and pointless for a raindrop at forty metres — the
+   * speed-up over a crest is a boundary-layer effect and a raindrop is not in
+   * the boundary layer.
+   */
+  sampleWind(x, z, height, couple = false) {
+    if (this.windSys) {
+      return windAt(this.windSys, x, z, this.uTime.value, height,
+        couple ? this._heightFn : null);
+    }
+    // the pre-M3 path: one direction, one speed, no gusts
+    const p = height === undefined ? 1 : 1;
+    return { x: this.wind.x * 4 * p, z: this.wind.y * 4 * p, speed: 4 * p, gust: 0, front: 0 };
+  }
+
+  /**
+   * The cloud deck's wind. The reference's own relation: it *"runs faster and
+   * slightly veered from the surface wind"* — 2.35× and +0.19 rad, which is the
+   * Ekman spiral, the same physics that turns the wind as you climb out of the
+   * friction layer. Above the boundary layer the flow is geostrophic: faster,
+   * because the ground is no longer dragging on it, and backed toward the
+   * pressure gradient it was always trying to follow.
+   */
+  cloudWind() {
+    if (!this.windSys) return { x: this.wind.x * 4, z: this.wind.y * 4 };
+    const m = meanFlow(this.windSys, this.uTime.value);
+    const a = m.dir + CLOUD_VEER;
+    const sp = m.speed * CLOUD_SPEEDUP;
+    return { x: Math.sin(a) * sp, z: Math.cos(a) * sp };
+  }
+
   _findSpawn() {
     // score candidates: dry, flat, and not up a mountain — so dramatic
     // landforms never strand you on a spire or a sheer face
@@ -1340,6 +1386,7 @@ export class SurfaceScale {
       { size: 300, count: 14, o: 0.38 },
     ];
     this.clouds = [];
+    // kept only for the pre-M3 path; `cloudWind()` supersedes it under ?m3=1
     this._cloudWind = r.float(2.5, 5.5) * (r.chance(0.5) ? 1 : -1);
     for (const L of layers) {
       const pts = [];
@@ -1967,7 +2014,15 @@ export class SurfaceScale {
       const day = Math.min(Math.max((elev + 0.15) * 3.2, 0), 1);
       for (let ci = 0; ci < this.clouds.length; ci++) {
         const c = this.clouds[ci];
-        c.position.x += this._cloudWind * dt;
+        // §6 M3 · the deck rides the same field the grass does, veered and
+        // sped up by the Ekman spiral rather than by a random scalar
+        if (this.windSys) {
+          const cw = this._cw || (this._cw = { x: 0, z: 0 });
+          c.position.x += cw.x * dt;
+          c.position.z += cw.z * dt;
+        } else {
+          c.position.x += this._cloudWind * dt;
+        }
         if (c.position.x > 4600) c.position.x -= 9200;
         if (c.position.x < -4600) c.position.x += 9200;
         c.material.color.setRGB(0.2 + day * 0.85, 0.2 + day * 0.85, 0.24 + day * 0.88)
@@ -2026,6 +2081,8 @@ export class SurfaceScale {
       this._pm.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
       this._frustum.setFromProjectionMatrix(this._pm);
       let blades = 0, drawn = 0;
+      // one evaluation of the deck's wind a frame, shared by every cloud
+      this._cw = this.cloudWind();
       const dusk = Math.min(Math.max((this.uSunDir.value.y + 0.12) / 0.24, 0), 1);
       for (const ring of this.meadow) {
         ring.update(this.body.x, this.body.z, this.body.y, this.uTime.value,
