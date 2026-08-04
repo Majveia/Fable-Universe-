@@ -79,8 +79,6 @@ export const STREAM = {
   /** drag begins here, as a fraction of the bound — a ceiling you feel before
    *  you hit is a ceiling that never feels like a wall */
   softAt: 0.72,
-  /** and the queue's own pressure, as a fraction of the cache cap */
-  queueAt: 0.55,
 };
 
 const clamp = (x, lo, hi) => (x < lo ? lo : x > hi ? hi : x);
@@ -125,6 +123,26 @@ export function effectiveChord({ R, maxDepth, splitK, alt }) {
 /** the altitude below which the maxDepth floor is what binds */
 export function floorAltitude({ R, maxDepth, splitK }) {
   return chordAt(R, maxDepth) * reachChords(splitK);
+}
+
+/**
+ * The deepest depth the split rule actually reaches at an altitude.
+ *
+ * **Floor, not round**, and the difference is not cosmetic. The tree refines to
+ * depth `d` while `alt < c(d)·(2·splitK+1)`, so the deepest level present is the
+ * floor of the log — at 1400 m over an Earth-sized world that is 16, where
+ * rounding says 17. A level that is never built cannot arrive, so anything
+ * measuring "how far behind is the ground" against a rounded target reads a
+ * *permanent* shortfall at any speed, and a governor fed that signal would drag
+ * for ever. Which is the one failure mode a governor must not have.
+ *
+ * The epsilon is for the exact-power case: `log2` of a ratio that is exactly
+ * 2^18 can land at 17.999999999999996.
+ */
+export function wantedDepth({ R, maxDepth, splitK, alt }) {
+  const c = effectiveChord({ R, maxDepth, splitK, alt });
+  const d = Math.floor(Math.log2(chordAt(R, 0) / c) + 1e-9);
+  return Math.min(maxDepth, Math.max(0, d));
 }
 
 /**
@@ -212,14 +230,6 @@ export class StreamGovernor {
     });
   }
 
-  /** how full the build queue is, 0..1 — the *other* thing that says "slow down" */
-  queueLoad() {
-    const s = this.quad?.stats;
-    if (!s) return 0;
-    const cap = this.quad.cap || 1;
-    return clamp(s.pending / cap, 0, 1);
-  }
-
   /**
    * The whole governor in one call: given where you are, how fast you want to
    * go, and a floor speed you are always allowed, return the speed to use.
@@ -245,15 +255,25 @@ export class StreamGovernor {
       out = hard * (STREAM.softAt + (1 - STREAM.softAt) * eased);
     }
 
-    // and the queue's own back-pressure, which catches the cases the altitude
-    // model cannot see — a descent director streaming ahead of you, a city pad
-    // regrading the ground, a cold cache after a scale change
-    const q = this.queueLoad();
-    if (q > STREAM.queueAt) {
-      const t = (q - STREAM.queueAt) / (1 - STREAM.queueAt);
-      out *= 1 - 0.55 * t * t;
-    }
-
+    // There was a second term here, reading back-pressure off the build queue,
+    // and it was deleted rather than fixed. Two reasons, both worth recording.
+    //
+    // It could not fire: `quadtree.js:334` only ever dispatches to *idle*
+    // workers, so `stats.pending` is bounded by the worker count — about four
+    // against a cache cap of nine hundred. `pending/cap` tops out near 0.011
+    // and the knee sat at 0.55. Dead code, and the test written for it
+    // fabricated a state the code cannot reach, which is worse than no test.
+    //
+    // Its obvious replacement — how many LOD levels the drawn ground is behind
+    // — is a genuine signal and is what the suite now measures. But as a second
+    // control loop inside the governor it is a feedback path that slowing down
+    // itself relieves, and nothing offline can show that converges rather than
+    // hunts. The altitude bound alone gives zero deficit in every simulated
+    // configuration, so the second loop is not needed to pass the gate; it
+    // would only be earning its keep on transients — a descent director
+    // streaming ahead of you, a city pad regrading the ground — that no
+    // offline instrument can produce. That makes it a change to bring back
+    // *with* the hardware run that could show it working, not before one.
     out = Math.max(out, Math.min(want, floor));
     this.pressure = want > 1e-9 ? clamp(1 - out / want, 0, 1) : 0;
     return out;

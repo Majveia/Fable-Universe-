@@ -1,11 +1,11 @@
 {
   "schema": "aeon-shadercheck/3",
-  "when": "2026-08-04T22:29:10.352Z",
+  "when": "2026-08-04T23:19:01.446Z",
   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
   "softwareRasterizer": true,
   "passes": [
     {
-      "flags": "m3=1&m2=1",
+      "flags": "m5=1&m3=1&m2=1",
       "mode": "stations",
       "complete": true,
       "shadersCompiled": 204,
@@ -23,10 +23,10 @@
       "detail": []
     },
     {
-      "flags": "m3=1&m2=1&paint=1&mat=1&sea=1&ridge=1",
+      "flags": "m5=1&m2=1&paint=1&mat=1&sea=1&ridge=1",
       "mode": "stations",
       "complete": true,
-      "shadersCompiled": 208,
+      "shadersCompiled": 204,
       "failures": 0,
       "warnings": 0,
       "scalesVisited": [

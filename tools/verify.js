@@ -66,9 +66,9 @@ import { QUALITY } from '../src/quality.js';
 import {
   DIAGONAL, HOVER, Hover, MOUNT, Mount, STREAM, StreamGovernor, chordAt,
   demandConst, demandRate, effectiveChord, floorAltitude, handMomentum,
-  maxSpeed, reachChords,
+  maxSpeed, reachChords, wantedDepth,
 } from '../src/vehicle.js';
-import { surfaceRadius, uvToDir } from '../src/tilebuild.js';
+import { FACES, surfaceRadius, uvToDir } from '../src/tilebuild.js';
 
 let failures = 0;
 let checks = 0;
@@ -4086,6 +4086,134 @@ function qtFly({ start, twist, altU, vU, splitK, job, seconds = 2, dt = 1 / 60 }
   return tot / (frames * dt);
 }
 
+/** the tile directly under a direction, at a depth — `quadtree.js:181`'s
+ *  projection, which is the only exact way to name the nadir cell */
+function qtNadir(cd, depth) {
+  const ax = Math.abs(cd[0]), ay = Math.abs(cd[1]), az = Math.abs(cd[2]);
+  let f;
+  if (ax >= ay && ax >= az) f = cd[0] > 0 ? 0 : 1;
+  else if (ay >= ax && ay >= az) f = cd[1] > 0 ? 2 : 3;
+  else f = cd[2] > 0 ? 4 : 5;
+  const F = FACES[f];
+  const dn = cd[0] * F.n[0] + cd[1] * F.n[1] + cd[2] * F.n[2];
+  const a = (cd[0] * F.r[0] + cd[1] * F.r[1] + cd[2] * F.r[2]) / dn;
+  const b = (cd[0] * F.u[0] + cd[1] * F.u[1] + cd[2] * F.u[2]) / dn;
+  const n = 1 << depth;
+  const i = Math.min(Math.max(((Math.atan(a) / (Math.PI / 4) + 1) / 2 * n) | 0, 0), n - 1);
+  const j = Math.min(Math.max(((Math.atan(b) / (Math.PI / 4) + 1) / 2 * n) | 0, 0), n - 1);
+  return f + ':' + depth + ':' + i + ':' + j;
+}
+
+/**
+ * One frame of the walk, *with residency* — `quadtree.js:278`'s `ready` rule.
+ *
+ * A node keeps drawing itself until all four children are resident, which is
+ * what makes refinement stream in with no holes. It is also what makes falling
+ * behind read as coarse ground rather than as a gap, and then as a pop when the
+ * stream catches up. So the depth actually drawn under the camera is the pop-in
+ * precursor, and it is pure bookkeeping.
+ */
+function qtWalkResident(cam, resident, splitK, job, maxDepth = QT.maxDepth) {
+  const R = QT.R;
+  const camR = Math.hypot(cam[0], cam[1], cam[2]);
+  const cd = [cam[0] / camR, cam[1] / camR, cam[2] / camR];
+  const horizon = Math.acos(Math.min(R * 0.995 / Math.max(camR, R), 1));
+  const shellK = surfaceRadius(cd[0], cd[1], cd[2], job) / R;
+  const misses = [];
+  let drawnUnder = -1;
+  const d3 = [0, 0, 0];
+
+  const visit = (f, d, i, j) => {
+    const span = 2 / (1 << d);
+    uvToDir(f, -1 + (i + 0.5) * span, -1 + (j + 0.5) * span, d3);
+    const ang = QT_HALF_ANG / (1 << d);
+    const dot = d3[0] * cd[0] + d3[1] * cd[1] + d3[2] * cd[2];
+    if (d >= 2 && dot < Math.cos(horizon + ang * 2.4 + Math.sqrt(2 * QT.amp / R) + 0.02)) return;
+    const sx = d3[0] * R * shellK - cam[0];
+    const sy = d3[1] * R * shellK - cam[1];
+    const sz = d3[2] * R * shellK - cam[2];
+    const dist = Math.max(Math.hypot(sx, sy, sz) - R * ang, 0.002);
+    const chord = R * ang * 2;
+    const key = f + ':' + d + ':' + i + ':' + j;
+
+    if (d < maxDepth && dist < chord * splitK) {
+      let ready = true;
+      for (let q = 0; q < 4; q++) {
+        const ci = i * 2 + (q & 1), cj = j * 2 + (q >> 1);
+        const ck = f + ':' + (d + 1) + ':' + ci + ':' + cj;
+        if (!resident.has(ck)) { ready = false; misses.push({ key: ck, prio: chord / dist }); }
+      }
+      if (ready) {
+        for (let q = 0; q < 4; q++) visit(f, d + 1, i * 2 + (q & 1), j * 2 + (q >> 1));
+        return;
+      }
+    }
+    if (d > drawnUnder && resident.has(key) && key === qtNadir(cd, d)) drawnUnder = d;
+  };
+  for (let f = 0; f < 6; f++) visit(f, 0, 0, 0);
+  return { misses, drawnUnder };
+}
+
+/**
+ * Fly with a worker pool, and report how far behind the ground got.
+ *
+ * `speedMul` flies at a multiple of the governor's own ceiling, which is what
+ * turns "is the bound right" into a measurement: at 1× the ground should never
+ * fall behind, and far above it, it must.
+ */
+function qtStream({ splitK, job, W, tau, altU, speedMul, seconds = 8, dt = 1 / 60 }) {
+  const R = QT.R;
+  const nrm = (v) => { const l = Math.hypot(...v); return v.map((q) => q / l); };
+  const a = nrm([0.31, 0.42, 0.85]);
+  let t0 = [0, 1, 0];
+  const dp = t0[0] * a[0] + t0[1] * a[1] + t0[2] * a[2];
+  t0 = nrm([t0[0] - dp * a[0], t0[1] - dp * a[1], t0[2] - dp * a[2]]);
+  const posAt = (arc) => {
+    const ang = arc / R, ca = Math.cos(ang), sa = Math.sin(ang);
+    const dir = [a[0] * ca + t0[0] * sa, a[1] * ca + t0[1] * sa, a[2] * ca + t0[2] * sa];
+    const r = surfaceRadius(dir[0], dir[1], dir[2], job) + altU;
+    return [dir[0] * r, dir[1] * r, dir[2] * r];
+  };
+
+  const gov = new StreamGovernor(null, { R, maxDepth: QT.maxDepth, splitK, workers: W, tau });
+  gov.samples = 1;                                  // τ is pinned for the test
+  const want = wantedDepth({ R, maxDepth: QT.maxDepth, splitK, alt: altU });
+
+  // warm start: converge the tree where the flight begins, so what is measured
+  // is the flight rather than a cold cache
+  const resident = new Set();
+  for (let warm = 0; warm < 600; warm++) {
+    const { misses } = qtWalkResident(posAt(0), resident, splitK, job);
+    if (!misses.length) break;
+    for (const m of misses) resident.add(m.key);
+  }
+
+  const inflight = new Map();
+  let free = W, t = 0, s = 0, behind = 0, jumps = 0, worst = 0, prevDrawn = -1, n = 0;
+  for (; n * dt < seconds; n++) {
+    s += gov.ceiling(altU) * speedMul * dt;
+    t += dt;
+    const { misses, drawnUnder } = qtWalkResident(posAt(s), resident, splitK, job);
+    for (const [k, fin] of inflight) {
+      if (fin <= t) { inflight.delete(k); resident.add(k); free++; }
+    }
+    misses.sort((x, y) => y.prio - x.prio);
+    for (const m of misses) {
+      if (free <= 0) break;
+      if (inflight.has(m.key) || resident.has(m.key)) continue;
+      inflight.set(m.key, t + tau);
+      free--;
+    }
+    const def = Math.max(0, want - drawnUnder);
+    if (def >= 1) behind++;
+    if (def > worst) worst = def;
+    // a level arriving late is the pop: the ground under you jumps resolution
+    if (prevDrawn >= 0 && drawnUnder > prevDrawn && n > 10) jumps++;
+    prevDrawn = drawnUnder;
+  }
+  return { behind: behind / n, worst, jumps, frames: n };
+}
+
 function suiteVehicle() {
   console.log('\n--- vehicle (§6 M5) ---');
   const job = { seed: 0x51ee7, ocean: 0.02, sea: true, R: QT.R, amp: QT.amp, res: 33, bathy: true };
@@ -4265,18 +4393,90 @@ function suiteVehicle() {
     }
     ok('and asking for more never returns less', mono);
 
-    // the queue's own back-pressure, which catches what altitude cannot see
-    const q = new StreamGovernor(
-      { stats: { pending: 700 }, cap: 900 },
-      { R: QT.R, maxDepth: 18, splitK: 6.5, workers: 4, tau: 0.0098 });
-    ok('§6 M5 · a full build queue slows the craft even under the altitude bound',
-      q.govern(alt, lim * 0.5) < lim * 0.5,
-      `pending 700 of 900 → ${(q.pressure * 100).toFixed(0)}% pressure`);
-    const idle = new StreamGovernor(
-      { stats: { pending: 0 }, cap: 900 },
-      { R: QT.R, maxDepth: 18, splitK: 6.5, workers: 4, tau: 0.0098 });
-    ok('and an empty one costs nothing at all — a governor that always drags is a top speed',
-      idle.govern(alt, lim * 0.5) === lim * 0.5);
+  }
+
+  // --- wantedDepth: floor, not round --------------------------------------
+  //
+  // A regression test for a bug that nearly shipped. `round(log2(c0/c_eff))`
+  // claims a level the tree never builds at some altitudes — 17 at 1400 m,
+  // where the split rule reaches 16 — and a deficit measured against a level
+  // that cannot exist is a *permanent* deficit at any speed. As a back-pressure
+  // signal that would have been a governor that always drags, which is the
+  // exact failure the test above names. The split rule is the reference.
+  {
+    const g = { R: QT.R, maxDepth: QT.maxDepth, splitK: 6.5 };
+    const splitRule = (alt) => {
+      let deepest = 0;
+      for (let d = 0; d <= QT.maxDepth; d++) if (alt < chordAt(QT.R, d) * reachChords(6.5)) deepest = d;
+      return deepest;
+    };
+    let agree = true;
+    const rows = [];
+    for (const altM of [50, 200, 400, 500, 900, 1400, 3000, 12000, 60000]) {
+      const alt = altM / unitM;
+      const got = wantedDepth({ ...g, alt });
+      const ref = splitRule(alt);
+      if (got !== ref) agree = false;
+      rows.push(`${altM}m→${got}`);
+    }
+    ok('§6 M5 · the wanted depth is the one the split rule actually reaches',
+      agree, rows.join(' · '));
+    ok('and it never exceeds the tree\'s own maximum',
+      wantedDepth({ ...g, alt: 1e-9 }) === QT.maxDepth);
+  }
+
+  // --- the gate's own clause, simulated ------------------------------------
+  //
+  // §6 M5's gate says "no pop-in", and the assumption has been that only a GPU
+  // can answer it. Not quite. Pop-in has a precursor that is pure bookkeeping:
+  // the deepest tile actually *drawn* under you falls behind the depth the
+  // split rule asks for, and then catches up in a jump. So: the walk, a worker
+  // pool finishing W tiles every τ, and quadtree.js's own `ready` rule. Fly it
+  // at the bound and far above it, and compare.
+  {
+    const job2 = { seed: 0x51ee7, ocean: 0.02, sea: true, R: QT.R, amp: QT.amp, res: 33, bathy: true };
+    const cfg = { splitK: 6.5, job: job2, W: 2, tau: 0.030, altU: 400 / unitM, seconds: 7 };
+
+    const at1 = qtStream({ ...cfg, speedMul: 1.0 });
+    ok('§6 M5 · at the bound the ground never falls behind — no pop, by construction',
+      at1.behind === 0 && at1.worst === 0 && at1.jumps === 0,
+      `${at1.frames} frames · ${(at1.behind * 100).toFixed(0)}% behind · `
+      + `worst ${at1.worst} levels · ${at1.jumps} LOD jumps`);
+
+    // The same pipeline must fail when over-driven, or the clean run above is
+    // passing for the wrong reason — a simulation that cannot fail proves
+    // nothing. And the speed to fail it at is not one to invent: it is what
+    // `planetscale.js:1514`'s law actually asks for on this machine.
+    const ref = new StreamGovernor(null, {
+      R: QT.R, maxDepth: QT.maxDepth, splitK: 6.5, workers: cfg.W, tau: cfg.tau,
+    });
+    ref.samples = 1;
+    const oldLaw = Math.min(Math.max(cfg.altU * 0.8, 0.008), 1600) * 3.4;
+    const mul = oldLaw / ref.ceiling(cfg.altU);
+    const over = qtStream({ ...cfg, speedMul: mul });
+    ok('§11 · and the law that shipped drives it straight into the gate\'s forbidden word',
+      over.behind > 0.5 && over.jumps > 0,
+      `${mul.toFixed(0)}× the bound: ${(over.behind * 100).toFixed(0)}% of frames behind · `
+      + `worst ${over.worst} levels · ${over.jumps} LOD jumps`);
+    // A sustained deficit is not yet a *pop* — the ground simply stays coarse.
+    // The pop is the catching-up, so the jump count is the clause's own word
+    // and it has to be non-zero somewhere for the test to mean what it says.
+    const mid = qtStream({ ...cfg, speedMul: 9 });
+    ok('while a milder over-drive only holds the ground coarse — the pop is the recovery',
+      mid.behind > 0.3 && mid.worst >= 1,
+      `at 9×: ${(mid.behind * 100).toFixed(0)}% behind, worst ${mid.worst} level, `
+      + `${mid.jumps} jumps — behind without ever catching up`);
+
+    // The bound is conservative, and by how much is worth recording rather than
+    // spending. Bisecting the onset over 16 configurations put the *lowest* at
+    // 1.60× — everything else between 1.8× and 7×. Taking that headroom would
+    // buy a quarter more speed at the cost of turning a derived constant into
+    // one fitted from sixteen samples on one route, so it is not taken. This
+    // pins the fact rather than the decision.
+    const head = qtStream({ ...cfg, speedMul: 1.5 });
+    ok('§11 · and the bound is conservative — measured headroom, deliberately unspent',
+      head.behind === 0,
+      'clean at 1.5× here; lowest onset over 16 configurations was 1.60×');
   }
 
   // --- τ is measured, and one bad tile must not raise the speed limit ------
