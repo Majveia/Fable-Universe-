@@ -31,7 +31,7 @@ import { makeGround } from '../src/ground.js';
 import {
   ARM, GAIT, LOOK, Walker, gravityOf, replay, sweepArm,
 } from '../src/avatar.js';
-import { BINDINGS, JUMP_CODE, input, setAnalog } from '../src/input.js';
+import { BINDINGS, JUMP_CODE, addLook, input, setAnalog } from '../src/input.js';
 import {
   LAYERS, MATERIAL_GLSL, blend, materialPalette, moistureAt, snowLine, worldBias,
 } from '../src/material.js';
@@ -1978,6 +1978,63 @@ function suiteWalk() {
     setAnalog({ x: 0.25, y: 0.4 });
     const kept = Math.hypot(input.move.x, input.move.y);
     setAnalog(null);
+  // --- §6 M4's gate · input to visible response within two frames ----------
+  //
+  // The clause reads "input → visible response ≤ 2 frames", and it is a claim
+  // about *buffering*, not about wall-clock latency — a machine's frame time is
+  // its own business, but a pipeline that holds an event for a frame before
+  // acting on it is a defect on every machine equally. So it is measured in
+  // frames, structurally: press on frame 0, and the body must have moved by the
+  // end of frame 1.
+  //
+  // One frame would be the theoretical floor and is not achievable: the event
+  // arrives between frames, so the earliest it can be *acted* on is the next
+  // step. Two is the budget because that leaves exactly one frame of slack, and
+  // anything that quietly adds a second buffer eats it.
+  {
+    const w = new Walker({ heightAt: () => 0, gravity: 9.80665 });
+    w.place(0, 0);
+    const dt = 1 / 60;
+    const idle = { move: { x: 0, y: 0 } };
+    const fwd = { move: { x: 0, y: -1 } };
+
+    // settle, so the measurement is of the press and not of the spawn
+    for (let i = 0; i < 30; i++) w.step(dt, idle, 0);
+    const still = { x: w.pos.x, z: w.pos.z };
+
+    // frame 0: the press arrives and is stepped
+    w.step(dt, fwd, 0);
+    const after1 = Math.hypot(w.pos.x - still.x, w.pos.z - still.z);
+    // frame 1
+    w.step(dt, fwd, 0);
+    const after2 = Math.hypot(w.pos.x - still.x, w.pos.z - still.z);
+
+    ok('§6 M4 · a press moves the body within one step, not two',
+      after1 > 1e-6, `moved ${(after1 * 1000).toFixed(1)} mm on the first frame`);
+    ok('and it is still moving on the second — no single-frame twitch',
+      after2 > after1 * 1.5, `${(after1 * 1000).toFixed(1)} → ${(after2 * 1000).toFixed(1)} mm`);
+
+    // a release must stop it just as promptly, which is the half nobody tests
+    for (let i = 0; i < 20; i++) w.step(dt, fwd, 0);   // up to speed
+    const moving = { x: w.pos.x, z: w.pos.z };
+    w.step(dt, idle, 0);
+    const coast1 = Math.hypot(w.pos.x - moving.x, w.pos.z - moving.z);
+    w.step(dt, idle, 0);
+    const coast2 = Math.hypot(w.pos.x - moving.x, w.pos.z - moving.z) - coast1;
+    ok('and a release is obeyed as promptly as a press',
+      coast2 < coast1, `coast ${(coast1 * 1000).toFixed(1)} then `
+      + `${(coast2 * 1000).toFixed(1)} mm — decelerating, not gliding`);
+
+    // and the look pipeline: a delta must be consumed by the frame that reads
+    // it, or the camera lags the mouse by exactly the buffer nobody can see
+    addLook(0.5, 0.25);
+    const took = input.takeLook();
+    const after = input.takeLook();
+    ok('§6 M4 · a look delta is consumed once and does not linger a frame',
+      Math.abs(took.x - 0.5) < 1e-12 && after.x === 0 && after.y === 0,
+      'takeLook zeroes the store, so no delta is applied twice or held over');
+  }
+
     ok('an analog source writes the axis directly, magnitude intact',
       Math.abs(kept - Math.hypot(0.25, 0.4)) < 1e-12,
       `|move| = ${kept.toFixed(4)} — the synthetic-KeyboardEvent bridge`
