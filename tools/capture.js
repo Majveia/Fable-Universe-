@@ -28,6 +28,15 @@ const settle = Number(arg('settle', 220));
 const settleCapMs = Number(arg('settle-cap', 90)) * 1000;
 const benchTimeoutMs = Number(arg('bench-timeout', 45)) * 60 * 1000;
 const tiers = String(arg('tiers', 'desktop')).split(',').map(s => s.trim()).filter(Boolean);
+/**
+ * Extra query appended to every station — `--extra "m5=1"`.
+ *
+ * `gate.js` has had this since M1 and this had not, which meant a feature
+ * behind a default-off flag could be *scored* but never *photographed*. §7.4
+ * says build behind a flag and §7.5 says capture, and without this those two
+ * instructions could not both be followed for the same commit.
+ */
+const extra = arg('extra', '') === true ? '' : String(arg('extra', ''));
 const outDir = resolve(REPO, 'docs/captures', milestone);
 
 for (const t of tiers) if (!TIERS[t]) throw new Error(`unknown tier "${t}" — pick from ${Object.keys(TIERS)}`);
@@ -63,7 +72,7 @@ function stations(route) {
     ['black-hole', `${base}&g=${galaxySeed}&bh=1`],
   ];
   if (giant >= 0) list.push(['cloud-deck', `${base}&g=${galaxySeed}&s=${starSeed}&p=${giant}&cl=1`]);
-  return list;
+  return extra ? list.map(([n, q]) => [n, `${q}&${extra}`]) : list;
 }
 
 // Wait for N rendered frames, not N milliseconds — that is the whole point,
@@ -111,7 +120,13 @@ for (const f of await readdir(outDir).catch(() => [])) {
   if (/\.(png|json)$/.test(f)) await rm(join(outDir, f));
 }
 
-const manifest = { schema: 'aeon-capture/1', milestone, seed, when: new Date().toISOString(), tiers: {} };
+// `extra` is recorded, not just applied: a capture set shot behind a flag and
+// one shot without it are different photographs of different software, and the
+// artefact has to say which it is or §7.7's re-shoot compares two unlike things.
+const manifest = {
+  schema: 'aeon-capture/1', milestone, seed, extra: extra || null,
+  when: new Date().toISOString(), tiers: {},
+};
 
 for (const tier of tiers) {
   const cfg = TIERS[tier];
