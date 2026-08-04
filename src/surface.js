@@ -1097,10 +1097,9 @@ export class SurfaceScale {
 
     const grassMul = qArr('grass', 'grass');
     const segs = qArr('blades', 'blades');
-    const palette = {
-      base: [this.pp.colC.r * 0.7, this.pp.colC.g * 0.8, this.pp.colC.b * 0.6],
-      tip: [this.pp.colC.r * 1.5, this.pp.colC.g * 1.4, this.pp.colC.b * 0.7],
-    };
+    // §9.1 · one base colour, and grassPalette() derives the ramp from it. The
+    // nine greens are the world's, not the reference's.
+    const palette = { base: [this.pp.colC.r, this.pp.colC.g, this.pp.colC.b] };
     // All four rings. §9.5: they exist *only* to switch tessellation, so the
     // only thing that differs between them here is `seg` and the row's own
     // per-ring multiplier — the density is one continuous law across all of
@@ -1112,6 +1111,12 @@ export class SurfaceScale {
         seg: segs[r],
         density: grassMul[r],
         palette,
+        // the *same* uniform objects the sky and terrain hold, so the grass
+        // cannot be lit by yesterday's sun — §6 M3's one-field doctrine
+        // applied to light rather than to wind
+        sunDir: this.uSunDir,
+        sunColor: this.uSunColor,
+        skyColor: { value: this.horizonColor },
       }));
     }
     for (const ring of this.meadow) this.scene.add(ring.group);
@@ -2021,8 +2026,10 @@ export class SurfaceScale {
       this._pm.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
       this._frustum.setFromProjectionMatrix(this._pm);
       let blades = 0, drawn = 0;
+      const dusk = Math.min(Math.max((this.uSunDir.value.y + 0.12) / 0.24, 0), 1);
       for (const ring of this.meadow) {
-        ring.update(this.body.x, this.body.z, this.body.y, this.uTime.value, this._frustum);
+        ring.update(this.body.x, this.body.z, this.body.y, this.uTime.value,
+          this._frustum, dusk);
         blades += ring.blades;
         drawn += ring.drawn;
       }

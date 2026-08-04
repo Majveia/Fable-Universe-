@@ -336,6 +336,79 @@ export function ringAt(d) {
  * is the only reason the exponent is 1.5 rather than something chosen purely
  * for how the far field looks.
  */
+export const MEADOW_COLOUR_GLSL = /* glsl */`
+  uniform vec3 uPal[${13}];   // grassPalette(), packed in PALETTE_KEYS order
+  #define P_ROOT   uPal[0]
+  #define P_LOW    uPal[1]
+  #define P_MID    uPal[2]
+  #define P_UPPER  uPal[3]
+  #define P_TIP    uPal[4]
+  #define P_TRANS  uPal[5]
+  #define P_SHEEN  uPal[6]
+  #define P_DRY    uPal[7]
+  #define P_PATCHA uPal[8]
+  #define P_PATCHB uPal[9]
+  #define P_PATCHC uPal[10]
+  #define P_PATCHD uPal[11]
+  #define P_HOLLOW uPal[12]
+
+  // Three ramps, not one. §9.2's paint() wants a shade, a mid and a lit stop
+  // per surface, and a blade's three are genuinely different curves: the lit
+  // face runs the full root-to-tip path, the mid stays nearer the base, and the
+  // shade never leaves the cool end — which is §9.2's "shadows change hue, they
+  // do not go black" expressed as a palette rather than as a clamp.
+  struct Blade { vec3 shade; vec3 mid; vec3 lit; vec3 trans; float dry; };
+
+  Blade bladeColour(float t, vec3 tint, float var) {
+    Blade b;
+    // the vertical hue path
+    b.lit = mix(P_LOW, P_MID, smoothstep(0.00, 0.26, t));
+    b.lit = mix(b.lit, P_UPPER, smoothstep(0.20, 0.66, t));
+    b.lit = mix(b.lit, P_TIP, smoothstep(0.80, 1.00, t));
+    b.mid = mix(P_ROOT, P_MID, smoothstep(0.05, 0.80, t));
+    b.shade = mix(P_ROOT * 0.82, P_LOW, smoothstep(0.15, 0.95, t));
+
+    // the meadow mosaic — four patch colours on two independent fields, so the
+    // drifts read as different sizes of the same thing rather than as one
+    // pattern at one scale
+    b.lit = mix(b.lit, P_PATCHC, smoothstep(0.35, 0.85, tint.x) * 0.45);
+    b.lit = mix(b.lit, P_PATCHA, smoothstep(0.65, 0.15, tint.x) * 0.35);
+    b.mid = mix(b.mid, P_PATCHB, smoothstep(0.30, 0.80, tint.y) * 0.40);
+    b.shade = mix(b.shade, P_HOLLOW, smoothstep(0.40, 0.90, tint.y) * 0.35);
+
+    // straw on the exposed shoulders, and only up the blade — a dry patch is
+    // dry at the tip first
+    b.dry = smoothstep(0.68, 0.99, tint.z) * smoothstep(0.45, 0.98, t);
+    b.lit = mix(b.lit, P_DRY, b.dry * 0.60);
+    b.mid = mix(b.mid, P_DRY * 0.72, b.dry * 0.42);
+
+    // no two blades in a meadow are the same green
+    float vj = 0.84 + 0.34 * var;
+    b.lit *= vj; b.mid *= vj * 0.98; b.shade *= 0.92 + 0.20 * var;
+    b.lit = mix(b.lit, P_PATCHD, smoothstep(0.72, 1.0, var) * 0.30);
+
+    b.trans = P_TRANS;
+    return b;
+  }
+
+  // §9.5's tier rule, as a number: "once a blade is two or three pixels wide,
+  // everything varying across its width is sub-pixel and should be dropped by
+  // tier." Sub-pixel detail does not resolve — it sparkles, and a meadow that
+  // sparkles reads as television static rather than as grass. Everything that
+  // varies ACROSS a blade retires on this; everything that varies ALONG one
+  // stays, because a blade is several pixels tall much further out than it is
+  // pixels wide.
+  float meadowNearK(float d) { return 1.0 - smoothstep(55.0, 240.0, d); }
+
+  // And the same argument one step further out. At a few hundred metres full
+  // contrast against the ground behind is what makes distant grass crawl as the
+  // camera moves; converging toward the sward mean keeps the texture and takes
+  // the edge energy out of it, which is what a painter does at that depth.
+  vec3 meadowSettle(vec3 col, vec3 swardMean, float d) {
+    return mix(col, mix(col, swardMean, 0.62), smoothstep(90.0, 430.0, d) * 0.42);
+  }
+`;
+
 export const MEADOW_GLSL = /* glsl */`
   uniform float uRingDn;      // this ring's quoted distance
   uniform float uChunkNear;   // the distance the CPU sized this chunk at

@@ -45,7 +45,8 @@ import {
   WIND_SPAN, bakeHeight, windUniforms,
 } from './wind.js';
 import {
-  MEADOW_GLSL, RINGS, bladeRoots, chunkGrid, chunkInstances, chunkNearDist,
+  MEADOW_COLOUR_GLSL, MEADOW_GLSL, PALETTE_KEYS, RINGS, bladeRoots, chunkGrid,
+  chunkInstances, chunkNearDist, grassPalette,
 } from './meadow.js';
 
 /**
@@ -266,6 +267,7 @@ export class WindField {
 
 const BLADE_VERT = /* glsl */`
   in vec3 position;
+  in float aSide;     // -1 .. +1 across the blade
   in vec2 aRoot;      // xz within the chunk
   in float aRand;     // the blade's own number: thinning, phase, variation
   in float aHeight;
@@ -274,19 +276,21 @@ const BLADE_VERT = /* glsl */`
   uniform mat4 viewMatrix;
   uniform vec2 uChunkOrigin;
   uniform vec3 uCam;
-  uniform float uTime;
   uniform float uHeightScale;
   uniform float uWidth;
   uniform float uForce;      // what the air can actually push with (rho U^2)
+  uniform float uCurl;       // 0 for a ribbon, ~0.55 for a rolled leaf
 
-  out float vTip;
-  out float vGust;
-  out float vRand;
+  out float vT;
+  out float vSide;
+  out float vVar;
+  out float vHead;
+  out vec3 vTint;
+  out float vBend;
+  out float vDist;
+  out vec3 vN;
+  out vec3 vW;
 
-  // Only what it calls. A blade samples the field; it does not evaluate one, so
-  // the gust lattice and the four-octave curl cascade have no business in a
-  // shader that runs on every vertex of every blade. WIND_MEAN_GLSL is the
-  // part windSample()'s analytic fallback needs.
   ${WIND_NOISE_GLSL}
   ${HEIGHT_GLSL}
   ${WIND_MEAN_GLSL}
@@ -296,35 +300,61 @@ const BLADE_VERT = /* glsl */`
   void main() {
     vec2 world = uChunkOrigin + aRoot;
     float ground = wTerrainH(world);
-    float d = length(vec3(world.x, ground, world.y) - uCam);
+    vec3 base = vec3(world.x, ground, world.y);
+    float d = length(base - uCam);
+    vDist = d;
 
     // the fine thinning. Collapsing is a multiply, not a branch — see the note
     // in src/flora.js on why that matters at this vertex count.
     float live = meadowKeep(d, aRand) ? 1.0 : 0.0;
 
-    vTip = position.y;
-    vRand = aRand;
+    vT = position.y;
+    vSide = aSide;
+    vVar = aRand;
+    // a seed head on one blade in ten
+    vHead = step(0.90, fract(aRand * 7.13));
 
-    // One sample, at one point, for every vertex of this blade. That is what
-    // makes the analytic-fallback branch inside windSample() warp-coherent, and
-    // §6 M3 calls that the single largest saving in this shader.
-    vec4 w = windSample(world, uTime);
+    // §9.5's tussock clustering, at a metre AND a decametre. Two scales rather
+    // than one because a meadow is lumpy at both, and a single octave reads as
+    // a texture rather than as ground that has plants growing in clumps on it.
+    float tuss = wNoise3(uWindSeed + 21, vec3(world * 0.62, 0.0)) * 0.5 + 0.5;
+    float swale = wNoise3(uWindSeed + 22, vec3(world * 0.043, 0.0)) * 0.5 + 0.5;
+    float dryF = wNoise3(uWindSeed + 23, vec3(world * 0.011, 0.0)) * 0.5 + 0.5;
+    vTint = vec3(tuss, swale, dryF);
+
+    // one sample, at one point, for every vertex of this blade — which is what
+    // makes windSample()'s fallback branch warp-coherent (§6 M3)
+    vec4 w = windSample(world, uWindTime);
     vec2 flow = w.rg;
-    vGust = w.a;
 
-    float h = aHeight * uHeightScale * live;
+    // tussocks are taller as well as differently coloured
+    float h = aHeight * uHeightScale * live * (0.72 + 0.56 * tuss) * (0.86 + 0.28 * swale);
+
     // the logarithmic boundary layer: roots barely move, tips whip
-    float lean = windProfile(vTip * max(h, 0.05)) * uForce;
-    // quasi-static balance of the wind against the blade's own stiffness, so a
-    // blade bows rather than shearing — and bows most where it is thinnest
-    float bend = lean * vTip * vTip * 0.16;
+    float lean = windProfile(vT * max(h, 0.05)) * uForce;
+    float bend = lean * vT * vT * 0.16;
+    vBend = clamp(bend * 2.2, 0.0, 1.5);
 
-    vec3 p = vec3(world.x, ground, world.y);
-    vec2 across = normalize(vec2(-flow.y, flow.x) + vec2(1e-6));
+    vec2 fdir = normalize(flow + vec2(1e-6));
+    vec2 across = vec2(-fdir.y, fdir.x);
+
+    vec3 p = base;
     p.xz += across * position.x * uWidth * live;
-    p.y += vTip * h;
-    p.xz += normalize(flow + vec2(1e-6)) * bend * h;
-    p.y -= bend * bend * h * 0.35;      // bowing shortens it, it does not stretch
+    p.y += vT * h;
+    p.xz += fdir * bend * h;
+    // the curve out of the blade's own plane, and the bow that shortens it —
+    // a bending blade does not stretch
+    p.xz += fdir * position.z * uWidth * live;
+    p.y -= bend * bend * h * 0.35;
+    vW = p;
+
+    // The fanned normal. A flat blade takes the face normal; a curved one
+    // rotates it across the width, which is the whole reason for the middle
+    // vertex — a rolled leaf catches the light differently on each side of its
+    // midrib and that is what stops a meadow reading as a field of ribbons.
+    vec3 along = normalize(vec3(fdir * bend * 1.4, 1.0));
+    vec3 face = normalize(cross(vec3(across.x, 0.0, across.y), along));
+    vN = normalize(face + vec3(across.x, 0.0, across.y) * aSide * uCurl);
 
     gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
   }
@@ -332,23 +362,81 @@ const BLADE_VERT = /* glsl */`
 
 const BLADE_FRAG = /* glsl */`
   precision highp float;
-  in float vTip;
-  in float vGust;
-  in float vRand;
+  in float vT;
+  in float vSide;
+  in float vVar;
+  in float vHead;
+  in vec3 vTint;
+  in float vBend;
+  in float vDist;
+  in vec3 vN;
+  in vec3 vW;
   out vec4 outColor;
-  uniform vec3 uBase;
-  uniform vec3 uTipCol;
+
+  uniform vec3 uCam;
+  uniform vec3 uSunDir;
   uniform vec3 uSunColor;
+  uniform vec3 uSkyColor;
+  uniform vec3 uSward;      // the mean the far field settles toward
+  uniform float uDusk;
+  ${MEADOW_COLOUR_GLSL}
 
   void main() {
-    // Act 3 is the law and the motion. §9.5's blade detail — the rolled
-    // cross-section, the tussock clustering, the meadow mosaic, the wind flash
-    // — is act 5, and putting a sketch of it here would make act 5's before and
-    // after meaningless. A root-to-tip hue path and per-blade variation only.
-    vec3 col = mix(uBase, uTipCol, vTip * vTip);
-    col *= 0.86 + 0.28 * fract(vRand * 71.3);
-    // the wind flash: a gust front turns blades edge-on and they catch the sun
-    col += uSunColor * smoothstep(1.1, 2.2, vGust) * 0.12 * vTip;
+    vec3 N = normalize(vN);
+    vec3 toEye = uCam - vW;
+    float dist = length(toEye);
+    vec3 V = toEye / max(dist, 1e-4);
+    if (!gl_FrontFacing) N = -N;
+
+    Blade b = bladeColour(vT, vTint, vVar);
+    float nearK = meadowNearK(vDist);
+
+    // Across-blade detail retires first, and the normal is the largest of it.
+    // Flattening toward vertical with distance is not a cheat — it is the same
+    // statement as "this is now one pixel wide", made to the lighting.
+    N = normalize(mix(vec3(0.0, 1.0, 0.0), N, 0.34 + 0.66 * nearK));
+
+    // §9.2's wrapped diffuse, in the shape the terrain uses when ?paint=1 is
+    // held back. The blade's three stops go through it as a ramp rather than a
+    // lerp, so the band edges §9.2 asks for survive.
+    float ndl = dot(N, uSunDir);
+    float wrap = clamp(ndl * 0.62 + 0.46, 0.0, 1.0);
+    // a blade is shadowed by the sward it stands in, and most at its base
+    float selfShadow = mix(0.62, 1.0, pow(vT, 0.75));
+    float ao = mix(0.34, 1.0, pow(vT, 0.55));
+
+    vec3 col = mix(b.shade, b.mid, smoothstep(0.10, 0.44, wrap));
+    col = mix(col, b.lit, smoothstep(0.52, 0.86, wrap));
+    col *= selfShadow * mix(0.55, 1.0, ao);
+    col *= uSunColor * mix(0.35, 1.0, uDusk);
+    // skylight, which is what actually lights the bottom of a sward
+    col += uSkyColor * (0.10 + 0.14 * ao) * b.mid;
+
+    // §9.2's subsurface transmission: only a blade nearly edge-on to the sun
+    // transmits, because that is light coming *through* rather than off
+    float trans = pow(max(dot(V, -uSunDir), 0.0), 3.2)
+                * pow(1.0 - abs(dot(N, uSunDir)), 2.2)
+                * smoothstep(0.12, 0.68, vT);
+    col += b.trans * trans * 0.55 * uDusk;
+
+    // §9.5's wind flash. A blade laid over by a gust turns its broad face up
+    // and catches the light — this is what makes a gust *visible* as a pale
+    // band racing across the field rather than merely present in the geometry.
+    float geom = pow(clamp(1.0 - abs(dot(N, V)), 0.0, 1.0), 1.9) * 0.45
+               + pow(clamp(dot(N, normalize(uSunDir + V)), 0.0, 1.0), 3.2) * 0.55;
+    float flash = smoothstep(0.34, 0.86, vBend) * smoothstep(0.14, 0.78, vT);
+    col = mix(col, P_SHEEN, geom * flash * 0.55 * (0.32 + 0.68 * nearK) * uDusk);
+
+    // a seed head on one blade in ten: a warm bronze plume at the very top
+    if (vHead > 0.5) {
+      col = mix(col, mix(P_DRY, vec3(0.32, 0.22, 0.14), 0.42) * 1.25,
+                smoothstep(0.78, 0.94, vT) * 0.82);
+    }
+
+    // the midrib, and the deep interior of the sward
+    col *= 1.0 - abs(vSide) * 0.13 * nearK;
+    col = meadowSettle(col, uSward, vDist);
+
     outColor = vec4(col, 1.0);
   }
 `;
@@ -359,20 +447,39 @@ const BLADE_FRAG = /* glsl */`
  * `seg` is the *only* thing a ring boundary changes (§9.5), which is why it is
  * a parameter here and a column in `quality.js` rather than a constant.
  */
-export function bladeGeometry(seg) {
+export function bladeGeometry(seg, curved = false) {
   const pos = [];
+  const side = [];
   const idx = [];
+  // Two triangles wide when curved (§9.5's "curved cross-section two triangles
+  // wide that shades like a rolled leaf") and one when not. The middle vertex
+  // is what lets the normal fan across the blade, and the fan is what makes a
+  // blade read as a rolled leaf instead of a ribbon.
+  //
+  // It is not free — three vertices a row rather than two, and four triangles a
+  // segment rather than two — so it is spent only where it resolves. §9.5 is
+  // explicit that across-blade detail is sub-pixel once a blade is two or three
+  // pixels wide, and the far rings are entirely inside that regime. They get
+  // the ribbon.
+  const cols = curved ? [-1, 0, 1] : [-1, 1];
   for (let i = 0; i <= seg; i++) {
     const t = i / seg;
-    const w = (1 - t) * (1 - t * 0.35) * 0.5;   // tapers, and faster near the tip
-    pos.push(-w, t, 0, w, t, 0);
+    const w = (1 - t) * (1 - t * 0.35) * 0.5;   // tapers, faster near the tip
+    for (const c of cols) {
+      pos.push(c * w, t, curved && c === 0 ? w * 0.35 : 0);
+      side.push(c);
+    }
   }
+  const n = cols.length;
   for (let i = 0; i < seg; i++) {
-    const a = i * 2;
-    idx.push(a, a + 1, a + 2, a + 2, a + 1, a + 3);
+    for (let c = 0; c < n - 1; c++) {
+      const a = i * n + c, b = a + 1, d = a + n, e = d + 1;
+      idx.push(a, b, d, d, b, e);
+    }
   }
   const g = new THREE.InstancedBufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('aSide', new THREE.Float32BufferAttribute(side, 1));
   g.setIndex(idx);
   return g;
 }
@@ -441,19 +548,34 @@ export class GrassRing {
     // own geometry object because `instanceCount` lives on the geometry rather
     // than the mesh — but the buffers are shared, so the cost is a few objects
     // and not a few hundred megabytes.
+    // §9.5's tier rule applied to geometry, not just to shading: a curved
+    // cross-section costs half again as many vertices and twice the triangles,
+    // and it only resolves where a blade is more than two or three pixels wide.
+    // The quality row's segment count is already that judgement — a ring drawn
+    // at one segment is a ring whose blades are marks, not leaves.
+    const curved = seg >= 3;
     const shared = {
       position: null,
+      side: null,
       index: null,
       aRoot: new THREE.InstancedBufferAttribute(root, 2),
       aRand: new THREE.InstancedBufferAttribute(rand, 1),
       aHeight: new THREE.InstancedBufferAttribute(height, 1),
     };
-    const proto = bladeGeometry(seg);
+    const proto = bladeGeometry(seg, curved);
     shared.position = proto.getAttribute('position');
+    shared.side = proto.getAttribute('aSide');
     shared.index = proto.getIndex();
+    this.curved = curved;
 
-    const base = palette?.base ?? [0.24, 0.36, 0.20];
-    const tip = palette?.tip ?? [0.62, 0.71, 0.34];
+    // §9.1 · the palette is the world's, derived from its vegetation colour
+    const pal = grassPalette(palette?.base ?? [0.24, 0.36, 0.20]);
+    const packed = PALETTE_KEYS.map((k) => new THREE.Vector3(...pal[k]));
+    // what the far field settles toward — the sward's own mean, so the
+    // convergence keeps the meadow's colour instead of greying toward nothing
+    const swardMean = new THREE.Vector3(
+      (pal.mid[0] + pal.low[0]) * 0.5, (pal.mid[1] + pal.low[1]) * 0.5,
+      (pal.mid[2] + pal.low[2]) * 0.5);
 
     // ONE material for the ring, not one per chunk.
     //
@@ -475,9 +597,9 @@ export class GrassRing {
         ...this.wf.sampleUniforms(),
         uChunkOrigin: { value: new THREE.Vector2(0, 0) },
         uCam: { value: new THREE.Vector3() },
-        uTime: { value: 0 },
         uHeightScale: { value: 1 },
         uWidth: { value: 0.028 },
+        uCurl: { value: curved ? 0.55 : 0.0 },
         uForce: { value: this.wf.wind.force },
         uRingDn: { value: this.spec.dn },
         uChunkNear: { value: this.spec.dn },
@@ -485,9 +607,12 @@ export class GrassRing {
         uHeightTex: this.wf.uniforms.uHeightTex,
         uHeightOrigin: this.wf.uniforms.uHeightOrigin,
         uHeightSpan: this.wf.uniforms.uHeightSpan,
-        uBase: { value: new THREE.Vector3(...base) },
-        uTipCol: { value: new THREE.Vector3(...tip) },
-        uSunColor: { value: new THREE.Vector3(1, 0.92, 0.78) },
+        uPal: { value: packed },
+        uSward: { value: swardMean },
+        uSunDir: opts.sunDir ?? { value: new THREE.Vector3(0.3, 0.4, 0.86) },
+        uSunColor: opts.sunColor ?? { value: new THREE.Vector3(1, 0.92, 0.78) },
+        uSkyColor: opts.skyColor ?? { value: new THREE.Vector3(0.36, 0.52, 0.78) },
+        uDusk: { value: 1 },
       },
       vertexShader: BLADE_VERT,
       fragmentShader: BLADE_FRAG,
@@ -511,6 +636,7 @@ export class GrassRing {
     // draws — which is what it always should have been.
     const geo = new THREE.InstancedBufferGeometry();
     geo.setAttribute('position', shared.position);
+    geo.setAttribute('aSide', shared.side);
     geo.setIndex(shared.index);
     geo.setAttribute('aRoot', shared.aRoot);
     geo.setAttribute('aRand', shared.aRand);
@@ -564,7 +690,7 @@ export class GrassRing {
    * is the difference between walking through a meadow and rebuilding one every
    * step.
    */
-  update(camX, camZ, camY, t, frustum = null) {
+  update(camX, camZ, camY, t, frustum = null, dusk = 1) {
     const chunk = this.spec.chunk;
     const ox = Math.floor(camX / chunk), oz = Math.floor(camZ / chunk);
     let live = 0, drawn = 0;
@@ -589,7 +715,8 @@ export class GrassRing {
     // took, which is the other half of that budget
     // per ring, and therefore written once rather than once per chunk
     this.material.uniforms.uCam.value.set(camX, camY, camZ);
-    this.material.uniforms.uTime.value = t;
+    this.material.uniforms.uWindTime.value = t;
+    this.material.uniforms.uDusk.value = dusk;
     this.blades = live;
     this.drawn = drawn;
   }
