@@ -455,6 +455,46 @@ export class GrassRing {
     const base = palette?.base ?? [0.24, 0.36, 0.20];
     const tip = palette?.tip ?? [0.62, 0.71, 0.34];
 
+    // ONE material for the ring, not one per chunk.
+    //
+    // Act 4 built 412 chunks across four rings, each with its own
+    // RawShaderMaterial. three caches programs by source, so that was still one
+    // shader compile — but it was 412 uniform sets to allocate, hold and walk
+    // on dispose, and the surface scale became slow enough to tear down that
+    // the compile gate's *next* navigation timed out. The defect showed up as
+    // "the black-hole scale was never reached", which is a symptom three files
+    // away from its cause.
+    //
+    // The two uniforms that genuinely differ per chunk are written in
+    // `onBeforeRender`, which three calls immediately before the draw and
+    // before `setProgram` uploads anything — the standard way to say "same
+    // shader, different transform" without minting a material to hold it.
+    const mat = new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        ...this.wf.sampleUniforms(),
+        uChunkOrigin: { value: new THREE.Vector2(0, 0) },
+        uCam: { value: new THREE.Vector3() },
+        uTime: { value: 0 },
+        uHeightScale: { value: 1 },
+        uWidth: { value: 0.028 },
+        uForce: { value: this.wf.wind.force },
+        uRingDn: { value: this.spec.dn },
+        uChunkNear: { value: this.spec.dn },
+        uDensityMul: { value: density },
+        uHeightTex: this.wf.uniforms.uHeightTex,
+        uHeightOrigin: this.wf.uniforms.uHeightOrigin,
+        uHeightSpan: this.wf.uniforms.uHeightSpan,
+        uBase: { value: new THREE.Vector3(...base) },
+        uTipCol: { value: new THREE.Vector3(...tip) },
+        uSunColor: { value: new THREE.Vector3(1, 0.92, 0.78) },
+      },
+      vertexShader: BLADE_VERT,
+      fragmentShader: BLADE_FRAG,
+      side: THREE.DoubleSide,
+    });
+    this.material = mat;
+
     for (let cx = -this.grid; cx <= this.grid; cx++) {
       for (let cz = -this.grid; cz <= this.grid; cz++) {
         const geo = new THREE.InstancedBufferGeometry();
@@ -465,31 +505,13 @@ export class GrassRing {
         geo.setAttribute('aHeight', shared.aHeight);
         geo.instanceCount = 0;
 
-        const mat = new THREE.RawShaderMaterial({
-          glslVersion: THREE.GLSL3,
-          uniforms: {
-            ...this.wf.sampleUniforms(),
-            uChunkOrigin: { value: new THREE.Vector2(0, 0) },
-            uCam: { value: new THREE.Vector3() },
-            uTime: { value: 0 },
-            uHeightScale: { value: 1 },
-            uWidth: { value: 0.028 },
-            uForce: { value: this.wf.wind.force },
-            uRingDn: { value: this.spec.dn },
-            uChunkNear: { value: this.spec.dn },
-            uDensityMul: { value: density },
-            uHeightTex: this.wf.uniforms.uHeightTex,
-            uHeightOrigin: this.wf.uniforms.uHeightOrigin,
-            uHeightSpan: this.wf.uniforms.uHeightSpan,
-            uBase: { value: new THREE.Vector3(...base) },
-            uTipCol: { value: new THREE.Vector3(...tip) },
-            uSunColor: { value: new THREE.Vector3(1, 0.92, 0.78) },
-          },
-          vertexShader: BLADE_VERT,
-          fragmentShader: BLADE_FRAG,
-          side: THREE.DoubleSide,
-        });
         const mesh = new THREE.Mesh(geo, mat);
+        mesh.userData.origin = new THREE.Vector2(0, 0);
+        mesh.userData.near = this.spec.dn;
+        mesh.onBeforeRender = () => {
+          mat.uniforms.uChunkOrigin.value.copy(mesh.userData.origin);
+          mat.uniforms.uChunkNear.value = mesh.userData.near;
+        };
         // Distance and frustum answer *different* questions — how far, and
         // whether it is behind you — and act 3 dismissed the second on the
         // grounds that it was the first asked twice. That was wrong.
@@ -509,7 +531,7 @@ export class GrassRing {
         // instanced geometry's local bounds.
         mesh.frustumCulled = false;
         mesh.userData.noCast = true;
-        this.chunks.push({ cx, cz, mesh, mat, geo });
+        this.chunks.push({ cx, cz, mesh, geo });
         this.group.add(mesh);
       }
     }
@@ -540,21 +562,24 @@ export class GrassRing {
       c.mesh.visible = count > 0;
       if (c.mesh.visible) drawn++;
       c.geo.instanceCount = count;
-      c.mat.uniforms.uChunkOrigin.value.set(gx * chunk, gz * chunk);
-      c.mat.uniforms.uChunkNear.value = dNear;
-      c.mat.uniforms.uCam.value.set(camX, camY, camZ);
-      c.mat.uniforms.uTime.value = t;
+      // per chunk, read back by its own onBeforeRender at draw time
+      c.mesh.userData.origin.set(gx * chunk, gz * chunk);
+      c.mesh.userData.near = dNear;
       live += count;
     }
     // what the CPU instanced this frame, before the shader's own thinning —
     // the number §5's budget is actually about — and how many draw calls it
     // took, which is the other half of that budget
+    // per ring, and therefore written once rather than once per chunk
+    this.material.uniforms.uCam.value.set(camX, camY, camZ);
+    this.material.uniforms.uTime.value = t;
     this.blades = live;
     this.drawn = drawn;
   }
 
   dispose() {
-    for (const c of this.chunks) { c.geo.dispose(); c.mat.dispose(); }
+    for (const c of this.chunks) c.geo.dispose();
+    this.material.dispose();
   }
 }
 

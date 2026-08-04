@@ -101,6 +101,17 @@ const jsonPath = resolve(REPO, String(arg('json', 'docs/captures/shaders.json'))
 const stationMode = arg('stations', false) !== false;
 const stationSeed = Number(arg('seed', 20250601));
 const stationFrames = Number(arg('frames', 90));
+/**
+ * Per-station navigation timeout, seconds.
+ *
+ * Playwright's default is 30 s, which is tuned for a page and not for a scale
+ * that has just built four rings of grass on a software rasteriser. The
+ * black-hole station timed out at exactly 30 s while the surface scale behind
+ * it was still tearing down — a real cost, but not a shader defect, and a gate
+ * that reports "not every scale was reached" because of it is telling the truth
+ * about the wrong thing.
+ */
+const stationNavMs = Number(arg('nav', 120)) * 1000;
 
 /**
  * The itinerary, resolved in-page from the seed with the same pure generators
@@ -179,7 +190,7 @@ for (const flags of passes) {
     for (const [name, q] of stations(route)) {
       const url = `${site.origin}/index.html?${q}${flags ? '&' + flags : ''}`;
       try {
-        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: stationNavMs });
         await page.evaluate(SETTLE, stationFrames);
         // Harvest before the next navigation. `addInitScript` re-runs on every
         // goto, so `window.__AEON_SHADERS` is a *fresh* array per station —
