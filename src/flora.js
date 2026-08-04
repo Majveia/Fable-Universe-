@@ -45,8 +45,8 @@ import {
   WIND_SPAN, bakeHeight, windUniforms,
 } from './wind.js';
 import {
-  MEADOW_COLOUR_GLSL, MEADOW_GLSL, PALETTE_KEYS, RINGS, bladeRoots, chunkGrid,
-  chunkInstances, chunkNearDist, grassPalette,
+  MEADOW_COLOUR_GLSL, MEADOW_GLSL, MEADOW_PART_GLSL, PALETTE_KEYS, RINGS,
+  bladeRoots, chunkGrid, chunkInstances, chunkNearDist, grassPalette,
 } from './meadow.js';
 
 /**
@@ -296,6 +296,7 @@ const BLADE_VERT = /* glsl */`
   ${WIND_MEAN_GLSL}
   ${WIND_SAMPLE_GLSL}
   ${MEADOW_GLSL}
+  ${MEADOW_PART_GLSL}
 
   void main() {
     vec2 world = uChunkOrigin + aRoot;
@@ -342,6 +343,10 @@ const BLADE_VERT = /* glsl */`
     p.xz += across * position.x * uWidth * live;
     p.y += vT * h;
     p.xz += fdir * bend * h;
+    // §6 M3 · the walker parts the grass. Applied after the wind rather than
+    // blended with it: a person walking through a meadow does not change which
+    // way the wind is blowing, they push blades aside on top of it.
+    p.xz += meadowPart(world, vT) * h * live;
     // the curve out of the blade's own plane, and the bow that shortens it —
     // a bending blade does not stretch
     p.xz += fdir * position.z * uWidth * live;
@@ -600,6 +605,7 @@ export class GrassRing {
         uHeightScale: { value: 1 },
         uWidth: { value: 0.028 },
         uCurl: { value: curved ? 0.55 : 0.0 },
+        uWalker: { value: new THREE.Vector4(0, -1e6, 0, 0) },
         uForce: { value: this.wf.wind.force },
         uRingDn: { value: this.spec.dn },
         uChunkNear: { value: this.spec.dn },
@@ -690,7 +696,7 @@ export class GrassRing {
    * is the difference between walking through a meadow and rebuilding one every
    * step.
    */
-  update(camX, camZ, camY, t, frustum = null, dusk = 1) {
+  update(camX, camZ, camY, t, frustum = null, dusk = 1, walker = null) {
     const chunk = this.spec.chunk;
     const ox = Math.floor(camX / chunk), oz = Math.floor(camZ / chunk);
     let live = 0, drawn = 0;
@@ -717,6 +723,14 @@ export class GrassRing {
     this.material.uniforms.uCam.value.set(camX, camY, camZ);
     this.material.uniforms.uWindTime.value = t;
     this.material.uniforms.uDusk.value = dusk;
+    // Only the near ring can resolve a parted blade — at ring 1's 22 m a 1.2 m
+    // disturbance is under a degree of arc, and past that it is a lie nobody
+    // can see costing a uniform write per frame.
+    if (walker && this.ring === 0) {
+      this.material.uniforms.uWalker.value.set(walker.x, walker.y, walker.z, walker.push);
+    } else {
+      this.material.uniforms.uWalker.value.w = 0;
+    }
     this.blades = live;
     this.drawn = drawn;
   }

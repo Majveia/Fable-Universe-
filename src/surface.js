@@ -2084,9 +2084,25 @@ export class SurfaceScale {
       // one evaluation of the deck's wind a frame, shared by every cloud
       this._cw = this.cloudWind();
       const dusk = Math.min(Math.max((this.uSunDir.value.y + 0.12) / 0.24, 0), 1);
+      // §6 M3's last gate clause, driven by §6 M4's single gait clock: one
+      // phase already runs the head bob and the footstep audio, so the grass
+      // the walker parts cannot drift out of sync with either — there is only
+      // one of them. A footfall pushes harder than the swing between, which is
+      // the difference between walking through grass and dragging a circle
+      // through it.
+      const w = this.walker;
+      const foot = w ? 0.62 + 0.38 * Math.abs(Math.cos(w.stepPhase * Math.PI)) : 1;
+      const walker = {
+        x: this.body.x,
+        y: this.body.y - EYE,
+        z: this.body.z,
+        // nothing to part while flying, and nothing to part while still
+        push: (this.fly || this.traveler?.riding) ? 0
+          : 0.75 * foot * Math.min(1, Math.hypot(this.vel?.x ?? 0, this.vel?.z ?? 0) / 1.5 + 0.35),
+      };
       for (const ring of this.meadow) {
         ring.update(this.body.x, this.body.z, this.body.y, this.uTime.value,
-          this._frustum, dusk);
+          this._frustum, dusk, walker);
         blades += ring.blades;
         drawn += ring.drawn;
       }

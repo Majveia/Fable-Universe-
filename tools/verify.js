@@ -60,7 +60,7 @@ import {
 import {
   DENS_POW, MEADOW_GLSL, RINGS, chunkCount, chunkGrid, chunkInstances,
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
-  bladeRoots, grassPalette, PALETTE_KEYS,
+  bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
 } from '../src/meadow.js';
 import { QUALITY } from '../src/quality.js';
 
@@ -3839,6 +3839,34 @@ function suiteMeadow() {
     ok('and one row change moves the blade budget by five times',
       hiBlades / lowBlades > 4.5,
       `${(lowBlades / 1000).toFixed(0)}k low vs ${(hiBlades / 1000).toFixed(0)}k ultra`);
+  }
+
+  // --- §6 M3 · the walker parts grass within 1.2 m -------------------------
+  //
+  // The last clause of the milestone's own gate, and the one that joins it to
+  // M4: the parting is driven by the single gait clock, so it cannot drift out
+  // of sync with the head bob or the footstep audio, because there is only one
+  // of them.
+  {
+    const code = MEADOW_PART_GLSL.replace(/\/\/[^\n]*/g, '');
+    ok('§6 M3 · the parting radius is the gate\'s own 1.2 m',
+      PART_RADIUS === 1.2 && code.includes('PART_R = 1.20'));
+    ok('and it falls to nothing at the radius, so there is no edge to see',
+      /smoothstep\(0\.0, PART_R, d\)/.test(code) && /if \(d > PART_R\) return vec2\(0\.0\)/.test(code));
+    ok('and tips swing furthest while roots barely move — the same cantilever',
+      /amount \* tip \* tip/.test(code));
+    ok('and it pushes *away* from the walker rather than in a fixed direction',
+      /vec2 away = root - uWalker\.xz/.test(code) && /normalize\(away/.test(code));
+
+    // the gait term: a footfall must push harder than the swing between, or it
+    // reads as a circle being dragged rather than as someone walking
+    const push = (phase) => 0.62 + 0.38 * Math.abs(Math.cos(phase * Math.PI));
+    const atFall = push(0), between = push(0.5);
+    ok('a footfall pushes harder than the swing between',
+      atFall > between * 1.4, `${atFall.toFixed(2)} at the footfall vs ${between.toFixed(2)} between`);
+    // and it is periodic in the gait, not in wall time
+    ok('and the push is periodic in the gait clock rather than in wall time',
+      Math.abs(push(0) - push(2)) < 1e-12 && Math.abs(push(0.5) - push(1.5)) < 1e-12);
   }
 
   // --- §9.5's blade palette, derived rather than transcribed ---------------
