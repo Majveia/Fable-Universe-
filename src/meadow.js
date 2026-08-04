@@ -205,6 +205,81 @@ export function shuffledIndices(seed, n) {
   return idx;
 }
 
+// ---------------------------------------------------------------------------
+// the colour of a blade — §9.5, act 5
+
+const mix3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const lum3 = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+const scale3 = (c, k) => [c[0] * k, c[1] * k, c[2] * k];
+
+/**
+ * §9.5's blade palette, derived from the world's own vegetation colour.
+ *
+ * The reference gives nine greens as hex literals. §9.1 is explicit that per-
+ * world palettes stay seed-derived and *"there is no default palette"* — so
+ * what ports is the **shape** of that ramp, not its values, exactly as §9.6
+ * ruled for the sky's four stops.
+ *
+ * The shape, read off the reference's own numbers: a blade runs from a dark,
+ * blue-shifted, desaturated root to a bright, yellow-shifted tip. Its root
+ * (`#2B564F`) is 0.30 of the mid-green's luminance and rotated toward teal; its
+ * tip (`#C6D46B`) is 2.1× and rotated toward yellow. That is a luminance ramp
+ * and a hue rotation, and both are things a base colour can be put through.
+ *
+ * Why teal at the root specifically, since it looks arbitrary: the base of a
+ * sward is shadowed by everything above it and lit almost entirely by skylight,
+ * which is blue. The root is not painted teal — it is painted *unlit*, and the
+ * only light down there is the sky's.
+ */
+export function grassPalette(base) {
+  // Two poles to rotate between, each normalised to the base's own luminance so
+  // that rotating hue never changes how bright the ramp is — the luminance ramp
+  // is the other axis and they must not interfere.
+  //
+  // The coefficients are calibrated, and §9.6 is the precedent for that:
+  // *"the stops above are that transfer's output for a G-type star at 13.5°.
+  // That is the port: not the values, the function that produced them."* The
+  // structure is the physics; the numbers are set so a temperate green
+  // reproduces the reference's own nine hand-picked colours, and then carry to
+  // any world's vegetation. `suiteMeadow` holds them to that.
+  const L = Math.max(lum3(base), 1e-4);
+  const norm = (c) => scale3(c, L / Math.max(lum3(c), 1e-4));
+  // skylight is blue and it is nearly all the light a root gets
+  const cool = norm([base[0] * 0.40, base[1] * 0.95, base[2] * 4.5]);
+  // a tip is thin enough to be lit through, so it runs warm
+  const warm = norm([base[0] * 1.9, base[1] * 0.7, base[2] * 0.8]);
+
+  const stop = (k, rot) => scale3(rot < 0 ? mix3(base, cool, -rot) : mix3(base, warm, rot), k);
+
+  return {
+    // the vertical path: five stops, root to tip
+    root: stop(0.30, -0.62),
+    low: stop(0.52, -0.30),
+    mid: stop(1.00, 0.00),
+    upper: stop(1.52, 0.26),
+    tip: stop(2.10, 0.52),
+    // what light coming *through* a blade looks like — §9.2's transmission
+    trans: stop(2.55, 0.66),
+    // the sheen a laid-over blade catches on a gust front
+    sheen: mix3(stop(2.4, 0.30), [1, 1, 1], 0.45),
+    // straw on the exposed shoulders
+    dry: mix3(stop(1.7, 0.72), [0.62, 0.50, 0.24], 0.45),
+    // the four-colour meadow mosaic: two cooler, two warmer, all near the base
+    patchA: stop(1.18, 0.22),
+    patchB: stop(0.86, -0.18),
+    patchC: stop(1.34, 0.10),
+    patchD: stop(0.74, -0.34),
+    // the deep interior of the sward, where nothing direct reaches
+    hollow: stop(0.22, -0.48),
+  };
+}
+
+/** the order `MEADOW_COLOUR_GLSL` expects them in, so a caller cannot mis-pack */
+export const PALETTE_KEYS = [
+  'root', 'low', 'mid', 'upper', 'tip', 'trans', 'sheen', 'dry',
+  'patchA', 'patchB', 'patchC', 'patchD', 'hollow',
+];
+
 /**
  * A chunk's blades: stratified, then shuffled. Both, and for different reasons.
  *
