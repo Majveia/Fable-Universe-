@@ -1,0 +1,325 @@
+{
+  "schema": "aeon-perf/1",
+  "seed": 20250601,
+  "tier": "desktop",
+  "qualityRow": "desktop",
+  "route": {
+    "galaxySeed": 443188473,
+    "starSeed": 2309765500,
+    "planetIndex": 0
+  },
+  "frames": 600,
+  "warmupFramesPerStation": 40,
+  "wallClockMs": 4520,
+  "fixedTimestepMs": 16.667,
+  "device": {
+    "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Laptop GPU (0x00002560) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "softwareRasterizer": false,
+    "gateValid": true,
+    "dpr": 1.12,
+    "viewport": [
+      2560,
+      1440
+    ],
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.7922.34 Safari/537.36"
+  },
+  "overall": {
+    "frameMs": {
+      "n": 360,
+      "mean": 0.802,
+      "p50": 0.4,
+      "p95": 2.1,
+      "p99": 2.7,
+      "max": 3
+    },
+    "fps": {
+      "p50": 2500,
+      "p95": 476.2,
+      "p99": 370.4
+    },
+    "cpuMs": {
+      "n": 360,
+      "mean": 0.626,
+      "p50": 0.3,
+      "p95": 1.8,
+      "p99": 2.4,
+      "max": 2.6
+    },
+    "drawCalls": {
+      "n": 360,
+      "mean": 44.306,
+      "p50": 25,
+      "p95": 92,
+      "p99": 104,
+      "max": 106
+    },
+    "triangles": {
+      "n": 360,
+      "mean": 55829.5,
+      "p50": 6493,
+      "p95": 188221,
+      "p99": 218941,
+      "max": 224061
+    }
+  },
+  "scales": [
+    {
+      "name": "cosmic",
+      "kind": "cosmic",
+      "frameMs": {
+        "n": 60,
+        "mean": 0.457,
+        "p50": 0.4,
+        "p95": 0.8,
+        "p99": 1,
+        "max": 1
+      },
+      "fps": {
+        "p50": 2500,
+        "p95": 1250,
+        "p99": 1000
+      },
+      "cpuMs": {
+        "n": 60,
+        "mean": 0.332,
+        "p50": 0.3,
+        "p95": 0.4,
+        "p99": 0.5,
+        "max": 0.5
+      },
+      "drawCalls": {
+        "n": 60,
+        "mean": 77,
+        "p50": 77,
+        "p95": 77,
+        "p99": 77,
+        "max": 77
+      },
+      "triangles": {
+        "n": 60,
+        "mean": 127,
+        "p50": 127,
+        "p95": 127,
+        "p99": 127,
+        "max": 127
+      }
+    },
+    {
+      "name": "galaxy",
+      "kind": "galaxy",
+      "frameMs": {
+        "n": 60,
+        "mean": 0.302,
+        "p50": 0.3,
+        "p95": 0.6,
+        "p99": 0.8,
+        "max": 0.8
+      },
+      "fps": {
+        "p50": 3333.3,
+        "p95": 1666.7,
+        "p99": 1250
+      },
+      "cpuMs": {
+        "n": 60,
+        "mean": 0.173,
+        "p50": 0.2,
+        "p95": 0.3,
+        "p99": 0.5,
+        "max": 0.5
+      },
+      "drawCalls": {
+        "n": 60,
+        "mean": 25,
+        "p50": 25,
+        "p95": 25,
+        "p99": 25,
+        "max": 25
+      },
+      "triangles": {
+        "n": 60,
+        "mean": 6493,
+        "p50": 6493,
+        "p95": 6493,
+        "p99": 6493,
+        "max": 6493
+      }
+    },
+    {
+      "name": "system",
+      "kind": "system",
+      "frameMs": {
+        "n": 60,
+        "mean": 0.422,
+        "p50": 0.4,
+        "p95": 0.8,
+        "p99": 1.5,
+        "max": 1.5
+      },
+      "fps": {
+        "p50": 2500,
+        "p95": 1250,
+        "p99": 666.7
+      },
+      "cpuMs": {
+        "n": 60,
+        "mean": 0.203,
+        "p50": 0.2,
+        "p95": 0.3,
+        "p99": 0.4,
+        "max": 0.4
+      },
+      "drawCalls": {
+        "n": 60,
+        "mean": 20,
+        "p50": 20,
+        "p95": 20,
+        "p99": 20,
+        "max": 20
+      },
+      "triangles": {
+        "n": 60,
+        "mean": 35499,
+        "p50": 35499,
+        "p95": 35499,
+        "p99": 35499,
+        "max": 35499
+      }
+    },
+    {
+      "name": "planet",
+      "kind": "planet",
+      "frameMs": {
+        "n": 60,
+        "mean": 1.898,
+        "p50": 1.9,
+        "p95": 2.5,
+        "p99": 3,
+        "max": 3
+      },
+      "fps": {
+        "p50": 526.3,
+        "p95": 400,
+        "p99": 333.3
+      },
+      "cpuMs": {
+        "n": 60,
+        "mean": 1.583,
+        "p50": 1.7,
+        "p95": 2,
+        "p99": 2.6,
+        "max": 2.6
+      },
+      "drawCalls": {
+        "n": 60,
+        "mean": 79.133,
+        "p50": 81,
+        "p95": 104,
+        "p99": 106,
+        "max": 106
+      },
+      "triangles": {
+        "n": 60,
+        "mean": 154088.6,
+        "p50": 157503,
+        "p95": 218941,
+        "p99": 224061,
+        "max": 224061
+      }
+    },
+    {
+      "name": "surface",
+      "kind": "surface",
+      "frameMs": {
+        "n": 60,
+        "mean": 1.513,
+        "p50": 1.4,
+        "p95": 2,
+        "p99": 3,
+        "max": 3
+      },
+      "fps": {
+        "p50": 714.3,
+        "p95": 500,
+        "p99": 333.3
+      },
+      "cpuMs": {
+        "n": 60,
+        "mean": 1.36,
+        "p50": 1.3,
+        "p95": 1.8,
+        "p99": 2.5,
+        "max": 2.5
+      },
+      "drawCalls": {
+        "n": 60,
+        "mean": 54.7,
+        "p50": 55,
+        "p95": 55,
+        "p99": 55,
+        "max": 55
+      },
+      "triangles": {
+        "n": 60,
+        "mean": 138758.4,
+        "p50": 138759,
+        "p95": 138759,
+        "p99": 138759,
+        "max": 138759
+      }
+    },
+    {
+      "name": "blackhole",
+      "kind": "blackhole",
+      "frameMs": {
+        "n": 60,
+        "mean": 0.22,
+        "p50": 0.2,
+        "p95": 0.5,
+        "p99": 0.9,
+        "max": 0.9
+      },
+      "fps": {
+        "p50": 5000,
+        "p95": 2000,
+        "p99": 1111.1
+      },
+      "cpuMs": {
+        "n": 60,
+        "mean": 0.105,
+        "p50": 0.1,
+        "p95": 0.2,
+        "p99": 0.3,
+        "max": 0.3
+      },
+      "drawCalls": {
+        "n": 60,
+        "mean": 10,
+        "p50": 10,
+        "p95": 10,
+        "p99": 10,
+        "max": 10
+      },
+      "triangles": {
+        "n": 60,
+        "mean": 11,
+        "p50": 11,
+        "p95": 11,
+        "p99": 11,
+        "max": 11
+      }
+    }
+  ],
+  "gpuMemoryMB": {
+    "textures": 122.8,
+    "buffers": 6,
+    "renderbuffers": 35.3,
+    "peak": 176.2,
+    "method": "tracked GL allocations minus deletes"
+  },
+  "threeInfo": {
+    "geometries": 5,
+    "textures": 22,
+    "programs": 16
+  }
+}
