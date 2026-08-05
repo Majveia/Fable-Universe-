@@ -1,0 +1,95 @@
+# §M0's shader compile gate, on pull requests that touch the renderer.
+#
+#   "Extract every shader string *as passed to `gl.shaderSource`*, not as it
+#    reads in source, and compile-check headlessly. This codebase and the
+#    reference both assemble shaders by template interpolation; defects only
+#    exist post-assembly."
+#
+# That is the whole reason this exists and cannot be replaced by a linter. A
+# shader in this project is a template with chunks interpolated into it, and
+# every shader defect this project has actually shipped was invisible in the
+# source and only appeared once assembled.
+#
+# ---------------------------------------------------------------------------
+# Why this is separate from `verify.yml`, and why it is PR-only
+#
+# It needs a browser and a software rasteriser, and it walks all six scales by
+# deep link at two flag sets. That is tens of minutes against `verify.yml`'s 75
+# seconds, so running it on every push to every branch would spend most of the
+# repo's CI minutes proving something that only changes when `src/` does.
+#
+# `paths:` keeps it honest: if the diff cannot contain a shader, the gate has
+# nothing to say and does not run.
+#
+# ---------------------------------------------------------------------------
+# It proves compilation. It does not prove a frame.
+#
+# SwiftShader compiles GLSL the same way real hardware does — which is exactly
+# what is being checked — but it renders nothing anyone should look at, and
+# `docs/GPU-RUN.md` is largely a record of what happens when a software
+# rasteriser's output gets read as evidence. Nothing here is a capture.
+
+name: shaders
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'index.html'
+      - 'vendor/**'
+      - 'tools/shadercheck.js'
+      - 'tools/lib.js'
+      - '.github/workflows/shaders.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: shaders-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    name: every shader, as assembled (§M0)
+    runs-on: ubuntu-latest
+    # generous, because a software rasteriser walking six scales is slow, but
+    # bounded — a gate that can hang forever is a gate nobody waits for
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Playwright is installed globally, never into the repo — the same
+      # discipline `docs/GPU-RUN.md` uses, so the project never grows a build
+      # step (§2.2).
+      - name: playwright + chromium
+        run: |
+          npm i -g playwright
+          npx playwright install --with-deps chromium
+
+      # One flag set rather than the two run locally. The second local pass
+      # exists to check the milestone flags in company; on CI the cost of that
+      # is a doubled wall clock on every renderer PR, and the set below already
+      # covers every scale and every default-off shader path that assembles
+      # differently.
+      - name: compile-check all six scales
+        run: |
+          node tools/shadercheck.js --stations --frames 45 \
+            --flags "m2=1&paint=1&mat=1&sea=1&ridge=1&m3=1&m5=1"
+
+      # The report is an artefact, not a commit. `docs/captures/shaders.json`
+      # is checked in from local runs deliberately — it records which machine
+      # and which flags produced a green — and a CI job overwriting it on every
+      # PR would turn a record into noise.
+      - name: keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shaders-report
+          path: docs/captures/shaders.json
+          if-no-files-found: warn
+
+      - name: leave the tree clean
+        if: always()
+        run: git checkout -- docs/captures/shaders.json || true

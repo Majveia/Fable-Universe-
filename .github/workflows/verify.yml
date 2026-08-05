@@ -1,0 +1,68 @@
+# The offline half of §7, on every push.
+#
+# AEON's rigor lives in commands that need no GPU: `tools/verify.js` computes
+# every CPU-decidable claim a second, independent way (§7.3), and
+# `tools/parse.js` checks that all 72 modules parse and that raw shaders
+# declare the attributes GLSL will not give them. Together they take about 75
+# seconds and need nothing installed, because §2.2 means this project has no
+# dependencies to install.
+#
+# ---------------------------------------------------------------------------
+# What this does NOT do, and must never claim to
+#
+# GitHub's runners have no GPU. §M0 is explicit — "Real GPU, not CI
+# SwiftShader" — and `docs/GPU-RUN.md` records four separate runs that lost
+# most of their value to software-rasteriser results being read as evidence.
+#
+# So nothing here scores a frame, and nothing here produces a capture. This
+# workflow proves that the arithmetic is right and the code parses. Whether the
+# thing is beautiful is a question for `docs/plans/RECKONING.md` Act A, on a
+# machine with real silicon, scored blind.
+#
+# ---------------------------------------------------------------------------
+# §2.2 is not violated by this
+#
+# "Zero dependencies... `python3 -m http.server 8080` must remain sufficient,
+# forever." That is an invariant about what it takes to *run* AEON, and it
+# still holds: no build step, no bundler, nothing installed into the repo. CI
+# is a thing that watches the repo, not a thing the repo needs.
+
+name: verify
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# a new push supersedes an in-flight run on the same ref — there is no reason
+# to finish measuring a commit nobody is looking at any more
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    name: offline suites (§7.3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # No `npm ci`. There is no package.json, and that is the point (§2.2).
+
+      - name: parse — 72 modules, and the raw-shader lint
+        run: node tools/parse.js
+
+      # This is the one that matters. 414 checks, each computing its answer a
+      # second, independent way — adaptive quadrature against a lookup table,
+      # finite differences against an analytic derivative, the quadtree's own
+      # walk against the streaming model built on top of it. A snapshot test
+      # proves only that something has not changed, which is the least
+      # interesting property it has.
+      - name: verify — every CPU-decidable claim (§7.3)
+        run: node tools/verify.js
