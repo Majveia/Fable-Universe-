@@ -31,7 +31,7 @@ Here is the sum, as of M5.
 | **All of M5 — traversal — off** | 6 M5 | `?m5=1` |
 | The composition solver off | 9.7 | `?solve=1` |
 | §5's budgets measured with the grass off | 5 | 0.19 M tri p95 — of a frame nobody wants |
-| **M1's gate clause (b) still fails** | 6 M1 | 2 hue families of 4, rolled past four times |
+| **M1's gate clause (b) still fails** | 6 M1 | **3** hue families of 4 (not 2 — ledger was stale); nine iterations; the fourth is blocked behind Act C. Needs a decision, see Act D |
 | ~~No plan for M4 or M7~~; none for M6 | 7.2 | **Act E closed** — `M4.md`, `M7.md` backfilled, marked retrospective |
 | **The critic has never run** | 8 | not once, in five milestones |
 
@@ -128,21 +128,60 @@ feature, not after the measurement.
 **Gate:** a perf JSON per tier whose flag set matches whatever Act B decided,
 and a plain statement of whether §5 is green for the frame we intend to ship.
 
-### Act D — Close or waive M1 (b) *(offline)*
+### Act D — Close or waive M1 (b) *(offline)* — **needs one decision**
 
 §6 says strict order: no M(n+1) until M(n) passes its gate. M1's clause (b) —
 four distinguishable hue families in the cosmic web, all within 0.02–0.85
-luminance — reads **FAIL, 2**, and has been stepped over four times.
+luminance — has been stepped over four milestones.
 
-Exactly two honest ways out:
+**The ledger understated this act, and the correction matters.** The clause does
+not read FAIL-2 any more and it is not waiting on a palette tweak. Reading
+`docs/plans/M1.md` §9–§13 end to end, it has had **nine iterations across four
+independent lines of attack**, each of which produced a measurement rather than
+an opinion:
 
-- **fix it** — `docs/plans/M1.md` §12 says this needs a decision about the
-  palette rather than a commit, so make the decision;
-- **amend §6** — in a commit that says the ladder now tolerates a named open
-  clause, and why.
+| attempt | § | result |
+|---|---|---|
+| five palette and luminance treatments | 9 | 2 families |
+| the slab — shorten the ray so local hue survives | 10 | 2 families, **but restored §2.8's true black, 0% → 31.7%** |
+| signed-log divergence transfer | 11 | 2 families; clause (c) 50.7% → **95.7%**, true black → 49.9% |
+| `?comp=1` depth rejection — kill additive summing | 12 | **96.3% of pixels changed, 0% of the hue distribution.** Refuted its own hypothesis |
+| `?web=1` — a second physical channel (void/sheet/filament/knot) | 13 | **2 → 3 families** |
 
-An open gate everyone steps over is worse than a constitution amended in the
-open. Pick one.
+So four of the five attempts fixed something real and none of them was the
+thing. The clause is at **3 of 4**, and what blocks the fourth is now measured
+rather than guessed: voids are sparse *by construction* — a void is a region
+with few particles, so amber lands at 0.9% of lit pixels however bright each
+tracer is — knots are 2.5–4.2% of elements, and the frame is 40.5% achromatic
+because soft additive points still sum to a desaturated mean even after whole
+tracers are depth-rejected.
+
+**The remaining fix is a dominant-class resolve — a rendering change of its own
+size. §5 says add the LOD before the feature, and nobody knows this project's
+frame cost yet, so that work is blocked behind Act C.** Which means "just fix
+it" is not currently one of the options.
+
+What is actually on the table:
+
+1. **Amend the measurement.** §6 M1 asks for *"≥4 distinguishable hue families"*;
+   §8 axis 6 asks for *"≤3 hue families plus one accent."* Together they pin it
+   at exactly four, and the disagreement is what a *family* is. As four modes in
+   a pixel histogram it is unreachable from two physical channels. As four hues
+   a viewer can point at, the frame already has violet, blue, teal, amber and
+   cream, all selected by physics. Changing `tools/gate.js`'s operationalisation
+   is a one-line honesty question, not a fudge — but it is a human's call
+   because it changes what the gate *means*.
+2. **Amend §6's ordering** to tolerate this one named open clause, with the
+   condition that releases it — i.e. revisit after Act C prices the compositor.
+3. **Wait**, and leave the ladder formally blocked until Act C lands.
+
+**Recommendation: (2), then revisit (1) or the compositor after Act C.** It is
+the only option that keeps the gate honest — the clause stays open, named, and
+carrying its release condition — without either faking a pass or blocking five
+milestones of finished work behind a rendering change §5 forbids costing yet.
+
+Whichever is chosen, it goes in a commit that says so. An open gate everyone
+steps over is worse than a constitution amended in the open.
 
 ### Act E — Backfill the plans *(offline)* — **CLOSED**
 
