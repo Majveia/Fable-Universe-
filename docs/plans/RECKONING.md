@@ -32,7 +32,7 @@ Here is the sum, as of M5.
 | The composition solver off | 9.7 | `?solve=1` |
 | §5's budgets measured with the grass off | 5 | 0.19 M tri p95 — of a frame nobody wants |
 | **M1's gate clause (b) still fails** | 6 M1 | 2 hue families of 4, rolled past four times |
-| No plan for M4 or M7; none for M6 | 7.2 | shipped without sign-off |
+| ~~No plan for M4 or M7~~; none for M6 | 7.2 | **Act E closed** — `M4.md`, `M7.md` backfilled, marked retrospective |
 | **The critic has never run** | 8 | not once, in five milestones |
 
 A visitor who opens the page gets the print, aerial perspective, a body, a
@@ -144,13 +144,28 @@ Exactly two honest ways out:
 An open gate everyone steps over is worse than a constitution amended in the
 open. Pick one.
 
-### Act E — Backfill the plans *(offline)*
+### Act E — Backfill the plans *(offline)* — **CLOSED**
 
-`docs/plans/` has M0, M1, M2, M3, M5. M4 and M7 shipped without one, against
-§7.2. Write `M4.md` and `M7.md` **marked as written after the fact**, because a
-retrospective plan that pretends to be a prospective one is a lie in the
-repository's own record. Their job is to give §7.7's re-score something to score
-against.
+`docs/plans/` had M0, M1, M2, M3, M5. M4 and M7 shipped without one, against
+§7.2. `M4.md` and `M7.md` are now written and **marked as written after the
+fact**, because a retrospective plan that pretends to be a prospective one is a
+lie in the repository's own record. Their job is to give §7.7's re-score
+something to score against.
+
+Three things surfaced in the writing that the ledger did not have:
+
+- **M4 and M7 were both built out of ladder order**, pulled forward by
+  `WORLDS.md` §2. That was a human decision and is now recorded in both files
+  rather than living only in a session transcript.
+- **M7 has never run on a phone.** Every clause of its gate was measured in a
+  desktop Chromium pretending to be one at 390 × 844. Emulation gets the layout
+  right and says nothing about whether a thumb reaches the fan.
+- **M4's two constants — eye 1.80 → 1.68 m, FOV 62 → 52 — moved every existing
+  capture, and no milestone was re-shot against them**, which §7.7 requires.
+  Act A inherits it.
+
+`M6.md` is still unwritten, and M6 is still not started. That is correct: §3
+says it waits.
 
 ### Act F — Run the critic, properly *(needs Act A's captures)*
 
