@@ -1074,6 +1074,15 @@ async function windSuite(n) {
  * so on this machine the wind pass would otherwise never be compiled by
  * anything.
  */
+/**
+ * The ray the seam is measured along: from the window centre outward, past the
+ * border at 220 m, to 420 m. Off-axis on purpose — a 45° ray leaves through a
+ * corner and crosses both edge masks at once, which is the easy case; 0.4 rad
+ * leaves through one edge, which is the case a real blade meets.
+ */
+const SEAM_DIR = 0.4;
+const SEAM_REACH = 420;
+
 async function windTargetCheck(w, t, camX, camZ, scale) {
   const site = await serve();
   const pw = await playwright();
@@ -1086,8 +1095,11 @@ async function windTargetCheck(w, t, camX, camZ, scale) {
   // rather than from disk.
   await page.addScriptTag({ type: 'module', content: `
     import * as THREE from 'three';
-    import { WIND_SIZE, makeWind, windTexel, windWindow } from '${site.origin}/src/wind.js';
-    import { WindField } from '${site.origin}/src/windfield.js';
+    import {
+      WIND_GLSL, WIND_SIZE, makeWind, syncWindUniforms, windTexel, windUniformBlock, windWindow,
+    } from '${site.origin}/src/wind.js';
+    import { WINDTEX_GLSL, WindField } from '${site.origin}/src/windfield.js';
+    import { noiseGLSL } from '${site.origin}/src/planet.js';
     try {
       const cv = document.createElement('canvas');
       cv.width = 8; cv.height = 8;
@@ -1112,8 +1124,53 @@ async function windTargetCheck(w, t, camX, camZ, scale) {
             THREE.DataUtils.fromHalfFloat(raw[o + 2])]);
         }
       }
-      window.__rt = { texels: out };
-    } catch (e) { window.__rt = { error: String(e && e.message || e) }; }
+      // ---- step 3: the seam ------------------------------------------
+      // A ray from the window centre straight out through the border and well
+      // beyond it, evaluating windAny -- the target inside, the mask across
+      // the edge, the analytic field outside. Rendered at 1024 samples into a
+      // float target so the comparison is not quantised by the instrument.
+      // (No backticks in here: this whole block is inside a template literal,
+      // and one in a comment ends it. See the head of tools/parse.js.)
+      const N = 1024;
+      const seamRT = new THREE.WebGLRenderTarget(N, 1, {
+        type: THREE.FloatType, format: THREE.RGBAFormat,
+        minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+        depthBuffer: false, stencilBuffer: false,
+      });
+      const uni = { ...windUniformBlock(),
+        uWindTex: { value: field.rt.texture },
+        uWindWin: field.uniforms.uWindWin,
+        uA: { value: new THREE.Vector2(${camX}, ${camZ}) },
+        uB: { value: new THREE.Vector2(${camX + Math.cos(SEAM_DIR) * SEAM_REACH},
+          ${camZ + Math.sin(SEAM_DIR) * SEAM_REACH}) },
+      };
+      syncWindUniforms(uni, wind, ${t});
+      const seamMat = new THREE.ShaderMaterial({
+        glslVersion: THREE.GLSL3,
+        vertexShader: 'void main(){ gl_Position = vec4(position.xy, 0.0, 1.0); }',
+        fragmentShader: [
+          'precision highp float;', 'out vec4 frag;',
+          'uniform vec2 uA;', 'uniform vec2 uB;',
+          noiseGLSL(true), WIND_GLSL, WINDTEX_GLSL,
+          'void main(){',
+          '  float u = (gl_FragCoord.x - 0.5) / float(' + (N - 1) + ');',
+          '  vec2 P = mix(uA, uB, u);',
+          '  frag = vec4(windAny(P), windInside(P));',
+          '}',
+        ].join(String.fromCharCode(10)),
+        uniforms: uni, depthTest: false, depthWrite: false, blending: THREE.NoBlending,
+      });
+      const sc = new THREE.Scene();
+      const q = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), seamMat);
+      q.frustumCulled = false; sc.add(q);
+      renderer.setRenderTarget(seamRT);
+      renderer.render(sc, new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1));
+      const line = new Float32Array(N * 4);
+      renderer.readRenderTargetPixels(seamRT, 0, 0, N, 1, line);
+      renderer.setRenderTarget(null);
+
+      window.__rt = { texels: out, seam: Array.from(line), N };
+    } catch (e) { window.__rt = { error: String(e && e.stack || e) }; }
   ` });
   await page.waitForFunction('window.__rt', null, { timeout: 60000 });
   const got = await page.evaluate(() => window.__rt);
@@ -1141,7 +1198,58 @@ async function windTargetCheck(w, t, camX, camZ, scale) {
     + `  max ${(worst * 255).toFixed(4)}/255 = ${(worst * scale).toExponential(2)} m/s`);
   console.log('       read back through three, at a camera 4.8 km off the origin, so the'
     + ' window addressing is under test and not just the arithmetic');
-  return pass ? 0 : 1;
+
+  // ---- step 3: the fallback, and whether the border shows ------------------
+  //
+  // Two questions, and the second is the one §M3's step-3 gate actually asks.
+  //
+  //   (a) does `windAny` agree with the field on both sides of the border?
+  //       The texture side is the field's own bilinear interpolant, so it
+  //       should — but "should" is what §2.7 said too.
+  //   (b) is it *continuous* across it? A seam is a step, and a step is visible
+  //       against the field's own gradient. So the measure is not an absolute
+  //       one: it is the largest jump between adjacent samples on the ray,
+  //       against the median jump on the same ray. A seam is a jump that stands
+  //       out from the field's ordinary variation; a number that does not
+  //       compare the two cannot tell a seam from a gust.
+  const N = got.N, step = SEAM_REACH / (N - 1);
+  let sWorst = 0, crossing = -1;
+  const jumps = [];
+  let prev = null;
+  for (let i = 0; i < N; i++) {
+    const d = i * step;
+    const x = camX + Math.cos(SEAM_DIR) * d, z = camZ + Math.sin(SEAM_DIR) * d;
+    const g = [got.seam[i * 4], got.seam[i * 4 + 1], got.seam[i * 4 + 2]];
+    const c = windSample(U, x, z);
+    sWorst = Math.max(sWorst, Math.max(Math.abs(g[0] - c.x), Math.abs(g[1] - c.z),
+      Math.abs(g[2] - c.gust)) / scale);
+    if (prev) jumps.push(Math.hypot(g[0] - prev[0], g[1] - prev[1]));
+    prev = g;
+    // where the mask stops being 1 — the first sample the blend touches
+    if (crossing < 0 && got.seam[i * 4 + 3] < 0.999) crossing = d;
+  }
+  const sorted = [...jumps].sort((a, b) => a - b);
+  const median = sorted[sorted.length >> 1];
+  const biggest = sorted[sorted.length - 1];
+  // where the biggest step is matters as much as its size: at the border it
+  // would be a seam, anywhere else it is the field doing what fields do
+  const sAt = (jumps.indexOf(biggest) + 0.5) * step;
+  // 6x the median jump is the threshold: the field's own along-ray variation is
+  // smooth at this sample spacing, so anything that stands six times out of it
+  // is structural rather than weather.
+  const smooth = biggest < median * 6;
+  const agrees = sWorst <= TOL;
+  const seamPass = smooth && agrees;
+  console.log(`\n  ${seamPass ? 'ok  ' : 'FAIL'} and the fallback leaves no seam —`
+    + ` ${N} samples along ${SEAM_REACH} m, out through the border at`
+    + ` ${crossing < 0 ? 'n/a' : crossing.toFixed(1) + ' m'}`);
+  console.log(`       largest step between adjacent samples ${biggest.toExponential(2)} m/s`
+    + ` at ${sAt.toFixed(1)} m, against a median of ${median.toExponential(2)}`
+    + `  (${(biggest / median).toFixed(2)}x, gate 6x)`);
+  console.log(`       and windAny tracks the field the whole way:`
+    + ` max ${(sWorst * 255).toFixed(4)}/255 = ${(sWorst * scale).toExponential(2)} m/s`);
+
+  return (pass ? 0 : 1) + (seamPass ? 0 : 1);
 }
 
 // ----------------------------------------------------------------- report ---

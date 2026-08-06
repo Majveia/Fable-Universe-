@@ -61,6 +61,38 @@ import { noiseGLSL } from './planet.js';
  * a real budget. The boundary layer is *not* applied here: `windShear` from
  * `WIND_GLSL` is one `log` of a height the caller knows, and keeping it out of
  * the target is what lets a blade fetch once at its root and shear per vertex.
+ *
+ * `texture2D` rather than `texture`: three.js defines the former in both GLSL
+ * modes (`vendor/three.module.js:20271`), so this chunk drops into a GLSL1
+ * consumer like `grass.js` and a GLSL3 one alike.
+ *
+ * ---------------------------------------------------------------------------
+ * `windAny` — the target where there is one, the field itself where there is
+ * not
+ *
+ * §M3 asks for an analytic fallback beyond the window's edge *"so gust bands
+ * still roll over the far hills"*, and notes that the fallback branch is
+ * warp-coherent — all of a blade's vertices sample one point — which is what
+ * makes it nearly free. That coherence is structural here rather than hoped
+ * for: a blade is either comfortably inside the window, comfortably outside, or
+ * in a 15 m band, and only the band evaluates both.
+ *
+ * The blend cannot show a seam, and not because the width was tuned. The target
+ * *holds* `windField` sampled on a lattice, so the two sides of the mask are a
+ * function and its own bilinear interpolant. Their difference is interpolation
+ * error — measured at 1.95e-3 m/s — so the mask is very nearly a no-op and the
+ * continuity is a property of the construction. `tools/pixeldiff.js --suite
+ * wind` walks a ray straight through the border and says so.
+ *
+ * The mask fades over the outer 3.5% of the window, about 15 m, which is the
+ * outermost nine texels. That is deliberate and not margin for its own sake:
+ * bilinear filtering at the very edge clamps, so the last half-texel is not the
+ * field but a repeat of it, and the fade has to be wide enough to have finished
+ * before that.
+ *
+ * **Requires `windField` in scope** — concatenate `WIND_GLSL` (and the noise it
+ * needs) ahead of this. A consumer that only ever samples inside the window can
+ * include this chunk alone and call `windTex`.
  */
 export const WINDTEX_GLSL = /* glsl */`
 uniform sampler2D uWindTex;
@@ -73,6 +105,20 @@ float windShearTex(float h) {
 vec3 windTex(vec2 P) {
   vec2 uv = (P - uWindWin.xy) * uWindWin.z;
   return texture2D(uWindTex, uv).xyz;
+}
+
+/** how much of the target is usable at P: 1 inside, 0 outside, a fade between */
+float windInside(vec2 P) {
+  vec2 uv = (P - uWindWin.xy) * uWindWin.z;
+  vec2 e = min(uv, 1.0 - uv);
+  return smoothstep(0.0, 0.035, min(e.x, e.y));
+}
+
+vec3 windAny(vec2 P) {
+  float m = windInside(P);
+  if (m <= 0.0) return windField(P);
+  if (m >= 1.0) return windTex(P);
+  return mix(windField(P), windTex(P), m);
 }
 `;
 
