@@ -43,6 +43,9 @@ const capMs = Number(arg('cap', 300)) * 1000;
 const outDir = String(arg('out', 'docs/captures/shot'));
 const builds = String(arg('builds', 'm2=1')).split(',').map((b) => b.trim()).filter(Boolean);
 const scale = String(arg('scale', 'surface'));
+/** what the route search is looking for: any rocky world, a living one, or one with an aurora */
+const want = String(arg('want', scale === 'surface' ? 'life' : 'any'));
+const WANT = { any: 'true', life: 'hit.alive', aurora: 'hit.alive && auroral(pl, starSeed, sp)' };
 
 /**
  * Find a world worth photographing, in the page, from the same generators the
@@ -54,8 +57,25 @@ const RESOLVE = (origin, want) => `
   import { galaxyParams } from '${origin}/src/galaxy.js';
   import { systemParams } from '${origin}/src/system.js';
   import { isBiosphere } from '${origin}/src/life.js';
+  import { findLandingSite } from '${origin}/src/terrain.js';
+  import { auroralGeometry, magnetosphere } from '${origin}/src/magnetosphere.js';
   const galaxySeed = hash(${seed}, 0xbe0) >>> 0;
   const gp = galaxyParams(galaxySeed);
+
+  // Whether a world has an aurora is not a preference, it is three facts about
+  // it: a live dynamo, an atmosphere, and an observer standing near enough to
+  // the oval. Most worlds fail at least one, so a search is the only way to
+  // photograph the case — which is itself the point of the module.
+  const auroral = (pl, starSeed, sp) => {
+    if ((pl.atmo ?? 1) < 0.05) return false;
+    const mag = magnetosphere(pl, { starT: sp.temp ?? 5778, auDist: pl.au ?? 1 });
+    if (!mag.hasOval) return false;
+    const dir = findLandingSite(pl, hash(pl.seed, 0x1a4d));
+    const lat = Math.asin(Math.min(Math.max(dir[1], -1), 1)) * 180 / Math.PI;
+    const g = auroralGeometry(pl, lat, mag, { RKm: Math.max((pl.radiusE ?? 1) * 6371, 200) });
+    return g.gapKm <= 2600 && g.gapDeg >= -6;
+  };
+
   let fallback = null;
   for (let i = 0; i < 8192; i++) {
     const starSeed = hash(gp.seed, i, 0x57a9) >>> 0;
@@ -63,9 +83,9 @@ const RESOLVE = (origin, want) => `
     for (let p = 0; p < sp.planets.length; p++) {
       const pl = sp.planets[p];
       if (pl.typeId > 4) continue;
-      const hit = { galaxySeed, starSeed, planet: p, alive: !!isBiosphere(pl) };
+      const hit = { galaxySeed, starSeed, planet: p, alive: !!isBiosphere(pl), i };
       if (!fallback) fallback = hit;
-      if (${want ? 'hit.alive' : 'true'}) { window.__route = hit; break; }
+      if (${want}) { window.__route = hit; break; }
     }
     if (window.__route) break;
   }
@@ -93,9 +113,15 @@ const cfg = TIERS[tier] || TIERS.low;
 const ctx = await browser.newContext({ viewport: cfg.viewport, deviceScaleFactor: 1 });
 const page = await ctx.newPage();
 page.on('pageerror', (e) => console.error('  page error: ' + e.message.split('\n')[0]));
+// modules announce what they decided; a capture that shows nothing should say
+// whether it drew nothing or drew something invisible
+page.on('console', (m) => {
+  const t = m.text();
+  if (/^\[(aurora|§9\.7)\]/.test(t)) console.log('  ' + t);
+});
 
 await page.goto(`${site.origin}/index.html?seed=${seed}`, { waitUntil: 'load' });
-await page.addScriptTag({ type: 'module', content: RESOLVE(site.origin, scale === 'surface') });
+await page.addScriptTag({ type: 'module', content: RESOLVE(site.origin, WANT[want] || WANT.any) });
 await page.waitForFunction('window.__route', null, { timeout: 60000 });
 const route = await page.evaluate(() => window.__route);
 

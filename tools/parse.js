@@ -68,7 +68,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, copyFileSync, readFileSync, rmSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { dirname, join, relative, resolve as resolvePath } from 'node:path';
 import { arg, REPO } from './lib.js';
 
 const dirs = String(arg('dir', 'src,tools')).split(',').map((d) => join(REPO, d.trim()));
@@ -187,8 +187,77 @@ for (const f of files) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// pass three — a named import that the target module does not export
+//
+// `node --check` parses one file at a time and cannot see across a module
+// boundary, so `import { addAurora } from './aurora.js'` against a module that
+// exports no such name is, to every check above this line, perfectly fine
+// JavaScript. The browser disagrees at *load* time, the page never boots, and
+// every downstream tool reports the same useless symptom — the page did not
+// boot — with no line number and no name.
+//
+// It has cost two runs. Once when a module was split in two and half the
+// exports moved; once when a file was overwritten by a different module of the
+// same name, which is the worse of the two because the import still *looks*
+// right and the export it wants exists somewhere.
+//
+// Deliberately conservative, in the same direction as the backtick lint: it
+// only follows relative specifiers it can find on disk, only reads static
+// `import { … }` forms, and treats a re-export (`export * from`) as "cannot
+// tell" rather than as a failure. False negatives, never false positives.
+
+/** the names a module exports, by static reading */
+function exportsOf(src) {
+  const out = new Set();
+  let starFrom = false;
+  for (const m of src.matchAll(/^export\s+(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)/gm)) {
+    out.add(m[1]);
+  }
+  for (const m of src.matchAll(/^export\s*\{([^}]*)\}/gm)) {
+    for (const part of m[1].split(',')) {
+      const name = part.trim().split(/\s+as\s+/).pop().trim();
+      if (name) out.add(name);
+    }
+  }
+  if (/^export\s+\*/m.test(src)) starFrom = true;
+  if (/^export\s+default\b/m.test(src)) out.add('default');
+  return { names: out, starFrom };
+}
+
+const sources = new Map();
+const readOnce = (f) => {
+  if (!sources.has(f)) { try { sources.set(f, readFileSync(f, 'utf8')); } catch { sources.set(f, null); } }
+  return sources.get(f);
+};
+
+let missing = 0, edges = 0;
+for (const f of files) {
+  const rel = relative(REPO, f);
+  const src = readOnce(f);
+  if (!src) continue;
+  for (const m of src.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"](\.[^'"]+)['"]/g)) {
+    const target = resolvePath(dirname(f), m[2]);
+    const tsrc = readOnce(target);
+    if (!tsrc) continue;                       // not on disk: not this lint's business
+    const { names, starFrom } = exportsOf(tsrc);
+    if (starFrom) continue;                    // a re-export could supply anything
+    edges++;
+    for (const part of m[1].split(',')) {
+      const want = part.trim().split(/\s+as\s+/)[0].trim();
+      if (!want || names.has(want)) continue;
+      missing++;
+      console.error(`\n─── ${rel} ───`);
+      console.error(`  imports '${want}' from ${relative(REPO, target)}, which does not export it.`);
+      console.error('  Valid JavaScript in both files, and a page that never boots.');
+    }
+  }
+}
+
 console.log(`\nparse · ${files.length - failed}/${files.length} modules parse`
   + (failed ? ` · ${failed} FAILED` : '')
   + ` · ${linted} raw shaders linted`
-  + (lint ? ` · ${lint} MISSING DECLARATIONS` : ''));
-process.exit(failed || lint ? 1 : 0);
+  + (lint ? ` · ${lint} MISSING DECLARATIONS` : '')
+  + ` · ${edges} import edges checked`
+  + (missing ? ` · ${missing} MISSING EXPORTS` : ''));
+process.exit(failed || lint || missing ? 1 : 0);

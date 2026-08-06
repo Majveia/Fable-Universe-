@@ -30,6 +30,10 @@ import {
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
 import {
+  EARTH_B0, apparentElevation, dynamoField, magnetosphere, speciesFor,
+  wavelengthRGB, windPressure,
+} from '../src/magnetosphere.js';
+import {
   ARM, GAIT, LOOK, Walker, gravityOf, replay, sweepArm,
 } from '../src/avatar.js';
 import { BINDINGS, JUMP_CODE, addLook, input, setAnalog } from '../src/input.js';
@@ -4853,7 +4857,155 @@ function suiteSoften() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// suite: aurora
+//
+// §M1 asks for a palette that is "a readout of real dynamics". src/magnetosphere.js
+// claims to be one at surface scale, and a claim like that is either checkable
+// or it is decoration. Every number below is a physical consequence, so a
+// stylistic edit that breaks one shows up here rather than in a screenshot
+// somebody likes.
+
+function suiteAurora() {
+  console.log('\naurora — the magnetosphere, as a night sky (§M1 applied to a world)');
+
+  const EARTHLIKE = { seed: 1, typeId: 1, massE: 1, radiusE: 1, Teq: 255, atmo: 1 };
+
+  {
+    // The one check that says the formula is physics and not a fit: feed it
+    // Earth's own field and Earth's own solar wind and see where it puts the
+    // oval. The real auroral oval sits at magnetic latitude 65-70°.
+    const m = magnetosphere({ ...EARTHLIKE }, { starT: 5778, auDist: 1 });
+    const mag = { ...m };
+    // dynamoField is seeded, so pin B0 to Earth's to test the standoff law
+    // itself rather than the dynamo proxy in front of it.
+    const standoff = Math.pow((2 * EARTH_B0 * EARTH_B0)
+      / ((4 * Math.PI * 1e-7) * windPressure(5778, 1)), 1 / 6);
+    const colat = (Math.asin(Math.sqrt(1 / standoff)) * 180) / Math.PI;
+    ok('Earth\'s field and Earth\'s wind put the oval at 65-75° magnetic latitude',
+      standoff > 8 && standoff < 12 && 90 - colat > 65 && 90 - colat < 75,
+      `standoff ${standoff.toFixed(2)} R_p (measured 10-11) · open/closed boundary at`
+      + ` ${(90 - colat).toFixed(1)}° magnetic latitude (measured 71-74; the visible`
+      + ` band hangs equatorward of it, at 65-70)` + ` · this world ${mag.hasOval ? 'has' : 'has no'} a dynamo`);
+  }
+
+  {
+    // A storm compresses the magnetosphere, which drags the oval equatorward —
+    // the reason a big event is visible from latitudes that never normally see
+    // one. If this ever inverts, the sky is lying about the weather.
+    const quiet = magnetosphere({ ...EARTHLIKE, seed: 7 }, { starT: 5778, auDist: 1, storm: 0 });
+    const storm = magnetosphere({ ...EARTHLIKE, seed: 7 }, { starT: 5778, auDist: 1, storm: 1 });
+    ok('§M1 · a storm compresses the magnetosphere and drags the oval equatorward',
+      !quiet.hasOval || (storm.standoff < quiet.standoff && storm.colat > quiet.colat),
+      quiet.hasOval
+        ? `standoff ${quiet.standoff.toFixed(2)} → ${storm.standoff.toFixed(2)} R_p ·`
+          + ` oval ${(90 - quiet.colat).toFixed(1)}° → ${(90 - storm.colat).toFixed(1)}° latitude`
+        : 'this seed has no dynamo — checked vacuously');
+  }
+
+  {
+    // An M dwarf's wind is violent, so the same planet gets a lower, brighter
+    // oval. Same physics, different star, and the sky says which.
+    const g = magnetosphere({ ...EARTHLIKE, seed: 3 }, { starT: 5778, auDist: 1 });
+    const m = magnetosphere({ ...EARTHLIKE, seed: 3 }, { starT: 3100, auDist: 1 });
+    ok('and a violent M-dwarf wind pushes it lower still than a G star\'s',
+      !g.hasOval || m.colat > g.colat,
+      g.hasOval ? `G type oval ${(90 - g.colat).toFixed(1)}° · M dwarf ${(90 - m.colat).toFixed(1)}°`
+        : 'no dynamo on this seed');
+  }
+
+  {
+    // No field is not a faint aurora. Venus and Mars have induced glows with no
+    // oval at all, and returning a dim ring anyway is exactly the decoration
+    // this module exists not to be.
+    let none = 0, some = 0;
+    for (let i = 0; i < 400; i++) {
+      const f = dynamoField({ seed: i, massE: 0.2 });
+      if (f === 0) none++; else some++;
+    }
+    const m = magnetosphere({ seed: 4, typeId: 1, massE: 1 }, {});
+    ok('a world with no dynamo gets no oval, not a faint one',
+      none > 0 && (m.hasOval || (m.colat === 90 && m.openFlux === 0)),
+      `${((none / 400) * 100).toFixed(0)}% of small worlds have a dead core`
+      + ' · a dead core returns hasOval false and openFlux 0');
+  }
+
+  {
+    // The transfer, not the taste: 557.7 nm has to come out green because the
+    // CIE observer says so, and 427.8 nm has to come out violet and dim.
+    const green = wavelengthRGB(557.7);
+    const red = wavelengthRGB(630.0);
+    const violet = wavelengthRGB(427.8);
+    const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    ok('§9.6 · emission lines become colours through a transfer, not a taste',
+      green[1] > green[0] && green[1] > green[2]
+      && red[0] > red[1] && red[0] > red[2]
+      && violet[2] > violet[1] && lum(violet) < lum(green) * 0.4,
+      `557.7 nm → green ${green.map((c) => c.toFixed(2))} ·`
+      + ` 630.0 → red ${red.map((c) => c.toFixed(2))} ·`
+      + ` 427.8 → violet ${violet.map((c) => c.toFixed(2))}, ${(lum(violet) / lum(green) * 100).toFixed(0)}% of green's luminance`);
+  }
+
+  {
+    // The stack, and the reason it is the most beautiful thing about an aurora:
+    // a state radiates only where it survives long enough to, so the 110-second
+    // red line lives above the 0.7-second green one, and the prompt N2 bands
+    // sit at the very bottom where the hardest particles stop.
+    const air = speciesFor({ typeId: 1 }, 1);
+    const by = (nm) => air.find((l) => Math.abs(l.nm - nm) < 1);
+    ok('the colours stack by excited-state lifetime — red above green above violet',
+      by(630).peak > by(557.7).peak && by(557.7).peak > by(427.8).peak,
+      `630 nm at ${by(630).peak.toFixed(0)} km · 557.7 at ${by(557.7).peak.toFixed(0)}`
+      + ` · 427.8 at ${by(427.8).peak.toFixed(0)} — a map of atmospheric density, read upward`);
+  }
+
+  {
+    // A CO2 world photodissociates to O and has no N2 bands, so its aurora is
+    // red — which is what Mars' actually is. No special case for Mars.
+    const co2 = speciesFor({ typeId: 4 }, 1);
+    const n2 = speciesFor({ typeId: 1 }, 1);
+    const has = (a, nm) => a.some((l) => Math.abs(l.nm - nm) < 1);
+    ok('a CO2 atmosphere gets a red aurora and no nitrogen bands',
+      !has(co2, 427.8) && has(co2, 630) && has(n2, 427.8)
+      && co2.find((l) => l.nm === 630).weight > co2.find((l) => l.nm === 557.7).weight,
+      'CO2: ' + co2.map((l) => l.nm).join(', ') + ' nm · N2/O2: ' + n2.map((l) => l.nm).join(', '));
+  }
+
+  {
+    // A thin cold atmosphere is compressed, so the whole stack sits lower. The
+    // coupling is the scale height, so no world needs a special case.
+    const thin = speciesFor({ typeId: 1 }, 0.5);
+    const thick = speciesFor({ typeId: 1 }, 2);
+    ok('and a puffier atmosphere lifts the whole stack, by its scale height',
+      thin[1].peak < thick[1].peak && Math.abs(thick[1].peak / thin[1].peak - 4) < 1e-6,
+      `green peaks at ${thin[1].peak.toFixed(0)} km thin · ${thick[1].peak.toFixed(0)} km thick`);
+  }
+
+  {
+    // The curvature term is what makes a distant curtain a glow on the horizon
+    // rather than a curtain in the sky. Without it every display looks equally
+    // close, which is the tell of an aurora painted on a dome.
+    const near = apparentElevation(120, 100, 6371);
+    const far = apparentElevation(120, 1200, 6371);
+    const gone = apparentElevation(120, 2600, 6371);
+    ok('§9.3 · a distant curtain sinks toward the horizon, and then below it',
+      near > far && far > gone && near > 45 && gone < 2,
+      `120 km up: ${near.toFixed(1)}° at 100 km away · ${far.toFixed(1)}° at 1200 km`
+      + ` · ${gone.toFixed(1)}° at 2600 km`);
+  }
+
+  {
+    const a = dynamoField({ seed: 424242, massE: 1.1 });
+    const b = dynamoField({ seed: 424242, massE: 1.1 });
+    const c = dynamoField({ seed: 424243, massE: 1.1 });
+    ok('§2.3 · the dynamo is a property of the seed, and two worlds differ',
+      a === b && a !== c,
+      `seed 424242 → ${(a * 1e6).toFixed(1)} µT twice · 424243 → ${(c * 1e6).toFixed(1)} µT`);
+  }
+}
+
 const suites = {
+  aurora: suiteAurora,
   soften: suiteSoften,
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,

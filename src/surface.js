@@ -31,6 +31,7 @@ import { findLandingSite } from './terrain.js';
 import { solveLandingSite } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
 import { AERIAL_GLSL, aerialParams, airFor, applyAerial } from './aerial.js';
+import { addAurora } from './curtain.js';
 import {
   NO_LIMIT, buildHorizon, ridgeAlbedo, saturationRadius, HORIZON_VERT,
   horizonFragment,
@@ -210,6 +211,17 @@ const M3 = PARAM('m3') === '1';
  * front of it.
  */
 const AIRMAT = PARAM('airmat') === '1';
+
+/**
+ * The aurora curtain — src/curtain.js. Default-off (§7.4).
+ *
+ * `?sun=<degrees>` puts the sun at a chosen elevation and holds it there, which
+ * this needs (an aurora is invisible above about −2°) and which §7.5 has wanted
+ * all along: two captures of "the same frame" taken minutes apart had the sun
+ * in different places, and every difference between them was that.
+ */
+const AURORA = PARAM('aurora') === '1';
+const SUN_AT = PARAM('sun') === null ? null : Number(PARAM('sun'));
 const WINDVIEW = PARAM('windview') === '1';
 
 const EXT = 1400;            // terrain extent, ~metres
@@ -745,6 +757,23 @@ export class SurfaceScale {
       this.sunPhase = this._sunPhaseFacing(s.sunElev, fwd);
     }
 
+    // ?sun= overrides whatever chose the hour — the solver's golden-hour
+    // constraint, or the default phase when the solver fell back — and stops
+    // the clock. **Outside** the solver's branch on purpose: the first version
+    // sat inside it and silently did nothing on every world the solver could
+    // not compose, which is most ocean worlds. The HUD said SUN +20° in a frame
+    // captured with ?sun=-14 and the flag looked like it had no effect at all.
+    //
+    // A capture of "the same frame" is only the same frame if the sun has not
+    // moved between the two runs (§7.5).
+    if (SUN_AT !== null && Number.isFinite(SUN_AT)) {
+      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+      fwd.y = 0;
+      if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, 1); else fwd.normalize();
+      this.sunPhase = this._sunPhaseFacing(SUN_AT, fwd);
+      this.playing = false;
+    }
+
     // a touch more bloom so the sun, water-glitter, the colossus's jewel and
     // the corona crown the frame — enough to glow, not to swallow detail
     this.bloomSettings = { strength: 0.58, radius: 0.72, threshold: 0.34 };
@@ -1034,6 +1063,9 @@ export class SurfaceScale {
     }
     const ld = this.ctx.landingDir || this.landingSolution?.dir
       || findLandingSite(pp, hash(pp.seed, 0x1a4d));
+    // Kept because it is the observer's place on the sphere, and latitude is
+    // what decides whether the aurora is overhead, on the horizon, or absent.
+    this._landingDir = ld;
     const g = this.ground = makeGround(pp, ld, { wind: this.wind });
     const type = pp.typeId;
     const noise = g.noise;
@@ -1557,6 +1589,35 @@ export class SurfaceScale {
     this.nightStars.renderOrder = 1;
     this.nightStars.frustumCulled = false;
     this.scene.add(this.nightStars);
+
+    // The aurora, if this world has a magnetosphere to draw one with. `null`
+    // is the common answer and the honest one — see src/magnetosphere.js.
+    if (AURORA) {
+      const ld = this._landingDir || [0, 1, 0];
+      const latDeg = (Math.asin(Math.min(Math.max(ld[1], -1), 1)) * 180) / Math.PI;
+      this.aurora = addAurora(this.pp, {
+        latDeg,
+        starT: this.ctx.system?.temp ?? 5778,
+        auDist: this.pp.au ?? 1,
+        RKm: Math.max((this.pp.radiusE ?? 1) * 6371, 200),
+        hScale: Math.max(this.atmo, 0.2),
+        skyR: 12000,
+      });
+      if (this.aurora) {
+        // Face it: the ribbon's own -Z, turned onto the camera's opening
+        // heading plus its seeded offset (§9.7 — see src/curtain.js).
+        const f2 = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+        this.aurora.mesh.rotation.y = Math.atan2(-f2.x, -f2.z)
+          + this.aurora.mesh.userData.bearingJitter;
+        this.scene.add(this.aurora.mesh);
+        console.info(`[aurora] oval at ${(90 - this.aurora.mag.colat).toFixed(1)}°`
+          + ` magnetic latitude · standoff ${this.aurora.mag.standoff.toFixed(1)} R_p`
+          + ` · ${this.aurora.geom.gapKm.toFixed(0)} km away`
+          + ` · lines ${this.aurora.lines.map((l) => l.nm).join('/')} nm`);
+      } else {
+        console.info('[aurora] none — no dynamo, no air, or the oval is out of range');
+      }
+    }
 
     // a meteor sprite waits offstage for its half-second
     this._shoot = {
@@ -2151,6 +2212,7 @@ export class SurfaceScale {
     // when it turns — so this is a sweep for anything new, and the guard in
     // `applyAerial` makes re-running it free.
     if ((this._airTick = (this._airTick ?? 0) + 1) % 30 === 0) this._dressAerial();
+    if (this.aurora) this.aurora.update(this.uTime.value, this.uSunDir.value.y);
     this._syncMaterial();
     if (this.sunShadow) {
       this.sunShadow.update(this.app.renderer, this.scene, this.camera,
