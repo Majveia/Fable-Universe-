@@ -317,3 +317,128 @@ export function aerialUniforms(world, atmo = 1, hazeX = 1, starT = 5778, elev = 
     uAirMistAmt: { value: p.mistAmt },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Injection — the other forty-six materials
+//
+// `AERIAL_GLSL` above is written to be pasted into a shader somebody controls,
+// and `surface.js` does exactly that for the terrain, the sky and the ocean.
+// The problem is everything else. A surface world builds settlements, ruins,
+// herds, ships, wildlife, caravans, megafauna, interiors, rivers and foliage,
+// and every one of them is made of three.js built-in materials whose shaders
+// nobody here writes. Forty-six of them at the last count: 33
+// `MeshStandardMaterial`, 6 `MeshBasicMaterial`, 7 `PointsMaterial`.
+//
+// Unported, they render at full contrast at any distance. A village two
+// kilometres away is as crisp as the grass at your boots while the *ground it
+// stands on* has gone to haze, which is §8 axis 3 failing in the one place the
+// eye is most likely to look — and it reads as the buildings being pasted onto
+// the frame rather than standing in it.
+//
+// `AERIAL_ALPHA_IS_CLARITY` is what makes fixing this incremental instead of a
+// flag day: an unported material writes `a = 1`, which under that encoding
+// means *clear*, so it renders today exactly as it always has and each material
+// ported is a gain rather than the removal of a defect.
+//
+// ---------------------------------------------------------------------------
+// Why `onBeforeCompile` and not a material subclass
+//
+// A subclass would mean forty-six construction sites edited, every one of them
+// in a module that has nothing to do with fog, and a permanent obligation on
+// the next person who adds a rock. This injects at compile time, so a material
+// keeps its own type, its own lighting, its own maps, and gains one function
+// call at the end of the fragment shader.
+//
+// Two details that are not optional:
+//
+// **`customProgramCacheKey`.** three caches compiled programs by material
+// configuration and knows nothing about `onBeforeCompile`. Two
+// `MeshStandardMaterial`s with identical settings — one injected, one not —
+// hash to the same key and the second silently gets the first's program. Which
+// one wins depends on render order, so the bug is intermittent, looks like a
+// z-fighting artefact, and is invisible in a still.
+//
+// **The instancing branch.** `transformed` is object-space and pre-instance, so
+// a herd of two hundred instanced animals would every one of them compute the
+// fog for the position of the *prototype*, and the whole herd would take the
+// haze of whichever one sat at the origin. The `#ifdef USE_INSTANCING` block
+// mirrors three's own `project_vertex` exactly.
+
+/**
+ * Aerial perspective, injected into a material three.js owns.
+ *
+ * `uniforms` is `aerialUniforms()` (or `surface.js`'s shared block) plus
+ * `uSunDir` and `uCam`. Sharing one object across every material is the point:
+ * the sun moves once per frame and forty-six materials follow.
+ *
+ * `bucket` is `solid` or `veil`. A solid writes clarity into alpha, which is
+ * what the print reads for distance. A veil — anything transparent or additive
+ * — composites its colour and leaves alpha alone, because there alpha is
+ * already carrying coverage and overwriting it would make a glow opaque.
+ *
+ * Idempotent, and returns the material, so it can be dropped into an existing
+ * expression.
+ */
+export function applyAerial(material, uniforms, { bucket = 'solid', enabled = true } = {}) {
+  if (!enabled || !material || !uniforms) return material;
+  // A ShaderMaterial owns its own source: injecting into one would be editing
+  // somebody's shader from the outside, and every such material in this repo
+  // already calls `aerial()` itself.
+  if (material.isShaderMaterial || material.isRawShaderMaterial) return material;
+  if (material.userData?.aerial) return material;
+  (material.userData ||= {}).aerial = bucket;
+
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    if (prev) prev.call(material, shader, renderer);
+    Object.assign(shader.uniforms, uniforms);
+
+    // `mvPosition` exists as a local inside project_vertex, but world space is
+    // what the air is measured in, so the world position is rebuilt here the
+    // same way three builds the view one.
+    shader.vertexShader = shader.vertexShader
+      .replace('void main() {', 'varying vec3 vAirW;\nvoid main() {')
+      .replace('#include <project_vertex>', /* glsl */`#include <project_vertex>
+        vec4 airWorld = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+          airWorld = instanceMatrix * airWorld;
+        #endif
+        vAirW = (modelMatrix * airWorld).xyz;`);
+
+    const composite = bucket === 'veil'
+      // a veil keeps its coverage: only the colour goes through the air
+      ? 'gl_FragColor.rgb = aerialOut.rgb;'
+      : 'gl_FragColor = aerialOut;';
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace('void main() {', /* glsl */`varying vec3 vAirW;
+        uniform vec3 uSunDir;
+        uniform vec3 uCam;
+${AERIAL_GLSL}
+        void main() {`)
+      // Immediately after opaque_fragment, which is where gl_FragColor first
+      // exists — and before three's own tonemapping and colorspace chunks,
+      // because the air scatters linear light. three applies its built-in fog
+      // after both, which is a compromise this does not have to inherit.
+      .replace('#include <opaque_fragment>', /* glsl */`#include <opaque_fragment>
+        {
+          vec3 airToCam = uCam - vAirW;
+          float airDist = length(airToCam);
+          vec4 aerialOut = aerial(gl_FragColor.rgb, airDist,
+            airDist > 1e-5 ? airToCam / airDist : vec3(0.0, 1.0, 0.0),
+            uSunDir, vAirW.y);
+          ${composite}
+        }`);
+  };
+
+  // three hashes programs by material configuration and knows nothing about
+  // onBeforeCompile — see the header. Without this an injected material can
+  // silently receive an uninjected material's program, and which one wins
+  // depends on render order.
+  const prevKey = material.customProgramCacheKey;
+  material.customProgramCacheKey = function key() {
+    return (prevKey ? prevKey.call(this) : '') + '|aerial:' + bucket;
+  };
+  material.needsUpdate = true;
+  return material;
+}

@@ -30,7 +30,7 @@ import { addInterior } from './interior.js';
 import { findLandingSite } from './terrain.js';
 import { solveLandingSite } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
-import { AERIAL_GLSL, aerialParams, airFor } from './aerial.js';
+import { AERIAL_GLSL, aerialParams, airFor, applyAerial } from './aerial.js';
 import {
   NO_LIMIT, buildHorizon, ridgeAlbedo, saturationRadius, HORIZON_VERT,
   horizonFragment,
@@ -202,6 +202,14 @@ const RIDGE = PARAM('ridge') === '1';
  * once against §5's tightest budget. `?windview=1` shows the field on its own.
  */
 const M3 = PARAM('m3') === '1';
+
+/**
+ * §9.3 into the materials three.js owns, not just the three this file writes.
+ * Default-off (§7.4) — flipping it is its own commit, with the measurement.
+ * `?m2=1&airmat=1` is the whole village standing in the air rather than in
+ * front of it.
+ */
+const AIRMAT = PARAM('airmat') === '1';
 const WINDVIEW = PARAM('windview') === '1';
 
 const EXT = 1400;            // terrain extent, ~metres
@@ -810,6 +818,61 @@ export class SurfaceScale {
       uAirMistAmt: { value: p.mistAmt },
     };
     return this._airU;
+  }
+
+  /**
+   * Aerial perspective, into every material three.js owns.
+   *
+   * `_aerialUniforms()` reaches the terrain, the sky and the ocean because this
+   * file writes their shaders. It reaches nothing else, and "nothing else" is a
+   * village, a herd, a wreck, a caravan, a ruin and every tree on the world —
+   * forty-six built-in materials that render at full contrast at any distance
+   * while the ground beneath them goes to haze.
+   *
+   * ---------------------------------------------------------------------------
+   * The rule for what is sky, and why it is a measurement rather than a list
+   *
+   * A traversal has to answer one question — is this object *in* the air or
+   * *beyond* it — and the honest answer is geometric. The fog saturates by
+   * about two kilometres; a moon, a ring, a comet and the star field sit at
+   * 1e4 to 1e7 metres, and the sky dome is a sphere kilometres across. So the
+   * test is the object's own world bounding sphere: too big to be a thing, or
+   * too far to be in this air, and it is sky.
+   *
+   * Written as a list of names instead, it would have been correct on the day
+   * and wrong the first time somebody added a second moon. `userData.noAerial`
+   * is the escape hatch for anything the geometry gets wrong.
+   *
+   * Idempotent by `userData.aerial`, so it can run again when a system builds
+   * itself late — the festival lanterns arrive at dusk, an hour of game time
+   * after this first runs.
+   */
+  _dressAerial() {
+    if (!AIRMAT || !AERIAL || !this.scene) return 0;
+    const u = { ...this._aerialUniforms(), uSunDir: this.uSunDir, uCam: this.uCam };
+    const sphere = new THREE.Sphere();
+    let dressed = 0;
+    this.scene.traverse((o) => {
+      if (!o.material || o.userData?.noAerial) return;
+      if (!(o.isMesh || o.isPoints)) return;          // sprites have no project_vertex
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      if (mats.every((m) => m.isShaderMaterial || m.userData?.aerial)) return;
+      if (!o.geometry?.boundingSphere) o.geometry?.computeBoundingSphere?.();
+      const bs = o.geometry?.boundingSphere;
+      if (bs) {
+        sphere.copy(bs).applyMatrix4(o.matrixWorld);
+        if (sphere.radius > 3000 || sphere.center.length() > 8000) {
+          for (const m of mats) (m.userData ||= {}).aerial = 'sky';
+          return;
+        }
+      }
+      // Additive and transparent surfaces keep their coverage: alpha there is
+      // already carrying how much of the pixel the glow covers, and clarity
+      // written over it makes a lantern opaque.
+      const veil = mats.some((m) => m.transparent || m.blending === THREE.AdditiveBlending);
+      for (const m of mats) { applyAerial(m, u, { bucket: veil ? 'veil' : 'solid' }); dressed++; }
+    });
+    return dressed;
   }
 
   /**
@@ -2083,6 +2146,11 @@ export class SurfaceScale {
     if (this.megafauna) this.megafauna.update(dt, this.uSunDir.value.y);
     this._syncPaintLight();
     this._syncAerial();
+    // Every half second rather than every frame, and not as thrift: systems
+    // build themselves late — the festival lanterns arrive at dusk, weather
+    // when it turns — so this is a sweep for anything new, and the guard in
+    // `applyAerial` makes re-running it free.
+    if ((this._airTick = (this._airTick ?? 0) + 1) % 30 === 0) this._dressAerial();
     this._syncMaterial();
     if (this.sunShadow) {
       this.sunShadow.update(this.app.renderer, this.scene, this.camera,
