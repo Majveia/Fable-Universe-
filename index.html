@@ -242,6 +242,19 @@
     #stats{ display:none; }
     #crumbs{ max-width:86vw; }
   }
+
+  /* ------- M7 (?m7=1): three persistent elements, everything else summoned -
+     `.summoned` is the resting state of the four that used to be resident —
+     display:none rather than opacity, so §8 axis 7's question ("delete the HUD
+     and lose no orientation") is asked of a frame where they genuinely are not
+     drawn. `.resting` is the 4 s idle fade of the three that remain, and it
+     goes to zero: the old fade stopped at 0.22, which is dimmer but still
+     chrome. Pointer events go with the opacity or a fully faded control would
+     still be catching taps. */
+  .summoned{ display:none !important; }
+  .resting{ opacity:0 !important; pointer-events:none !important;
+    transition:opacity 1.1s ease; }
+  #crumbs, #stats, #timectl{ transition:opacity .35s ease; }
 </style>
 <script type="importmap">
 {

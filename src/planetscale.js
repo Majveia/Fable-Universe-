@@ -27,6 +27,7 @@ import { addOrbitals } from './orbital.js';
 import { solveWatershed } from './hydrology.js';
 import { CityField } from './city.js';
 import { addAurora } from './aurora.js';
+import { STREAM, StreamGovernor } from './vehicle.js';
 
 const TILE_VERT = /* glsl */`
   uniform vec3 uCenter;     // tile center, planet frame (static per tile)
@@ -649,6 +650,30 @@ export class PlanetScale {
     this.planetGroup = new THREE.Group();
     this.planetGroup.add(this.quad.group);
     this.scene.add(this.planetGroup);
+
+    // ---- §6 M5: the throttle stops being a guess --------------------------
+    //
+    // The flight law below this used to read `spd = clamp(alt·0.8, …)` with a
+    // ×3.4 boost — "the throttle is your altitude", which has exactly the right
+    // *shape* (the deeper the tree has to refine, the slower you may cross it)
+    // and a constant nobody derived. Measured against the tree's own demand it
+    // is over budget by 2.2× unboosted and 7.4× with the boost on a fast
+    // four-worker machine, and by forty times on a slow two-worker one. The
+    // failure is not a hole in the ground — `quadtree.js:298` keeps the parent
+    // drawn until all four children land — it is ground that stays coarse under
+    // you and then pops a level when the stream catches up. Which is §6 M5's
+    // forbidden word, reached from the other side.
+    //
+    // `?tau=` pins the measurement for a reproducible capture; without it the
+    // governor learns this machine from the real worker round trip.
+    this.m5 = url.searchParams.get('m5') === '1';
+    const tauPin = parseFloat(url.searchParams.get('tau'));
+    this.gov = new StreamGovernor(this.quad, {
+      R: this.R, maxDepth: qdepth, splitK: this.quad.splitK,
+      workers: this.quad.workers.length,
+      tau: Number.isFinite(tauPin) ? tauPin / 1000 : STREAM.tau0,
+    });
+    if (!Number.isFinite(tauPin)) this.quad.onBuild = (s) => this.gov.observe(s);
 
     // -- the sea: a second quadtree, flat at sea level, wearing water
     this.seaR = hasSea ? this.R + this.amp * pp.oceanLevel : -1;
@@ -1510,8 +1535,14 @@ export class PlanetScale {
       const upNow = _up.copy(this.camPos).normalize();
       this.camPos.copy(upNow).multiplyScalar(this._groundR(upNow) + this.eyeH);
     } else {
-      // in flight: the throttle is your altitude
-      const spd = Math.min(Math.max(alt * 0.8, 0.008), 1600) * boost;
+      // in flight: the throttle is your altitude, and the ceiling is the rate
+      // the ground can actually arrive at (§6 M5). The *want* keeps the old
+      // law — it is the right shape and it is what the controls feel like —
+      // and the governor is what stands between it and the pop.
+      const want = Math.min(Math.max(alt * 0.8, 0.008), 1600) * boost;
+      // the floor is the un-boosted walking-out speed: a machine having a bad
+      // second slows the ship to a crawl, never to a stop
+      const spd = this.m5 ? this.gov.govern(alt, want, 0.008) : want;
       if (this.keys.has('KeyW')) { this.camPos.addScaledVector(fwd, spd * dt); this._spd = spd; }
       if (this.keys.has('KeyS')) { this.camPos.addScaledVector(fwd, -spd * dt); this._spd = spd; }
       if (this.keys.has('KeyA')) { this.camPos.addScaledVector(right, -spd * dt); this._spd = spd; }
@@ -1705,6 +1736,12 @@ export class PlanetScale {
           ? 'afloat · the sea bears you' : 'on foot') : 'flight'],
       ['altitude', this._fmtKm(Math.max(this.altUnits ?? 0, 0) * this.unitKm)],
       ['speed', this._spd > 0 ? this._fmtKm(this._spd * this.unitKm) + '/s' : '—'],
+      // §8 axis 8: the HUD must not assert a number the world is contradicting.
+      // When the governor is holding the ship back, say so and say why — the
+      // ground is arriving as fast as this machine can make it.
+      ...(this.m5 && this.gov.pressure > 0.02 ? [['throttle',
+        `held at ${this._fmtKm(this.gov.limit * this.unitKm)}/s · `
+        + `${this.quad.workers.length} builders at ${(this.gov.tau * 1000).toFixed(0)} ms`]] : []),
       ['terrain tiles', `${S.drawn} drawn · ${S.cached} cached${S.pending ? ` · ${S.pending} streaming` : ''}`],
       ...(this.ocean ? [['sea tiles', `${this.ocean.stats.drawn} drawn · ${this.ocean.stats.cached} cached`]] : []),
       ...(this.quad.job.craters ? [['craters', String(this.quad.job.craters.length / 5)]] : []),

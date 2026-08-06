@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RNG, arand, galaxyName, hash, starName } from './rng.js';
-import { makeNebulaSprites, softDotTexture, galaxyAtlasTexture, makeVolumetricNebula } from './nebula.js';
+import { bulgeTexture, makeNebulaSprites, softDotTexture, galaxyAtlasTexture, makeVolumetricNebula } from './nebula.js';
 import { COSMO } from './cosmology.js';
 import { CollisionSim, COLLISION_NOTE } from './collision.js';
 
@@ -291,13 +291,16 @@ export class GalaxyScale {
         this.starData = this.sim.starData;
         this.scene.add(this.sim.points);
         this.uniforms = { uTime: { value: 0 }, uVrot: { value: 0 } }; // sky compat
-        const coreTex = softDotTexture();
+        const coreTex = bulgeTexture();
         this.coreSprites = [this.sim.c1, this.sim.c2].map((c, i) => {
           const sp = new THREE.Sprite(new THREE.SpriteMaterial({
             map: coreTex, color: i === 0 ? new THREE.Color(0.65, 0.55, 0.4) : new THREE.Color(0.42, 0.5, 0.65),
             blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
           }));
-          sp.scale.setScalar(P.radius * (i === 0 ? 0.28 : 0.2));
+          // the same r^¼ profile as the single-galaxy nucleus, for the same
+          // reason — two Gaussians clipping into each other was worse, not
+          // better, than one
+          sp.scale.setScalar(P.radius * (i === 0 ? 0.46 : 0.34));
           this.scene.add(sp);
           return { sp, c };
         });
@@ -504,20 +507,65 @@ export class GalaxyScale {
   _buildCore() {
     const R = this.params.radius;
     const tex = softDotTexture();
+    // The nucleus, on a de Vaucouleurs r^¼ profile rather than a Gaussian.
+    //
+    // A Gaussian is flat near its centre, so an additive sprite at `R * 0.16`
+    // clipped across a disc a sixth of the galaxy wide and the core read as a
+    // white hole with nothing in it. The r^¼ law is a cusp with faint wings:
+    // the saturated part is small, the falloff around it stays readable, and
+    // the bulge stars — 22% of everything drawn, and already there — carry the
+    // extended light the old sprite was standing in for.
+    //
+    // §9.6 rules that the sun disc is "painted 3× oversize and never blown
+    // out". Same principle one scale up: brightness reads as a bright *small*
+    // thing with a gradient, not as a large flat maximum.
     const core = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: tex, color: new THREE.Color(0.85, 0.7, 0.5),
+      map: bulgeTexture(), color: new THREE.Color(0.85, 0.7, 0.5),
       blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
     }));
-    core.scale.setScalar(R * 0.16);
+    core.scale.setScalar(R * 0.30);
     core.renderOrder = 4;
     this.scene.add(core);
+    // The spheroid's unresolved light: the stars too faint to be worth a point
+    // sprite, summed into one soft disc. It is an **LOD stand-in**, and it has
+    // to retire like one.
+    //
+    // It did not. At a distance the galaxy is small in frame and the glow reads
+    // as a halo; fly in and the same sprite is still `R * 1.1` across, so it
+    // floods the whole frame with an additive tan wash. Two things are wrong
+    // with that at once, and the second is an invariant:
+    //
+    //   · it double-counts light — the stars it stands in for are being drawn
+    //     as points at that range, so their brightness is added twice;
+    //   · §2.8 says "in vacuum the background is true #000 and blacks are never
+    //     lifted", and a full-frame additive wash is exactly a lifted black.
+    //
+    // Measured at a third of the default framing: 23.3% of the frame reached
+    // true #000 at distance and 0.4% up close. So it fades out as the stars it
+    // represents become resolvable, which is the same rule §M3's grass rings
+    // follow and the same reason.
     const glow = new THREE.Sprite(new THREE.SpriteMaterial({
       map: tex, color: new THREE.Color(0.16, 0.13, 0.095),
       blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
+      transparent: true, opacity: 1,
     }));
     glow.scale.setScalar(R * 1.1);
     glow.renderOrder = 0;
     this.scene.add(glow);
+    this.haloGlow = glow;
+  }
+
+  /**
+   * How much of the unresolved-light stand-in survives at this camera distance.
+   *
+   * 1 beyond two galaxy radii, 0 inside one. Inside a radius you are among the
+   * stars it was standing in for, and they are all being drawn.
+   */
+  _glowFade() {
+    const R = Math.max(this.params.radius, 1e-6);
+    const d = this.camera.position.length() / R;
+    const t = Math.min(Math.max((d - 1.0) / 1.0, 0), 1);
+    return t * t * (3 - 2 * t);
   }
 
   _buildBackdrop() {
@@ -558,6 +606,8 @@ export class GalaxyScale {
     if (this.coreSprites) for (const { sp, c } of this.coreSprites) sp.position.copy(c);
     if (this.playing) this._updateSupernovae(dt);
     this.uniforms.uTime.value = this.time;
+    // retire the unresolved-light stand-in as its stars become resolvable
+    if (this.haloGlow) this.haloGlow.material.opacity = this._glowFade();
     if (this.nebulaMesh) {
       // world-size → pixel-size conversion for the nebula sprites
       this.nebulaMesh.material.uniforms.uProj.value =

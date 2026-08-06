@@ -93,7 +93,18 @@ export function addWeather(s) {
       rain.material.opacity = storm * 0.6 * (0.3 + 0.7 * day);
       if (storm > 0.03) {
         const P = geo.attributes.position.array;
-        const fall = 55 * dt, wx = s.wind.x * 9 * dt, wz = s.wind.y * 9 * dt;
+        // §6 M3 · rain slants on the *same* field that bends the grass, so a
+        // gust arriving is one event in the frame rather than two systems
+        // happening to be busy at once. Sampled once for the whole curtain —
+        // it spans 120 m and the field varies over hundreds, so per-drop
+        // sampling would buy nothing and cost N evaluations a frame.
+        //
+        // No terrain coupling: the speed-up over a crest is a boundary-layer
+        // effect and a raindrop at forty metres is not in the boundary layer.
+        const w = s.sampleWind
+          ? s.sampleWind(s.camera.position.x, s.camera.position.z, 40)
+          : { x: s.wind.x * 4, z: s.wind.y * 4 };
+        const fall = 55 * dt, wx = w.x * 2.2 * dt, wz = w.z * 2.2 * dt;
         for (let i = 0; i < N; i++) {
           P[i * 3] += wx; P[i * 3 + 1] -= fall; P[i * 3 + 2] += wz;
           if (P[i * 3 + 1] < 0) {

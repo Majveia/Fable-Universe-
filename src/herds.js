@@ -9,7 +9,6 @@
 import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
 import { isBiosphere } from './life.js';
-import { airOf, applyAerial } from './aerial.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 const EXT = 1400;
@@ -74,10 +73,10 @@ export function addHerds(s) {
 
   const totalN = herds.reduce((a, h) => a + h.n, 0);
   const geo = grazerGeometry(pp);
-  const mat = applyAerial(new THREE.MeshStandardMaterial({
+  const mat = new THREE.MeshStandardMaterial({
     color: pp.colC.clone().lerp(new THREE.Color(0.5, 0.42, 0.32), 0.55),
     roughness: 0.9, flatShading: true,
-  }), airOf(s), { name: 'herds/addHerds' });
+  });
   const mesh = new THREE.InstancedMesh(geo, mat, totalN);
   mesh.frustumCulled = false;
   s.scene.add(mesh);

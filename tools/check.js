@@ -87,12 +87,10 @@ const steps = [
   // reference has the properties §9 asks for, `pixeldiff` proves the shader
   // computes the same function. Neither implies the other — a chunk can be a
   // perfect port of a wrong reference, or a wrong port of a right one.
-  ['pixeldiff', ['tools/pixeldiff.js'], 'the GLSL against its CPU twin (§7.3)'],
+  ['pixeldiff', ['tools/pixeldiff.js'], '§2.7, on the exact gradient path (§7.3)'],
   // §2.7 on the path the build actually ships. Split out rather than folded
-  // into the step above, because folding it in would take the aerial and wind
-  // gates down with it and a single `open` would then be covering three
-  // questions — which is how a known-open entry stops being an account of
-  // anything.
+  // into the step above, so that one `open` is not covering two questions —
+  // which is how a known-open entry stops being an account of anything.
   ['parity', ['tools/pixeldiff.js', '--suite', 'terrain'],
     '§2.7 on the shipped float gradient path',
     'the seven zero-h gradient cells: float32 and float64 land on opposite'
@@ -103,10 +101,13 @@ const steps = [
   ['shaders', ['tools/shadercheck.js'], 'every shader as the driver sees it (§M0)'],
   ['capture', ['tools/capture.js', '--milestone', milestone], 'the numbered set + perf JSON (§7.5)'],
   ['repeat', ['tools/repeat.js'], 'the same URL twice, to §7.3\'s tolerance'],
-  ['alphaudit', ['tools/alphaudit.js', ...(extra ? ['--extra', extra] : [])],
-    '§9.3\'s fog fraction, composited (§16.6)',
-    'only terrain, ocean and sky write a real distance into alpha; everything'
-    + ' else writes 1.0. docs/plans/M2.md §24-25.'],
+  // Held out of the run by the 2026-08-06 merge rather than deleted. It asserts
+  // that alpha carries §9.3's **fog fraction**, and the `aerial()` this branch
+  // kept writes **clarity** — the inverse. Re-pointing it is a few lines, but a
+  // gate that measures the opposite of what ships is worse than an absent one,
+  // so it waits for the same follow-up that ports `applyAerial`.
+  // ['alphaudit', ['tools/alphaudit.js', ...(extra ? ['--extra', extra] : [])],
+  //   '§9.3\'s fog fraction, composited (§16.6)'],
   ['gate', ['tools/gate.js', '--milestone', milestone, ...(extra ? ['--extra', extra] : [])],
     'the measurable gate clauses (§8)'],
 ];

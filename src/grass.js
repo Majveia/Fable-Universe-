@@ -12,7 +12,6 @@ import * as THREE from 'three';
 import { RNG, arand, hash } from './rng.js';
 import { isBiosphere } from './life.js';
 import { softDotTexture } from './nebula.js';
-import { airOf, applyAerial } from './aerial.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 
@@ -172,12 +171,12 @@ export function addGrass(s) {
   const NP = COARSE ? 40 : 90;
   const pGeo = new THREE.BufferGeometry();
   const pPos = new Float32Array(NP * 3);
-  const petals = new THREE.Points(pGeo, applyAerial(new THREE.PointsMaterial({
+  const petals = new THREE.Points(pGeo, new THREE.PointsMaterial({
     map: softDotTexture(24),
     color: new THREE.Color().setHSL(r.float(0, 1), 0.7, 0.72),
     size: 0.32, transparent: true, opacity: 0.85,
     depthWrite: false, sizeAttenuation: true,
-  }), airOf(s), { name: 'grass/addGrass' }));
+  }));
   const pVel = new Float32Array(NP * 3);
   const pLife = new Float32Array(NP);
   const spawnPetal = (i) => {

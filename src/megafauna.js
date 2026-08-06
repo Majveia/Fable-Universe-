@@ -13,7 +13,6 @@ import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
 import { softDotTexture } from './nebula.js';
 import { now } from './clock.js';
-import { airOf, applyAerial } from './aerial.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 const EXT = 1400;
@@ -40,7 +39,7 @@ function buildColossus(s, r) {
   const u = H / 150;                                   // unit scale
   const bronze = new THREE.Color().setHSL(0.09, 0.5, 0.34);
   const verd = new THREE.Color().setHSL(0.42, 0.45, 0.38);
-  const mat = applyAerial(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.72, metalness: 0.55, flatShading: true }), airOf(s), { name: 'megafauna/buildColossus' });
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.72, metalness: 0.55, flatShading: true });
 
   const g = new THREE.Group();
   const parts = [];
@@ -65,7 +64,7 @@ function buildColossus(s, r) {
   };
 
   // stepped stone pedestal (its own paler material) — the plinth of a titan
-  const stoneMat = applyAerial(new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.09, 0.16, 0.55), roughness: 0.95, flatShading: true }), airOf(s), { name: 'megafauna/buildColossus' });
+  const stoneMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.09, 0.16, 0.55), roughness: 0.95, flatShading: true });
   for (let i = 0; i < 4; i++) {
     const w = (34 - i * 6) * u;
     const step = new THREE.Mesh(new THREE.BoxGeometry(w, 4 * u, w), stoneMat);
@@ -109,18 +108,18 @@ function buildColossus(s, r) {
 
   // the eyes and the staff-jewel take a light after dark
   const glow = new THREE.Group();
-  const jewel = new THREE.Sprite(applyAerial(new THREE.SpriteMaterial({
+  const jewel = new THREE.Sprite(new THREE.SpriteMaterial({
     map: softDotTexture(48), color: new THREE.Color(1.4, 1.1, 0.6),
     transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
-  }), airOf(s), { name: 'megafauna/buildColossus' }));
+  }));
   jewel.scale.setScalar(10 * u);
   jewel.position.set(24 * u, shoulder + 46 * u, 0);
   glow.add(jewel);
   for (const ex of [-2.6 * u, 2.6 * u]) {
-    const eye = new THREE.Sprite(applyAerial(new THREE.SpriteMaterial({
+    const eye = new THREE.Sprite(new THREE.SpriteMaterial({
       map: softDotTexture(32), color: new THREE.Color(1.3, 0.8, 0.4),
       transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
-    }), airOf(s), { name: 'megafauna/buildColossus' }));
+    }));
     eye.scale.setScalar(2.4 * u);
     eye.position.set(ex, shoulder + 21 * u, 6.2 * u);
     glow.add(eye);
@@ -145,16 +144,16 @@ function buildWhales(s, r) {
   const N = COARSE ? 4 : 8;
   const geo = whaleGeometry();
   const col = new THREE.Color().setHSL(r.float(0.55, 0.72), 0.35, 0.4);
-  const mat = applyAerial(new THREE.MeshStandardMaterial({ color: col, roughness: 0.85, flatShading: true }), airOf(s), { name: 'megafauna/buildWhales' });
+  const mat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.85, flatShading: true });
   const whales = new THREE.InstancedMesh(geo, mat, N);
   whales.frustumCulled = false;
   s.scene.add(whales);
   // a soft belly-glow billboard under each, for dusk
   const glowTex = softDotTexture(64);
-  const glows = new THREE.Points(new THREE.BufferGeometry(), applyAerial(new THREE.PointsMaterial({
+  const glows = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({
     map: glowTex, color: new THREE.Color(0.7, 0.85, 1.1), size: 40, transparent: true,
     opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true,
-  }), airOf(s), { name: 'megafauna/buildWhales' }));
+  }));
   const gp = new Float32Array(N * 3);
   glows.geometry.setAttribute('position', new THREE.BufferAttribute(gp, 3));
   glows.frustumCulled = false;
@@ -205,7 +204,7 @@ function whaleGeometry() {
 function buildLeviathan(s, r) {
   if (s.seaLevel === null) return null;
   const SEG = COARSE ? 7 : 11;
-  const mat = applyAerial(new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.58, 0.4, 0.14), roughness: 0.5, metalness: 0.2, flatShading: true }), airOf(s), { name: 'megafauna/buildLeviathan' });
+  const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.58, 0.4, 0.14), roughness: 0.5, metalness: 0.2, flatShading: true });
   const humps = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.6), mat, SEG);
   humps.frustumCulled = false;
   s.scene.add(humps);

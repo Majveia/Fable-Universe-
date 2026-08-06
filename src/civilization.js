@@ -13,7 +13,6 @@ import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
 import { addSettlement } from './settlement.js';
 import { now } from './clock.js';
-import { airOf, applyAerial } from './aerial.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 
@@ -134,11 +133,11 @@ function buildPort(s, group, site, r, d, dry) {
     const x = site.x + Math.cos(ang) * rad, z = site.z + Math.sin(ang) * rad;
     if (!dry(x, z)) continue;
     const sign = new THREE.Mesh(new THREE.PlaneGeometry(r.float(4, 9), r.float(6, 16)),
-      applyAerial(new THREE.MeshBasicMaterial({
+      new THREE.MeshBasicMaterial({
         color: new THREE.Color().setHSL(r.float(0, 1), 0.9, 0.6),
         transparent: true, opacity: 0, side: THREE.DoubleSide,
         blending: THREE.AdditiveBlending, depthWrite: false,
-      }), airOf(s), { name: 'civilization/buildPort' }));
+      }));
     sign.position.set(x, s.heightAt(x, z) + r.float(16, 40), z);
     sign.rotation.y = r.float(0, 6.28);
     group.add(sign);
@@ -154,9 +153,9 @@ function buildPort(s, group, site, r, d, dry) {
 
 // --------------------------------------------------------- the monument ----
 function buildMonument(s, group, site, r, d, dry) {
-  const stone = applyAerial(new THREE.MeshStandardMaterial({
+  const stone = new THREE.MeshStandardMaterial({
     color: new THREE.Color().setHSL(0.09, 0.2, 0.62), roughness: 0.95, flatShading: true,
-  }), airOf(s), { name: 'civilization/buildMonument' });
+  });
   const dark = stone.clone(); dark.color.multiplyScalar(0.7);
 
   // a stepped ziggurat at the heart
@@ -193,10 +192,10 @@ function buildMonument(s, group, site, r, d, dry) {
   obel.rotation.y = Math.PI / 4;
   group.add(obel);
   // a beacon at the obelisk's cap, lit at night
-  const beacon = new THREE.Sprite(applyAerial(new THREE.SpriteMaterial({
+  const beacon = new THREE.Sprite(new THREE.SpriteMaterial({
     map: softDotTexture(32), color: new THREE.Color(1.3, 0.9, 0.5),
     transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
-  }), airOf(s), { name: 'civilization/buildMonument' }));
+  }));
   beacon.position.set(ox, s.heightAt(ox, oz) + obh + 2, oz);
   beacon.scale.setScalar(6);
   group.add(beacon);
@@ -208,8 +207,8 @@ function buildMonument(s, group, site, r, d, dry) {
 
 // --------------------------------------------------------- the spaceport ----
 function buildSpaceport(s, group, site, r, d, dry) {
-  const metal = applyAerial(new THREE.MeshStandardMaterial({ color: 0x7c848c, roughness: 0.5, metalness: 0.4 }), airOf(s), { name: 'civilization/buildSpaceport' });
-  const prefab = applyAerial(new THREE.MeshStandardMaterial({ color: 0x9aa0a2, roughness: 0.7 }), airOf(s), { name: 'civilization/buildSpaceport' });
+  const metal = new THREE.MeshStandardMaterial({ color: 0x7c848c, roughness: 0.5, metalness: 0.4 });
+  const prefab = new THREE.MeshStandardMaterial({ color: 0x9aa0a2, roughness: 0.7 });
   const pads = [];
   // landing pads: low discs with an emissive ring of edge-lights
   for (let i = 0; i < (COARSE ? 2 : 3); i++) {
@@ -221,8 +220,8 @@ function buildSpaceport(s, group, site, r, d, dry) {
     disc.position.set(x, h + 0.6, z);
     group.add(disc);
     const ring = new THREE.Mesh(new THREE.TorusGeometry(10, 0.5, 6, 28),
-      applyAerial(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.3, 0.8, 1.1), transparent: true,
-        opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false }), airOf(s), { name: 'civilization/buildSpaceport' }));
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(0.3, 0.8, 1.1), transparent: true,
+        opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false }));
     ring.rotation.x = Math.PI / 2;
     ring.position.set(x, h + 1.3, z);
     group.add(ring);
@@ -256,10 +255,10 @@ function buildSpaceport(s, group, site, r, d, dry) {
     fin.rotation.y = -a;
     ship.add(fin);
   }
-  const plume = new THREE.Sprite(applyAerial(new THREE.SpriteMaterial({
+  const plume = new THREE.Sprite(new THREE.SpriteMaterial({
     map: softDotTexture(48), color: new THREE.Color(1.4, 1.1, 0.7),
     transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
-  }), airOf(s), { name: 'civilization/buildSpaceport' }));
+  }));
   plume.scale.setScalar(10);
   ship.add(hull, nose, plume);
   const pad0 = pads[0] ?? { x: site.x, z: site.z, h: s.heightAt(site.x, site.z) };

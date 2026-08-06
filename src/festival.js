@@ -90,8 +90,15 @@ export function addFestival(s) {
         l.life -= dt;
         l.y += l.vy * dt;
         l.vy = Math.max(l.vy * (1 - dt * 0.1), 1.5);      // they slow as they rise
-        l.x += (s.wind.x * 2.5 + Math.sin(t * 0.7 + l.sway) * 0.8) * dt;
-        l.z += (s.wind.y * 2.5 + Math.cos(t * 0.6 + l.sway) * 0.8) * dt;
+        // §6 M3 · a lantern rises out of the boundary layer as it goes, so it
+        // reads the field at its own height and genuinely accelerates as it
+        // clears the drag near the ground — which is what the log profile in
+        // wind.js says happens, applied to something other than a blade
+        const w = s.sampleWind
+          ? s.sampleWind(l.x, l.z, Math.max(l.y - (s.heightAt ? s.heightAt(l.x, l.z) : 0), 0.5))
+          : { x: s.wind.x * 4, z: s.wind.y * 4 };
+        l.x += (w.x * 0.62 + Math.sin(t * 0.7 + l.sway) * 0.8) * dt;
+        l.z += (w.z * 0.62 + Math.cos(t * 0.6 + l.sway) * 0.8) * dt;
         if (l.life <= 0) l.alive = false;
         P[i * 3] = l.x; P[i * 3 + 1] = l.y; P[i * 3 + 2] = l.z;
       }

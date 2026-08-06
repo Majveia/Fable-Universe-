@@ -40,15 +40,32 @@ const TIER_NAMES = ['low', 'mobile', 'desktop', 'ultra'];
  *   cities      the full metropolis generator
  *   volumetrics volumetric cloud deck and god rays
  *
- * Empty seats are deliberate: §M3's grass rings, wind render target and blade
- * tessellation belong here too and do not exist yet. When they arrive they
- * become columns, not new URL parameters.
+ * §M3 filled the three seats this table was holding open, and they are the
+ * reference's own rows adopted verbatim in shape (§5):
+ *
+ *   grass       per-ring instance-count multipliers, one per ring
+ *   wind        the wind render target's side, in texels
+ *   blades      per-ring blade segment counts — the *only* thing a ring
+ *               boundary changes (§9.5), so this is the tessellation dial
+ *
+ * `grass` is per-ring rather than a single number because the rings do not
+ * scale together, and the direction is the opposite of the obvious guess. On
+ * every row `grass[0] > grass[3]`: the near ring keeps proportionally more
+ * (0.30 against 0.24 at low) and gains proportionally more (1.45 against 1.20
+ * at ultra).
+ *
+ * The reason is what a blade *is* at each distance. Underfoot a blade is
+ * individually resolved, so thinning it leaves a visible hole and density is
+ * the only thing that fills the ground. At three hundred metres a blade is a
+ * sub-pixel mark, so removing some and widening the rest is very nearly free —
+ * which is the same count-for-width trade ring 3's density law already makes.
+ * The far rings are therefore where a low-tier machine gets its frames back.
  */
 export const QUALITY = [
-  { name: 'low', px: 0.85, cosmic: 44, quadSplit: 4.5, quadDepth: 14, tileRes: 25, atmoSteps: 6, shadowRes: 1024, cities: false, volumetrics: false },
-  { name: 'mobile', px: 1.00, cosmic: 56, quadSplit: 5.5, quadDepth: 16, tileRes: 29, atmoSteps: 8, shadowRes: 1536, cities: true, volumetrics: false },
-  { name: 'desktop', px: 1.12, cosmic: 68, quadSplit: 6.5, quadDepth: 18, tileRes: 33, atmoSteps: 12, shadowRes: 2048, cities: true, volumetrics: true },
-  { name: 'ultra', px: 1.32, cosmic: 86, quadSplit: 8.0, quadDepth: 20, tileRes: 41, atmoSteps: 16, shadowRes: 2560, cities: true, volumetrics: true },
+  { name: 'low', px: 0.85, cosmic: 44, quadSplit: 4.5, quadDepth: 14, tileRes: 25, atmoSteps: 6, shadowRes: 1024, cities: false, volumetrics: false, grass: [0.30, 0.28, 0.26, 0.24], wind: 160, blades: [3, 1, 1, 1] },
+  { name: 'mobile', px: 1.00, cosmic: 56, quadSplit: 5.5, quadDepth: 16, tileRes: 29, atmoSteps: 8, shadowRes: 1536, cities: true, volumetrics: false, grass: [0.58, 0.55, 0.52, 0.48], wind: 224, blades: [3, 2, 1, 1] },
+  { name: 'desktop', px: 1.12, cosmic: 68, quadSplit: 6.5, quadDepth: 18, tileRes: 33, atmoSteps: 12, shadowRes: 2048, cities: true, volumetrics: true, grass: [1.00, 1.00, 1.00, 1.00], wind: 288, blades: [4, 2, 1, 1] },
+  { name: 'ultra', px: 1.32, cosmic: 86, quadSplit: 8.0, quadDepth: 20, tileRes: 41, atmoSteps: 16, shadowRes: 2560, cities: true, volumetrics: true, grass: [1.45, 1.38, 1.30, 1.20], wind: 352, blades: [5, 3, 2, 1] },
 ];
 
 const param = (k) => {
@@ -112,6 +129,22 @@ export function qInt(key, column) {
 export function qFloat(key, column) {
   const v = parseFloat(param(key));
   return Number.isFinite(v) ? v : Q[column];
+}
+
+/**
+ * A per-ring knob: same contract, comma-separated in the URL.
+ *
+ * §M3's grass multipliers and blade segments are one number per ring rather
+ * than one number, because the rings do not scale together (see the table's own
+ * note). `?grass=1,1,0.5,0.5` overrides all four; a short list is padded from
+ * the row, so `?grass=2` raises the near ring and leaves the rest alone.
+ */
+export function qArr(key, column) {
+  const row = Q[column];
+  const raw = param(key);
+  if (!raw) return row.slice();
+  const given = String(raw).split(',').map(Number);
+  return row.map((d, i) => (Number.isFinite(given[i]) ? given[i] : d));
 }
 
 /** a boolean knob: `?k=0` forces off, `?k=1` forces on, else the row decides */

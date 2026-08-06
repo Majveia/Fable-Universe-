@@ -11,7 +11,6 @@
 import * as THREE from 'three';
 import { hash, RNG, cityName } from './rng.js';
 import { softDotTexture } from './nebula.js';
-import { airOf, applyAerial } from './aerial.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 
@@ -222,10 +221,10 @@ export function addSettlement(s) {
     const x = site.x + Math.cos(th) * 20, z = site.z + Math.sin(th) * 20;
     const h = s.heightAt(x, z);
     const body = new THREE.Mesh(new THREE.BoxGeometry(4.2, towerH, 4.2),
-      applyAerial(new THREE.MeshStandardMaterial({ color: facade.clone().multiplyScalar(0.8), roughness: 0.9 }), airOf(s), { name: 'settlement/addSettlement' }));
+      new THREE.MeshStandardMaterial({ color: facade.clone().multiplyScalar(0.8), roughness: 0.9 }));
     body.position.set(x, h + towerH / 2 - 0.5, z);
     const cap = new THREE.Mesh(new THREE.ConeGeometry(3.4, 3.4, 4),
-      applyAerial(new THREE.MeshStandardMaterial({ color: roof, roughness: 0.85 }), airOf(s), { name: 'settlement/addSettlement' }));
+      new THREE.MeshStandardMaterial({ color: roof, roughness: 0.85 }));
     cap.position.set(x, h + towerH + 1.2, z);
     cap.rotation.y = Math.PI / 4;
     group.add(body, cap);
@@ -241,13 +240,13 @@ export function addSettlement(s) {
     if (!dry(x, z) || h < site.h + 4) continue;
     const towerHt = 13;
     const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.7, 2.6, towerHt, 8),
-      applyAerial(new THREE.MeshStandardMaterial({ color: facade.clone().multiplyScalar(0.75), roughness: 0.92 }), airOf(s), { name: 'settlement/addSettlement' }));
+      new THREE.MeshStandardMaterial({ color: facade.clone().multiplyScalar(0.75), roughness: 0.92 }));
     tower.position.set(x, h + towerHt / 2, z);
     const capm = new THREE.Mesh(new THREE.ConeGeometry(2.2, 2.2, 8),
-      applyAerial(new THREE.MeshStandardMaterial({ color: roof, roughness: 0.85 }), airOf(s), { name: 'settlement/addSettlement' }));
+      new THREE.MeshStandardMaterial({ color: roof, roughness: 0.85 }));
     capm.position.set(x, h + towerHt + 1, z);
     const rotor = new THREE.Group();
-    const bladeM = applyAerial(new THREE.MeshStandardMaterial({ color: 0xcfc4ae, roughness: 0.8, side: THREE.DoubleSide }), airOf(s), { name: 'settlement/addSettlement' });
+    const bladeM = new THREE.MeshStandardMaterial({ color: 0xcfc4ae, roughness: 0.8, side: THREE.DoubleSide });
     for (let b = 0; b < 4; b++) {
       const blade = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 7.4), bladeM);
       blade.position.y = 4.4;
@@ -327,7 +326,7 @@ export function addSettlement(s) {
   }
   if (postXf.length) {
     const posts = new THREE.InstancedMesh(postGeo,
-      applyAerial(new THREE.MeshStandardMaterial({ color: 0x27251f, roughness: 0.95 }), airOf(s), { name: 'settlement/addSettlement' }), postXf.length);
+      new THREE.MeshStandardMaterial({ color: 0x27251f, roughness: 0.95 }), postXf.length);
     postXf.forEach((p, i) => {
       d.position.set(p.x, p.h + 1.4, p.z);
       d.rotation.set(0, 0, 0);
@@ -339,11 +338,11 @@ export function addSettlement(s) {
   }
   const lampGeo = new THREE.BufferGeometry();
   lampGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lampPts), 3));
-  const lamps = new THREE.Points(lampGeo, applyAerial(new THREE.PointsMaterial({
+  const lamps = new THREE.Points(lampGeo, new THREE.PointsMaterial({
     map: softDotTexture(32), color: new THREE.Color(1.35, 0.85, 0.42),
     size: 3.2, transparent: true, opacity: 0, depthWrite: false,
     blending: THREE.AdditiveBlending, sizeAttenuation: true,
-  }), airOf(s), { name: 'settlement/addSettlement' }));
+  }));
   group.add(lamps);
 
   // ------------------------------------------------------ the ring-gate ----
@@ -351,16 +350,16 @@ export function addSettlement(s) {
   const gate = new THREE.Group();
   {
     const plinth = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 3.1, 1.1, 10),
-      applyAerial(new THREE.MeshStandardMaterial({ color: 0x3a3733, roughness: 0.9 }), airOf(s), { name: 'settlement/addSettlement' }));
+      new THREE.MeshStandardMaterial({ color: 0x3a3733, roughness: 0.9 }));
     plinth.position.y = 0.55;
     const ring = new THREE.Mesh(new THREE.TorusGeometry(3.1, 0.34, 8, 30),
-      applyAerial(new THREE.MeshStandardMaterial({ color: 0x54504a, roughness: 0.55, metalness: 0.35 }), airOf(s), { name: 'settlement/addSettlement' }));
+      new THREE.MeshStandardMaterial({ color: 0x54504a, roughness: 0.55, metalness: 0.35 }));
     ring.position.y = 4.4;
     const glow = new THREE.Mesh(new THREE.CircleGeometry(2.6, 26),
-      applyAerial(new THREE.MeshBasicMaterial({
+      new THREE.MeshBasicMaterial({
         color: new THREE.Color(0.5, 0.8, 1.2), transparent: true, opacity: 0,
         blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false,
-      }), airOf(s), { name: 'settlement/addSettlement' }));
+      }));
     glow.position.y = 4.4;
     gate.add(plinth, ring, glow);
     const gh = s.heightAt(site.x, site.z);
@@ -377,7 +376,7 @@ export function addSettlement(s) {
     const crateN = COARSE ? 14 : 24;
     const crates = new THREE.InstancedMesh(
       new THREE.BoxGeometry(1, 1, 1),
-      applyAerial(new THREE.MeshStandardMaterial({ color: 0x6b5233, roughness: 0.95 }), airOf(s), { name: 'settlement/addSettlement' }), crateN);
+      new THREE.MeshStandardMaterial({ color: 0x6b5233, roughness: 0.95 }), crateN);
     for (let i = 0; i < crateN; i++) {
       const hm = homes[r.int(0, Math.min(homes.length - 1, NT - 1))];
       const x = hm.x + r.gauss() * 7, z = hm.z + r.gauss() * 7;
@@ -390,11 +389,11 @@ export function addSettlement(s) {
     }
     group.add(crates);
 
-    const awnMat = applyAerial(new THREE.MeshStandardMaterial({
+    const awnMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color().setHSL(r.float(0, 1), 0.55, 0.5),
       roughness: 0.85, side: THREE.DoubleSide,
-    }), airOf(s), { name: 'settlement/addSettlement' });
-    const poleMat = applyAerial(new THREE.MeshStandardMaterial({ color: 0x4a3d2c, roughness: 0.95 }), airOf(s), { name: 'settlement/addSettlement' });
+    });
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x4a3d2c, roughness: 0.95 });
     for (let i = 0; i < (COARSE ? 2 : 4); i++) {
       const ang = r.float(0, 6.28), rad = r.float(9, 15);
       const x = site.x + Math.cos(ang) * rad, z = site.z + Math.sin(ang) * rad;
@@ -411,7 +410,7 @@ export function addSettlement(s) {
       awning.rotation.x = -Math.PI / 2 + 0.12;
       awning.position.y = 2.35;
       const counter = new THREE.Mesh(new THREE.BoxGeometry(3, 0.8, 1.6),
-        applyAerial(new THREE.MeshStandardMaterial({ color: 0x7a6242, roughness: 0.9 }), airOf(s), { name: 'settlement/addSettlement' }));
+        new THREE.MeshStandardMaterial({ color: 0x7a6242, roughness: 0.9 }));
       counter.position.y = 0.4;
       stall.add(awning, counter);
       stall.position.set(x, h, z);
@@ -450,7 +449,7 @@ export function addSettlement(s) {
       return g;
     })();
     folkMesh = new THREE.InstancedMesh(fGeo,
-      applyAerial(new THREE.MeshStandardMaterial({ roughness: 0.9 }), airOf(s), { name: 'settlement/addSettlement' }), folkN);
+      new THREE.MeshStandardMaterial({ roughness: 0.9 }), folkN);
     const fColor = new THREE.Color();
     folkLampPts = new Float32Array(folkN * 3);
     for (let i = 0; i < folkN; i++) {
@@ -468,11 +467,11 @@ export function addSettlement(s) {
     group.add(folkMesh);
     const flGeo = new THREE.BufferGeometry();
     flGeo.setAttribute('position', new THREE.BufferAttribute(folkLampPts, 3));
-    folkLamps = new THREE.Points(flGeo, applyAerial(new THREE.PointsMaterial({
+    folkLamps = new THREE.Points(flGeo, new THREE.PointsMaterial({
       map: softDotTexture(32), color: new THREE.Color(1.3, 0.8, 0.4),
       size: 1.6, transparent: true, opacity: 0, depthWrite: false,
       blending: THREE.AdditiveBlending, sizeAttenuation: true,
-    }), airOf(s), { name: 'settlement/addSettlement' }));
+    }));
     group.add(folkLamps);
   }
 
@@ -485,10 +484,10 @@ export function addSettlement(s) {
   const sAge = new Float32Array(NSMOKE);
   for (let i = 0; i < NSMOKE; i++) sAge[i] = (i / NSMOKE) * 9;
   smokeGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
-  const smoke = hearths.length ? new THREE.Points(smokeGeo, applyAerial(new THREE.PointsMaterial({
+  const smoke = hearths.length ? new THREE.Points(smokeGeo, new THREE.PointsMaterial({
     map: softDotTexture(32), color: 0x9aa0a8, size: 4.5,
     transparent: true, opacity: 0.16, depthWrite: false, sizeAttenuation: true,
-  }), airOf(s), { name: 'settlement/addSettlement' })) : null;
+  })) : null;
   if (smoke) group.add(smoke);
   const windAng = r.float(0, 6.28);
   const wind = { x: Math.cos(windAng) * 1.7, z: Math.sin(windAng) * 1.7 };
@@ -504,13 +503,13 @@ export function addSettlement(s) {
     const mastH = r.float(30, 55);
     const mast = new THREE.Mesh(
       new THREE.CylinderGeometry(0.35, 0.6, mastH, 6),
-      applyAerial(new THREE.MeshStandardMaterial({ color: 0x2a2c30, roughness: 0.9 }), airOf(s), { name: 'settlement/addSettlement' }));
+      new THREE.MeshStandardMaterial({ color: 0x2a2c30, roughness: 0.9 }));
     mast.position.set(x, h + mastH / 2, z);
     group.add(mast);
-    const lamp = new THREE.Sprite(applyAerial(new THREE.SpriteMaterial({
+    const lamp = new THREE.Sprite(new THREE.SpriteMaterial({
       map: tex, color: new THREE.Color(1.6, 0.12, 0.1),
       blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-    }), airOf(s), { name: 'settlement/addSettlement' }));
+    }));
     lamp.position.set(x, h + mastH + 1.5, z);
     lamp.scale.setScalar(6);
     group.add(lamp);

@@ -8,7 +8,6 @@
 import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
 import { softDotTexture } from './nebula.js';
-import { airOf, applyAerial } from './aerial.js';
 
 const EXT = 1400;
 
@@ -32,10 +31,10 @@ export function addShips(s) {
   }
   if (!anchors.length) return null;
 
-  const hullMat = applyAerial(new THREE.MeshStandardMaterial({ color: 0x4e3a26, roughness: 0.85 }), airOf(s), { name: 'ships/addShips' });
-  const sailMat = applyAerial(new THREE.MeshStandardMaterial({
+  const hullMat = new THREE.MeshStandardMaterial({ color: 0x4e3a26, roughness: 0.85 });
+  const sailMat = new THREE.MeshStandardMaterial({
     color: 0xe8e0cc, roughness: 0.9, side: THREE.DoubleSide,
-  }), airOf(s), { name: 'ships/addShips' });
+  });
   const tex = softDotTexture(32);
   const ships = [];
   for (const a of anchors) {
@@ -53,10 +52,10 @@ export function addShips(s) {
     const jib = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 4.0), sailMat);
     jib.position.set(0, 3.6, 3.4);
     jib.rotation.y = -0.18;
-    const lamp = new THREE.Sprite(applyAerial(new THREE.SpriteMaterial({
+    const lamp = new THREE.Sprite(new THREE.SpriteMaterial({
       map: tex, color: new THREE.Color(1.35, 0.85, 0.4),
       transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
-    }), airOf(s), { name: 'ships/addShips' }));
+    }));
     lamp.position.y = 9.6;
     lamp.scale.setScalar(3);
     ship.add(hull, mast, sail, jib, lamp);

@@ -11,7 +11,6 @@ import * as THREE from 'three';
 import { RNG, arand, hash } from './rng.js';
 import { NOISE_GLSL } from './planet.js';
 import { softDotTexture } from './nebula.js';
-import { airOf, applyAerial } from './aerial.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 const EXT = 1400;
@@ -162,10 +161,10 @@ export function addRivers(s) {
   }
   const sPos = new Float32Array(Math.max(sprayList.length, 1) * 3);
   sprayGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
-  const spray = new THREE.Points(sprayGeo, applyAerial(new THREE.PointsMaterial({
+  const spray = new THREE.Points(sprayGeo, new THREE.PointsMaterial({
     map: softDotTexture(32), color: 0xdfe8ee, size: 3.5, transparent: true,
     opacity: 0.5, depthWrite: false, blending: THREE.NormalBlending, sizeAttenuation: true,
-  }), airOf(s), { name: 'rivers/addRivers' }));
+  }));
   spray.frustumCulled = false;
   group.add(spray);
 
