@@ -1,10 +1,36 @@
 // Every world's people looked up and drew their own figures in the dark.
 //
-// A handful of constellations hang in each world's night: bright named
-// stars joined by hairline strokes, with a label that kindles beneath the
-// figure. They fade in only when the sky is dark, wheel with the night as
-// the world turns, and — like everything here — are the same figures in the
-// same places every time you return. Look up at dusk and the sky has names.
+// A handful of constellations hang in each world's night: bright stars joined
+// by hairline strokes. They fade in only when the sky is dark, wheel with the
+// night as the world turns, and — like everything here — are the same figures
+// in the same places every time you return.
+//
+// ---------------------------------------------------------------------------
+// The names are computed and never drawn, which is the whole point
+//
+// This module used to paint each figure's name into the sky as a sprite, in
+// `300 34px "Helvetica Neue", Arial, sans-serif`. It was the only place in
+// `src/` that drew letterforms into a world, and it broke three things at once:
+//
+// - **§2.1**, which forbids web fonts by name. Letterforms are the most
+//   authored asset there is — a typeface is somebody's drawing — and this
+//   imported one from whatever the operating system happened to have.
+// - **§2.3**, and visibly. That font stack resolves to Helvetica Neue on
+//   macOS, Arial on Windows and Liberation or DejaVu on Linux, so one seed
+//   gave three different skies. §11 calls this a determinism leak; it was the
+//   only one anybody could *see*.
+// - **§4, and §8's seventh axis.** "Minimalism is a property of the chrome."
+//   A caption hanging over an alien horizon is chrome that escaped into the
+//   world, and it read as a label on a place rather than as the place.
+//
+// The figures were never the problem. The directions, the star counts, the
+// spread, the hue and the walk order all come out of `RNG(hash(seed))` and
+// always did. Only the caption was imported.
+//
+// So the names are still derived and still deterministic, and they are returned
+// in this module's API for the HUD or the logbook to use if they ever want
+// them. The sky simply does not spell them out. A constellation is a shape you
+// are told about, not a shape with its name written beside it.
 
 import * as THREE from 'three';
 import { hash, RNG, constellationName } from './rng.js';
@@ -13,23 +39,6 @@ import { now } from './clock.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 const SKY_R = 15000;
-
-function labelTexture(text) {
-  const cv = document.createElement('canvas');
-  cv.width = 512; cv.height = 96;
-  const g = cv.getContext('2d');
-  g.clearRect(0, 0, 512, 96);
-  g.font = '300 34px "Helvetica Neue", Arial, sans-serif';
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  g.fillStyle = 'rgba(220,230,255,0.92)';
-  // letter-spaced, the way the rest of the interface breathes
-  const spaced = text.toUpperCase().split('').join(' ');
-  g.fillText(spaced, 256, 52);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.anisotropy = 2;
-  return tex;
-}
 
 export function addConstellations(s) {
   if (s.atmo < 0.35) return null;   // airless skies keep their raw stars
@@ -40,7 +49,7 @@ export function addConstellations(s) {
 
   const K = COARSE ? 3 : r.int(4, 6);
   const starTex = softDotTexture(48);
-  const labels = [];
+  const names = [];
   const starMats = [];
   const lineMats = [];
 
@@ -98,33 +107,19 @@ export function addConstellations(s) {
     group.add(line);
     lineMats.push(lineMat);
 
-    // the label, kindled beneath the figure
-    const centroid = new THREE.Vector3();
-    nodes.forEach(p => centroid.add(p));
-    centroid.multiplyScalar(1 / n);
-    const lowest = Math.min(...nodes.map(p => p.y));
-    centroid.y = lowest - SKY_R * 0.045;
-    const labelMat = new THREE.SpriteMaterial({
-      map: labelTexture(name), transparent: true, opacity: 0,
-      depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
-    });
-    const label = new THREE.Sprite(labelMat);
-    label.position.copy(centroid);
-    label.scale.set(2600, 490, 1);
-    label.renderOrder = 3;
-    group.add(label);
-    labels.push(labelMat);
+    names.push(name);
   }
 
   return {
     count: K,
+    /** derived, deterministic, and deliberately not painted into the sky */
+    names,
     update(dt, sunY) {
       // dark of night reveals them; a slow twinkle keeps them alive
       const dark = Math.max(1 - Math.max(sunY + 0.05, 0) * 4 * s.atmo, 0);
       const tw = 0.85 + 0.15 * Math.sin(now() * 1.3);
       for (const m of starMats) m.opacity = dark * tw;
       for (const m of lineMats) m.opacity = dark * 0.32;
-      for (const m of labels) m.opacity = dark * 0.7;
     },
   };
 }

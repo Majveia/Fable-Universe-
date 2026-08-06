@@ -50,7 +50,7 @@
 // - The three ramp stops are inputs. They are a *material* property, and
 //   materials are act 4; this file lights whatever it is handed.
 
-import { STOPS, airColours, hexToLinear } from './starlight.js';
+import { STOPS, airColours, airColoursQuantised, hexToLinear } from './starlight.js';
 
 const clamp01 = (x) => Math.min(Math.max(x, 0), 1);
 const smoothstep = (e0, e1, x) => {
@@ -119,9 +119,17 @@ export function paint(s, L) {
  *
  * `airColours()` already derives them — this only names the four §9.2 reads, so
  * a caller does not have to know which entries of a ten-stop table are lights.
+ *
+ * `quantised` opts into `starlight.js`'s airmass-bucketed memo, which costs
+ * 0.574/255 of accuracy and saves a 1.73 ms spectral integral per frame. It is
+ * a parameter rather than the default because the choice belongs at the call
+ * site: a render loop should take it, and a test that pins this against §9.1's
+ * painted values must not — the memo's error is three orders of magnitude
+ * larger than that check's tolerance, and a default would have silently turned
+ * the fixture test into a test of the cache.
  */
-export function lightFor(T, elev) {
-  const a = airColours(T, elev);
+export function lightFor(T, elev, quantised = false) {
+  const a = quantised ? airColoursQuantised(T, elev) : airColours(T, elev);
   return { sun: a.sunLight, ambSky: a.ambSky, ambGnd: a.ambGnd, shadowTint: a.shadowTint };
 }
 

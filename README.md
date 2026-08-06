@@ -589,12 +589,13 @@ wander.
 
 ![fireflies over the night meadow](docs/screenshots/63-fireflies-dusk.png)
 
-And the night has **names**. Each world's sky carries a handful of
-**named constellations** — bright stars joined by hairline strokes with a
-label that kindles beneath the figure ("The Drowned Reaper", "The
-Lantern-Bearer") — drawn from the seed, wheeling as the world turns,
-fading in only when the sky goes dark. Look up at dusk and the sky means
-something.
+And the night has **figures**. Each world's sky carries a handful of
+**constellations** — bright stars joined by hairline strokes — drawn from the
+seed, wheeling as the world turns, fading in only when the sky goes dark. They
+have names ("The Reaper", "The Empty Throne", "The Kindled Wanderer"), derived
+from the same seed and never written across the sky: a typeface is somebody's
+drawing, and nothing here is drawn by anybody. Look up at dusk and the sky
+means something without saying so.
 
 ![the night's constellations over Velune](docs/screenshots/64-constellations.png)
 
@@ -801,12 +802,37 @@ src/audio.js        generative ambient beds per scale
 src/nebula.js       procedural nebula textures & sprites
 src/starfield.js    galaxy-from-within sky, relativistic star shading
 src/post.js         HDR bloom pipeline
+src/bloom.js        the bloom, with compact support: a bright pass and a
+                    bounded blur chain, rendered to its own texture
+src/starlight.js    the star -> air-colour transfer: a world's sky, haze and
+                    four light colours from its own star's spectrum
+src/paint.js        the light model — half-Lambert wrap, a three-stop hue
+                    ramp with banded edges, violet shadows, backlight rim
+src/aerial.js       aerial perspective: warm toward the sun, cool away,
+                    thinning with altitude, mist pooling on valley floors —
+                    and the fog fraction written into the alpha channel
+src/soft.js         the wet-in-wet wash, at an eighth resolution
+src/wash.js         watercolour softening and chroma bleed: the pixel keeps
+                    its luminance and takes the wash's colour, so paint runs
+                    and pixels do not
+src/print.js        the print: a rational tonemap, shadows to violet and
+                    highlights to cream, paper tooth, warm-dark vignette
+src/shadow.js       the sun's shadow pass
+src/ground.js       the one definition of the walkable ground
+src/landing.js      the composition solver: where to stand, which way to
+                    face, and where the sun is — solved together
 src/hud.js          the interface
 src/rng.js          deterministic hashing, RNG, name synthesis
 src/bench.js        the ?bench=1 harness: a measured 600-frame flight
 
+tools/check.js      the whole instrument, in one command
 tools/capture.js    headless capture: numbered PNGs + perf JSON per tier
 tools/shadercheck.js  compiles every shader as the driver actually sees it
+tools/parse.js      every module parsed, plus the lint for backticks inside
+                    GLSL templates — five real catches so far
+tools/verify.js     the maths, against independent references
+tools/pixeldiff.js  the GLSL against its CPU twin, on a real driver
+tools/alphaudit.js  the fog fraction, read back after compositing
 tools/lib.js        dependency-free static server, tier table, browser launch
 ```
 
@@ -817,8 +843,10 @@ step: `npm i -g playwright && npx playwright install chromium`. See
 [`tools/README.md`](tools/README.md).
 
 ```bash
+node tools/check.js                       # everything, one verdict
 node tools/capture.js --milestone M0      # the numbered set + the numbers
 node tools/shadercheck.js                 # every shader, post-assembly
+node tools/pixeldiff.js                   # every shader chunk vs its CPU twin
 ```
 
 ## Gallery
