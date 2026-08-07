@@ -30,8 +30,8 @@ import {
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
 import {
-  EARTH_B0, apparentElevation, dynamoField, magnetosphere, speciesFor,
-  wavelengthRGB, windPressure,
+  EARTH_B0, apparentElevation, dynamoField, groundIllumination, lineGain,
+  magnetosphere, speciesFor, wavelengthRGB, windPressure,
 } from '../src/magnetosphere.js';
 import {
   ARM, GAIT, LOOK, Walker, gravityOf, replay, sweepArm,
@@ -4992,6 +4992,76 @@ function suiteAurora() {
       near > far && far > gone && near > 45 && gone < 2,
       `120 km up: ${near.toFixed(1)}° at 100 km away · ${far.toFixed(1)}° at 1200 km`
       + ` · ${gone.toFixed(1)}° at 2600 km`);
+  }
+
+  // ---- what it puts on the ground ----------------------------------------
+
+  {
+    // The International Brightness Coefficient scale is measured, not chosen:
+    // IBC I is about starlight and IBC IV is full-moon class and casts shadows.
+    // Three decades between them, and the renderer has to span all three or the
+    // aurora is either always invisible or always spectacular.
+    const air = speciesFor({ typeId: 1 }, 1);
+    const faint = groundIllumination(air, 0.2);
+    const strong = groundIllumination(air, 1.5);
+    ok('the ground light spans IBC I to IBC IV — starlight to full moon',
+      faint.lux > 1e-4 && faint.lux < 3e-3 && strong.lux > 0.05 && strong.lux < 0.5
+      && strong.lux / faint.lux > 100,
+      `faint ${faint.lux.toFixed(5)} lux (${faint.moons.toFixed(4)} moons) ·`
+      + ` strong ${strong.lux.toFixed(3)} lux (${strong.moons.toFixed(2)} moons)`
+      + ` · ${(strong.lux / faint.lux).toFixed(0)}x between them`);
+  }
+
+  {
+    // The Purkinje shift. Cones need about 0.01 lux, so a faint aurora is
+    // genuinely colourless to a person standing under it and red only to a
+    // camera. Everyone who has seen one faint and then seen the photograph
+    // knows this; almost no renderer does it.
+    const air = speciesFor({ typeId: 1 }, 1);
+    const faint = groundIllumination(air, 0.3);
+    const strong = groundIllumination(air, 1.5);
+    const chroma = (c) => Math.max(...c) - Math.min(...c);
+    ok('§9.2 · a faint aurora is grey, because the eye is running on rods',
+      chroma(faint.rgb) < 0.02 && chroma(strong.rgb) > 0.5
+      && strong.rgb[1] > strong.rgb[0] && strong.rgb[1] > strong.rgb[2],
+      `faint ${faint.rgb.map((c) => c.toFixed(2)).join(',')} — achromatic ·`
+      + ` strong ${strong.rgb.map((c) => c.toFixed(2)).join(',')} — green dominant`);
+  }
+
+  {
+    // §9.2's hemispheric doctrine: normalise to unit luminance so the tint can
+    // rotate hue without ever bleaching what it lights. An aurora turns the
+    // snow green; it does not turn the snow up.
+    const air = speciesFor({ typeId: 1 }, 1);
+    let worst = 0;
+    for (let p = 0.05; p <= 1.6; p += 0.05) {
+      const c = groundIllumination(air, p).rgb;
+      worst = Math.max(worst, Math.abs(0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2] - 1));
+    }
+    ok('and the tint is unit luminance at every power, so it cannot bleach',
+      worst < 1e-9, `worst deviation ${worst.toExponential(1)} over 32 power levels`);
+  }
+
+  {
+    // Softer precipitation is redder, which is the opposite of the intuition: a
+    // low-energy electron stops high where the 110-second red state survives,
+    // and a hard one punches into air that collides it away first.
+    const air = speciesFor({ typeId: 1 }, 1);
+    const soft = groundIllumination(air, 1.05).rgb;   // both above the cone threshold,
+    const hard = groundIllumination(air, 1.55).rgb;   // so this is hue and not the Purkinje shift
+    ok('softer precipitation is redder, and harder is greener',
+      lineGain(0, 0.2) > lineGain(0, 1.4) && lineGain(1, 0.2) < lineGain(1, 1.4)
+      && soft[0] / soft[1] > hard[0] / hard[1],
+      `630 nm gain ${lineGain(0, 0.2).toFixed(2)} soft → ${lineGain(0, 1.4).toFixed(2)} hard`
+      + ` · red:green ${(soft[0] / soft[1]).toFixed(2)} → ${(hard[0] / hard[1]).toFixed(2)}`);
+  }
+
+  {
+    const air = speciesFor({ typeId: 1 }, 1);
+    const off = groundIllumination(air, 0);
+    ok('§2.8 · and by day it contributes nothing at all',
+      off.lux === 0 && off.moons === 0 && off.rgb.every((c) => c === 0),
+      'no aurora, no light — not a small light');
   }
 
   {

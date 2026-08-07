@@ -15,7 +15,7 @@ import { RNG, hash } from './rng.js';
 import { noiseGLSL } from './planet.js';
 import {
   AURORA_FRAG, AURORA_VERT, auroralGeometry, magnetosphere, ribbonMesh,
-  speciesFor, speciesGLSL,
+  groundIllumination, speciesFor, speciesGLSL,
 } from './magnetosphere.js';
 
 const clamp = (x, a, b) => Math.min(Math.max(x, a), b);
@@ -98,7 +98,7 @@ export function addAurora(pp, { latDeg = 62, starT = 5778, auDist = 1, RKm = 637
      * are different: night is whether you can see it at all, and the substorm
      * is whether there is anything to see.
      */
-    update(t, sunY) {
+    update(t, sunY, forced = null) {
       uniforms.uTime.value = t;
       // Civil twilight is about −6°; an aurora is washed out well before that,
       // so the gate is the sun's own height rather than a clock.
@@ -109,9 +109,13 @@ export function addAurora(pp, { latDeg = 62, starT = 5778, auDist = 1, RKm = 637
       const s = new RNG(hash(pp.seed ?? 0, 0xa17d)).float(0, 1000);
       const load = 0.5 + 0.5 * Math.sin(t * 0.021 + s);
       const gust = 0.5 + 0.5 * Math.sin(t * 0.11 + s * 1.7);
-      uniforms.uPower.value = clamp(
+      uniforms.uPower.value = forced !== null ? clamp(forced, 0, 1.6) : clamp(
         (0.28 + 0.72 * Math.pow(load, 2.2)) * (0.7 + 0.3 * gust) * clamp(mag.openFlux, 0.25, 2.4),
         0, 1.6);
+    },
+    /** what the curtain puts on the ground — see groundIllumination() */
+    illumination() {
+      return groundIllumination(lines, uniforms.uPower.value * uniforms.uNight.value);
     },
     dispose() { geometry.dispose(); mesh.material.dispose(); },
   };

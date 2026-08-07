@@ -222,6 +222,13 @@ const AIRMAT = PARAM('airmat') === '1';
  */
 const AURORA = PARAM('aurora') === '1';
 const SUN_AT = PARAM('sun') === null ? null : Number(PARAM('sun'));
+/**
+ * `?storm=<0..1.6>` pins the substorm instead of letting it cycle. A capture
+ * control like `?sun=`, and the only way to photograph the two ends of the
+ * same display: at 0.3 an aurora is below the cone threshold and genuinely
+ * colourless, at 1.4 it is full green. Both are the same physics.
+ */
+const STORM_AT = PARAM('storm') === null ? null : Number(PARAM('storm'));
 const WINDVIEW = PARAM('windview') === '1';
 
 const EXT = 1400;            // terrain extent, ~metres
@@ -1035,6 +1042,57 @@ export class SurfaceScale {
     u.sky.value.set(...L.ambSky);
     u.gnd.value.set(...L.ambGnd);
     u.sh.value.set(...L.shadowTint);
+
+    // The aurora is a light, not only a picture of one.
+    //
+    // It enters as a **hemispheric sky term** and not as a directional light,
+    // and that is the physically correct model rather than the cheap one: a
+    // curtain subtends tens of degrees of sky, so what reaches the ground is a
+    // broad wash from one half of the hemisphere. A directional light would
+    // give it a hard shadow, and an aurora does not cast one until IBC IV.
+    //
+    // It also tints the shadow, at a third of the strength. §9.2: *"shadows
+    // change hue, they do not go black."* On a night lit by an aurora the
+    // shadows are the greenest thing in the frame, because there is nothing
+    // else in them.
+    if (this.aurora) {
+      const a = this.aurora.illumination();
+      if (a.moons > 1e-3) {
+        // Calibrated against the scene's own night, not against nothing. The
+        // ambient floor here is an AmbientLight at 0.35 — already far above
+        // physical starlight, because §M8's exposure adaptation does not exist
+        // yet — so the aurora is placed *relative to that floor*: one full moon
+        // of aurora roughly doubles the available light, which is about what a
+        // full moon does to a starlit night.
+        //
+        // The first pass used 0.55 here and 0.9 on the hemisphere below, and
+        // 0.85 moons rendered a tower as a flat saturated green slab. An aurora
+        // at IBC IV lets you read a newspaper with difficulty; it does not
+        // floodlight a building.
+        // This coefficient is much larger than the hemisphere light's below,
+        // and the reason is §9.2 rather than taste. Its first hemi term is
+        //
+        //     hueOnly = hemi / dot(hemi, luma)
+        //
+        // — the magnitude is divided straight back out, because §9.2 wants the
+        // ambient to *tint* and never to wash. So adding brightness to ambSky
+        // does nothing at all; what moves the frame is the tint's share of the
+        // resulting **hue**, and to get a share you have to be comparable to
+        // what is already there. `ambSky` is #9EC6E6, luminance about 0.5, so
+        // 0.45 at one moon rotates it roughly halfway to green.
+        //
+        // Measured, not assumed: at 0.18 the terrain moved by 0/255 while the
+        // props moved by 14, and the frame had an aurora that lit the buildings
+        // and not the ground it stood on.
+        const k = Math.min(a.moons, 1.4) * 0.45;
+        u.sky.value.set(
+          L.ambSky[0] + a.rgb[0] * k, L.ambSky[1] + a.rgb[1] * k, L.ambSky[2] + a.rgb[2] * k);
+        u.sh.value.set(
+          L.shadowTint[0] + a.rgb[0] * k * 0.34,
+          L.shadowTint[1] + a.rgb[1] * k * 0.34,
+          L.shadowTint[2] + a.rgb[2] * k * 0.34);
+      }
+    }
   }
 
   _buildTerrain() {
@@ -1694,6 +1752,11 @@ export class SurfaceScale {
     this.dirLight = new THREE.DirectionalLight(0xffffff, 2);
     this.scene.add(this.dirLight);
     this.scene.add(new THREE.AmbientLight(0x223344, 0.35));
+    // Everything three.js lights for us — settlements, herds, ruins, ships —
+    // gets the aurora the same way, as a hemisphere from above. Black below,
+    // because the ground is not emitting it.
+    this.auroraLight = new THREE.HemisphereLight(0x000000, 0x000000, 0);
+    this.scene.add(this.auroraLight);
   }
 
   _buildCityGlow() {
@@ -2212,7 +2275,20 @@ export class SurfaceScale {
     // when it turns — so this is a sweep for anything new, and the guard in
     // `applyAerial` makes re-running it free.
     if ((this._airTick = (this._airTick ?? 0) + 1) % 30 === 0) this._dressAerial();
-    if (this.aurora) this.aurora.update(this.uTime.value, this.uSunDir.value.y);
+    if (this.aurora) {
+      this.aurora.update(this.uTime.value, this.uSunDir.value.y, STORM_AT);
+      const a = this.aurora.illumination();
+      // The tint leaves `illumination()` normalised to unit *luminance*, which
+      // puts its brightest channel above 1. A three light multiplies colour by
+      // intensity, so passing it straight through counts the brightness twice.
+      // Renormalise to peak 1 and let intensity carry it alone.
+      const peak = Math.max(...a.rgb, 1e-6);
+      this.auroraLight.color.setRGB(a.rgb[0] / peak, a.rgb[1] / peak, a.rgb[2] / peak);
+      // A hemisphere light delivers roughly intensity x luminance(colour) to an
+      // up-facing surface; the tint is peak-normalised so its luminance is
+      // about 0.85. 0.09 x 0.85 = 0.077, against the night ambient's 0.066.
+      this.auroraLight.intensity = Math.min(a.moons, 1.4) * 0.09;
+    }
     this._syncMaterial();
     if (this.sunShadow) {
       this.sunShadow.update(this.app.renderer, this.scene, this.camera,

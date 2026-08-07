@@ -106,6 +106,10 @@ import { RNG, hash } from './rng.js';
 
 const DEG = Math.PI / 180;
 const clamp = (x, a, b) => Math.min(Math.max(x, a), b);
+const smoothstepf = (e0, e1, x) => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+};
 
 // ---------------------------------------------------------------------- 1 ---
 // the magnetosphere
@@ -226,6 +230,26 @@ export function wavelengthRGB(nm) {
 }
 
 /**
+ * How hard precipitation re-weights the lines. One definition, used by the
+ * shader and by the photometry, because they are the same claim.
+ *
+ * **Softer precipitation is redder, and that is the opposite of the intuition.**
+ * A low-energy electron stops high, where the air is thin enough for the
+ * 110-second ¹D oxygen state to survive and radiate at 630 nm. A hard one
+ * punches down into air dense enough to collide that state away before it can,
+ * and lights the prompt N₂ bands instead. So a weak, diffuse aurora is a red
+ * wash and a violent one is vivid green with a violet hem — which is what every
+ * photograph of a substorm shows, and the reverse of "more energy, more red".
+ *
+ * The first version of this had it the wrong way round, and the tell was the
+ * *ground* light: it came out warm yellow, and an aurora does not turn snow
+ * yellow.
+ *
+ * `i === 0` is the 630 nm line by construction of `speciesFor`.
+ */
+export const lineGain = (i, p) => (i === 0 ? 1.15 - 0.62 * p : 0.62 + 0.52 * p);
+
+/**
  * Which lines this world's air can emit, and at what altitude.
  *
  * `peak` and `width` are kilometres, and they come from the physics in the
@@ -259,7 +283,7 @@ export function speciesFor(pp, hScale = 1) {
     line(630.0, 240, 95, 0.62),   // ¹D oxygen, quenched below ~200 km
     line(557.7, 122, 42, 1.0),    // ¹S oxygen, the dominant line
     line(427.8, 100, 14, 0.30),   // N₂⁺ 1NG, prompt, the violet lower fringe
-    line(661.0, 94, 10, 0.22),    // N₂ 1PG, the pink hem on a hard event
+    line(661.0, 94, 10, 0.13),    // N₂ 1PG, the pink hem on a hard event
   ];
 }
 
@@ -425,7 +449,7 @@ export function speciesGLSL(lines) {
     {
       float w${i} = exp(-pow((vAlt - ${l.peak.toFixed(1)}) / ${l.width.toFixed(1)}, 2.0))
                   * ${l.weight.toFixed(3)}
-                  * ${i === 0 ? '(0.45 + 0.55 * uPower)' : '(1.35 - 0.35 * uPower)'};
+                  * ${i === 0 ? '(1.15 - 0.62 * uPower)' : '(0.62 + 0.52 * uPower)'};
       col += vec3(${l.rgb.map((c) => c.toFixed(4)).join(', ')}) * w${i};
       total += w${i};
     }`).join('\n');
@@ -477,4 +501,82 @@ export function ribbonMesh(mag, geom, lines, { RKm, seg = 96, rows = 24, skyR = 
   }
 
   return { pos, along, alt, index: new Uint32Array(idx), loKm, hiKm, seg, rows };
+}
+
+// ---------------------------------------------------------------------- 5 ---
+// what it puts on the ground
+
+/**
+ * What the curtain does to the ground.
+ *
+ * An aurora is not only a thing in the sky; it is the brightest thing in a
+ * moonless polar night and it puts real light on snow. The photometry is
+ * well measured, on the International Brightness Coefficient scale:
+ *
+ *     IBC I    ~0.0003 lux    a faint arc, about starlight
+ *     IBC II   ~0.003         Milky Way brightness
+ *     IBC III  ~0.03          reads colour to the naked eye
+ *     IBC IV   ~0.3           full-moon class; casts shadows
+ *
+ * ---------------------------------------------------------------------
+ * The honest part: absolute is adapted, relative is not
+ *
+ * Full sunlight is 100 000 lux, so a strong aurora is a millionth of a
+ * sunlit noon. Rendered on the same linear scale it would be invisible, and
+ * a physically-scaled aurora that nobody can see is not more honest than a
+ * visible one — it is a different lie, and §M8's exposure adaptation is the
+ * mechanism that has not been built yet.
+ *
+ * So `lux` is the real number and `moons` is the number this scene uses:
+ * how many full moons of illumination this is. The scene's night is already
+ * exposure-adapted by a large factor, and putting the aurora on that same
+ * adapted scale preserves the **ratio** between aurora, moon and starlight,
+ * which is the part that is actually visible in a frame.
+ *
+ * The tint is normalised to unit luminance before it leaves here, which is
+ * §9.2's hemispheric doctrine exactly: *"normalise the hemi colour to unit
+ * luminance so it can rotate hue without ever bleaching the palette."* An
+ * aurora should turn the snow green, not turn it up.
+ */
+export function groundIllumination(lines, power) {
+  const p = clamp(power, 0, 1.6);
+  if (p <= 1e-4) return { lux: 0, moons: 0, rgb: [0, 0, 0] };
+  // IBC I to IBC IV is three decades, spread over the power range
+  const lux = 3e-4 * Math.pow(10, p * 1.9);
+
+  // the mix that reaches the ground, weighted as the shader weights it
+  let r = 0, g = 0, b = 0, w = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const k = l.weight * lineGain(i, p);
+    r += l.rgb[0] * k; g += l.rgb[1] * k; b += l.rgb[2] * k; w += k;
+  }
+  r /= w; g /= w; b /= w;
+
+  // The Purkinje shift, and the reason a faint aurora is grey.
+  //
+  // Cones need roughly 0.01 lux to work at all. Below that the eye is running
+  // on rods, which do not do colour — so a weak display is genuinely
+  // **colourless** to a person standing under it, and shows red only to a
+  // camera that can integrate for thirty seconds. Everyone who has seen one
+  // faint and then seen the photograph knows this and almost no renderer does
+  // it, because the natural thing to do is emit the emission colour at whatever
+  // brightness and let it be dim.
+  //
+  // So the tint desaturates toward neutral as the light falls through the
+  // mesopic band. It is not a stylistic dimming: it is the observer, and it is
+  // the difference between a frame that looks like an aurora and one that looks
+  // like a photograph of an aurora.
+  const cone = smoothstepf(0.0025, 0.06, lux);
+  const grey = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  r = grey + (r - grey) * cone;
+  g = grey + (g - grey) * cone;
+  b = grey + (b - grey) * cone;
+
+  // §9.2: normalised to unit luminance, so it rotates hue without ever
+  // bleaching what it lights. An aurora turns the snow green; it does not turn
+  // the snow up.
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const n = lum > 1e-5 ? 1 / lum : 0;
+  return { lux, moons: lux / 0.25, cone, rgb: [r * n, g * n, b * n] };
 }
