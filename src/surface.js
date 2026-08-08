@@ -30,6 +30,7 @@ import { addInterior } from './interior.js';
 import { findLandingSite } from './terrain.js';
 import { solveLandingSite } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
+import { exposureFor, nightFraction, nightLight, skyLux } from './night.js';
 import { AERIAL_GLSL, aerialParams, airFor, applyAerial } from './aerial.js';
 import { addAurora } from './curtain.js';
 import {
@@ -812,12 +813,16 @@ export class SurfaceScale {
     const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
     const L = lightFor(T, Math.max(elev, 0.5));
     const v = (c) => ({ value: new THREE.Vector3(c[0], c[1], c[2]) });
-    this._paintLight = { T, uniforms: { sun: v(L.sun), sky: v(L.ambSky), gnd: v(L.ambGnd), sh: v(L.shadowTint) } };
+    this._paintLight = { T, uniforms: {
+      sun: v(L.sun), sky: v(L.ambSky), gnd: v(L.ambGnd), sh: v(L.shadowTint),
+      exp: { value: 1 },
+    } };
     return {
       uPaintSun: this._paintLight.uniforms.sun,
       uPaintAmbSky: this._paintLight.uniforms.sky,
       uPaintAmbGnd: this._paintLight.uniforms.gnd,
       uPaintShadowTint: this._paintLight.uniforms.sh,
+      uPaintExposure: this._paintLight.uniforms.exp,
       ...this.sunShadow.uniforms,
     };
   }
@@ -1033,6 +1038,31 @@ export class SurfaceScale {
   }
 
   /** the sun climbs, so the beam it sends reddens less — re-derive as it moves */
+  /**
+   * The brightest moon that is up, as the night model wants it.
+   *
+   * The illuminated fraction is `(1 - dot(moon, sun)) / 2` — a moon opposite
+   * the sun is full, a moon beside it is new — and the *brightest* rather than
+   * the highest, because `moonLux` already weighs phase against elevation and
+   * a fat moon low down beats a sliver overhead.
+   */
+  _brightestMoon() {
+    if (!this.skyMoons || !this.skyMoons.length) return null;
+    const sun = this.uSunDir.value;
+    let best = null;
+    for (const m of this.skyMoons) {
+      const d = m.mesh.position;
+      const len = d.length() || 1;
+      const y = d.y / len;
+      const illum = (1 - (d.x * sun.x + d.y * sun.y + d.z * sun.z) / len) * 0.5;
+      const elev = (Math.asin(Math.min(Math.max(y, -1), 1)) * 180) / Math.PI;
+      const lx = nightLight(this._paintLight.T,
+        { moonIlluminated: illum, moonElevDeg: elev }).moonLux;
+      if (!best || lx > best.lux) best = { illum, elev, lux: lx };
+    }
+    return best;
+  }
+
   _syncPaintLight() {
     if (!PAINT || !this._paintLight) return;
     const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
@@ -1042,6 +1072,32 @@ export class SurfaceScale {
     u.sky.value.set(...L.ambSky);
     u.gnd.value.set(...L.ambGnd);
     u.sh.value.set(...L.shadowTint);
+
+    // Night, which this line used to have no answer for. `lightFor` is only
+    // defined for a sun above the horizon, so the clamp to 0.5° above meant
+    // §9.2 painted a sunrise at three in the morning — the frame went dark
+    // because the key light faded, while the ambient it was lit by stayed
+    // dawn-coloured. src/night.js has the header on what actually lights a
+    // moonless night, and airglow being the answer is the surprise.
+    const nf = nightFraction(elev);
+    if (nf > 0.001) {
+      const moon = this._brightestMoon();
+      const N = nightLight(this._paintLight.T, moon
+        ? { moonIlluminated: moon.illum, moonElevDeg: moon.elev }
+        : {});
+      const mix = (v, a, b) => v.set(
+        a[0] + (b[0] - a[0]) * nf, a[1] + (b[1] - a[1]) * nf, a[2] + (b[2] - a[2]) * nf);
+      mix(u.sun.value, L.sun, N.sun);
+      mix(u.sky.value, L.ambSky, N.ambSky);
+      mix(u.gnd.value, L.ambGnd, N.ambGnd);
+      mix(u.sh.value, L.shadowTint, N.shadowTint);
+      this._nightLux = N.lux;
+    } else {
+      this._nightLux = 0;
+    }
+    // How much light there is, which §9.2 never asked. One number across the
+    // whole day so there is no seam between a day branch and a night one.
+    u.exp.value = exposureFor(skyLux(elev, this._nightLux || undefined));
 
     // The aurora is a light, not only a picture of one.
     //

@@ -78,7 +78,7 @@ export function ramp3(t, shade, mid, lit, soft, jit) {
  * s: { N, V, L: sunDir, shade, mid, lit, soft, jit, shadow, trans, transCol,
  *      rim, ao, ambient }
  */
-export function paint(s, L) {
+export function paint(s, L, exposure = 1) {
   const ndl = dot3(s.N, s.L);
   const wrap = clamp01(ndl * 0.62 + 0.46);
   const t = wrap * (0.34 + (1 - 0.34) * s.shadow);
@@ -111,7 +111,8 @@ export function paint(s, L) {
     col = col.map((v, i) => v + s.transCol[i] * tr * thin * s.trans * s.shadow * 0.52);
   }
 
-  return col.map((v) => v * s.ao);
+  // the exposure lever — see the GLSL twin below, and src/night.js
+  return col.map((v) => v * s.ao * exposure);
 }
 
 /**
@@ -153,6 +154,7 @@ export const PAINT_GLSL = /* glsl */`
   uniform vec3 uPaintAmbSky;
   uniform vec3 uPaintAmbGnd;
   uniform vec3 uPaintShadowTint;
+  uniform float uPaintExposure;   // 1 by day; see exposureFor() in src/night.js
 
   struct Surf {
     vec3 N; vec3 V; vec3 L;      // normal, surface->eye, surface->sun
@@ -206,6 +208,11 @@ export const PAINT_GLSL = /* glsl */`
     }
 
     col *= s.ao;
-    return col;
+    // The one thing §9.2 never had: *how much light there is*. Everything above
+    // is a shading model normalised to fully lit, so with the light model on
+    // and the sun below the horizon the ground came back as bright as noon and
+    // merely a different hue. One multiply, set from real lux — and a stand-in
+    // for §M8's exposure adaptation rather than a claim to be one.
+    return col * uPaintExposure;
   }
 `;

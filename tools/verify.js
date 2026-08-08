@@ -30,6 +30,10 @@ import {
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
 import {
+  AIRGLOW_LUX, FULL_MOON_LUX, STARLIGHT_LUX, airglowColour, coneFraction,
+  moonLux, moonlightColour, nightFraction, nightLight, starlightColour,
+} from '../src/night.js';
+import {
   EARTH_B0, apparentElevation, dynamoField, groundIllumination, lineGain,
   magnetosphere, speciesFor, wavelengthRGB, windPressure,
 } from '../src/magnetosphere.js';
@@ -5074,7 +5078,127 @@ function suiteAurora() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// suite: night
+//
+// §9.2's light model is only defined for a sun above the horizon, and
+// `surface.js` used to hand it `max(elev, 0.5)` — so at three in the morning it
+// painted a sunrise. Everything below is what replaces that, and every claim is
+// a measured quantity rather than a mood.
+
+function suiteNight() {
+  console.log('\nnight — the hour §9.2 had no palette for');
+
+  {
+    // The order almost nobody guesses. Airglow is the brightest natural source
+    // in a moonless sky — brighter than every star combined — because the
+    // mesosphere spends the night re-emitting the ultraviolet it absorbed by
+    // day. It is why a truly dark night still has a horizon.
+    ok('airglow outshines the stars, which is the surprise in the ladder',
+      AIRGLOW_LUX > STARLIGHT_LUX * 2 && FULL_MOON_LUX / AIRGLOW_LUX > 300,
+      `airglow ${AIRGLOW_LUX} lux · starlight ${STARLIGHT_LUX} ·`
+      + ` full moon ${FULL_MOON_LUX} (${(FULL_MOON_LUX / AIRGLOW_LUX).toFixed(0)}x the airglow)`);
+  }
+
+  {
+    // Through the same CIE integral the day palette uses (§9.6: port the
+    // function, not the values). Airglow is dominated by O I 557.7 and the
+    // sodium D lines, so it comes out yellow-green — and the OH bands that
+    // carry most of its energy contribute nothing, which is the point of
+    // passing them in.
+    const ag = airglowColour();
+    ok('§9.6 · airglow gets its colour from its lines, not from a preference',
+      ag[0] > 0.5 && ag[1] > 0.5 && ag[2] < 0.25,
+      `[${ag.map((c) => c.toFixed(3)).join(', ')}] — yellow-green, from O I 557.7 and Na D 589`);
+  }
+
+  {
+    // The Moon is a grey-brown rock whose reflectance rises toward the red, so
+    // moonlight is *warmer* than sunlight. It looks blue only because of the
+    // observer, and painting it blue at source is a mistake that cannot be
+    // undone downstream.
+    const high = moonlightColour(5778, 60);
+    const low = moonlightColour(5778, 5);
+    const st = starlightColour();
+    ok('moonlight is warm at source — the blue comes from the eye, not the moon',
+      high[0] > high[2] && low[0] / Math.max(low[2], 1e-6) > high[0] / Math.max(high[2], 1e-6),
+      `60° [${high.map((c) => c.toFixed(2)).join(',')}] ·`
+      + ` 5° [${low.map((c) => c.toFixed(2)).join(',')}] — redder low, as it crosses more air`
+      + ` · integrated starlight [${st.map((c) => c.toFixed(2)).join(',')}]`);
+  }
+
+  {
+    // The opposition surge: near full phase every regolith grain hides its own
+    // shadow and the disc brightens sharply, so a half moon gives roughly a
+    // *tenth* of a full moon's light rather than a half. It is why moonlit
+    // nights feel binary.
+    const full = moonLux(1, 60);
+    const half = moonLux(0.5, 60);
+    const ratio = full / half;
+    ok('the opposition surge — a half moon is a tenth of a full one, not a half',
+      ratio > 5 && ratio < 12,
+      `full ${full.toFixed(3)} lux · half ${half.toFixed(4)} · ${ratio.toFixed(1)}x`);
+  }
+
+  {
+    // And extinction: a moon at 5° has crossed ten air masses and is useless
+    // for seeing by, which is the other half of why moonlight feels binary.
+    const zen = moonLux(1, 80);
+    const rise = moonLux(1, 4);
+    ok('and a rising moon delivers a fraction of what an overhead one does',
+      rise < zen * 0.35 && moonLux(1, -1) === 0,
+      `80° ${zen.toFixed(3)} lux · 4° ${rise.toFixed(3)} · below the horizon exactly 0`);
+  }
+
+  {
+    // The whole point: a moonless night is blue *because of the observer*. The
+    // spectrum going in is warm — airglow yellow-green over 4100 K starlight —
+    // and what comes out is a cool grey because rods do not report colour.
+    const dark = nightLight(5778, {});
+    const moonlit = nightLight(5778, { moonIlluminated: 1, moonElevDeg: 60 });
+    ok('§9.2 · a moonless night is blue from the Purkinje shift, not from the sky',
+      dark.cone < 0.05 && dark.ambSky[2] > dark.ambSky[0]
+      && moonlit.cone > 0.9 && moonlit.ambSky[0] > moonlit.ambSky[2],
+      `moonless: ${dark.lux.toFixed(4)} lux, cone ${dark.cone.toFixed(2)},`
+      + ` sky [${dark.ambSky.map((c) => c.toFixed(2)).join(',')}] — cool ·`
+      + ` full moon: ${moonlit.lux.toFixed(3)} lux, cone ${moonlit.cone.toFixed(2)},`
+      + ` sky [${moonlit.ambSky.map((c) => c.toFixed(2)).join(',')}] — warm`);
+  }
+
+  {
+    // §8 axis 2 asks whether any surface receives no light information at all.
+    // On a moonless night the answer has to be "airglow, from every direction",
+    // so the key light falls back to the ambient rather than to black.
+    const dark = nightLight(5778, {});
+    const lit = dark.sun.some((c) => c > 0.05);
+    ok('§8 axis 2 · with no moon the key falls back to the sky, never to black',
+      lit && dark.shadowTint.some((c) => c > 0.02),
+      `key [${dark.sun.map((c) => c.toFixed(2)).join(',')}] ·`
+      + ` shadow [${dark.shadowTint.map((c) => c.toFixed(2)).join(',')}] — §9.2, shadows change hue`);
+  }
+
+  {
+    // Blended across real thresholds: civil twilight at −6° is where the
+    // brightest stars appear, nautical at −12° is where the horizon stops being
+    // visible at sea — which is exactly when nothing is left of the day.
+    ok('and it blends in across civil and nautical twilight, not at a cut',
+      nightFraction(2) === 0 && nightFraction(-6) > 0.2 && nightFraction(-6) < 0.9
+      && nightFraction(-14) === 1,
+      `+2° ${nightFraction(2).toFixed(2)} · −6° ${nightFraction(-6).toFixed(2)}`
+      + ` · −12° ${nightFraction(-12).toFixed(2)} · −14° ${nightFraction(-14).toFixed(2)}`);
+  }
+
+  {
+    // Shared with src/magnetosphere.js, and it has to be: an aurora and the
+    // night it hangs in are seen by one pair of eyes.
+    ok('the cone threshold is the same one the aurora uses',
+      coneFraction(0.001) < 0.02 && coneFraction(0.1) > 0.98,
+      `0.001 lux → ${coneFraction(0.001).toFixed(3)} · 0.1 lux → ${coneFraction(0.1).toFixed(3)}`);
+  }
+}
+
 const suites = {
+  night: suiteNight,
   aurora: suiteAurora,
   soften: suiteSoften,
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
