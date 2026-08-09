@@ -73,10 +73,28 @@ That is one defect, not two, and it is the blocking axis.
 
 ## Two findings that are not scores
 
-1. **The meadow is not drawing.** Near-ground high-frequency detail is 1.15 and
-   1.07 out of 255. M3 instances ~3.3 M blades; that would raise the figure by
-   an order of magnitude. Whichever frame carries `m3=1`, the grass did not
-   reach the picture.
+1. ~~**The meadow is not drawing.**~~ **Corrected — it is.** The inference was
+   that near-ground detail of 1.15 and 1.07 out of 255 meant no grass. Probing
+   the actual page proves otherwise: the meadow builds 4 rings over 412 chunks
+   and draws **3,517,993 blades across 162 chunks** (429,619 / 774,883 /
+   1,233,091 / 1,080,400 by ring), and that is at *low*-tier density
+   multipliers of 0.30/0.28/0.26/0.24.
+
+   So the real finding is worse for the art and better for the code: **3.5 M
+   blades are being drawn and the ground still measures as a smooth gradient.**
+   §6 M3's own gate asks that grass "reads as *meadow* at the horizon, not as a
+   green plane" — it is reading as a plane. That is a materials failure, not an
+   absence, and it is the same defect the Materials axis already scored 1 and 2.
+
+   Separately, the 0.21 M triangle count is explained: `M3` is read from
+   `PARAM('m3')` at module load, the bench URL carried no flags, so the bench's
+   surface station built no meadow at all. That is the `capture.js` bug fixed in
+   `922aed6` — the stations had the flags and the bench did not.
+
+   **What is not yet settled** is whether the flat ground in these two images is
+   3.5 M blades averaging to a wash, or the camera standing somewhere the rings
+   do not reach. Asserting the first would repeat the mistake this correction is
+   for. It needs one capture with the fixed bench and a near-ground crop.
 2. **`planet-orbit` violates §2.8.** Darkest pixel `rgb(13,7,0)`, luma 0.0305,
    and **0.0%** of the frame reaches true black — in *both* sets, so it is not
    flag-related. §2.8: in vacuum the background is true `#000` and blacks are
