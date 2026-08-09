@@ -61,11 +61,11 @@ const CSS = `
   backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
   color:rgba(255,255,255,.92); font:inherit; touch-action:none;
   display:flex; align-items:center; justify-content:center; }
-#tt .ctx { right:16px; bottom:calc(22px + env(safe-area-inset-bottom));
+#tt .ctx { right:16px; bottom:calc(78px + env(safe-area-inset-bottom));
   width:46px; height:46px; font-size:18px; }
 #tt .ctx:active { background:rgba(158,203,255,.28); }
 #tt .fan { position:absolute; right:16px;
-  bottom:calc(22px + env(safe-area-inset-bottom));
+  bottom:calc(78px + env(safe-area-inset-bottom));
   width:46px; height:46px; pointer-events:none; }
 #tt .fan b { width:40px; height:40px; font-size:15px; left:3px; top:3px;
   opacity:0; transform:translate(0,0) scale(.6);
@@ -74,7 +74,7 @@ const CSS = `
 #tt.fanned .fan b { opacity:1; }
 #tt .fan b:active { background:rgba(158,203,255,.28); }
 #tt .cap { position:absolute; right:74px;
-  bottom:calc(30px + env(safe-area-inset-bottom));
+  bottom:calc(86px + env(safe-area-inset-bottom));
   font-size:10px; letter-spacing:.22em; text-transform:uppercase;
   color:rgba(255,255,255,.55); white-space:nowrap; pointer-events:none;
   opacity:0; transition:opacity .25s ease; }

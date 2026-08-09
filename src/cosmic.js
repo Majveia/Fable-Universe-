@@ -829,8 +829,18 @@ export class CosmicScale {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
     this.controls.rotateSpeed = 0.5;
-    this.controls.minDistance = 60;
-    this.controls.maxDistance = BOX * 2.1;
+    // 60 units inside a 900-unit box meant the nearest you could ever get was a
+    // fifteenth of the way in — always looking *at* the cosmic web and never
+    // standing in it. The filaments are the subject; at 8 you can fly down a
+    // strand and watch the tracers stream past, which is the whole reason the
+    // colour carries density and divergence (§M1).
+    this.controls.minDistance = 8;
+    this.controls.maxDistance = BOX * 2.6;
+    // Pinch toward what you are looking at, not toward the screen centre. On a
+    // phone that is the difference between zooming and aiming-then-zooming, and
+    // it costs one line.
+    this.controls.zoomToCursor = true;
+    this.controls.zoomSpeed = 1.35;
     this.controls.autoRotate = true;
     this.controls.autoRotateSpeed = 0.14;
     app.renderer.domElement.addEventListener('pointerdown', () => {

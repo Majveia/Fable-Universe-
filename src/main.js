@@ -449,6 +449,8 @@ class App {
         case 'KeyB': if (!s.onKey?.('KeyB')) this.hud.toggleLog(); break;
         case 'KeyU': this.freshUniverse(); break;
         case 'KeyG': this.hud.toggleAtlas(); break;
+        // J for the leap: somewhere wondrous, one press, from anywhere.
+        case 'KeyJ': this.hud._wondrous(); break;
         // Same scale-first rule as KeyB above, and it was missing. `cosmic.js`
         // handles KeyN — it is the N-body/Zel'dovich toggle, and §M1's gate
         // clause (c) is *about* that toggle. This line took the key first, so

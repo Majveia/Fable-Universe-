@@ -71,11 +71,17 @@ export class HUD {
     this.timectl = el('div', 'timectl');
     this.timectl.innerHTML = `
       <span class="readout" id="time-readout"></span>
+      <button id="t-wonder" title="somewhere wondrous (j)">✦</button>
       <button id="t-mute" title="sound (m)">♪</button>
       <button id="t-slow" title="slower">−</button>
       <button id="t-play" title="pause / play">⏸</button>
       <button id="t-fast" title="faster">+</button>`;
     this.readout = this.timectl.querySelector('#time-readout');
+    // Somewhere wondrous, promoted. It has always existed — as `#at-rand`,
+    // three taps deep inside the Atlas overlay, where nobody looking for
+    // serendipity would find it. It is the single most *fable* thing the
+    // interface can do, so it gets to be one press on both layers.
+    this.timectl.querySelector('#t-wonder').onclick = () => this._wondrous();
     this.playBtn = this.timectl.querySelector('#t-play');
     this.muteBtn = this.timectl.querySelector('#t-mute');
     this.timectl.querySelector('#t-slow').onclick = () => app.active()?.slowDown?.();
@@ -238,7 +244,8 @@ export class HUD {
           <button id="tb-fly" title="toggle flight">✈</button>
           <button id="tb-view" title="third person">◉</button>
           <button id="tb-act" title="board the skiff">⛵</button>
-          <button id="tb-atlas" title="atlas">✦</button>
+          <button id="tb-atlas" title="atlas">☰</button>
+          <button id="tb-wonder" title="somewhere wondrous">✦</button>
           <button id="tb-help" title="controls">?</button>
         </div>
       </div>
@@ -248,7 +255,8 @@ export class HUD {
         stick — move · push to the rim — boost<br>
         tap — select · double-tap — go there<br>
         ✈ — fly · ◉ — third person · ⛵ — the skiff<br>
-        ✦ — atlas: anywhere, one step</div>`;
+        ☰ — atlas: anywhere, one step<br>
+        ✦ — somewhere wondrous</div>`;
     document.body.appendChild(ui);
 
     const key = (code, on) =>
@@ -348,6 +356,7 @@ export class HUD {
       ui.querySelector('#touchhelp').classList.toggle('open');
     });
     ui.querySelector('#tb-atlas').addEventListener('click', () => this.toggleAtlas());
+    ui.querySelector('#tb-wonder').addEventListener('click', () => this._wondrous());
     // the shuttle: B by another name, shown only where shuttles fly
     this._shBtn = ui.querySelector('#tb-shuttle');
     this._shBtn.addEventListener('click', () => {

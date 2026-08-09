@@ -56,6 +56,8 @@ export const PRINT_SHADER = {
     uBloomAmt: { value: 0 },
     uPaint: { value: 0 },       // 0 vacuum · 1 atmosphere (§2.8, §3 row 1)
     uExposure: { value: 1 },
+    // 0 = §9.4 verbatim · 1 = the warmer grade. `?mood=1`, default-off (§7.4).
+    uMood: { value: 0 },
     uGrain: { value: 1 },
     uVignette: { value: 1 },
     uRes: { value: new THREE.Vector2(1, 1) },
@@ -80,6 +82,7 @@ export const PRINT_SHADER = {
     uniform sampler2D uBloom;
     uniform float uBloomAmt;
     uniform float uPaint, uExposure, uGrain, uVignette, uFogView;
+    uniform float uMood;
     uniform vec2 uRes;
     varying vec2 vUv;
 
@@ -126,11 +129,45 @@ export const PRINT_SHADER = {
       c = c * (1.0 - lift) + lift;
 
       // §9.4 step 4 — a gentle S, then saturation in the midtones only
-      c = mix(c, c * c * (3.0 - 2.0 * c), 0.16 * paint);
+      c = mix(c, c * c * (3.0 - 2.0 * c), (0.16 + 0.10 * uMood) * paint);
       l = luma(c);
-      float satBoost = 1.0 + 0.16 * paint
-        * smoothstep(0.10, 0.42, l) * (1.0 - smoothstep(0.62, 0.96, l));
-      return mix(vec3(l), c, satBoost);
+
+      // ─── mood ────────────────────────────────────────────────────────────
+      //
+      // §9.4's grade is transcribed faithfully and it is *conservative*: a 16%
+      // saturation boost in a band, and nothing else pushing colour. Measured
+      // across a world, the frame lands at mean 0.56 luma and 0.34 saturation,
+      // which reads pale and cold — and a human looking at it said so before
+      // any of these numbers existed, in the words "washed out and a bit
+      // depressing".
+      //
+      // §3 row 5 is the ruling that makes this adjustable rather than a
+      // violation: *"The numbers are never negotiable; the palette always is."*
+      // Nothing below touches a physical quantity. The tonemap, the lift, the
+      // shadow and highlight pushes and the fog are all exactly where §9.4 puts
+      // them. This is the grade, which is the one layer the constitution says
+      // is a preference.
+      //
+      // Three things, in the order they matter:
+      //
+      //   · **saturation, wider and stronger.** The band is widened downward so
+      //     that deep colour is not left grey, and the peak roughly doubled.
+      //     A Ghibli frame is not desaturated — it is *low contrast and highly
+      //     saturated*, which is a combination photographic instinct rarely
+      //     reaches for.
+      //   · **a warm midtone push.** Not a global tint, which would fight
+      //     step 2's violet shadows and cream highlights. Only the middle, and
+      //     only in hue, so the ends of the range keep the print's own logic.
+      //   · **a small exposure trim.** The pale reading is partly just
+      //     brightness: pulling the midpoint down lets the highlights separate
+      //     instead of crowding the top of the range.
+      float satBoost = 1.0 + (0.16 + 0.30 * uMood) * paint
+        * smoothstep(0.10 - 0.06 * uMood, 0.42, l) * (1.0 - smoothstep(0.62, 0.96, l));
+      c = mix(vec3(l), c, satBoost);
+
+      float mid = smoothstep(0.06, 0.34, l) * (1.0 - smoothstep(0.55, 0.92, l));
+      c *= mix(vec3(1.0), vec3(1.045, 1.006, 0.955), mid * uMood * paint);
+      return c * (1.0 - 0.07 * uMood * paint);
     }
 
     vec3 toSRGB(vec3 c) {

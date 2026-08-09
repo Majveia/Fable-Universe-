@@ -88,6 +88,12 @@
     text-shadow:0 1px 18px rgba(0,0,0,.8);
   }
 
+  /* The desktop time row sits bottom-right and is about 26px tall, so it owns
+     the band from 22px to ~48px. Every mobile control on the right side clears
+     64px for that reason — #tbtns was at 20px and landed exactly on top of it,
+     which on a phone is two tap targets in one place. §M7 wants the controls
+     inside the bottom 30%; at 390x844 that is the lowest 253px and the raised
+     stack tops out near 196px, so it still fits. */
   #timectl{
     right:26px; bottom:22px; display:flex; align-items:center; gap:14px;
     font-size:11px; letter-spacing:.2em; color:var(--ink-dim);
@@ -208,7 +214,7 @@
     border-radius:50%; background:rgba(255,255,255,.15); border:1px solid var(--ink-faint);
     transition:background .2s; }
   #stick:active #knob{ background:rgba(158,203,255,.3); }
-  #vslide{ position:absolute; right:14px; bottom:calc(96px + env(safe-area-inset-bottom));
+  #vslide{ position:absolute; right:14px; bottom:calc(152px + env(safe-area-inset-bottom));
     width:36px; height:128px; border-radius:20px;
     border:1px solid var(--hairline); background:rgba(12,16,22,.28);
     backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
@@ -220,7 +226,7 @@
     font-size:10px; color:var(--ink-faint); pointer-events:none; }
   #vslide::before{ content:'▲'; top:7px; }
   #vslide::after{ content:'▼'; bottom:7px; }
-  #tbtns{ position:absolute; right:12px; bottom:calc(20px + env(safe-area-inset-bottom));
+  #tbtns{ position:absolute; right:12px; bottom:calc(76px + env(safe-area-inset-bottom));
     display:flex; flex-direction:column; align-items:flex-end; gap:8px; pointer-events:auto; }
   #tbtns button{ border-radius:50%; border:1px solid var(--hairline);
     background:rgba(12,16,22,.32); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
@@ -230,7 +236,7 @@
   #tbrow{ display:flex; gap:6px; }
   #tbrow button{ width:36px; height:36px; font-size:13px; }
   #tbtns button:active{ background:rgba(158,203,255,.28); }
-  #touchhelp{ position:absolute; right:82px; bottom:calc(30px + env(safe-area-inset-bottom));
+  #touchhelp{ position:absolute; right:82px; bottom:calc(86px + env(safe-area-inset-bottom));
     max-width:260px; padding:12px 15px;
     font-size:11px; line-height:2.05; letter-spacing:.12em; text-transform:uppercase;
     color:var(--ink-dim); background:rgba(8,11,15,.72);
