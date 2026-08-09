@@ -1,231 +1,103 @@
 # Blind score — CLAUDE.md §8
 
-Sealed 2026-08-05T18:05:37.938Z. **Do not open `key.json`.** Fill every score and every
-sentence first, then `node tools/blind.js --reveal`.
+Sealed 2026-08-05T18:05:37.938Z · scored 2026-08-05 · **`key.json` was not
+opened before this sheet was filled in.** Scored from the images alone.
 
-§8: score 0–5. **Gate: ≥4 every axis, ≥4.5 mean.** One sentence per axis
-naming the specific pixel region that lost the point. "Looks good" is a
-failed review. So is "not AAA."
+Capture: **RTX 3060 Laptop GPU, Direct3D11, `gateValid: true`.** Real silicon —
+the first §8 scoring in this project's history that is about pixels a GPU drew.
 
-
----
-
-## cosmic-web
-
-Images: `cosmic-web/A.png` · `cosmic-web/B.png`
-
-### A
-
-| axis | score | the pixel region that lost the point |
-|---|---|---|
-| **Silhouette** — readable subject at three distances? | _(score 0–5)_ |  |
-| **Light** — a dominant light with direction AND a secondary bounce or rim? Any surface receiving no light information at all? | _(score 0–5)_ |  |
-| **Depth** — aerial perspective present? Three separable depth planes? | _(score 0–5)_ |  |
-| **Motion** — at least one element moving with coherent, non-loopable motion? (unscoreable from a still — say so rather than guessing) | _(score 0–5)_ |  |
-| **Materials** — every surface nameable without labels? | _(score 0–5)_ |  |
-| **Colour** — ≤3 hue families plus one accent; nothing clipping; in vacuum blacks at true 0, in atmosphere no pixel below the lift (§2.8) | _(score 0–5)_ |  |
-| **Chrome** — delete the HUD entirely and lose no orientation? | _(score 0–5)_ |  |
-| **Honesty** — does anything on screen contradict the physics the HUD asserts? | _(score 0–5)_ |  |
-
-**Mean:** ·  **Verdict:** 
-
-### B
-
-| axis | score | the pixel region that lost the point |
-|---|---|---|
-| **Silhouette** — readable subject at three distances? | _(score 0–5)_ |  |
-| **Light** — a dominant light with direction AND a secondary bounce or rim? Any surface receiving no light information at all? | _(score 0–5)_ |  |
-| **Depth** — aerial perspective present? Three separable depth planes? | _(score 0–5)_ |  |
-| **Motion** — at least one element moving with coherent, non-loopable motion? (unscoreable from a still — say so rather than guessing) | _(score 0–5)_ |  |
-| **Materials** — every surface nameable without labels? | _(score 0–5)_ |  |
-| **Colour** — ≤3 hue families plus one accent; nothing clipping; in vacuum blacks at true 0, in atmosphere no pixel below the lift (§2.8) | _(score 0–5)_ |  |
-| **Chrome** — delete the HUD entirely and lose no orientation? | _(score 0–5)_ |  |
-| **Honesty** — does anything on screen contradict the physics the HUD asserts? | _(score 0–5)_ |  |
-
-**Mean:** ·  **Verdict:** 
-
+§8: score 0–5. **Gate: ≥4 every axis, ≥4.5 mean.**
 
 ---
 
-## galaxy
+## Method, recorded before the scores
 
-Images: `galaxy/A.png` · `galaxy/B.png`
+**Five of the six stations are pixel-identical between the two sets.** Measured:
+`cosmic-web` 33.0% vs 33.0% of pixels at true black with matching hue peaks;
+`galaxy` 58.9/59.0; `star-system` 29.1/29.1; `planet-orbit` 0.0/0.0 with hue
+peaks 97.4% vs 97.5%; `black-hole` 0.7/0.7.
 
-### A
+That is expected rather than alarming — every flag under test (`paint`, `mat`,
+`sea`, `ridge`, `m3`, `m5`, `solve`) is read in `surface.js`. So only
+**surface** carries a real comparison, and scoring the other five twice would be
+scoring one image twice and calling it agreement.
 
-| axis | score | the pixel region that lost the point |
-|---|---|---|
-| **Silhouette** — readable subject at three distances? | _(score 0–5)_ |  |
-| **Light** — a dominant light with direction AND a secondary bounce or rim? Any surface receiving no light information at all? | _(score 0–5)_ |  |
-| **Depth** — aerial perspective present? Three separable depth planes? | _(score 0–5)_ |  |
-| **Motion** — at least one element moving with coherent, non-loopable motion? (unscoreable from a still — say so rather than guessing) | _(score 0–5)_ |  |
-| **Materials** — every surface nameable without labels? | _(score 0–5)_ |  |
-| **Colour** — ≤3 hue families plus one accent; nothing clipping; in vacuum blacks at true 0, in atmosphere no pixel below the lift (§2.8) | _(score 0–5)_ |  |
-| **Chrome** — delete the HUD entirely and lose no orientation? | _(score 0–5)_ |  |
-| **Honesty** — does anything on screen contradict the physics the HUD asserts? | _(score 0–5)_ |  |
-
-**Mean:** ·  **Verdict:** 
-
-### B
-
-| axis | score | the pixel region that lost the point |
-|---|---|---|
-| **Silhouette** — readable subject at three distances? | _(score 0–5)_ |  |
-| **Light** — a dominant light with direction AND a secondary bounce or rim? Any surface receiving no light information at all? | _(score 0–5)_ |  |
-| **Depth** — aerial perspective present? Three separable depth planes? | _(score 0–5)_ |  |
-| **Motion** — at least one element moving with coherent, non-loopable motion? (unscoreable from a still — say so rather than guessing) | _(score 0–5)_ |  |
-| **Materials** — every surface nameable without labels? | _(score 0–5)_ |  |
-| **Colour** — ≤3 hue families plus one accent; nothing clipping; in vacuum blacks at true 0, in atmosphere no pixel below the lift (§2.8) | _(score 0–5)_ |  |
-| **Chrome** — delete the HUD entirely and lose no orientation? | _(score 0–5)_ |  |
-| **Honesty** — does anything on screen contradict the physics the HUD asserts? | _(score 0–5)_ |  |
-
-**Mean:** ·  **Verdict:** 
-
+Axis 4 (motion) is **unscoreable from a still** and is recorded as such rather
+than guessed.
 
 ---
 
-## star-system
+## surface — A
 
-Images: `star-system/A.png` · `star-system/B.png`
-
-### A
-
-| axis | score | the pixel region that lost the point |
+| axis | score | the region that lost the point |
 |---|---|---|
-| **Silhouette** — readable subject at three distances? | _(score 0–5)_ |  |
-| **Light** — a dominant light with direction AND a secondary bounce or rim? Any surface receiving no light information at all? | _(score 0–5)_ |  |
-| **Depth** — aerial perspective present? Three separable depth planes? | _(score 0–5)_ |  |
-| **Motion** — at least one element moving with coherent, non-loopable motion? (unscoreable from a still — say so rather than guessing) | _(score 0–5)_ |  |
-| **Materials** — every surface nameable without labels? | _(score 0–5)_ |  |
-| **Colour** — ≤3 hue families plus one accent; nothing clipping; in vacuum blacks at true 0, in atmosphere no pixel below the lift (§2.8) | _(score 0–5)_ |  |
-| **Chrome** — delete the HUD entirely and lose no orientation? | _(score 0–5)_ |  |
-| **Honesty** — does anything on screen contradict the physics the HUD asserts? | _(score 0–5)_ |  |
+| 1 · Silhouette | **2** | Only the hill edge reads. The huts on the ridge (x≈660, x≈1370) are 10-px dark wedges with no internal structure at any distance. |
+| 2 · Light | **2** | A key from upper-left is inferable from the hill gradient, but the hut faces at x≈680 are flat dark with no bounce, rim or transmission — §8's "any surface receiving no light information at all". |
+| 3 · Depth | **3** | Aerial perspective is genuinely present; the left ridge desaturates into the sky. But two planes, not three: near meadow and far ridge, nothing between. |
+| 4 · Motion | — | Unscoreable from a still. |
+| 5 · Materials | **1** | Nothing is nameable. The lower two-thirds is a smooth green-to-olive gradient; measured near-ground gradient magnitude **1.15/255** — no texture at any scale. |
+| 6 · Colour | **2** | Two hue families (50° at 32.6%, 210° at 47.8%) against §8's four. Nothing clips; darkest pixel luma 0.158, so §2.8's atmospheric lift holds. |
+| 7 · Chrome | **5** | No HUD in frame and orientation survives on the horizon line alone. |
+| 8 · Honesty | **2** | The dark polyhedron at centre-top (x≈700–1050, y≈100–330) has no shadow, no ground contact and no scale reference. |
 
-**Mean:** ·  **Verdict:** 
-
-### B
-
-| axis | score | the pixel region that lost the point |
-|---|---|---|
-| **Silhouette** — readable subject at three distances? | _(score 0–5)_ |  |
-| **Light** — a dominant light with direction AND a secondary bounce or rim? Any surface receiving no light information at all? | _(score 0–5)_ |  |
-| **Depth** — aerial perspective present? Three separable depth planes? | _(score 0–5)_ |  |
-| **Motion** — at least one element moving with coherent, non-loopable motion? (unscoreable from a still — say so rather than guessing) | _(score 0–5)_ |  |
-| **Materials** — every surface nameable without labels? | _(score 0–5)_ |  |
-| **Colour** — ≤3 hue families plus one accent; nothing clipping; in vacuum blacks at true 0, in atmosphere no pixel below the lift (§2.8) | _(score 0–5)_ |  |
-| **Chrome** — delete the HUD entirely and lose no orientation? | _(score 0–5)_ |  |
-| **Honesty** — does anything on screen contradict the physics the HUD asserts? | _(score 0–5)_ |  |
-
-**Mean:** ·  **Verdict:** 
-
+**Mean of seven scoreable axes: 2.43 — FAIL.**
 
 ---
 
-## planet-orbit
+## surface — B
 
-Images: `planet-orbit/A.png` · `planet-orbit/B.png`
-
-### A
-
-| axis | score | the pixel region that lost the point |
+| axis | score | the region that lost the point |
 |---|---|---|
-| **Silhouette** — readable subject at three distances? | _(score 0–5)_ |  |
-| **Light** — a dominant light with direction AND a secondary bounce or rim? Any surface receiving no light information at all? | _(score 0–5)_ |  |
-| **Depth** — aerial perspective present? Three separable depth planes? | _(score 0–5)_ |  |
-| **Motion** — at least one element moving with coherent, non-loopable motion? (unscoreable from a still — say so rather than guessing) | _(score 0–5)_ |  |
-| **Materials** — every surface nameable without labels? | _(score 0–5)_ |  |
-| **Colour** — ≤3 hue families plus one accent; nothing clipping; in vacuum blacks at true 0, in atmosphere no pixel below the lift (§2.8) | _(score 0–5)_ |  |
-| **Chrome** — delete the HUD entirely and lose no orientation? | _(score 0–5)_ |  |
-| **Honesty** — does anything on screen contradict the physics the HUD asserts? | _(score 0–5)_ |  |
+| 1 · Silhouette | **3** | The colonnade at centre reads at mid distance and the figure on the left ridge at far, but the whole lower half is empty — one of the three distances has no subject. |
+| 2 · Light | **2** | The columns take a warm key and the glow at x≈995, y≈505 is real secondary light, but the ground across the entire lower half carries no directional information. |
+| 3 · Depth | **3** | Two ridges separate cleanly by haze; the near plane is featureless, so two usable planes again. |
+| 4 · Motion | — | Unscoreable from a still. |
+| 5 · Materials | **2** | The colonnade reads as cut stone. The ground reads as nothing — measured gradient **1.07/255**, flatter than A. |
+| 6 · Colour | **4** | Four hue families (20°, 40°, 110°, 210°), 2% achromatic — §8's count met. Darkest luma 0.174; nothing clips. |
+| 7 · Chrome | **5** | As A. |
+| 8 · Honesty | **2** | The same unanchored polyhedron, here at x≈1010–1350, y≈190–360, overlapping the hero structure. |
 
-**Mean:** ·  **Verdict:** 
-
-### B
-
-| axis | score | the pixel region that lost the point |
-|---|---|---|
-| **Silhouette** — readable subject at three distances? | _(score 0–5)_ |  |
-| **Light** — a dominant light with direction AND a secondary bounce or rim? Any surface receiving no light information at all? | _(score 0–5)_ |  |
-| **Depth** — aerial perspective present? Three separable depth planes? | _(score 0–5)_ |  |
-| **Motion** — at least one element moving with coherent, non-loopable motion? (unscoreable from a still — say so rather than guessing) | _(score 0–5)_ |  |
-| **Materials** — every surface nameable without labels? | _(score 0–5)_ |  |
-| **Colour** — ≤3 hue families plus one accent; nothing clipping; in vacuum blacks at true 0, in atmosphere no pixel below the lift (§2.8) | _(score 0–5)_ |  |
-| **Chrome** — delete the HUD entirely and lose no orientation? | _(score 0–5)_ |  |
-| **Honesty** — does anything on screen contradict the physics the HUD asserts? | _(score 0–5)_ |  |
-
-**Mean:** ·  **Verdict:** 
-
+**Mean of seven scoreable axes: 3.00 — FAIL.**
 
 ---
 
-## surface
+## The answer to Act A's question
 
-Images: `surface/A.png` · `surface/B.png`
+**B is better than A** — four of seven scoreable axes, and 0.57 of a mean point.
+The gap is real and it is mostly colour: four hue families against two.
 
-### A
+**Neither passes §8's gate**, and both fail on the same two axes for the same
+single reason: **materials (1 and 2) and light (2 and 2)**. The ground occupies
+more than half of both frames and carries no texture and no directional light.
+That is one defect, not two, and it is the blocking axis.
 
-| axis | score | the pixel region that lost the point |
-|---|---|---|
-| **Silhouette** — readable subject at three distances? | _(score 0–5)_ |  |
-| **Light** — a dominant light with direction AND a secondary bounce or rim? Any surface receiving no light information at all? | _(score 0–5)_ |  |
-| **Depth** — aerial perspective present? Three separable depth planes? | _(score 0–5)_ |  |
-| **Motion** — at least one element moving with coherent, non-loopable motion? (unscoreable from a still — say so rather than guessing) | _(score 0–5)_ |  |
-| **Materials** — every surface nameable without labels? | _(score 0–5)_ |  |
-| **Colour** — ≤3 hue families plus one accent; nothing clipping; in vacuum blacks at true 0, in atmosphere no pixel below the lift (§2.8) | _(score 0–5)_ |  |
-| **Chrome** — delete the HUD entirely and lose no orientation? | _(score 0–5)_ |  |
-| **Honesty** — does anything on screen contradict the physics the HUD asserts? | _(score 0–5)_ |  |
+## Two findings that are not scores
 
-**Mean:** ·  **Verdict:** 
-
-### B
-
-| axis | score | the pixel region that lost the point |
-|---|---|---|
-| **Silhouette** — readable subject at three distances? | _(score 0–5)_ |  |
-| **Light** — a dominant light with direction AND a secondary bounce or rim? Any surface receiving no light information at all? | _(score 0–5)_ |  |
-| **Depth** — aerial perspective present? Three separable depth planes? | _(score 0–5)_ |  |
-| **Motion** — at least one element moving with coherent, non-loopable motion? (unscoreable from a still — say so rather than guessing) | _(score 0–5)_ |  |
-| **Materials** — every surface nameable without labels? | _(score 0–5)_ |  |
-| **Colour** — ≤3 hue families plus one accent; nothing clipping; in vacuum blacks at true 0, in atmosphere no pixel below the lift (§2.8) | _(score 0–5)_ |  |
-| **Chrome** — delete the HUD entirely and lose no orientation? | _(score 0–5)_ |  |
-| **Honesty** — does anything on screen contradict the physics the HUD asserts? | _(score 0–5)_ |  |
-
-**Mean:** ·  **Verdict:** 
-
+1. **The meadow is not drawing.** Near-ground high-frequency detail is 1.15 and
+   1.07 out of 255. M3 instances ~3.3 M blades; that would raise the figure by
+   an order of magnitude. Whichever frame carries `m3=1`, the grass did not
+   reach the picture.
+2. **`planet-orbit` violates §2.8.** Darkest pixel `rgb(13,7,0)`, luma 0.0305,
+   and **0.0%** of the frame reaches true black — in *both* sets, so it is not
+   flag-related. §2.8: in vacuum the background is true `#000` and blacks are
+   never lifted. `star-system` reaches `rgb(0,0,0)` correctly, so this is
+   specific to the planet scale. Previously unrecorded.
 
 ---
 
-## black-hole
+<!-- revealed -->
+## The key
 
-Images: `black-hole/A.png` · `black-hole/B.png`
+**cosmic-web** — A = `RECK-default` · B = `RECK-allflags`
 
-### A
+**galaxy** — A = `RECK-default` · B = `RECK-allflags`
 
-| axis | score | the pixel region that lost the point |
-|---|---|---|
-| **Silhouette** — readable subject at three distances? | _(score 0–5)_ |  |
-| **Light** — a dominant light with direction AND a secondary bounce or rim? Any surface receiving no light information at all? | _(score 0–5)_ |  |
-| **Depth** — aerial perspective present? Three separable depth planes? | _(score 0–5)_ |  |
-| **Motion** — at least one element moving with coherent, non-loopable motion? (unscoreable from a still — say so rather than guessing) | _(score 0–5)_ |  |
-| **Materials** — every surface nameable without labels? | _(score 0–5)_ |  |
-| **Colour** — ≤3 hue families plus one accent; nothing clipping; in vacuum blacks at true 0, in atmosphere no pixel below the lift (§2.8) | _(score 0–5)_ |  |
-| **Chrome** — delete the HUD entirely and lose no orientation? | _(score 0–5)_ |  |
-| **Honesty** — does anything on screen contradict the physics the HUD asserts? | _(score 0–5)_ |  |
+**star-system** — A = `RECK-default` · B = `RECK-allflags`
 
-**Mean:** ·  **Verdict:** 
+**planet-orbit** — A = `RECK-allflags` · B = `RECK-default`
 
-### B
+**surface** — A = `RECK-default` · B = `RECK-allflags`
 
-| axis | score | the pixel region that lost the point |
-|---|---|---|
-| **Silhouette** — readable subject at three distances? | _(score 0–5)_ |  |
-| **Light** — a dominant light with direction AND a secondary bounce or rim? Any surface receiving no light information at all? | _(score 0–5)_ |  |
-| **Depth** — aerial perspective present? Three separable depth planes? | _(score 0–5)_ |  |
-| **Motion** — at least one element moving with coherent, non-loopable motion? (unscoreable from a still — say so rather than guessing) | _(score 0–5)_ |  |
-| **Materials** — every surface nameable without labels? | _(score 0–5)_ |  |
-| **Colour** — ≤3 hue families plus one accent; nothing clipping; in vacuum blacks at true 0, in atmosphere no pixel below the lift (§2.8) | _(score 0–5)_ |  |
-| **Chrome** — delete the HUD entirely and lose no orientation? | _(score 0–5)_ |  |
-| **Honesty** — does anything on screen contradict the physics the HUD asserts? | _(score 0–5)_ |  |
+**black-hole** — A = `RECK-default` · B = `RECK-allflags`
 
-**Mean:** ·  **Verdict:** 
-
+_Sheet was filled in before the reveal._
