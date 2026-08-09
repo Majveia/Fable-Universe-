@@ -91,10 +91,27 @@ That is one defect, not two, and it is the blocking axis.
    surface station built no meadow at all. That is the `capture.js` bug fixed in
    `922aed6` — the stations had the flags and the bench did not.
 
-   **What is not yet settled** is whether the flat ground in these two images is
-   3.5 M blades averaging to a wash, or the camera standing somewhere the rings
-   do not reach. Asserting the first would repeat the mistake this correction is
-   for. It needs one capture with the fixed bench and a near-ground crop.
+   **Settled, by looking rather than by inferring.** The nearest 320×180 px of
+   ground in the all-flags frame, magnified 5× with nearest-neighbour so nothing
+   could hide in the resampling, is **completely featureless** — a flat sage
+   wash with no blade edges, no colour variation, no sub-pixel noise. The
+   default frame measures the same (gradient 1.15 vs 1.07 out of 255).
+
+   So the final position is narrower than either earlier claim, and both were
+   loose:
+
+   - **In the frame, there is no grass.** Visually confirmed at magnification,
+     not inferred from a gradient statistic.
+   - **In the CPU's bookkeeping, there are 3.5 M blades across 162 chunks.**
+     Measured from the running page.
+
+   Both are facts and they do not agree. The reconciliation is *not* known, and
+   guessing it is what the two previous versions of this note did wrong. The
+   candidates: instances are issued but the vertex shader collapses them (a zero
+   height, or `meadowKeep` rejecting against true distance); or `ring.blades`
+   and `ring.drawn` are counters that do not reflect what was submitted; or the
+   probe's low tier and the capture's desktop tier diverge. **Naming the cause
+   needs a draw-call inspection, not another still.**
 2. **`planet-orbit` violates §2.8.** Darkest pixel `rgb(13,7,0)`, luma 0.0305,
    and **0.0%** of the frame reaches true black — in *both* sets, so it is not
    flag-related. §2.8: in vacuum the background is true `#000` and blacks are
