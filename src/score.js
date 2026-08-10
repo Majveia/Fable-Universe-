@@ -158,6 +158,62 @@ export const LFO_RATIOS = [1, Math.SQRT2, 1.7320508075688772, 2.23606797749979,
   2.6457513110645907, 3.3166247903554];
 
 // ---------------------------------------------------------------------------
+// the pad's timbre
+//
+// `wave` above names one of WebAudio's three built-in shapes, and it is kept
+// because it is the readable thing to print in a label. It is not what gets
+// played. A raw `sawtooth` has every harmonic at 1/n out to Nyquist, and held
+// as a ten-second pad that is not warm, it is a buzzer — the opposite of the
+// brief, and the opposite of what the reference frames look like. Three
+// discrete shapes is also a coarse answer to a continuous input: a hue of 0.33
+// and a hue of 0.34 should not step from `triangle` to `sawtooth`.
+//
+// So the pad is built from a generated harmonic table instead, and `warm` moves
+// it continuously:
+//
+//   · **tilt** — amplitudes fall as `n^-tilt`, tilt 2.7 (a cold world, almost a
+//     sine) to 1.5 (a warm world, reedy). A sawtooth is tilt 1.0; nothing here
+//     ever gets there, which is the guarantee.
+//   · **a Gaussian roll-off** on the top of the series, so the last partials
+//     taper to nothing rather than stopping dead. A hard cut-off at partial 16
+//     is a rectangular window on the spectrum and rings.
+//   · **a slight even-harmonic dip** on warm worlds — an odd-weighted series is
+//     hollow, like a stopped pipe, and hollow reads as warm where bright reads
+//     as harsh.
+//
+// The point of putting it here rather than in `audio.js` is that "soothing" then
+// becomes a number a harness can check: the amplitude-weighted mean harmonic
+// (the spectral centroid) is computable offline, and `padCentroid()` below is
+// what a check asserts a bound on.
+
+/** how many harmonics the pad's generated wave carries */
+export const PAD_PARTIALS = 16;
+
+/**
+ * Harmonic amplitudes for the pad's `PeriodicWave`, index 0 being DC (always
+ * zero — a pad with a DC offset eats headroom and moves no air).
+ */
+export function padPartials(warm, n = PAD_PARTIALS) {
+  const w = clamp(warm, 0, 1);
+  const tilt = lerp(2.7, 1.5, w);
+  const even = 1 - 0.35 * w;
+  const a = new Float32Array(n + 1);
+  for (let k = 1; k <= n; k++) {
+    const taper = Math.exp(-2.2 * (k / n) * (k / n));
+    a[k] = Math.pow(k, -tilt) * taper * (k % 2 === 0 ? even : 1);
+  }
+  return a;
+}
+
+/** amplitude-weighted mean harmonic number — the decidable form of "soft" */
+export function padCentroid(warm, n = PAD_PARTIALS) {
+  const a = padPartials(warm, n);
+  let num = 0, den = 0;
+  for (let k = 1; k <= n; k++) { num += k * a[k]; den += a[k]; }
+  return den > 0 ? num / den : 1;
+}
+
+// ---------------------------------------------------------------------------
 // modes
 //
 // Six of the seven diatonic modes, ordered dark to bright by the count of

@@ -637,6 +637,7 @@ const DUST_FRAG = /* glsl */`
   uniform float uGain;
   uniform float uRefDraw;    // draw units at the reference radius (1 AU)
   uniform float uSubDraw;    // sublimation radius, draw units — no dust inside
+  uniform float uFlatDraw;   // where the power law turns over, ~6 r_sub
   uniform float uOuterDraw;
   uniform float uBandDraw;   // asteroid-belt dust band centre, 0 = none
   uniform float uSeed;
@@ -654,8 +655,21 @@ const DUST_FRAG = /* glsl */`
     if (inner * outer < 1e-4) discard;
 
     float x = r / uRefDraw;                       // radius in reference units
-    // n ∝ r^−1.3 · irradiance 1/r² · fan thickness ∝ r  ⇒  r^−2.3
-    float col = pow(x, -2.3);
+    // Two populations, because a real system has two.
+    //
+    //   the zodiacal cloud — n ∝ r^−1.3 (Leinert 1998), irradiance 1/r², fan
+    //   thickness ∝ r, so surface brightness ∝ r^−2.3, which is the exponent
+    //   the zodiacal light is observed to follow. Inside the sublimation zone
+    //   the power law turns over rather than running away: there is no dust
+    //   left there to be bright.
+    //
+    //   the debris disc — the collisional cascade off the belt and whatever
+    //   Kuiper analogue this system has, spread far more evenly. This is the
+    //   component that is actually *imaged* around other stars in scattered
+    //   light, and it is what keeps the plane legible past a few AU instead of
+    //   collapsing the whole cloud into a cusp at the star.
+    float xs = max(x, uFlatDraw / uRefDraw);
+    float col = pow(xs, -2.3) + 0.55 * pow(x, -0.9);
 
     // the IRAS dust bands: collisional debris from the asteroid families, a
     // real local enhancement at the belt's own radius
@@ -665,22 +679,31 @@ const DUST_FRAG = /* glsl */`
     }
 
     // the fan seen edge-on: a sightline nearly in the plane crosses far more
-    // dust than one looking down on it
+    // dust than one looking down on it. This is why the zodiacal light is a
+    // *band* rather than a haze, and why the plane of a system announces
+    // itself the moment the camera drops toward it.
     vec3 V = normalize(uCamPos - vW);
-    float path = clamp(1.0 / (abs(V.y) + 0.055), 1.0, 7.0);
+    float path = 1.0 / (abs(V.y) + 0.055);
 
-    // Henyey–Greenstein, g = 0.6: interplanetary grains are forward scatterers
+    // Henyey–Greenstein: interplanetary grains scatter forward. g = 0.35 is
+    // inside the measured range for the zodiacal cloud and — unlike the 0.6 the
+    // inner cloud prefers — keeps the forward lobe to about 4× the 90° value
+    // instead of 25×, which is the difference between a bright far side and a
+    // clipped one. Normalised at 90 degrees so uGain keeps one meaning here.
     vec3 L = normalize(vW - uStar);
     float ct = clamp(dot(L, V), -1.0, 1.0);
-    const float g = 0.6, g2 = 0.36;
-    float hg = (1.0 - g2) / pow(1.0 + g2 - 2.0 * g * ct, 1.5) * 0.25;
+    const float g = 0.35, g2 = 0.1225;
+    float hg = ((1.0 - g2) / pow(1.0 + g2 - 2.0 * g * ct, 1.5)) / 0.7379;
 
     // grains are a little redder than the light they scatter (Mie on ~10 µm
     // silicates), which is measured and is why the zodiacal light is warm
     vec3 tint = uChroma * vec3(1.06, 1.0, 0.90);
 
     float grain = 0.82 + 0.30 * fbm3(vec3(vW.xz * (0.9 / uRefDraw), uSeed));
-    float b = col * path * hg * grain * uGain * inner * outer;
+    // one stated ceiling on the geometry terms, so an edge-on sightline through
+    // the forward lobe brightens the plane instead of clipping it
+    float boost = min(path * hg, 9.0);
+    float b = col * boost * grain * uGain * inner * outer;
     vec3 c = tint * b;
     c = mix(vec3(0.0), c, vec3(equal(c, c)));
     fragColor = vec4(clamp(c, 0.0, 4.0), 1.0);
@@ -811,7 +834,18 @@ export class SystemScale {
     this.controls.maxDistance = far * 4 + 200;
     this._prevTarget = new THREE.Vector3();
 
-    this.bloomSettings = { strength: 0.75, radius: 0.65, threshold: 0.0 };
+    // The threshold used to be 0, which means every lit pixel blooms — and
+    // `bloom.js`'s bright pass collapses to `w = 1` there, so the whole frame
+    // was being blurred and added back to itself. In vacuum that is a pedestal
+    // under a field §2.8 requires to reach zero, and it is half of why the old
+    // star capture had 70.6% of the frame lit and 22% true black.
+    //
+    // 0.30 sits above the dust (which peaks near 0.1 at a normal viewing angle)
+    // and below the photosphere (0.5 at the limb, 1.5 at disc centre), so what
+    // glows is the star, and what the star glows *into* is a bounded 64-pixel
+    // reach rather than the whole frame. §9.4 calls the halo around a light the
+    // instrument's point spread function; this is the aperture setting.
+    this.bloomSettings = { strength: 0.9, radius: 0.8, threshold: 0.3 };
     if (this.params.pulsar) this.noteOverride = PULSAR_NOTE;
 
     // arriving from another star: come in hot on the old flight vector,
@@ -1043,6 +1077,53 @@ export class SystemScale {
     // -- asteroid belt
     if (P.belt) this._buildBelt(P.belt, r);
     if (P.comet) this._buildComet(P.comet, r);
+    // -- and the dust the whole system is swimming in
+    this._buildDust();
+  }
+
+  /**
+   * The interplanetary dust cloud: the thing that makes a star system a *place*
+   * rather than two spheres and an ellipse on black.
+   *
+   * It is one population and one shader, and it is the same population as the
+   * corona above — F-corona near the star, zodiacal light at 1 AU, debris disc
+   * further out. Every radius here is derived rather than chosen:
+   *
+   *   inner edge   grains sublimate at ~1,500 K, and T = 278·L^¼/√r gives
+   *                r_sub = (278/1500)²·√L AU. A real, sharp, dust-free zone.
+   *   band         the IRAS dust bands — collisional debris from the asteroid
+   *                families, sitting at the belt's own radius.
+   *   outer edge   past the last planet, where there is nothing left to grind.
+   */
+  _buildDust() {
+    const P = this.params;
+    const rSub = Math.max(0.0344 * Math.sqrt(Math.max(P.lum, 1e-4)), 0.004);
+    const aMax = P.planets.length ? P.planets[P.planets.length - 1].a : 3;
+    const rOut = aMax * 2.4;
+    const geo = dustDiscGeometry(drawR(rSub), drawR(rOut));
+    const c = starChroma(P.temp);
+    this.dust = new THREE.Mesh(geo, new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        uChroma: { value: new THREE.Vector3(c[0], c[1], c[2]) },
+        uStar: this.uSunPos,
+        uCamPos: this.uCamPos,
+        uGain: { value: 0.0065 },
+        uRefDraw: { value: AU_DRAW },
+        uSubDraw: { value: drawR(rSub) },
+        uFlatDraw: { value: drawR(rSub * 6) },
+        uOuterDraw: { value: drawR(rOut) },
+        uBandDraw: { value: P.belt ? drawR(P.belt.a) : 0 },
+        uSeed: { value: (hash(P.seed, 0xd057) >>> 8) / 65536 },
+      },
+      vertexShader: DUST_VERT,
+      fragmentShader: DUST_FRAG,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }));
+    this.scene.add(this.dust);
   }
 
   /** lighthouse beams, wind glow, and the wreckage shell of the supernova */
@@ -1106,8 +1187,24 @@ export class SystemScale {
   _buildBelt(belt, r) {
     const N = 3200;
     const geo = new THREE.IcosahedronGeometry(0.16, 0);
-    const mat = new THREE.MeshBasicMaterial({ color: 0x8a827a });
-    // basic material — lit look faked by distance dimming below
+    const c = starChroma(this.params.temp);
+    // Lit by the star it orbits, rather than by a flat `MeshBasicMaterial`
+    // hex. One draw call either way; the difference is that §8 axis 2 —
+    // "any surface receiving no light information at all?" — now has an answer.
+    const mat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        uChroma: { value: new THREE.Vector3(c[0], c[1], c[2]) },
+        uStar: this.uSunPos,
+        uCamPos: this.uCamPos,
+        uRefDraw: { value: AU_DRAW },
+        // one AU of irradiance is the unit; the 1/r² in the shader does the
+        // rest, so a belt around a bright star is genuinely brighter
+        uGain: { value: 0.62 * Math.min(Math.max(this.params.lum, 0.05), 40) ** 0.35 },
+      },
+      vertexShader: BELT_VERT,
+      fragmentShader: BELT_FRAG,
+    });
     this.beltMesh = new THREE.InstancedMesh(geo, mat, N);
     this.beltMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.beltData = [];
