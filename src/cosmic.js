@@ -1356,6 +1356,43 @@ export class CosmicScale {
     return { position: best, galaxySeed: gseed };
   }
 
+  /**
+   * Zoom, owned here rather than by `OrbitControls`, so that the *pinch* works.
+   *
+   * `main.js` synthesises a pinch into `active().onWheel?.({ deltaY })` and
+   * `touch.js` does the same — but `CosmicScale` never implemented `onWheel`,
+   * and `OrbitControls` listens for real DOM wheel events on the canvas, which
+   * a synthesised plain object is not. So two fingers on the glass did nothing
+   * at this scale, on every build, while the mouse wheel worked. Taking the
+   * dolly means one implementation serves both, which is why
+   * `controls.enableZoom` is off above.
+   *
+   * Geometric, because the range is: 6 to BOX·3.4 is a factor of 510, and a
+   * linear dolly cannot cross that without being useless at one end.
+   *
+   * The gain reproduces the tuned `zoomSpeed = 1.7` feel exactly — one 100-unit
+   * notch is 9.25%, so `exp(k·100) = 0.95^-1.7`. A coarse pointer gets 2.9×
+   * that, and the reason is arithmetic rather than taste: `touch.js` scales
+   * finger travel by 3.2, so a full-screen pinch on a 390-point phone arrives
+   * as |deltaY| ≈ 1,600, and at the mouse gain that is a 4× dolly — five
+   * pinches to cross the range. A one-pinch traverse of the *useful* range
+   * (whole web to inside a filament, about 60×) wants |deltaY| ≈ 4,600, and
+   * multiplying here rather than asking `touch.js` for a bigger gain keeps the
+   * change inside one file.
+   */
+  onWheel(e) {
+    const dy = Number(e?.deltaY) || 0;
+    if (!dy) return true;
+    // DOM_DELTA_LINE reports notches, not pixels; one line is about 16 px
+    const k = this._zoomK * (e.deltaMode === 1 ? 16 : 1);
+    const t = this.controls.target;
+    const d = this.camera.position.clone().sub(t);
+    const len = Math.min(Math.max(d.length() * Math.exp(k * dy),
+      this.controls.minDistance), this.controls.maxDistance);
+    this.camera.position.copy(t).addScaledVector(d.normalize(), len);
+    return true;
+  }
+
   onKey(code) {
     if (code === 'KeyE') { this.physicalView = !this.physicalView; return true; }
     if (code === 'KeyN') { this.toggleMode(); return true; }
