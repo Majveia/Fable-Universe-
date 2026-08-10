@@ -1,22 +1,20 @@
 // The score — the musical decisions, and only those.
 //
 // ---------------------------------------------------------------------------
-// STATUS: this is half of a feature, and the half that is missing is the half
-// that makes a sound.
+// STATUS: wired. `audio.js` imports `deriveScore`, `chordPlan`, `arpNote`,
+// `bellNote`, `padPartials`, `snapToScale`, `hz` and `LFO_RATIOS`, and plays
+// them through a graph built once at unlock.
 //
-// `deriveScore()` and everything under it are complete and checked — the
-// `score` suite in `tools/verify.js` asserts determinism, that ten worlds do
-// not land on the same chord, that the mode ladder is monotone in the star's
-// colour temperature, that a heavier world sits lower, that vacuum reverberates
-// longer than air, and that no two LFO rates share a period. What does not
-// exist yet is the WebAudio graph that plays any of it: **nothing in this file
-// is currently imported by `audio.js`, and the game is silent of it.**
-//
-// It is landed rather than held back because the untestable half is the easy
-// half — oscillators, a biquad, a generated impulse response — and the half
-// that carries the actual claim ("the score is attuned to the world") is the
-// one that had to be decidable without ears. That part is done and provable.
-// Wiring it is a separate commit, and it is the next one.
+// One integration seam is still open and it is worth knowing about: `main.js`'s
+// `_worldInfo()` currently describes a world with `{ type, atmo, mood }` and
+// returns `null` at the four vacuum scales. Everything below degrades to a
+// sensible default when a field is missing, so the score works today — but the
+// star's temperature, the world's gravity, its equilibrium temperature, its
+// palette hue and the seed that fixes the key are all *available* at those call
+// sites and none of them arrive yet. Until they do, every universe is in the
+// same key at the cosmic scale and every world is scored as if it orbited the
+// Sun at one gravity. The patch is nine lines and is written out in
+// `docs/notes/score-integration.md`; `main.js` belongs to another agent.
 //
 // There is no WebAudio in this file and no THREE, which is the entire reason it
 // exists apart from `audio.js`. §7.3 requires new maths to have a CPU reference
