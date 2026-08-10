@@ -16,6 +16,16 @@
 // Sun at one gravity. The patch is nine lines and is written out in
 // `docs/notes/score-integration.md`; `main.js` belongs to another agent.
 //
+// And the limit, stated here so it is not quietly forgotten now that a
+// synthesiser exists: **nothing in this repo can hear.** The checks establish
+// necessary conditions — the mapping discriminates, no chord holds a semitone,
+// no sequence has a detectable period, the mix keeps headroom, the graph does
+// not grow or click — and every one of those is satisfied by a great deal of
+// music nobody wants to listen to. Whether it is *pleasant*, whether `TRIM`'s
+// eleven levels balance, and whether the reverb sounds like a valley rest on
+// the code reading correctly and on nothing else. `score-integration.md` §7
+// lists all seven such claims and what a human with speakers should check first.
+//
 // There is no WebAudio in this file and no THREE, which is the entire reason it
 // exists apart from `audio.js`. §7.3 requires new maths to have a CPU reference
 // and an offline check "before it enters the render loop", and a synthesiser is

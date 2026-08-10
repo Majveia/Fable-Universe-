@@ -542,6 +542,7 @@ uniform vec3 uCamPos;
 uniform vec3 uCTop, uCBody, uCTerm, uCUnder, uCCore, uCRim;
 uniform vec3 uCSun, uCShadow;
 uniform float uCloudLum;      // the day/night clock, shared with the sky
+uniform float uCloudThick;    // optical depth scale — Beer's law, one dial
 varying vec2 vC;
 varying float vSeed;
 varying float vHF;
@@ -559,6 +560,38 @@ vec3 cloudRamp3(float t, vec3 shade, vec3 mid, vec3 lit, float soft, float jit) 
   float a = smoothstep(0.17 - soft + jit, 0.17 + soft + jit, t);
   float b = smoothstep(0.58 - soft + jit, 0.58 + soft + jit, t);
   return mix(mix(shade, mid, a), lit, b);
+}
+
+// Henyey–Greenstein, without the 1/4pi: the sun term here is a painted
+// irradiance, not radiometric watts, and carrying the normalisation would only
+// force a compensating gain somewhere less honest.
+float cloudHG(float cosT, float g) {
+  float g2 = g * g;
+  float den = max(1.0 + g2 - 2.0 * g * cosT, 1e-4);
+  return (1.0 - g2) / (den * sqrt(den));
+}
+
+// Three-lobe Mie phase for a 10-micron water droplet.
+//
+// Technique ported — not vendored — from Leonxlnx/sakura-realm (MIT), whose
+// decomposition is the clearest statement of why one lobe cannot do this job.
+// Mie scattering off cloud water has three distinct features and a single HG
+// term can only ever have one of them:
+//
+//   · a needle-sharp forward spike, which IS the silver lining and the reason a
+//     thin edge in front of the sun goes incandescent rather than merely pale
+//   · a broad forward pedestal carrying most of the energy out to 60-90 deg,
+//     which is what makes a side-lit flank read as lit water rather than grey
+//   · a small backscatter shoulder, which lights the face of a cloud when the
+//     sun is behind the viewer
+//
+// The weights sum to 1 and every HG lobe integrates to the same total over the
+// sphere, so this is an energy-conserving redistribution and not a gain: it
+// buys the silver lining without brightening the frame.
+float cloudMiePhase(float cosT) {
+  return cloudHG(cosT,  0.91) * 0.52    // forward spike — the silver lining
+       + cloudHG(cosT,  0.38) * 0.24    // forward pedestal — side-lit luminosity
+       + cloudHG(cosT, -0.32) * 0.24;   // backscatter shoulder — the sunlit face
 }
 
 void main() {
@@ -601,18 +634,48 @@ void main() {
   // the sunlit flank takes the colour of the light that is on it
   col *= mix(vec3(1.0), uCSun * 1.28, term * 0.44);
 
-  // Silver lining. The rim of a backlit cumulus blazes, and sharpening the
-  // gradient into a line is the same texture fetch doing more drawing.
-  float back = clamp(dot(V, -uSunDir), 0.0, 1.0);
+  // --- optical depth through the puff ------------------------------------
+  //
+  // zz is the half-chord of the sphere the billboard stands in, so 2*zz is
+  // a genuine path length through the droplet medium rather than a fudge on
+  // the alpha. Everything below is Beer's law on that path, which means the
+  // rind and the silver lining come out of one number instead of two dials.
+  float tau = 2.0 * zz * mix(0.55, 1.45, den) * uCloudThick;
+  float trans = exp(-tau);
+
+  // Beer–Powder (sakura-realm's framing): the dark-edge term that turns a
+  // silhouette from a cut-out into something with a rind. Weighted to the lit
+  // side only — a thin edge lit from behind is bright, a thin edge lit from in
+  // front is dark, and that asymmetry is most of what says "this is a volume".
+  float cosT = dot(-V, uSunDir);          // +1 = looking into the sun
+  float powder = 1.0 - exp(-tau * 2.6);
+  float powderM = mix(1.0, powder, 0.55 * (0.5 - 0.5 * cosT));
+  col *= mix(1.0, powderM, 0.70);
+
+  // --- the light that came *through* --------------------------------------
+  //
+  // The silver lining is not a rim shader. It is transmitted sunlight,
+  // weighted by the forward spike of the Mie phase — so it appears exactly
+  // where the cloud is thin AND the sun is behind it, and nowhere else, with
+  // no term of its own to tune. The clamp is the whole normalisation: the
+  // three-lobe phase peaks near 124 at zero degrees against 0.39 at ninety,
+  // and 0.06 puts the side-lit case at nothing and the forward case hard
+  // against the ceiling, which is what a silver lining looks like.
+  float phase = cloudMiePhase(cosT);
+  col += uCRim * clamp(phase * 0.06, 0.0, 1.10) * trans;
+
+  // ...and the painted rim, which is a different claim: §9.2's bands say an
+  // edge should read as a *line*, and a physically correct gradient will not
+  // draw one. Both, deliberately — the physics decides where the light is, the
+  // paint decides that it has an edge.
   float edge = pf.b;
   float sunEdge = clamp(dot(normalize(vRight * vC.x + vUp * vC.y + vec3(1e-5)), uSunDir) * 0.5 + 0.5, 0.0, 1.0);
   float rimLine = smoothstep(0.30, 0.84, edge);
-  float silver = rimLine * pow(sunEdge, 1.9) * (0.34 + 1.7 * pow(back, 1.3));
-  col = mix(col, uCRim * 1.45, clamp(silver, 0.0, 0.94));
-  // ...and a thin cool line down the shaded side
+  col = mix(col, uCRim * 1.45,
+            clamp(rimLine * pow(sunEdge, 1.9) * (0.22 + 0.55 * clamp(phase * 0.06, 0.0, 1.2)), 0.0, 0.92));
+  // a thin cool line down the shaded side — the reference annotates this as
+  // the thing that actually reads as drawn rather than rendered
   col = mix(col, mix(uCCore, uCShadow, 0.42), rimLine * (1.0 - sunEdge) * (1.0 - term) * 0.36);
-  // whole-cloud glow when the sun is directly behind
-  col += uCSun * pow(back, 6.0) * 0.62 * (1.0 - edge * 0.4);
 
   col *= uCloudLum;
 
@@ -778,6 +841,11 @@ export function makeCumulus({
     uCloudDrift: { value: new THREE.Vector2(0, 0) },
     uCloudAmount: { value: amount },
     uCloudLum: { value: 1 },
+    // 3.4 is the optical depth of a puff seen through its middle. Below about
+    // 2 the whole deck goes translucent and the ramp's bands stop reading;
+    // above about 6 the powder term darkens every edge into a hard rind and
+    // the silver lining disappears because nothing transmits.
+    uCloudThick: { value: 3.4 },
     uCTop: v3(), uCBody: v3(), uCTerm: v3(),
     uCUnder: v3(), uCCore: v3(), uCRim: v3(),
     uCSun: v3(), uCShadow: v3(),

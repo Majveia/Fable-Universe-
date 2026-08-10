@@ -294,8 +294,8 @@ export const BONE = B;
 // change still reconfigures the whole figure, which is the shape §5 asks for.
 
 const DETAIL = [
-  { sides: 7, coatU: 13, coatV: 5, scarfN: 9, scarfW: 3 },   // low
-  { sides: 8, coatU: 15, coatV: 6, scarfN: 11, scarfW: 3 },  // mobile
+  { sides: 7, coatU: 13, coatV: 5, scarfN: 11, scarfW: 3 },  // low
+  { sides: 8, coatU: 15, coatV: 6, scarfN: 13, scarfW: 3 },  // mobile
   { sides: 10, coatU: 19, coatV: 7, scarfN: 14, scarfW: 4 }, // desktop
   { sides: 12, coatU: 23, coatV: 8, scarfN: 17, scarfW: 4 }, // ultra
 ];
@@ -1359,33 +1359,55 @@ export class Figure {
     let py = S[co + 4] * ax + S[co + 5] * ay + S[co + 6] * az + S[co + 7];
     let pz = S[co + 8] * ax + S[co + 9] * ay + S[co + 10] * az + S[co + 11];
 
-    // The direction it streams. A scarf is nearly massless, so it is almost pure
-    // air — but not instantly: the lag is what makes it crack rather than snap,
-    // and it is the same exponential the hem uses at a faster rate.
+    // The direction the air is going, smoothed. A scarf is nearly massless so it
+    // is almost pure air — but not instantly: the lag is what makes it crack
+    // rather than snap, and it is the hem's exponential at a faster rate.
     const airSp = Math.hypot(wx, wz, vy);
-    const drape = 1 / (1 + airSp * 0.55);          // 1 when still, → 0 in a gale
-    const tx = wx * 0.10;
-    const ty = vy * 0.10 - 1.35 * drape;
-    const tz = wz * 0.10 + 0.35 * drape;
-    const tl = Math.hypot(tx, ty, tz) || 1;
+    const drape = 1 / (1 + airSp * 0.55);          // 1 when still, toward 0 in a gale
+    const tl = Math.max(airSp, 1e-4);
     const k = clamp(dt * 5.0, 0, 1);
-    this._scarf.x += (tx / tl - this._scarf.x) * k;
-    this._scarf.y += (ty / tl - this._scarf.y) * k;
-    this._scarf.z += (tz / tl - this._scarf.z) * k;
+    this._scarf.x += (wx / tl - this._scarf.x) * k;
+    this._scarf.y += (vy / tl - this._scarf.y) * k;
+    this._scarf.z += (wz / tl - this._scarf.z) * k;
     this._scarf.normalize();
 
+    // ---- the chain ---------------------------------------------------------
+    //
+    // The first pass integrated a nearly-constant direction and produced a rigid
+    // rod — which is what every capture showed, a 1.3 m wire sticking out of the
+    // shoulder. Two things were missing and both are properties of a real
+    // ribbon:
+    //
+    //   · **Compliance grows along the length.** The end at the knot remembers
+    //     the shoulder; the free end remembers only the air. `follow` therefore
+    //     rises with t, so the scarf *bends* out of its launch direction over
+    //     its own length rather than translating along one.
+    //
+    //   · **Gravity is a per-segment acceleration, not a nudge.** It accumulates
+    //     down the chain and it is strongest where the air is weakest, so the
+    //     same code hangs the scarf at a standstill and streams it in a gust
+    //     with nothing switching between the two.
+    //
+    // It leaves the shoulder pointing out and back regardless, because a scarf
+    // is thrown over a shoulder and that is where the loose end starts.
     const seg = this.scarfLen / (c.ni - 1);
-    let dx = this._scarf.x, dy = this._scarf.y, dz = this._scarf.z;
+    let dx = -0.55, dy = -0.30, dz = 0.78;
+    const dl0 = Math.hypot(dx, dy, dz);
+    dx /= dl0; dy /= dl0; dz /= dl0;
+    const grav = 0.42 * drape + 0.06;
     for (let i = 0; i < c.ni; i++) {
       const t = i / (c.ni - 1);
       if (i > 0) {
-        // gravity pulls the far end down harder than the near end, and the wave
-        // travels *along* the scarf — the classic ribbon read, and the reason it
-        // never looks like a rod with a texture on it
-        dy += -0.135 * drape * (0.25 + t);
-        const wob = Math.sin(t * 6.0 - this._t * 7.2) * (0.10 + 0.30 * (1 - drape)) * t;
-        dx += -this._scarf.z * wob * 0.5;
-        dz += this._scarf.x * wob * 0.5;
+        const follow = (0.10 + 0.42 * t) * (1 - drape * 0.55);
+        dx += (this._scarf.x - dx) * follow;
+        dy += (this._scarf.y - dy) * follow;
+        dz += (this._scarf.z - dz) * follow;
+        dy -= grav * (0.30 + 1.15 * t) * 0.42;
+        // the wave travels *along* the scarf, across the flow — the classic
+        // ribbon read, and the reason it never looks like a rod with a texture
+        const wob = Math.sin(t * 5.2 - this._t * 6.4) * (0.16 + 0.46 * (1 - drape)) * t;
+        dx += -this._scarf.z * wob * 0.6;
+        dz += this._scarf.x * wob * 0.6;
         const dl = Math.hypot(dx, dy, dz) || 1;
         dx /= dl; dy /= dl; dz /= dl;
         px += dx * seg; py += dy * seg; pz += dz * seg;
@@ -1395,10 +1417,12 @@ export class Figure {
       let sx = -dz, sz = dx;
       const sl = Math.hypot(sx, sz) || 1;
       sx /= sl; sz /= sl;
-      const tw = Math.sin(t * 4.2 - this._t * 3.4) * 0.55 * (1 - drape * 0.6);
+      const tw = Math.sin(t * 4.2 - this._t * 3.4) * 0.62 * (1 - drape * 0.5);
       const ct = Math.cos(tw);
       const ux = sx * ct, uy = Math.sin(tw) * 0.9, uz = sz * ct;
-      const half = 0.055 * (1 - t * 0.35);
+      // wide enough to be cloth. The first pass was 0.11 m across and read as a
+      // wire at every distance the figure is ever seen from.
+      const half = 0.082 * (1 - t * 0.30);
       for (let j = 0; j < c.nj; j++) {
         const q = (j / (c.nj - 1) - 0.5) * 2;
         const o = (c.base + i * c.nj + j) * 3;

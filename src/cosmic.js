@@ -567,11 +567,22 @@ const M1_PALETTE = /* glsl */`
   // extinguishes the void tracers before that reaches the frame, and the
   // whole divergence channel goes invisible in the half of the volume where
   // it is most interesting. Fifteen stops from void to node, not ninety.
+  //
+  // The floor was raised from 0.012 to 0.022 on a measurement, and the reason
+  // is the paragraph above taken seriously. Every tracer is the same mass, so
+  // a void does not contain *dimmer* galaxies — it contains *fewer* of them,
+  // and crowding is what is supposed to say so. At the old floor the void
+  // tracers printed at the very bottom of the 8-bit range, where the blue they
+  // are carrying cannot be expressed in the two or three levels of channel
+  // spread available: the frame's hue histogram had four families and none of
+  // them was the blue one, with nothing at all between 190° and 340°. A flatter
+  // law is both the more faithful reading of equal-mass tracers and the one
+  // that lets the emptiest half of the volume reach the frame with its colour.
   float webLum(float dens) {
-    return 0.012
-         + 0.030 * smoothstep(-1.70, 0.05, dens)
-         + 0.050 * smoothstep(0.35, 1.70, dens)
-         + 0.090 * smoothstep(1.95, 2.48, dens);
+    return 0.022
+         + 0.026 * smoothstep(-1.70, 0.05, dens)
+         + 0.040 * smoothstep(0.35, 1.70, dens)
+         + 0.075 * smoothstep(1.95, 2.48, dens);
   }
 
   // Shimmer rides ln D and ln a — both integrals of the Friedmann equation,
