@@ -1,10 +1,22 @@
-// The sky as seen from inside a galaxy: a seeded dome of stars with a
-// milky band across it — the home galaxy's disk seen edge-on from within.
+// The sky — both of them.
+//
+// Half of this file is the night: a seeded dome of stars with a milky band
+// across it, the home galaxy's disk seen edge-on from within. That half is
+// older than §9.6 and is documented where it starts.
+//
+// The other half, at the bottom, is the **day**: §9.6's painted four-stop
+// wash. It is new, and it exists because the surface scale was shipping a
+// two-stop `mix(uZenith, uHorizon, pow(1-y, 2.6))` — a flat pale wash with no
+// vertical structure, no azimuthal asymmetry, no Mie halo and no cirrus, whose
+// two colours were `pp.atmoColor * 0.5` and `pp.atmoColor * 0.26`. Nine of the
+// ten stops §9.1 names, and every one of them already computed by the transfer
+// in `starlight.js`, went unread. See `SKY_BODY_GLSL`.
 
 import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
 import { softDotTexture, nebulaTexture } from './nebula.js';
 import { blackbodyRGB } from './planet.js';
+import { airColoursQuantised } from './starlight.js';
 
 // Blackbody color ramp, log-spaced 1500 K → 30000 K (T = 1500·20^u)
 let _rampTex = null, _rampCols = null;
@@ -265,4 +277,254 @@ export function makeSkyDome(seed, radius) {
   }
 
   return group;
+}
+
+// ===========================================================================
+// §9.6 · THE DAY SKY — a painted gradient, not a scattering integral
+// ===========================================================================
+//
+// §9.6 is unusually specific, and every clause of it is here:
+//
+//   "Four-stop vertical wash, azimuthal asymmetry (warm toward sun, cool
+//    away), Mie halo as pow(ang,7)·0.72 + pow(ang,1.9)·0.16, sun disc painted
+//    3× oversize and never blown out, sheared cirrus above the horizon."
+//
+// …followed by AEON's own complication, which is the whole reason this is a
+// module and not eight hex literals:
+//
+//   "derive the four sky stops from the star's spectrum through a fixed
+//    transfer, rather than hardcoding them. The stops above are that
+//    transfer's output for a G-type star at 13.5°. That is the port: not the
+//    values, the function that produced them."
+//
+// That transfer already exists and is already correct — `starlight.js`
+// integrates Planck against the CIE colour-matching functions through Rayleigh
+// and Ångström optical depths and von Kries-adapts §9.1's painted stops onto
+// the result, and `tools/verify.js` pins it to §9.1's hexes at the fixture. So
+// this file writes **no colour at all**. Every one of the ten stops arrives as
+// a uniform, from `airColoursQuantised(T, elev)`, and a red dwarf's sky comes
+// out of the same code looking like a red dwarf's sky because the numbers that
+// went in were a red dwarf's numbers.
+//
+// ---------------------------------------------------------------------------
+// Why the shape matters more than the palette
+//
+// The frame this replaced was not dark, and it was not the wrong hue. It was
+// *flat*: one `mix()` between two colours, on `pow(1 - y, 2.6)`. Two stops
+// cannot hold a horizon. The four-stop wash puts three separate transitions
+// into the top half of the frame — horizon→mid at y≈0.05, mid→upper at y≈0.23,
+// upper→zenith at y≈0.6 — and the azimuthal term then rotates the horizon band
+// itself, warm on the sun's side and cool on the anti-solar side. That is what
+// makes a skyline a *line* rather than the place two greys happen to meet, and
+// it is §8 axis 3's third depth plane arriving for free.
+//
+// ---------------------------------------------------------------------------
+// What is deliberately not physical, per §11's last trap
+//
+// The sun disc is painted 3× oversize and the band edges in the wash are soft
+// but visible. Both look like defects to a PBR reflex. §9.6 and §11 both say
+// so in advance, so they are spelled out here rather than discovered later:
+//
+//   · the disc is `mix(col, uSunDisc * 1.9, mask)` — a *mix*, not an additive
+//     term, so it cannot exceed 1.9 no matter what else is in the pixel. Under
+//     §9.4's rational tonemap 1.9 prints at about 0.81, which is a bright warm
+//     cream and not white. "Never blown out" is enforced by the operator, not
+//     by hoping the exposure stays low. The path this replaced was
+//     `uSunColor * disk * 5.0`, added — which clips, and which then feeds a
+//     clipped white into the bloom pyramid.
+//
+//   · the halo is clamped at 0.9, so the sky's own colour is never entirely
+//     replaced even at the centre of the glow.
+
+/**
+ * A gradient noise for the cirrus, and nothing else in the frame.
+ *
+ * Self-contained on purpose. The sky shader is included into hosts that may or
+ * may not already have `NOISE_GLSL` (surface.js's sky did not), and a second
+ * `snoise` in one program is a redefinition error rather than a wrong picture.
+ * Every symbol here is prefixed `sky`.
+ *
+ * The hash is the fract/dot family already used by `surface.js`'s `hash13`,
+ * not a `sin()` hash: `sin` at large arguments is precision-dependent, and a
+ * cirrus deck that differs between two drivers is a §2.3 leak that only ever
+ * shows up in somebody else's screenshot.
+ */
+const SKY_NOISE_GLSL = /* glsl */`
+vec2 skyHash2(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.xx + p3.yz) * p3.zy) * 2.0 - 1.0;
+}
+float skyNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return 1.4 * mix(
+    mix(dot(skyHash2(i), f), dot(skyHash2(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0)), u.x),
+    mix(dot(skyHash2(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0)),
+        dot(skyHash2(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0)), u.x), u.y);
+}
+`;
+
+/** an unrolled fbm — the octave count is a tier knob, so it is not a loop */
+const skyFbm = (n) => /* glsl */`
+float skyFbm${n}(vec2 p) {
+  float v = 0.0, a = 0.5;
+  ${Array.from({ length: n }, () => 'v += a * skyNoise(p); p = p * 2.07 + 11.3; a *= 0.5;').join('\n  ')}
+  return v;
+}
+`;
+
+/**
+ * The ten stops, as uniforms. Declared apart from the body so a host that
+ * already has `uSunDir` (most surface-scale shaders do) can include the body
+ * without a redefinition — the same split `wind.js` makes between `WIND_GLSL`
+ * and `WIND_CONSUMER_GLSL`, for the same reason.
+ */
+export const SKY_UNIFORM_GLSL = /* glsl */`
+uniform vec3 uSkyZen;      // §9.1's four-stop vertical wash, zenith → horizon
+uniform vec3 uSkyUp;
+uniform vec3 uSkyMid;
+uniform vec3 uSkyHor;
+uniform vec3 uSkyAnti;     // the anti-solar horizon: cool
+uniform vec3 uSkyHorSun;   // the solar horizon: warm
+uniform vec3 uSunGlow;     // the Mie halo's colour
+uniform vec3 uSunDiscCol;  // the disc, painted — see the note on 1.9
+uniform vec3 uSkyHaze;     // the ground-side wash, so the dome has no edge
+uniform vec3 uSkyMist;
+uniform vec3 uCirrusCol;
+uniform float uSunAng;     // PAINTED angular radius of the disc, radians (3×)
+uniform float uSkyAir;     // 0 vacuum … 1 thick atmosphere
+uniform float uSkyLum;     // 0.055 night floor … 1 full day
+uniform float uCirrusAmt;  // cirrus coverage, 0 … 1
+uniform vec2 uCirrusDir;   // unit; the upper wind, so the streaks lie along it
+uniform vec2 uCirrusDrift; // metres of advection, from the shared wind field
+`;
+
+const SKY_SUN_GLSL = /* glsl */`
+uniform vec3 uSunDir;
+`;
+
+/**
+ * The body. `cirrusWarp`/`cirrusDetail` are octave counts, because the cirrus
+ * is the only expensive thing in this shader and §5 wants one row of the
+ * quality table to reconfigure it.
+ */
+const skyBody = (cirrusWarp, cirrusDetail) => /* glsl */`
+${SKY_NOISE_GLSL}
+${skyFbm(cirrusDetail)}
+${cirrusWarp > 0 ? skyFbm(cirrusWarp) : ''}
+
+// The wash, and only the wash. skyDomeLite and skyDome share it so a
+// reflection and the sky it reflects cannot drift apart.
+vec3 skyWash(vec3 d) {
+  float yy = max(d.y, -0.18);
+  // four stops. The band edges overlap deliberately — a hard join between two
+  // of them would be a horizon in the wrong place.
+  vec3 col = mix(uSkyHor, uSkyMid, smoothstep(-0.02, 0.13, yy));
+  col = mix(col, uSkyUp,  smoothstep(0.10, 0.36, yy));
+  col = mix(col, uSkyZen, smoothstep(0.32, 0.86, yy));
+
+  // azimuthal asymmetry: warm toward the sun, cool away from it. This is the
+  // term that gives the horizon a *direction*, which is most of why a painted
+  // sky beats a scattering integral at a fifth of the cost.
+  vec2 dh = normalize(d.xz + vec2(1e-5));
+  vec2 sh = normalize(uSunDir.xz + vec2(1e-5));
+  float az = dot(dh, sh) * 0.5 + 0.5;
+  float horiz = pow(1.0 - clamp(yy, 0.0, 1.0), 3.4);
+  col = mix(col, uSkyAnti,   horiz * (1.0 - az) * 0.62);
+  col = mix(col, uSkyHorSun, horiz * pow(az, 2.1) * 0.92);
+  return col;
+}
+
+// The full dome. sunMask comes back so a god-ray or flare pass can be gated
+// on the disc the sky actually drew, rather than on its own idea of where the
+// sun is.
+vec3 skyDome(vec3 d, out float sunMask) {
+  float air = clamp(uSkyAir, 0.0, 1.0);
+  vec3 col = skyWash(d) * (uSkyLum * air);
+
+  // Mie forward-scatter halo — §9.6's exponents exactly. It is scattered
+  // light, so it needs air: in vacuum this term is zero and the star sits on
+  // black, which is §2.8 arriving out of the physics rather than a branch.
+  float ang = dot(d, uSunDir);
+  float halo = pow(max(ang, 0.0), 7.0);
+  float wide = pow(max(ang, 0.0), 1.9);
+  col = mix(col, uSunGlow * uSkyLum,
+            clamp(halo * 0.72 + wide * 0.16, 0.0, 0.9) * air);
+
+  // The disc. Chord length rather than the angle: for a sun a third of a
+  // degree across, cos(ang) sits 1e-5 below 1.0, and thresholding a float32
+  // dot product there is a handful of ulps from the answer. |d - sunDir| is
+  // 2·sin(ang/2) ≈ ang, and it is exact where it matters.
+  float chord = length(d - uSunDir);
+  // Below the horizon the disc is occluded by the world, not by the shader —
+  // but the dome is drawn at infinity, so it has to say so itself.
+  float up = smoothstep(-0.035, 0.005, uSunDir.y);
+  sunMask = smoothstep(uSunAng * 1.10, uSunAng * 0.88, chord) * up;
+  // A mix, not an add. See this section's header: this is what "never blown
+  // out" is implemented as.
+  col = mix(col, uSunDiscCol * 1.9, sunMask);
+
+  // Sheared cirrus, above the horizon only. The shear is along the *upper*
+  // wind rather than along world z: the reference could bake its one wind
+  // direction into the anisotropy, and AEON cannot, because the streaks have
+  // to lie along whatever direction this world's Ekman-veered deck is running.
+  float cd = smoothstep(0.035, 0.30, max(d.y, 0.0));
+  if (cd > 0.001 && uCirrusAmt > 0.002) {
+    // project the ray onto a flat deck, then rotate into the wind's frame
+    vec2 fp = d.xz / max(d.y, 0.05) * 0.0016 + uCirrusDrift * 0.00022;
+    vec2 sp = vec2(dot(fp, uCirrusDir), dot(fp, vec2(-uCirrusDir.y, uCirrusDir.x)));
+    ${cirrusWarp > 0 ? `vec2 w = vec2(skyFbm${cirrusWarp}(sp * 2.1 + vec2(7.3, 2.1)),
+                    skyFbm${cirrusWarp}(sp * 2.1 + vec2(1.9, 9.4)));`
+    : 'vec2 w = vec2(0.0);'}
+    // 0.55 along the wind against 3.4 across it: a 6:1 stretch, which is what
+    // makes a lump of noise read as a mare's tail
+    float ci = skyFbm${cirrusDetail}(vec2(sp.x * 0.55, sp.y * 3.4) + w * 0.6);
+    ci = smoothstep(0.10, 0.44, ci) * cd * (0.30 + 0.5 * pow(max(ang, 0.0), 1.4));
+    // ice forward-scatters hard, so cirrus in front of the sun is the
+    // brightest thing in the sky that is not the sun
+    col = mix(col, uCirrusCol * uSkyLum * (0.92 + 0.55 * pow(max(ang, 0.0), 3.0)),
+              clamp(ci * 0.55 * uCirrusAmt * air, 0.0, 1.0));
+  }
+
+  // the ground-side wash, so the dome never shows a hard edge below the
+  // horizon where the terrain does not reach
+  col = mix(col, mix(uSkyHaze, uSkyMist, 0.35) * (uSkyLum * air),
+            smoothstep(0.0, -0.16, d.y));
+  return col;
+}
+
+// §9.6: "Keep a lightweight variant without disc or cirrus for reflections —
+// moving water resolves none of it and the octaves come back as sparkle."
+vec3 skyDomeLite(vec3 d) {
+  float air = clamp(uSkyAir, 0.0, 1.0);
+  vec3 col = skyWash(d) * (uSkyLum * air);
+  float ang = max(dot(d, uSunDir), 0.0);
+  col = mix(col, uSunGlow * uSkyLum,
+            clamp(pow(ang, 7.0) * 0.72 + pow(ang, 1.9) * 0.16, 0.0, 0.9) * air);
+  return col;
+}
+`;
+
+/** octaves per tier. Low gets no warp at all — see `skyGLSL`. */
+const CIRRUS_OCTAVES = {
+  low: [0, 2], mobile: [1, 3], desktop: [2, 4], ultra: [2, 5],
+};
+
+/**
+ * The chunk, built for a tier.
+ *
+ * `withSun` is false for a host that already declares `uSunDir` — which is
+ * every surface-scale material in this repo, and the reason this is a
+ * parameter rather than one constant.
+ *
+ * The cirrus is the only thing in the shader whose cost is not fixed, and it
+ * is the thing §5 says must be a row: at `low` it is two octaves and no domain
+ * warp (three noise lookups a pixel), at `desktop` it is the reference's own
+ * two-plus-four (six). The wash, the asymmetry, the halo and the disc are the
+ * same arithmetic on every tier, because none of them is measurable.
+ */
+export function skyGLSL(tier = 'desktop', withSun = true) {
+  const [w, d] = CIRRUS_OCTAVES[tier] || CIRRUS_OCTAVES.desktop;
+  return (withSun ? SKY_SUN_GLSL : '') + SKY_UNIFORM_GLSL + skyBody(w, d);
 }

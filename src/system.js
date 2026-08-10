@@ -572,17 +572,24 @@ function makeCorona(Teff, radiusDraw, seed, timeUniform) {
     glslVersion: THREE.GLSL3,
     uniforms: {
       uChroma: { value: new THREE.Vector3(c[0], c[1], c[2]) },
-      // The exposure a coronagraph applies. 10⁻⁶ · gain, so a gain of 2.6e5
-      // puts the r = 1.05 rim at about a quarter of the disc's radiance and
-      // everything past r = 3 below one 8-bit step — which is what an eclipse
-      // photograph, printed, actually looks like.
-      uGain: { value: 2.6e5 * starExposure(Teff) },
+      // The exposure a coronagraph applies, and the only free number in this
+      // shader. 1.5e5 puts the r = 1.02 rim at about 0.47 of the disc's own
+      // radiance, r = 1.5 at 0.016, r = 3 at 0.0006 — which prints as a bright
+      // limb ring dissolving into structure that is gone by four radii. That is
+      // an eclipse photograph. Anything larger is a sprite wearing a citation.
+      uGain: { value: 1.5e5 * starExposure(Teff) },
       uTime: timeUniform,
       uSeed: { value: seed },
       uScale: { value: radiusDraw * CORONA_OUTER },
     },
     vertexShader: BILLBOARD_VERT,
-    fragmentShader: CORONA_FRAG.replace('${OUTER}', CORONA_OUTER.toFixed(2)),
+    // `CORONA_OUTER` is interpolated into the source at definition time, above.
+    // An earlier draft also ran a `.replace('${OUTER}', …)` here, which found
+    // nothing and did nothing — the placeholder had already been substituted by
+    // the template literal itself. Removed rather than left as a no-op: dead
+    // string surgery on a shader is exactly the kind of thing that reads as
+    // load-bearing during the next debugging session.
+    fragmentShader: CORONA_FRAG,
     blending: THREE.AdditiveBlending,
     transparent: true,
     depthWrite: false,
@@ -906,14 +913,18 @@ export class SystemScale {
       const mesh = new THREE.Mesh(
         new THREE.SphereGeometry(dR, 64, 48),
         makePhotosphereMaterial(temp, seed, this.uCamPos, this.uTime));
-      // a child, so it inherits the star's transform and a binary's second
-      // corona tracks its own component without a second update path
-      mesh.add(makeCorona(temp, dR, seed, this.uTime));
+      // A child, so a binary's second corona tracks its own component without a
+      // second update path. Note it inherits the *position* only: the billboard
+      // applies its scale in view space, so `uScale` has to be driven by hand
+      // when the star's radius changes (see `_updateDeepTime`).
+      const corona = makeCorona(temp, dR, seed, this.uTime);
+      mesh.add(corona);
       this.scene.add(mesh);
-      return { mesh, dR, color };
+      return { mesh, dR, color, corona };
     };
     this.primary = mkStar(P.temp, P.radiusSun);
     this.starMesh = this.primary.mesh;
+    this.starCorona = this.primary.corona;
     this.starColor = this.primary.color;
     this.starDrawR = this.primary.dR;
     this.secondary = null;
@@ -1516,17 +1527,46 @@ export class SystemScale {
     D.L = st.L;
 
     // -- the star itself
+    //
+    // The lever moves T_eff over more than a decade — 3,350 K on the red-giant
+    // ascent, 70,000 K at envelope ejection — so everything the photosphere is
+    // made of has to move with it: the chromaticity ramp, the Stefan–Boltzmann
+    // exposure, the spot coverage, and the corona's radius and colour.
+    //
+    // The ramp is the expensive one. Rebuilding it is twelve CIE integrals over
+    // 201 wavelengths, which is nothing once and about 2 ms per frame if it is
+    // done every frame while the key is held. It is only *visibly* wrong once
+    // the temperature has moved a percent or so, so it is rebuilt on that
+    // threshold rather than on the clock — the same "set once, not per frame"
+    // discipline §11 asks for, applied to a CPU cost instead of a GPU one.
     const dR = this._starDrawROf(st.R);
     this.starMesh.scale.setScalar(dR / this.starDrawR);
-    const col = blackbodyRGB(st.T);
-    this.starMesh.material.uniforms.uColor.value.copy(col);
-    // a bigger disk covers more of the frame, so ease its surface exposure and
-    // bloom back to keep the giant readable instead of a white blowout
+    const su = this.starMesh.material.uniforms;
+    if (!(Math.abs(st.T - (this._rampT ?? 0)) < this._rampT * 0.01)) {
+      this._rampT = st.T;
+      su.uRamp.value = chromaRamp(st.T);
+      const c = starChroma(st.T);
+      this.starCorona.material.uniforms.uChroma.value.set(c[0], c[1], c[2]);
+    }
+    const expo = starExposure(st.T);
+    su.uExposure.value = expo;
+    su.uSpots.value = Math.min(Math.max((6200 - st.T) / 2600, 0), 1) ** 1.4 * 0.85;
+
+    // The corona is a child of the star mesh, so it *follows* the star — but
+    // `BILLBOARD_VERT` applies `uScale` in view space, after the model-view
+    // transform has been collapsed onto the origin, so the parent's scale never
+    // reaches it. A red giant's corona has to be told to grow.
+    const cu = this.starCorona.material.uniforms;
+    cu.uScale.value = dR * CORONA_OUTER;
+    cu.uGain.value = 1.5e5 * expo;
+
+    // A bigger disc covers more of the frame. The radiance itself no longer
+    // needs easing — Stefan–Boltzmann already puts a 3,350 K giant at 11% of a
+    // G star's surface brightness, which is the honest reason a red giant is
+    // not a blowout — but the *bloom* still reads area, so a star that fills the
+    // frame gets less of it.
     const cover = Math.min(dR / 40, 1);
-    this.starMesh.material.uniforms.uBright.value = 1 - 0.72 * cover;
-    const glow = this.starMesh.children.find(c => c.isSprite);
-    if (glow) glow.material.color.copy(col).multiplyScalar(0.8 * (1 - 0.7 * cover));
-    this.bloomSettings.strength = 0.75 - 0.5 * cover;
+    this.bloomSettings.strength = 0.9 - 0.45 * cover;
     if (this.app.active() === this) this.app.post.tune(this.bloomSettings);
 
     // -- supernova: one violent frame at the crossing
