@@ -1292,7 +1292,6 @@ export class Figure {
     const c = this.coat;
     if (!c) return;
     const POS = this.posAttr.array;
-    const D = this.D;
     const w = st.walker;
     const S = this.skin, ro = B.root * 12;
     const gait = clamp(st.speed / 3.2, 0, 1);
@@ -1346,7 +1345,6 @@ export class Figure {
         POS[o] = x; POS[o + 1] = y; POS[o + 2] = z;
       }
     }
-    void D;
   }
 
   _scarfCloth(dt, st, wx, wz, vy) {
