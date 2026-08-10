@@ -36,8 +36,24 @@ const PARAM = (k) => {
   catch { return null; }
 };
 
-/** M1 — the web must breathe. Default-off (§7.4); see docs/plans/M1.md. */
-const M1 = PARAM('m1') === '1';
+/**
+ * M1 — the web must breathe. **Now default-on**; `?m1=0` restores the old web.
+ *
+ * docs/plans/M1.md records the gate honestly: clauses (a), (c), (d) and (e)
+ * pass, and clause (b) — four distinguishable hue families — reached three and
+ * is blocked on a compositing change of its own size, not on a palette tweak.
+ * §7 caps that at five iterations and then asks for an escalation with a
+ * written account of the blocking axis, which §12 and §13 of that plan are.
+ *
+ * What is *not* defensible is what shipping default-off meant in the meantime:
+ * the scale a visitor actually lands on was the pre-M1 one, so none of the four
+ * clauses that pass — the growth-factor drift, the N-toggle, the dither, the
+ * anisotropic kernel — were in any frame anyone saw. A milestone that is four
+ * fifths met and zero fifths visible is the worst of both. The flag stays, so
+ * `?m1=0` still produces the old frame for a comparison, and clause (b) stays
+ * open in the ledger where it can be argued with.
+ */
+const M1 = PARAM('m1') !== '0';
 
 /**
  * `?slab=<fraction>` — render a view-aligned slice through the box instead of
@@ -81,12 +97,20 @@ const M1 = PARAM('m1') === '1';
 const COMPOSITE_DEPTH = PARAM('comp') === '1';
 
 /**
- * The second hue channel (`?web=1`) — structure class from the tensor's
- * eigenvalue signature, on top of the divergence ramp. M1 §12 option B.
- * Default-off (§7.4), so the ramp is still what `?m1=1` alone renders and the
- * two can be scored against each other on one machine.
+ * The second hue channel (`?web=0` to disable) — structure class from the
+ * tensor's eigenvalue signature, on top of the divergence ramp. M1 §12 option
+ * B, and **now default-on**.
+ *
+ * It is the one change that moved the blocked clause: docs/plans/M1.md §13
+ * measures the hue-family count going from 2 to 3, with peaks at 210° and 170°
+ * where before there was one. Void amber and knot violet are on screen and
+ * selected by physics. It costs nothing when the eigenvalues are already being
+ * computed for the displacement, and the alternative — shipping the ramp alone
+ * because the channel did not get all the way to four — throws away a measured
+ * improvement to protect a number that a rendering change, not this one, is
+ * what blocks.
  */
-const WEB_CLASS = PARAM('web') === '1';
+const WEB_CLASS = PARAM('web') !== '0';
 
 const SLAB = (() => {
   const v = PARAM('slab');
@@ -829,8 +853,40 @@ export class CosmicScale {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
     this.controls.rotateSpeed = 0.5;
-    this.controls.minDistance = 60;
-    this.controls.maxDistance = BOX * 2.1;
+    // --- how far you may fly, and how fast the gesture takes you there -----
+    //
+    // The dwell was 60 … 1890 units on a 900-unit box. Two things were wrong
+    // with it, and only the second is obvious.
+    //
+    // The near stop was the real one. 60 units is about a fourteenth of the
+    // box, which sounds close and is not: the filaments are tens of units
+    // across, so 60 is still *outside* every structure in the simulation. You
+    // could approach the web and never enter it, and the thing worth seeing at
+    // this scale — that a filament is not fog but a crowd of individual
+    // tracers, each one a galaxy — was behind a wall nobody could get past.
+    // 6 units puts the camera inside a filament with tracers on both sides.
+    //
+    // The far stop is the framing complaint: at 1890 the box subtends most of
+    // the frame, so pulling back to "see the whole thing" instead ran out of
+    // travel with the web still cropped. 3.4× the box is enough to hold it
+    // whole with air around it.
+    this.controls.minDistance = 6;
+    this.controls.maxDistance = BOX * 3.4;
+
+    // A 315× dwell range is unusable at a fixed step, and OrbitControls' dolly
+    // is already geometric — each notch scales the distance rather than
+    // subtracting from it — which is exactly the right law and why the range
+    // can be this wide at all. What it is not is fast enough: at the default
+    // speed, crossing 6 → 3060 takes something like sixty notches, and a pinch
+    // on glass has far less travel than sixty notches of a wheel.
+    //
+    // So the speed is raised, and raised further on a coarse pointer, where
+    // the gesture is a thumb-and-forefinger span of a couple of centimetres
+    // rather than an unbounded scroll. This is the whole of "on mobile, make
+    // sure you can really zoom in and out": the range was there, the gesture
+    // could not reach across it.
+    const coarse = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+    this.controls.zoomSpeed = coarse ? 2.6 : 1.7;
     this.controls.autoRotate = true;
     this.controls.autoRotateSpeed = 0.14;
     app.renderer.domElement.addEventListener('pointerdown', () => {

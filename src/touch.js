@@ -36,6 +36,23 @@
 
 import { input, setAnalog, setSource } from './input.js';
 
+// ---------------------------------------------------------------------------
+// Where the thumb cluster sits, and why it is not on the bottom edge
+//
+// It used to be bottom: calc(22px + env(safe-area-inset-bottom)), right: 16px.
+// #timectl is bottom: calc(22px + env(...)), right: 26px. Same corner, same
+// edge, 46 px of button over 34 px of button: the two overlapped outright —
+// and on cosmic, galaxy and system, where the star is this layer's *primary*
+// tap and the strip now carries one too, the frame had two identical buttons
+// stacked on each other.
+//
+// So the strip keeps the bottom edge, because it is the smaller and the more
+// peripheral of the two, and the cluster stacks above it. `--lift` is that
+// stack height: 22 px of strip offset, 34 px of strip button, 24 px of clear
+// air. It is one custom property rather than four copies of the same sum
+// because the caption, the fan and the button all have to move together, and
+// the version this replaces had the number written out three times at two
+// different values — which is how they came apart to begin with.
 const CSS = `
 #tt { position:fixed; inset:0; z-index:22; pointer-events:none;
   opacity:1; transition:opacity .45s ease; }
@@ -61,24 +78,29 @@ const CSS = `
   backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
   color:rgba(255,255,255,.92); font:inherit; touch-action:none;
   display:flex; align-items:center; justify-content:center; }
-#tt .ctx { right:16px; bottom:calc(22px + env(safe-area-inset-bottom));
-  width:46px; height:46px; font-size:18px; }
+/* the thumb cluster stacks above the time strip — see the note above CSS */
+#tt { --lift: calc(80px + env(safe-area-inset-bottom)); }
+#tt .ctx { right:16px; bottom:var(--lift);
+  width:52px; height:52px; font-size:20px; }
 #tt .ctx:active { background:rgba(158,203,255,.28); }
-#tt .fan { position:absolute; right:16px;
-  bottom:calc(22px + env(safe-area-inset-bottom));
-  width:46px; height:46px; pointer-events:none; }
-#tt .fan b { width:40px; height:40px; font-size:15px; left:3px; top:3px;
+#tt .fan { position:absolute; right:16px; bottom:var(--lift);
+  width:52px; height:52px; pointer-events:none; }
+#tt .fan b { width:44px; height:44px; font-size:16px; left:4px; top:4px;
   opacity:0; transform:translate(0,0) scale(.6);
   transition:opacity .18s ease, transform .22s cubic-bezier(.2,1.3,.4,1); }
 #tt.fanned .fan { pointer-events:auto; }
 #tt.fanned .fan b { opacity:1; }
 #tt .fan b:active { background:rgba(158,203,255,.28); }
-#tt .cap { position:absolute; right:74px;
-  bottom:calc(30px + env(safe-area-inset-bottom));
+#tt .cap { position:absolute; right:80px;
+  bottom:calc(var(--lift) + 16px);
   font-size:10px; letter-spacing:.22em; text-transform:uppercase;
   color:rgba(255,255,255,.55); white-space:nowrap; pointer-events:none;
   opacity:0; transition:opacity .25s ease; }
 #tt.fanned .cap, #tt.hint .cap { opacity:1; }
+/* The stick's zone stops short of the strip for the same reason: a thumb that
+   lands on the last 70 px of glass is reaching for a control, not for a
+   walking direction. */
+#tt .zone { bottom:calc(52px + env(safe-area-inset-bottom)); }
 `;
 
 /**
