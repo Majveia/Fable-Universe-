@@ -168,32 +168,86 @@ const mat = (shade, mid, lit, { rim = 1.0, ao = 1.0, emis = 0, trans = 0 } = {})
   shade: hexLin(shade), mid: hexLin(mid), lit: hexLin(lit), rim, ao, emis, trans,
 });
 
+// ---------------------------------------------------------------------------
+// On the values below, which are two stops darker than the first pass
+//
+// The first version of this table was built by eye, as a coat one would want to
+// own. Captured at 17 m against this world's ground it was a **pale smudge the
+// same value as the meadow** — no silhouette at all, which is §8 axis 1 scoring
+// 2 and the benchmark's whole argument lost. Three causes, all in this file:
+//
+//   · §9.7 forces spawn into an 8–18° sun and §9.2's half-Lambert wrap maps the
+//     entire lit hemisphere into 0.46–1.0. Above the ramp's upper edge at 0.58
+//     everything resolves to the `lit` stop — so on a figure standing in open
+//     sun, `lit` is not an accent, it is *most of the body*. A `lit` stop chosen
+//     as "indigo in sunlight" has to be chosen as "the colour of the whole
+//     coat", and #8B95BA is a colour a coat is never any part of.
+//
+//   · The rim was weighted 1.30. `pow(1 − dot(N,V), 4.2)` is large within about
+//     20° of the silhouette edge, which at thirty metres is the entire figure —
+//     so the term that exists to *draw* an edge was filling the shape.
+//
+//   · `paint()`'s hemispheric fill and sun gain both add, and neither subtracts.
+//
+// So: every stop down in value and up in chroma, the rims cut by roughly half,
+// and a distance term in the shader that collapses the ramp toward `shade` (see
+// `figFragment`). The pauldron is the one thing that stays bright, because it is
+// the value contrast the silhouette is legible by.
+
 export const KIT = {
   // the coat — deep indigo. Dark enough to read as a silhouette against a lit
   // sky, violet enough that §9.2's shadow blend never lands on grey.
-  coat: mat('#1E2440', '#364268', '#8B95BA', { rim: 1.30 }),
-  coatWorn: mat('#1A2038', '#2F3A5C', '#7D88AC', { rim: 1.20, ao: 0.92 }),
+  coat: mat('#10142A', '#1E2A50', '#4A5C90', { rim: 0.55 }),
+  coatWorn: mat('#0D1124', '#1A2547', '#415282', { rim: 0.48, ao: 0.92 }),
   // the suit under it
-  suit: mat('#171B2A', '#272D42', '#545C7A', { rim: 1.05 }),
+  suit: mat('#0C0E18', '#161A2C', '#333A58', { rim: 0.45 }),
   // boots and gauntlets. Note the violet bias in the shade stop: leather this
   // dark is exactly where an achromatic black creeps in, and §M2's gate calls a
   // shadowed surface that has gone achromatic-dark a failure in those words.
-  leather: mat('#14161F', '#24273A', '#4C5168', { rim: 0.85, ao: 0.94 }),
+  leather: mat('#0A0B12', '#141626', '#2C3048', { rim: 0.35, ao: 0.94 }),
   // the pauldron — bone ceramic. The one bright value on the figure, and the
-  // reason the shoulder line survives at 40 px against a dark coat.
-  shell: mat('#6E6A5E', '#B5AE99', '#F2E8CC', { rim: 0.75 }),
-  strap: mat('#2A1D14', '#513826', '#8E6A45', { rim: 0.95 }),
+  // reason the shoulder line survives at 40 px against a dark coat. Everything
+  // else got darker; this deliberately did not.
+  shell: mat('#514F46', '#9C957E', '#E8DCBC', { rim: 0.40 }),
+  strap: mat('#1C130D', '#3A2718', '#6E5133', { rim: 0.40 }),
   // the scarf. Cloth, so it transmits: §9.2's subsurface term is what makes a
   // backlit scarf glow along its trailing edge instead of going flat.
-  scarf: mat('#4A1712', '#9C3524', '#D9714A', { rim: 1.55, trans: 0.85 }),
+  scarf: mat('#33100C', '#7A2417', '#C05334', { rim: 0.85, trans: 0.85 }),
   // the coat's lining, seen when the hem lifts or a panel blows open — and seen
   // on every back face, which is the rule the shader states once.
-  lining: mat('#3A1410', '#7E2B1E', '#C2603C', { rim: 1.25, trans: 0.55 }),
+  lining: mat('#260C09', '#5C1D13', '#96432A', { rim: 0.60, trans: 0.55 }),
   // the void inside the hood. Dark, and never neutral.
-  hollow: mat('#0E1020', '#14172A', '#1D2238', { rim: 0.30, ao: 0.34 }),
+  hollow: mat('#080914', '#0E101E', '#161A2A', { rim: 0.12, ao: 0.34 }),
   // the accent
   visor: mat('#123040', '#2E6E88', '#A8ECFF', { rim: 0.40, emis: 1 }),
 };
+
+// ---------------------------------------------------------------------------
+// the coat's hanging shape
+//
+// Shared by the builder and by the cloth update, because they are the same
+// surface and the first version wrote it out twice. Two copies of a
+// parameterisation is exactly the drift §2.7 legislates against one scale up:
+// change the flare in one and the rest pose and the live pose describe two
+// different coats, and the seam between them lights wrong.
+
+const COAT = {
+  top: P.waist - 0.085,   // 0.995 — where the skirt leaves the torso
+  drop: 0.640,            // hem at 0.355, a hand above the boot cuff
+  r0: 0.176,
+  flare: 0.250,           // 0.85 m across at the hem: the mass of the figure
+  gap0: 0.34,             // nearly closed at the belt…
+  gap1: 0.58,             // …and wide open over the legs
+};
+
+function coatRest(v, u) {
+  const gap = COAT.gap0 + COAT.gap1 * v ** 1.3;
+  return {
+    a: FRONT + gap + u * (Math.PI * 2 - 2 * gap),
+    r: COAT.r0 + COAT.flare * v ** 1.15,
+    y: COAT.top - v * COAT.drop,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // the skeleton
@@ -502,12 +556,19 @@ function buildGeometry(seed, D) {
   // largest value contrast on the figure, and value contrast is what silhouette
   // legibility *is* at 40 px — the shape survives because one corner of it is
   // four stops brighter than the rest, not because the outline is complicated.
+  // It is a *shell*, not a ball: the first pass read as a sphere on a shoulder
+  // because the widest ring was the middle one and every ring was round. A
+  // pauldron is a plate that flares out and *down* over the deltoid and stops on
+  // a hard lip, so the widest ring is low, the sections are ovals wider
+  // front-to-back than across, and the bottom ring is a dark strap that reads as
+  // the edge the plate ends on.
   limb(M, [
-    { y: 1.318, rx: 0.052, rz: 0.086, cx: -0.212, cz: 0.004 },
-    { y: 1.372, rx: 0.080, rz: 0.108, cx: -0.224, cz: 0.002 },
-    { y: 1.434, rx: 0.088, rz: 0.110, cx: -0.228, cz: 0 },
-    { y: 1.489, rx: 0.070, rz: 0.092, cx: -0.212, cz: -0.002 },
-    { y: 1.522, rx: 0.038, rz: 0.052, cx: -0.192, cz: -0.004 },
+    { y: 1.288, rx: 0.046, rz: 0.078, cx: -0.204, cz: 0.004 },
+    { y: 1.332, rx: 0.084, rz: 0.112, cx: -0.232, cz: 0.002 },
+    { y: 1.396, rx: 0.098, rz: 0.118, cx: -0.240, cz: 0 },
+    { y: 1.456, rx: 0.088, rz: 0.104, cx: -0.226, cz: -0.002 },
+    { y: 1.508, rx: 0.060, rz: 0.076, cx: -0.200, cz: -0.004 },
+    { y: 1.534, rx: 0.026, rz: 0.036, cx: -0.184, cz: -0.004 },
   ], () => bind(B.armL, B.chest, 0.45), (i) => (i === 0 ? KIT.strap : KIT.shell), D.sides);
 
   // --- the strap: the diagonal --------------------------------------------
@@ -578,18 +639,19 @@ function buildGeometry(seed, D) {
   // The gap widens as it descends — 0.34 rad at the belt to 0.92 at the hem — so
   // the coat is nearly closed at the waist and opens over the legs. A constant
   // gap reads as a cut-out; a widening one reads as a coat that hangs.
+  // `flip: -1`, and it is not a taste. The grid convention is
+  // n = cross(∂G/∂i, ∂G/∂j) with i running *up*; on this surface i runs down
+  // the drop, so the cross product comes out inward. The first capture showed
+  // it plainly: the coat's whole belly rendered in the rust lining, because
+  // every outward-facing fragment was being told it was a back face.
   M.grid((i, j) => {
-    const v = i / (D.coatV - 1);
-    const u = j / (D.coatU - 1);
-    const gap = 0.34 + 0.58 * v ** 1.3;
-    const a = FRONT + gap + u * (Math.PI * 2 - 2 * gap);
-    const rr = 0.176 + 0.190 * v ** 1.22;
-    return [Math.cos(a) * rr, P.waist - 0.085 - v * 0.660, Math.sin(a) * rr * 1.06];
+    const c = coatRest(i / (D.coatV - 1), j / (D.coatU - 1));
+    return [Math.cos(c.a) * c.r, c.y, Math.sin(c.a) * c.r * 1.06];
   }, D.coatV, D.coatU, (i) => ({
     m: i >= D.coatV - 2 ? KIT.coatWorn : KIT.coat,
     bind: bind(B.root),
     ao: 1 - 0.10 * (i / (D.coatV - 1)),
-  }), { cloth: { kind: 'coat' } });
+  }), { flip: -1, cloth: { kind: 'coat' } });
 
   // --- the scarf: the motion read at distance ------------------------------
   //
@@ -678,15 +740,29 @@ const figFragment = (shadowGLSL) => /* glsl */`
   void main() {
     vec3 N = normalize(vN);
     vec3 toEye = cameraPosition - vW;
-    vec3 V = toEye / max(length(toEye), 1e-4);
+    float dist = length(toEye);
+    vec3 V = toEye / max(dist, 1e-4);
+
+    // §M2 act 6 says far ridges are "pure haze, pure shape" and §9.5 says
+    // across-blade detail should be dropped once a blade is two pixels wide.
+    // The same statement, made about a body: at thirty metres a person is 30 px
+    // tall, every stop above the shade one is sub-pixel, and the only thing that
+    // survives is the outline. This term is what turns the figure into that
+    // outline instead of letting it dissolve into ground of the same value.
+    float far = smoothstep(9.0, 30.0, dist);
 
     vec3 shade = vShade, mid = vMid, lit = vLit;
     float rim = vSurf.x, trans = vSurf.w;
     if (!gl_FrontFacing) {
       N = -N;
       shade = uLineShade; mid = uLineMid; lit = uLineLit;
-      rim = 1.25; trans = max(trans, 0.55);
+      rim = 0.60; trans = max(trans, 0.55);
     }
+    // The rim draws an edge, and at range the whole figure is edge — so the
+    // term that exists to separate a silhouette from its background stops
+    // filling it in. This one line is most of the difference between a shape
+    // and a smudge at 17 m.
+    rim *= 1.0 - far * 0.88;
 
     Surf sf;
     sf.N = N; sf.V = V; sf.L = uSunDir;
@@ -712,8 +788,16 @@ const figFragment = (shadowGLSL) => /* glsl */`
     col = mix(col, col * vec3(1.14, 1.05, 0.86), dust);
     col *= 1.0 - uWet * 0.18 * smoothstep(1.9, 0.4, vRest.y);
 
+    // and the collapse toward shape. Note it is a mix toward the material's own
+    // *shade* stop rather than toward black: §2.8 gives vacuum true black and
+    // an atmosphere none, and a distant figure is emphatically inside an
+    // atmosphere. It goes dark and violet, not dark and empty.
+    col = mix(col, col * 0.38 + shade * 0.85, far);
+
     // the accent. It is a light, so it is added rather than mixed, and it is
-    // gated on uGlow — bright noon does not need a lamp and dusk does.
+    // gated on uGlow — bright noon does not need a lamp and dusk does. It is the
+    // one thing that does *not* fade with distance: at 40 px the visor is the
+    // pixel that says which way the figure is facing.
     col += uVisor * vSurf.z * uGlow;
 
     gl_FragColor = vec4(col, 1.0);
@@ -1231,12 +1315,9 @@ export class Figure {
     for (let i = 0; i < c.ni; i++) {
       const vv = i / (c.ni - 1);
       const hinge = vv * vv;                    // the coat swings from the waist
-      const gap = 0.34 + 0.58 * vv ** 1.3;
-      const rr = 0.176 + 0.190 * vv ** 1.22;
-      const y0 = P.waist - 0.085 - vv * 0.660;
       for (let j = 0; j < c.nj; j++) {
-        const uu = j / (c.nj - 1);
-        const a = FRONT + gap + uu * (Math.PI * 2 - 2 * gap);
+        const rest = coatRest(vv, j / (c.nj - 1));
+        const a = rest.a, rr = rest.r, y0 = rest.y;
         const ca = Math.cos(a), sa = Math.sin(a);
         // the pelvis carries the top of the coat: the waist follows the body's
         // lean and turn, and the wind offset below is added on top in figure

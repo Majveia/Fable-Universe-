@@ -18,6 +18,20 @@ runnable and capturable — and that remains the executable one. This file recor
 a second, supplied directly by the human on 2026-08-10 as three reference
 frames, and it is more specific than the reference in the places that matter.
 
+**The frames have a source, and it is readable.** They are from
+**`Leonxlnx/sakura-realm`** (GitHub, **MIT licence**, Three.js `^0.180.0`,
+Vite + pmndrs/postprocessing). That upgrades the benchmark from a look to a
+comparable *implementation*, and §10's rule for the reference applies here
+unchanged: **port techniques and constants, not files.** Nothing is vendored,
+nothing is depended on, and §2.2 (zero runtime dependencies, no build step) and
+§4 (no third-party art assets) are untouched — sakura-realm needs Vite and a
+postprocessing package, and AEON still must run under `python3 -m http.server`.
+
+Its architecture is close enough to AEON's for the comparison to be sharp:
+instanced grass streamed in chunks around the camera on a shared
+divergence-free wind field, a procedural sky, raymarched clouds, a procedurally
+grown tree, and a quality-tier table. §5 and §6 M3 describe the same shapes.
+
 **When this file and a score disagree, this file is the target.** When this file
 and `CLAUDE.md` disagree, `CLAUDE.md` wins — nothing here licenses breaking §2.
 
@@ -101,6 +115,41 @@ the benchmark, where the near field would histogram at ~0.
 | sun | blown cream, not clipped | at system scale it was a clipped grey blowout; fixed, unverified |
 | saturation | high | sat 0.343, mean 143.9 |
 | haze | horizon only | reaches the feet |
+
+---
+
+## 3b · The first thing reading sakura-realm settles
+
+Its blade vertex shader opens:
+
+```glsl
+attribute vec4 iPos;    // xyz world base, w height (m)
+```
+
+**The blade's exact world position — including Y — arrives as a per-instance
+attribute, computed on the CPU.** There is no height texture in that vertex
+shader and no GLSL terrain function. Every root is exactly on the ground
+because the CPU put it there.
+
+AEON does the opposite. `flora.js`'s `BLADE_VERT` calls `wTerrainH(world)`,
+which samples the **wind field's** height bake — 192² over ±1400 m, a 14.66 m
+texel. That resolution is right for the wind, whose finest term is a ±58 m
+stencil, and wrong for seating a 0.42–1.0 m blade. Measured against the real
+ground: **rms 0.11–0.15 m, worst 0.68 m, and 19–29% of roots more than 10 cm
+below the surface the terrain is drawn from.**
+
+The reason AEON took the texture route is recorded in `flora.js` and is a real
+constraint, not an oversight: one geometry and one instance buffer are *shared*
+across every chunk in a ring, because minting a buffer per chunk meant 412
+vertex array objects and cost a browser crash at the compile gate. Per-instance
+world positions require per-chunk buffers. So this is a genuine architectural
+fork with a cost on both sides, and it is the decision to revisit — not a bug
+to patch.
+
+The third option neither project takes, and the one §2.7 already blesses one
+scale up: **port `ground.heightAt` to GLSL** the way `terrain.js` ports the
+orbital field, with the same numeric parity test. That fixes the root height
+exactly, at any distance, with no per-chunk buffers.
 
 ---
 

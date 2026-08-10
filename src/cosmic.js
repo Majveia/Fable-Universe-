@@ -437,26 +437,44 @@ const M1_PALETTE = /* glsl */`
     // spends its width on a region that barely exists while blending the
     // families that do — measured, 0.15→0.85 edges put 80% of the mass into one
     // 40° hue band and the histogram read two families.
-    vec3 col = vec3(0.62, 0.77, 1.00);                                    // void: blue cloud
-    col = mix(col, vec3(0.81, 0.88, 1.00), smoothstep(0.40, 0.62, nClass)); // sheet
-    col = mix(col, vec3(0.91, 0.89, 0.77), smoothstep(1.40, 1.62, nClass)); // filament: green valley
-    col = mix(col, vec3(1.00, 0.71, 0.48), smoothstep(2.40, 2.62, nClass)); // knot: red sequence
+    // ---------------------------------------------------------------------
+    // Chroma, and the measurement that forced it up.
+    //
+    // The stops above were pastels — #9FC4FF through #FFB47A — and an 8-bit
+    // frame cannot hold a pastel at the luminance a deep field lives at. The
+    // arithmetic is unforgiving: #CFE0FF normalised to unit luminance is
+    // (0.93, 1.01, 1.15), a linear saturation of 0.19; through the vacuum
+    // tonemap and the sRGB encode that lands as 3.5% saturation, and a tracer
+    // printing (95, 98, 104) is **grey**. Measured on the capture: 93.8% of lit
+    // pixels achromatic and two hue families, against a gate that wants four.
+    //
+    // The pastels were also not the physics. Galaxy colours are *strongly*
+    // bimodal (Baldry et al. 2004) — the blue cloud is genuinely blue and the
+    // red sequence genuinely red — and painting a measured bimodality as two
+    // near-whites is the lossy step, not this. So the stops move to the
+    // chromaticity the populations actually have, each at least 42° from its
+    // neighbours in hue so that additive overlap between two families still
+    // resolves as two families rather than as their mean.
+    vec3 col = vec3(0.53, 0.63, 1.00);                                    // void: blue cloud, O/B light
+    col = mix(col, vec3(0.18, 0.86, 0.92), smoothstep(0.45, 0.55, nClass)); // sheet
+    col = mix(col, vec3(1.00, 0.80, 0.20), smoothstep(1.45, 1.55, nClass)); // filament: green valley
+    col = mix(col, vec3(1.00, 0.30, 0.32), smoothstep(2.45, 2.55, nClass)); // knot: red sequence
 
-    // Divergence still speaks inside the family, but through *saturation*, not
-    // hue. Leaning the colour toward the next channel along rotated hue by
-    // enough to smear one family into its neighbour, which is the one thing
-    // this channel exists to prevent.
+    // Divergence still speaks inside the family — but it may not spend chroma
+    // to do it. The previous version pulled up to 22% toward grey, which is
+    // exactly the budget this channel has to keep, so flow now modulates
+    // saturation *upward* from a saturated base instead of downward from one.
     float flow = clamp(-th, 0.0, 1.0);
-    col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, 0.78 + 0.30 * flow);
+    col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, 1.0 + 0.18 * flow);
 
     // Dense, fully collapsed and no longer flowing: it has stopped. Kept far
     // narrower than the divergence ramp's version, because there it was the
     // fifth stop of a monotone sweep and here it competes with a family. At the
     // old width it turned most of the knot class achromatic — 28.9% of the
     // frame — and a family that reads as cream is not a hue.
-    float vir = smoothstep(1.60, 2.40, dens)
-              * smoothstep(2.70, 2.94, nClass)
-              * (1.0 - smoothstep(0.02, 0.18, abs(th)));
+    float vir = smoothstep(1.90, 2.55, dens)
+              * smoothstep(2.80, 2.97, nClass)
+              * (1.0 - smoothstep(0.02, 0.12, abs(th)));
     col = mix(col, vec3(1.00, 0.95, 0.86), vir);
 
     col *= vec3(1.0 + 0.09*sin(hash*6.283),
@@ -1031,8 +1049,19 @@ export class CosmicScale {
     // rather than an unbounded scroll. This is the whole of "on mobile, make
     // sure you can really zoom in and out": the range was there, the gesture
     // could not reach across it.
+    //
+    // And the gesture could not reach it *at all*, which is the defect under
+    // the defect. `main.js` and `touch.js` both synthesise a pinch into
+    // `active().onWheel?.({ deltaY })`, a plain object — while `OrbitControls`
+    // binds a real DOM `wheel` listener to the canvas. A plain object never
+    // reaches that listener, so pinch-to-zoom did nothing here on any build,
+    // and the mouse wheel worked, which is exactly why it survived: the wheel
+    // is the one input a desktop test exercises and a phone never has.
+    // `onWheel()` below owns the dolly for both, so this switch stays off.
     const coarse = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
-    this.controls.zoomSpeed = coarse ? 2.6 : 1.7;
+    this.controls.enableZoom = false;
+    // exp(k · 100) = 0.95^−1.7 — one notch is 9.25%, the tuned wheel feel
+    this._zoomK = 8.845e-4 * (coarse ? 2.9 : 1);
     this.controls.autoRotate = true;
     this.controls.autoRotateSpeed = 0.14;
     app.renderer.domElement.addEventListener('pointerdown', () => {
@@ -1046,7 +1075,12 @@ export class CosmicScale {
     // achromatic, because a broad grey haze is what an unthresholded bloom of a
     // multicoloured point field *is*. Above the void tracers (which peak near
     // 0.05) and below the filament and knot cores, so what glows is structure.
-    this.bloomSettings = { strength: 0.85, radius: 0.75, threshold: 0.06 };
+    // Strength matters as much as the threshold, and for a second reason: a
+    // bloom is a *blur*, and blurring a field whose neighbouring tracers carry
+    // different hues averages them — which is the same hue-destroying mechanism
+    // the compositing does, applied again in screen space. 0.85 was adding
+    // nearly a full second copy of the frame.
+    this.bloomSettings = { strength: 0.5, radius: 0.75, threshold: 0.06 };
   }
 
   // ------------------------------------------------------------ field ----

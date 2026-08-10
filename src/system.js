@@ -353,7 +353,7 @@ function chromaRamp(Teff) {
  * or vanish from it.
  */
 function starExposure(Teff) {
-  return Math.min(Math.max(1.18 * Math.pow(Teff / 5772, 0.9), 0.62), 2.05);
+  return Math.min(Math.max(0.78 * Math.pow(Teff / 5772, 0.9), 0.42), 1.45);
 }
 
 // ---------------------------------------------------------------------------
@@ -454,7 +454,7 @@ const PHOTO_FRAG = /* glsl */`
     // A thin shell above the photosphere, optically thin except in the Balmer
     // lines, which is why the flash spectrum is red. It is only visible where
     // the sightline grazes: μ → 0.
-    col += vec3(0.62, 0.11, 0.13) * pow(1.0 - mu, 7.0) * 0.85 * uExposure;
+    col += vec3(0.62, 0.11, 0.13) * pow(1.0 - mu, 6.0) * 1.15 * uExposure;
 
     // §11: never hand a non-finite texel to the bloom pyramid.
     col = mix(vec3(0.0), col, vec3(equal(col, col)));
@@ -475,7 +475,11 @@ function makePhotosphereMaterial(Teff, seed, camPosUniform, timeUniform) {
       uTime: timeUniform,
       uSeed: { value: seed },
       uSpots: { value: spots },
-      uGran: { value: 0.028 },
+      // Solar granulation contrast is about 15% in intensity at 500 nm. This
+      // uniform perturbs T^4, which *is* intensity, so 0.075 against the
+      // 1.35 g + 0.45 fine weighting below lands in that band rather than
+      // wherever a number chosen by eye would have.
+      uGran: { value: 0.075 },
       uCamPos: camPosUniform,
     },
     vertexShader: PHOTO_VERT,
@@ -650,8 +654,18 @@ const DUST_FRAG = /* glsl */`
     float r = max(vR, 1e-3);
     // the dust-free zone: grains sublimate where T > ~1500 K, which for a
     // Sun-like star is 0.03 AU and is a real, sharp inner edge
-    float inner = smoothstep(uSubDraw, uSubDraw * 2.2, r);
-    float outer = 1.0 - smoothstep(uOuterDraw * 0.72, uOuterDraw, r);
+    // The inner fade runs all the way to the turnover radius rather than
+    // stopping at 2.2 r_sub. It used to stop early, which left a constant-
+    // brightness plateau between the end of the fade and the start of the
+    // power law — a bright annulus with a dark hole punched in it, and in the
+    // capture that read as two dark lobes flanking the star rather than as a
+    // dust-free zone. One monotone fade from the sublimation radius to where
+    // the cloud starts obeying its power law.
+    float inner = smoothstep(uSubDraw, uFlatDraw, r);
+    // A long outer fade, because a short one is a *rim*: at 0.72 the cloud was
+    // still bright where it started fading, so the edge of the mesh drew a
+    // horizon line across the frame and the plane read as a solid table.
+    float outer = 1.0 - smoothstep(uOuterDraw * 0.30, uOuterDraw, r);
     if (inner * outer < 1e-4) discard;
 
     float x = r / uRefDraw;                       // radius in reference units
@@ -669,7 +683,7 @@ const DUST_FRAG = /* glsl */`
     //   light, and it is what keeps the plane legible past a few AU instead of
     //   collapsing the whole cloud into a cusp at the star.
     float xs = max(x, uFlatDraw / uRefDraw);
-    float col = pow(xs, -2.3) + 0.55 * pow(x, -0.9);
+    float col = pow(xs, -2.3) + 0.16 * pow(x, -0.9);
 
     // the IRAS dust bands: collisional debris from the asteroid families, a
     // real local enhancement at the belt's own radius
@@ -830,8 +844,24 @@ export class SystemScale {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.06;
     this.controls.rotateSpeed = 0.55;
+    // The dolly is taken off `OrbitControls` and implemented in `onWheel()`
+    // below, for the reason written out at length in `cosmic.js`: `main.js` and
+    // `touch.js` synthesise a pinch into `active().onWheel?.({ deltaY })`, a
+    // plain object, and `OrbitControls` binds a real DOM `wheel` listener to
+    // the canvas. The two never meet, so pinch-to-zoom did nothing at this
+    // scale on any build — invisible on desktop because the wheel event is real
+    // there, and the wheel is the only zoom a desktop test ever exercises.
+    this.controls.enableZoom = false;
     this.controls.minDistance = 2.2;
     this.controls.maxDistance = far * 4 + 200;
+    // exp(k · 100) = 0.95^−1.7, one notch is 9.25% — the same law and the same
+    // feel `cosmic.js` and `galaxy.js` use, so the gesture means one thing at
+    // every scale. The 2.9× on a coarse pointer is arithmetic, not taste:
+    // `touch.js` scales finger travel by 3.2, so a full-screen pinch arrives as
+    // |deltaY| ≈ 1,600, and a comfortable one-pinch traverse of this scale's
+    // useful range wants about 4,600.
+    this._zoomK = 8.845e-4
+      * (window.matchMedia && matchMedia('(pointer: coarse)').matches ? 2.9 : 1);
     this._prevTarget = new THREE.Vector3();
 
     // The threshold used to be 0, which means every lit pixel blooms — and
@@ -845,7 +875,16 @@ export class SystemScale {
     // glows is the star, and what the star glows *into* is a bounded 64-pixel
     // reach rather than the whole frame. §9.4 calls the halo around a light the
     // instrument's point spread function; this is the aperture setting.
-    this.bloomSettings = { strength: 0.9, radius: 0.8, threshold: 0.3 };
+    // Measured, twice. At threshold 0.3 / strength 0.45 the blurred copy still
+    // landed +0.1 linear across the whole disc, and the limb — which is where
+    // the temperature actually lives — printed at 4.4% saturation against the
+    // 17.6% the limb-darkening law predicts for it. A bloom whose reach (~64
+    // source pixels) is comparable to the disc it is blooming does not make a
+    // halo, it makes a fill.
+    //
+    // 0.55 is above the limb (0.48 linear) and below disc centre (1.04), so
+    // only the centre seeds the halo and the limb keeps its own colour.
+    this.bloomSettings = { strength: 0.3, radius: 0.8, threshold: 0.55 };
     if (this.params.pulsar) this.noteOverride = PULSAR_NOTE;
 
     // arriving from another star: come in hot on the old flight vector,
@@ -1099,7 +1138,12 @@ export class SystemScale {
     const P = this.params;
     const rSub = Math.max(0.0344 * Math.sqrt(Math.max(P.lum, 1e-4)), 0.004);
     const aMax = P.planets.length ? P.planets[P.planets.length - 1].a : 3;
-    const rOut = aMax * 2.4;
+    // 1.5 rather than 2.4 times the last orbit. The far sheet was still "lit"
+    // by the gate's 0.02 cut while carrying only three or four levels of
+    // spread between its channels — chromatic in ratio, achromatic in print —
+    // so it was spending two thirds of the frame to say nothing, and taking
+    // §2.8's true black with it.
+    const rOut = aMax * 1.5;
     const geo = dustDiscGeometry(drawR(rSub), drawR(rOut));
     const c = starChroma(P.temp);
     this.dust = new THREE.Mesh(geo, new THREE.ShaderMaterial({
@@ -1108,7 +1152,7 @@ export class SystemScale {
         uChroma: { value: new THREE.Vector3(c[0], c[1], c[2]) },
         uStar: this.uSunPos,
         uCamPos: this.uCamPos,
-        uGain: { value: 0.0065 },
+        uGain: { value: 0.0016 },
         uRefDraw: { value: AU_DRAW },
         uSubDraw: { value: drawR(rSub) },
         uFlatDraw: { value: drawR(rSub * 6) },
@@ -1457,6 +1501,31 @@ export class SystemScale {
     this.rel.dir.addScaledVector(right, -dx).addScaledVector(up, -dy).normalize();
   }
 
+  /**
+   * The dolly, geometric, about whatever the camera is looking at — so it works
+   * from a pinch as well as a wheel (see the note beside `enableZoom` above).
+   *
+   * Geometric because the range is: from 2.2 units, which is inside a planet's
+   * own orbit, out past the last world, and a linear step cannot serve both
+   * ends. Cruise mode owns the camera outright, so the gesture stands down
+   * there rather than fighting the flight vector.
+   */
+  onWheel(e) {
+    if (this.rel.on) return false;
+    const dy = Number(e?.deltaY) || 0;
+    if (!dy) return true;
+    // DOM_DELTA_LINE reports notches rather than pixels; one line is about 16
+    const k = this._zoomK * (e.deltaMode === 1 ? 16 : 1);
+    const t = this.controls.target;
+    const d = this.camera.position.clone().sub(t);
+    const len = Math.min(Math.max(d.length() * Math.exp(k * dy),
+      this.controls.minDistance), this.controls.maxDistance);
+    this.camera.position.copy(t).addScaledVector(d.normalize(), len);
+    // a glide in flight would fight the dolly and win, so the gesture cancels it
+    this._glideTo = null;
+    return true;
+  }
+
   pick(raycaster) {
     const meshes = this.planetNodes.map(n => n.mesh).concat(this.allMoons);
     const hits = raycaster.intersectObjects(meshes, false);
@@ -1663,7 +1732,7 @@ export class SystemScale {
     // not a blowout — but the *bloom* still reads area, so a star that fills the
     // frame gets less of it.
     const cover = Math.min(dR / 40, 1);
-    this.bloomSettings.strength = 0.9 - 0.45 * cover;
+    this.bloomSettings.strength = 0.3 - 0.15 * cover;
     if (this.app.active() === this) this.app.post.tune(this.bloomSettings);
 
     // -- supernova: one violent frame at the crossing

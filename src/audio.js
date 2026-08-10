@@ -67,7 +67,7 @@ import {
 // show up in a profile. A low-tier machine gets three pad voices in unison-of-
 // one and a 3.2 s tail; ultra gets five in pairs and 7 s.
 
-const AUDIO_TIER = [
+export const AUDIO_TIER = [
   { padSlots: 3, unison: 1, shimmer: 1, irVast: 3.2, irClose: 1.4, arp: true },
   { padSlots: 4, unison: 2, shimmer: 2, irVast: 4.0, irClose: 1.8, arp: true },
   { padSlots: 5, unison: 2, shimmer: 3, irVast: 6.0, irClose: 2.4, arp: true },
@@ -75,7 +75,7 @@ const AUDIO_TIER = [
 ];
 
 /** how long a scale change takes to complete, in seconds. A cross-fade, not a cut. */
-const XFADE = 3.2;
+export const XFADE = 3.2;
 /** how far ahead the scheduler writes events. Comfortably over the 1 s a background tab throttles to. */
 const LOOKAHEAD = 2.0;
 /** how often the scheduler wakes. Not on the render loop, and not a rAF. */
@@ -84,6 +84,93 @@ const TICK_MS = 250;
 const WAVE_STEPS = 5;
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+// ---------------------------------------------------------------------------
+// gain staging, as a table rather than as literals
+//
+// These were inline in `_applyScore` and there is one good reason to lift them
+// out: they are the only thing standing between the score and a clipped mix,
+// and inline they could not be added up by anything but a person. As a table,
+// `peakMix()` below can total them and a check can assert the sum, which turns
+// "does it clip?" from a listening test into arithmetic.
+//
+// Every number is a *peak* contribution — voice gain at its LFO's maximum —
+// against a `score.voices.*` value that is already ≤ ~1.3. The compressor after
+// the master is a safety net for the transients, not a mixer; if it is doing
+// real work on the sustained voices then this table is wrong.
+
+export const TRIM = {
+  pad: 0.10, padLfo: 0.022,     // the harmonic body
+  sub: 0.16,                    // gravity, under everything
+  shimmer: 0.9, shimmerOsc: 0.012,
+  air: 0.13,                    // wind / starlight wash
+  body: 0.16,                   // swell, roar, rumble
+  bloom: 0.05,                  // the golden-hour layer
+  arp: 0.05, bell: 0.028,       // transients, one at a time
+  wet: 0.9,                     // reverb send scale
+};
+
+/**
+ * The worst case the mix can reach on a given score, summing every sustained
+ * voice at its LFO peak plus one transient. Pure, so a check can sweep every
+ * scale and every world type and assert the total leaves headroom.
+ */
+export function peakMix(score) {
+  const v = score.voices;
+  return v.pad * (TRIM.pad + TRIM.padLfo)
+    + v.sub * TRIM.sub
+    + v.shimmer * TRIM.shimmer * TRIM.shimmerOsc * 3
+    + v.air * TRIM.air * (1 + score.air.gustDepth)
+    + v.body * TRIM.body * (1 + score.body.swellDepth)
+    + TRIM.bloom + TRIM.arp;
+}
+
+/**
+ * The impulse response's amplitude envelope at time `t` in a tail of `seconds`.
+ *
+ * `exp(−6.9078·t/T)` is −60 dB exactly at `T`, which is the definition of RT60,
+ * and the `(1 − t/T)` factor forces the last sample to be exactly zero. Without
+ * it the buffer ends on a non-zero value and the convolution's tail terminates
+ * in a step — a click on every impulse, which in a reverb means a click on
+ * everything.
+ */
+export function irEnvelope(t, seconds) {
+  if (!(seconds > 0) || t < 0 || t > seconds) return 0;
+  const build = t < 0.008 ? t / 0.008 : 1;   // a tail builds, it does not begin
+  return Math.exp(-6.9078 * t / seconds) * (1 - t / seconds) * build;
+}
+
+/** the one-pole coefficient at fraction `u` through the tail — air absorbs the top first */
+export function irDamp(u, damping) {
+  return Math.min(0.985, 0.12 + damping * 0.86 * clamp(u, 0, 1));
+}
+
+/** which of the two convolvers the score's tail length asks for, 0 = close, 1 = vast */
+export function reverbBlend(seconds, close, vast) {
+  return clamp((seconds - close) / Math.max(vast - close, 1e-3), 0, 1);
+}
+
+/** the per-voice level of an `n`-note chord, normalised so the pad's total is 1 */
+export function padTaper(i, n) {
+  if (i >= n) return 0;
+  let sum = 0;
+  for (let k = 0; k < n; k++) sum += Math.pow(0.86, k);
+  return Math.pow(0.86, i) / sum;
+}
+
+/**
+ * How far a cross-fade has travelled `t` seconds in.
+ *
+ * `setTargetAtTime` with a time constant of `XFADE/3` is a first-order approach
+ * that reaches 95% at `XFADE`. It is used for every ramp in this file precisely
+ * because it cannot overshoot — a cross-fade that overshot would momentarily
+ * push a voice above its target and put a bump in the middle of a transition
+ * whose entire job is to be unnoticeable (§2.5).
+ */
+export function xfadeAt(t, seconds = XFADE) {
+  return t <= 0 ? 0 : 1 - Math.exp(-3 * t / seconds);
+}
+
 
 export class Ambience {
   /**
@@ -242,7 +329,6 @@ export class Ambience {
     const sr = this.ctx.sampleRate;
     const len = Math.max(64, Math.round(sr * seconds));
     const buf = this.ctx.createBuffer(2, len, sr);
-    const decay = 6.9078 / seconds;             // −60 dB exactly at `seconds`
     const ER = [0.0071, 0.0113, 0.0177, 0.0229, 0.0311, 0.0431, 0.0577, 0.0713];
     for (let ch = 0; ch < 2; ch++) {
       const d = buf.getChannelData(ch);
@@ -250,11 +336,8 @@ export class Ambience {
       let lp = 0, energy = 0;
       for (let i = 0; i < len; i++) {
         const t = i / sr;
-        const u = i / len;
-        const build = t < 0.008 ? t / 0.008 : 1;   // a tail builds, it does not begin
-        const env = Math.exp(-decay * t) * (1 - u) * build;
-        const a = Math.min(0.985, 0.12 + damping * 0.86 * u);
-        lp += ((r.next() * 2 - 1) - lp) * (1 - a);
+        const env = irEnvelope(t, seconds);
+        lp += ((r.next() * 2 - 1) - lp) * (1 - irDamp(i / len, damping));
         d[i] = lp * env;
       }
       if (early) {
@@ -490,9 +573,9 @@ export class Ambience {
     }
 
     const v = s.voices;
-    this._to(this.padGain.gain, v.pad * 0.10);
-    this._to(this.subGain.gain, v.sub * 0.16);
-    this._to(this.shimmerGain.gain, v.shimmer * 0.9);
+    this._to(this.padGain.gain, v.pad * TRIM.pad);
+    this._to(this.subGain.gain, v.sub * TRIM.sub);
+    this._to(this.shimmerGain.gain, v.shimmer * TRIM.shimmer);
     this._to(this.toneLP.frequency, s.cutoffHz);
     this._to(this.toneLP.Q, 0.62 + 0.5 * s.brightness);
     this._to(this.subLP.frequency, clamp(s.tonicHz * 3.2, 90, 320));
@@ -502,10 +585,10 @@ export class Ambience {
     // objects rather than different code paths
     this._to(this.airBP.frequency, s.air.centerHz);
     this._to(this.airBP.Q, s.air.q);
-    this._to(this.airGain.gain, v.air * 0.13);
+    this._to(this.airGain.gain, v.air * TRIM.air);
     this._to(this.bodyLP.frequency, s.body.lowpassHz);
     this._to(this.bodyLP.Q, s.body.q);
-    this._to(this.bodyGain.gain, v.body * 0.16);
+    this._to(this.bodyGain.gain, v.body * TRIM.body);
 
     for (let i = 0; i < this.pad.osc.length; i++) {
       const sign = this.q.unison === 1 ? 0 : (i % 2 === 0 ? -1 : 1);
@@ -514,13 +597,13 @@ export class Ambience {
 
     const b = s.lfoBase, r = LFO_RATIOS;
     this._aim(this.lfo.cutoff, b * r[0], s.cutoffHz * 0.22 * s.motion);
-    this._aim(this.lfo.pad, b * r[1], v.pad * 0.022 * s.motion);
-    this._aim(this.lfo.gust, b * r[2] + s.air.gustRate * 0.5, v.air * s.air.gustDepth * 0.13);
+    this._aim(this.lfo.pad, b * r[1], v.pad * TRIM.padLfo * s.motion);
+    this._aim(this.lfo.gust, b * r[2] + s.air.gustRate * 0.5, v.air * s.air.gustDepth * TRIM.air);
     this._aim(this.lfo.sweep, b * r[3] + s.air.gustRate * 0.3, s.air.centerHz * 0.34 * s.motion);
-    this._aim(this.lfo.swell, s.body.swellRate, v.body * s.body.swellDepth * 0.16);
+    this._aim(this.lfo.swell, s.body.swellRate, v.body * s.body.swellDepth * TRIM.body);
     this._aim(this.lfo.detune, b * r[5], 4 + 5 * s.warm * s.motion);
     for (let i = 0; i < this.shimmer.length; i++) {
-      this._aim(this.lfo['sh' + i], b * r[(i + 2) % r.length] * 1.37, 0.012 * s.motion, 0.012);
+      this._aim(this.lfo['sh' + i], b * r[(i + 2) % r.length] * 1.37, TRIM.shimmerOsc * s.motion, TRIM.shimmerOsc);
     }
 
     this._applyReverb(s);
@@ -546,9 +629,9 @@ export class Ambience {
   _applyReverb(s) {
     if (!this._irReady) return;
     const q = this.q;
-    const t = clamp((s.reverb.seconds - q.irClose) / Math.max(q.irVast - q.irClose, 1e-3), 0, 1);
-    this._to(this.sendClose.gain, s.reverb.wet * (1 - t) * 0.9);
-    this._to(this.sendVast.gain, s.reverb.wet * t * 0.9);
+    const t = reverbBlend(s.reverb.seconds, q.irClose, q.irVast);
+    this._to(this.sendClose.gain, s.reverb.wet * (1 - t) * TRIM.wet);
+    this._to(this.sendVast.gain, s.reverb.wet * t * TRIM.wet);
   }
 
   // -------------------------------------------------------- the scheduler ---
@@ -581,13 +664,13 @@ export class Ambience {
     if (this.q.arp) {
       for (let guard = 0; this._arpAt < horizon && guard < 64; guard++) {
         const n = arpNote(s, this._arpK);
-        if (!n.rest && s.voices.arp > 0.01) this._pluck(this._arpAt, n.hz, n.vel * 0.05, 2.4, 5.5);
+        if (!n.rest && s.voices.arp > 0.01) this._pluck(this._arpAt, n.hz, n.vel * TRIM.arp, 2.4, 5.5);
         this._arpAt += Math.max(0.2, n.gap);
         this._arpK++;
       }
       for (let guard = 0; this._bellAt < horizon && guard < 32; guard++) {
         const n = bellNote(s, this._bellK);
-        if (!n.rest && s.voices.bell > 0.01) this._pluck(this._bellAt, n.hz, n.vel * 0.028, 5.5, 2.6);
+        if (!n.rest && s.voices.bell > 0.01) this._pluck(this._bellAt, n.hz, n.vel * TRIM.bell, 5.5, 2.6);
         this._bellAt += Math.max(1, n.gap);
         this._bellK++;
       }
@@ -614,17 +697,12 @@ export class Ambience {
     const tc = Math.max(0.08, (this._retuning ? XFADE : s.glide) / 3);
     this._retuning = false;
     const n = plan.hz.length;
-    // per-voice taper, normalised so the pad's level does not depend on how
-    // many notes the chord happens to have
-    let sum = 0;
-    for (let i = 0; i < n; i++) sum += Math.pow(0.86, i);
-
     for (let i = 0; i < this.pad.slots.length; i++) {
       const sl = this.pad.slots[i];
       const f = plan.hz[i];
       if (i < n && Number.isFinite(f) && f > 0) {
         for (const o of sl.osc) o.frequency.setTargetAtTime(f, when, tc);
-        sl.gain.gain.setTargetAtTime(Math.pow(0.86, i) / sum, when, tc);
+        sl.gain.gain.setTargetAtTime(padTaper(i, n), when, tc);
       } else {
         sl.gain.gain.setTargetAtTime(0, when, tc);
       }
@@ -742,7 +820,7 @@ export class Ambience {
     // for a value that has not meaningfully moved.
     if (Math.abs(target - this._swell) < 0.02) return;
     this._swell = target;
-    this.bloomGain.gain.setTargetAtTime(target * 0.05, this.ctx.currentTime, 0.7);
+    this.bloomGain.gain.setTargetAtTime(target * TRIM.bloom, this.ctx.currentTime, 0.7);
     // the light opens the filter as well as the chord — §9.7's golden hour, in
     // the one place the score gets to agree with the grade
     if (this.score) {

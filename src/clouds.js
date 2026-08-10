@@ -319,3 +319,524 @@ export class CloudsScale {
 }
 
 export const CLOUDS_NOTE = `There is nothing to stand on here and never will be: pressure just keeps rising until hydrogen forgets how to be a gas. So you fly. The decks are the planet's own palette breathing in world-space noise — steer into a cumulus tower and it swallows the view; wait long enough and lightning goes off below the deck, as it does on Jupiter, where single bolts carry a thousand times the energy of ours. The wind figure is honest for a fast rotator. The bottom of this world is thousands of kilometers of glowing metal.`;
+
+// ===========================================================================
+// SURFACE CUMULUS — the clouds you stand under, as opposed to the ones you
+// fly between (CloudsScale, above).
+// ===========================================================================
+//
+// What this replaces, and why "blobs" was the accurate description:
+//
+//   surface.js drew its weather as two `THREE.Points` layers of a radial
+//   `softDotTexture(64)`, 9 and 14 puffs, `opacity` 0.5 and 0.38, tinted a
+//   single flat grey that tracked the time of day. A radial gradient sprite has
+//   no top, no base, no silhouette and no light direction, so nine of them
+//   scattered across the sky is nine smudges on the lens. Measured off the
+//   shipped frame, the cloud region came back at saturation 0.127 and value
+//   0.825 — a flat pale wash, which is exactly what the geometry predicts.
+//
+// A cumulus has three things that sprite could not have, and all three are
+// what makes it read as cloud rather than as fog:
+//
+//   1. **Form.** A flat base at the condensation level and a cauliflower top,
+//      grown as a real cumulus grows — a broad base disc, then towers of
+//      decreasing radius, then shoulders budding off the towers. That is the
+//      reference's construction and it is right; it is transcribed here.
+//   2. **A lit top and a shadowed base.** Not a lambert term — a *height
+//      fraction* carried per puff, so a stack of towers separates into readable
+//      storeys instead of averaging into one grey mass. A cumulus is lit as
+//      much by the sky dome above it as by the sun on its shoulder, and the
+//      height fraction is what encodes that.
+//   3. **A silver lining.** The rim of a backlit cumulus blazes, and the
+//      shaded side carries a thin cool line. The reference annotates the second
+//      as the thing that "actually reads as drawn rather than rendered", and
+//      that is worth believing.
+//
+// ---------------------------------------------------------------------------
+// Everything moves on one wind (§6 M3)
+//
+// M3's thesis is that one global field is sampled by everything, cloud
+// advection named explicitly. The deck therefore takes its drift from
+// `surface.js`'s `cloudWind()`, which is `meanFlow()` veered by CLOUD_VEER and
+// sped up by CLOUD_SPEEDUP — the Ekman spiral, not a random scalar. The same
+// vector shears the cirrus in `starfield.js`, so the high deck and the low deck
+// cannot disagree about which way the weather is going.
+//
+// ---------------------------------------------------------------------------
+// Zero assets (§2.1)
+//
+// The puff atlas is four profiles of gradient noise computed on the CPU at
+// init from `hash(seed, ...)`. It is 256 x 256 x RGBA = 256 KB of generated
+// texture and nothing on the wire.
+
+import { airColoursQuantised } from './starlight.js';
+
+// ---------------------------------------------------------------------------
+// the atlas
+
+/** the fract/dot hash family used elsewhere in this repo, on the CPU */
+function chash2(x, y) {
+  let p0 = (x * 0.1031) % 1, p1 = (y * 0.1030) % 1, p2 = (x * 0.0973) % 1;
+  if (p0 < 0) p0 += 1; if (p1 < 0) p1 += 1; if (p2 < 0) p2 += 1;
+  const d = p0 * (p1 + 33.33) + p1 * (p2 + 33.33) + p2 * (p0 + 33.33);
+  p0 += d; p1 += d; p2 += d;
+  const a = ((p0 + p1) * p2) % 1;
+  return a < 0 ? a + 1 : a;
+}
+
+function cnoise2(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const a = chash2(ix, iy), b = chash2(ix + 1, iy);
+  const c = chash2(ix, iy + 1), d = chash2(ix + 1, iy + 1);
+  return (a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy) * 2 - 1;
+}
+
+function cfbm2(x, y, oct) {
+  let v = 0, amp = 0.5, px = x, py = y;
+  for (let i = 0; i < oct; i++) { v += amp * cnoise2(px, py); px = px * 2.07 + 11.3; py = py * 2.07 + 11.3; amp *= 0.5; }
+  return v;
+}
+
+/**
+ * Four puff profiles in one texture, 2 x 2 tiles.
+ *
+ *   R  scalloped alpha profile — the silhouette
+ *   G  interior density        — which storey of the ramp a texel lands on
+ *   B  rim mask                — where the silver lining and the cool line go
+ *   A  a softer shoulder, for anything that wants smoke rather than cumulus
+ *
+ * Per-puff variety then comes from picking a tile and spinning the billboard by
+ * the golden angle, which is visually identical to evaluating the noise live
+ * and costs one fetch instead of eight octaves.
+ */
+export function puffAtlas(seed = 0, side = 256) {
+  const data = new Uint8Array(side * side * 4);
+  const half = side / 2;
+  for (let ty = 0; ty < 2; ty++) {
+    for (let tx = 0; tx < 2; tx++) {
+      const s = (tx + ty * 2) * 37.13 + 5 + (seed % 977) * 0.0137;
+      for (let j = 0; j < half; j++) {
+        for (let i = 0; i < half; i++) {
+          const cx = (i + 0.5) / half * 2 - 1, cy = (j + 0.5) / half * 2 - 1;
+          const r = Math.hypot(cx, cy);
+          const ang = Math.atan2(cy, cx);
+          // the lobes are sampled on the unit circle, so the profile closes on
+          // itself exactly — a scallop that did not would show as a seam
+          const rx = Math.cos(ang), ry = Math.sin(ang);
+          const lob = cfbm2(rx * 2.35 + s * 13.7, ry * 2.35 + s * 13.7, 3)
+            + cfbm2(rx * 5.1 + s * 29.1, ry * 5.1 + s * 29.1, 2) * 0.45;
+          const R = 0.80 + lob * 0.20;
+          const a = smooth01(R, R - 0.34, r);
+          const den = cfbm2(cx * 2.6 + s * 31.3, cy * 2.6 + s * 31.3, 3) * 0.5 + 0.5;
+          const edge = smooth01(R - 0.36, R - 0.02, r);
+          const aSoft = smooth01(R, R - 0.42, r);
+          const o = ((ty * half + j) * side + (tx * half + i)) * 4;
+          data[o] = clamp255(a); data[o + 1] = clamp255(den);
+          data[o + 2] = clamp255(edge); data[o + 3] = clamp255(aSoft);
+        }
+      }
+    }
+  }
+  return { data, side };
+}
+
+const clamp255 = (v) => Math.max(0, Math.min(255, Math.round(v * 255)));
+function smooth01(e0, e1, x) {
+  const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0 || 1e-6)));
+  return t * t * (3 - 2 * t);
+}
+
+// ---------------------------------------------------------------------------
+// the coverage field
+//
+// One field decides two things: whether a puff is drawn at all, and — when
+// surface.js grows a shadow pass — where its shadow falls. The reference makes
+// that identity explicit and it is the right invariant: a shadow must always
+// belong to a cloud you can point at.
+
+export const CLOUD_FIELD_GLSL = /* glsl */`
+uniform vec2 uCloudDrift;    // metres, from the shared wind field
+uniform float uCloudAmount;  // 0 clear .. 1 overcast
+
+vec2 cfHash2(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.xx + p3.yz) * p3.zy) * 2.0 - 1.0;
+}
+float cfNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return 1.4 * mix(
+    mix(dot(cfHash2(i), f), dot(cfHash2(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0)), u.x),
+    mix(dot(cfHash2(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0)),
+        dot(cfHash2(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0)), u.x), u.y);
+}
+float cfFbm(vec2 p, int oct) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) {
+    if (i >= oct) break;
+    v += a * cfNoise(p); p = p * 2.07 + 11.3; a *= 0.5;
+  }
+  return v;
+}
+// Evaluated per *vertex*, four times per puff — not per fragment. That is the
+// whole reason it can afford a domain warp.
+float cloudField(vec2 q) {
+  vec2 p = (q - uCloudDrift) * 0.00071;
+  vec2 w = vec2(cfFbm(p * 1.55 + vec2(11.3, 4.7), 3), cfFbm(p * 1.55 + vec2(37.1, 19.2), 3));
+  float f = cfFbm(p + w * 0.62, 4);
+  float g = cfFbm(p * 3.7 + w * 1.1, 3);
+  f = f * 0.78 + g * 0.22;
+  return clamp(smoothstep(-0.035, 0.30, f) * uCloudAmount, 0.0, 1.0);
+}
+`;
+
+const CUMULUS_VERT = /* glsl */`
+precision highp float;
+${CLOUD_FIELD_GLSL}
+attribute vec2 corner;
+attribute vec3 pdata;    // radius, per-puff seed, height fraction
+attribute vec2 fcen;     // the formation's centre, for the coverage lookup
+varying vec2 vC;
+varying float vSeed;
+varying float vHF;
+varying vec3 vW;
+varying float vOp;
+varying vec3 vRight;
+varying vec3 vUp;
+varying vec3 vFwd;
+
+void main() {
+  vec3 wc = position + vec3(uCloudDrift.x, 0.0, uCloudDrift.y);
+  vec2 fw = fcen + uCloudDrift;
+  // the same field that will draw the shadow decides whether this puff exists
+  float cf = cloudField(fw);
+  float op = smoothstep(0.16, 0.52, cf);
+  vOp = op;
+  // A degenerate triangle off-screen, not a discard: a puff that is not in a
+  // cloud costs no fragment at all this way.
+  if (op < 0.012) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+
+  vRight = normalize(vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]));
+  vUp    = normalize(vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]));
+  vFwd   = normalize(vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]));
+
+  float rad = pdata.x * mix(0.80, 1.06, op);
+  float ra = pdata.y * 2.399963;             // golden angle: no two puffs align
+  float cr = cos(ra), sr = sin(ra);
+  vec2 rc = vec2(corner.x * cr - corner.y * sr, corner.x * sr + corner.y * cr);
+  // 0.86 on the vertical: a cumulus puff is wider than it is tall
+  vec3 wp = wc + vRight * (rc.x * rad) + vUp * (rc.y * rad * 0.86);
+  vC = rc; vSeed = pdata.y; vHF = pdata.z; vW = wp;
+  gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+}
+`;
+
+const CUMULUS_FRAG = (aerialGLSL) => /* glsl */`
+precision highp float;
+uniform sampler2D uPuff;
+uniform vec3 uSunDir;
+uniform vec3 uCamPos;
+uniform vec3 uCTop, uCBody, uCTerm, uCUnder, uCCore, uCRim;
+uniform vec3 uCSun, uCShadow;
+uniform float uCloudLum;      // the day/night clock, shared with the sky
+varying vec2 vC;
+varying float vSeed;
+varying float vHF;
+varying vec3 vW;
+varying float vOp;
+varying vec3 vRight;
+varying vec3 vUp;
+varying vec3 vFwd;
+${aerialGLSL}
+
+// §9.2's three-colour hue path, verbatim from src/paint.js. Bands that are
+// soft but *visible* are the single largest contributor to the illustrated
+// look, and §11's last trap is a warning not to smooth them out.
+vec3 cloudRamp3(float t, vec3 shade, vec3 mid, vec3 lit, float soft, float jit) {
+  float a = smoothstep(0.17 - soft + jit, 0.17 + soft + jit, t);
+  float b = smoothstep(0.58 - soft + jit, 0.58 + soft + jit, t);
+  return mix(mix(shade, mid, a), lit, b);
+}
+
+void main() {
+  float r = length(vC);
+  if (!(r <= 1.02)) discard;
+  vec2 tile = vec2(mod(floor(vSeed * 4.0), 2.0), mod(floor(vSeed * 2.0), 2.0));
+  vec4 pf = texture2D(uPuff, (clamp(vC, -1.0, 1.0) * 0.5 + 0.5) * 0.5 + tile * 0.5);
+  // An analytic falloff over the baked profile. It softens the silhouette, and
+  // it makes a hard-edged opaque quad structurally impossible even if the
+  // atlas failed to upload.
+  float a = pf.r * smoothstep(1.02, 0.60, r);
+  if (!(a > 0.004)) discard;
+  float den = pf.g;
+  a *= mix(0.62, 1.0, den);
+  a *= vOp;
+
+  // A fake volumetric normal off the billboard disc, biased upward: cumulus
+  // tops face the sky and bellies face the ground, and a flat card cannot say
+  // so on its own.
+  float zz = sqrt(max(0.0, 1.0 - min(r, 1.0) * min(r, 1.0)));
+  vec3 N = normalize(vRight * vC.x + vUp * vC.y + vFwd * zz * 0.85 + vec3(0.0, 0.62, 0.0));
+  vec3 V = normalize(uCamPos - vW);
+
+  float ndl = dot(N, uSunDir);
+  float t = clamp(ndl * 0.5 + 0.5, 0.0, 1.0);
+  // The height fraction as its own term rather than a nudge to the lambert.
+  // This is what separates a stack of towers into readable storeys instead of
+  // one grey mass — a cumulus is lit as much by the dome above it as by the
+  // sun on its shoulder.
+  t = mix(t, clamp(t + vHF * 0.36 - 0.10, 0.0, 1.0), 0.78);
+  t *= mix(0.68, 1.10, den);
+  float term = smoothstep(0.30, 0.54, t);      // the terminator, as a line
+
+  vec3 col = cloudRamp3(t, uCUnder, uCTerm, uCTop, 0.085, (den - 0.5) * 0.06);
+  // The belly goes violet fast and does not pass through grey to get there —
+  // §9.2's ruling that shadows change hue rather than going black, applied to
+  // the one surface in the frame that is nothing but shadow and light.
+  col = mix(mix(uCCore, uCUnder, 0.30), col, smoothstep(0.0, 0.28, t));
+  col = mix(col, uCBody, 0.13);
+  // the sunlit flank takes the colour of the light that is on it
+  col *= mix(vec3(1.0), uCSun * 1.28, term * 0.44);
+
+  // Silver lining. The rim of a backlit cumulus blazes, and sharpening the
+  // gradient into a line is the same texture fetch doing more drawing.
+  float back = clamp(dot(V, -uSunDir), 0.0, 1.0);
+  float edge = pf.b;
+  float sunEdge = clamp(dot(normalize(vRight * vC.x + vUp * vC.y + vec3(1e-5)), uSunDir) * 0.5 + 0.5, 0.0, 1.0);
+  float rimLine = smoothstep(0.30, 0.84, edge);
+  float silver = rimLine * pow(sunEdge, 1.9) * (0.34 + 1.7 * pow(back, 1.3));
+  col = mix(col, uCRim * 1.45, clamp(silver, 0.0, 0.94));
+  // ...and a thin cool line down the shaded side
+  col = mix(col, mix(uCCore, uCShadow, 0.42), rimLine * (1.0 - sunEdge) * (1.0 - term) * 0.36);
+  // whole-cloud glow when the sun is directly behind
+  col += uCSun * pow(back, 6.0) * 0.62 * (1.0 - edge * 0.4);
+
+  col *= uCloudLum;
+
+  float dist = length(uCamPos - vW);
+  // 0.55x the true distance. A deck at 1.2 km would otherwise be handed
+  // straight to §9.3's curve and come back as haze — but a cumulus is *above*
+  // most of the boundary layer the extinction length was measured in, so the
+  // air between the eye and it is thinner than the same distance along the
+  // ground. The factor is the reference's and it is a statement about where
+  // the aerosol is, not a fudge to keep the clouds visible.
+  vec4 fogged = aerial(col, dist * 0.55, V, uSunDir, vW.y);
+  gl_FragColor = vec4(fogged.rgb, clamp(a, 0.0, 1.0) * clamp(fogged.a * 0.55 + 0.45, 0.0, 1.0));
+}
+`;
+
+// ---------------------------------------------------------------------------
+// growing a cumulus
+//
+// A cumulus congestus is not a blob and it is not a sphere. It has a flat base
+// at the lifting condensation level — every cloud in a field shares that base,
+// which is why a real sky looks ruled — and above it a few towers of
+// decreasing radius with cauliflower budding off their shoulders. Grown in
+// that order, the silhouette comes out right without anyone drawing it.
+
+/** how many formations across, by tier — the deck spans grid x spacing metres */
+const CUMULUS_GRID = { low: 5, mobile: 7, desktop: 9, ultra: 11 };
+
+/**
+ * Puff centres for a whole sky's worth of cumulus.
+ *
+ * `rand` is a deterministic 0..1 source (§2.3: `RNG` from `rng.js`, never
+ * `Math.random`). `base` is the condensation level in metres.
+ */
+export function growCumulus(rand, { grid = 9, spacing = 3050, base = 900, scale = 1 } = {}) {
+  const puffs = [];
+  let fi = 0;
+  for (let gz = 0; gz < grid; gz++) {
+    for (let gx = 0; gx < grid; gx++) {
+      const fx = (gx - (grid - 1) / 2) * spacing + (rand() - 0.5) * spacing * 0.75;
+      const fz = (gz - (grid - 1) / 2) * spacing + (rand() - 0.5) * spacing * 0.75;
+      // the base wanders a little between formations but not much: they all
+      // condensed out of the same air at the same dew point
+      const cbase = base * (0.86 + rand() * 0.36);
+      const sc = (0.72 + rand() * 0.85) * scale;
+      const nTow = 2 + ((rand() * 3) | 0);
+      const baseR = (300 + rand() * 230) * sc;
+      let maxY = 0;
+      const local = [];
+      // the broad flat base
+      const nb = 7 + ((rand() * 7) | 0);
+      for (let i = 0; i < nb; i++) {
+        const a = rand() * Math.PI * 2, rr = Math.sqrt(rand()) * baseR;
+        const py = rand() * 0.10 * baseR;
+        local.push({
+          x: Math.cos(a) * rr, y: py, z: Math.sin(a) * rr * 0.72,
+          rad: (0.44 + rand() * 0.32) * baseR, seed: rand() * 100,
+        });
+        maxY = Math.max(maxY, py);
+      }
+      // the towers
+      for (let t = 0; t < nTow; t++) {
+        const a = rand() * Math.PI * 2, rr = Math.sqrt(rand()) * baseR * 0.55;
+        const tx = Math.cos(a) * rr, tz = Math.sin(a) * rr * 0.7;
+        const hTop = (0.85 + rand() * 1.15) * baseR;
+        const steps = 4 + ((rand() * 4) | 0);
+        for (let s = 0; s < steps; s++) {
+          const u = s / (steps - 1);
+          const py = u * hTop;
+          const rad = (0.52 - 0.22 * u * u + rand() * 0.13) * baseR * (1 - 0.25 * u);
+          const jx = (rand() - 0.5) * baseR * 0.30 * (0.4 + u);
+          const jz = (rand() - 0.5) * baseR * 0.30 * (0.4 + u);
+          local.push({ x: tx + jx, y: py, z: tz + jz, rad, seed: rand() * 100 });
+          maxY = Math.max(maxY, py);
+          // cauliflower on the shoulders — the thing that makes a tower read
+          // as boiling rather than as a cylinder
+          if (s > 0 && rand() < 0.7) {
+            const aa = rand() * Math.PI * 2, dd = rad * (0.55 + rand() * 0.5);
+            local.push({
+              x: tx + jx + Math.cos(aa) * dd, y: py + (rand() - 0.3) * rad * 0.5,
+              z: tz + jz + Math.sin(aa) * dd, rad: rad * (0.42 + rand() * 0.30),
+              seed: rand() * 100,
+            });
+          }
+        }
+      }
+      for (const p of local) {
+        puffs.push({
+          cx: fx + p.x, cy: cbase + p.y, cz: fz + p.z, rad: p.rad, seed: p.seed,
+          // the height fraction, which is what separates a stack of towers into
+          // storeys in the fragment shader
+          hf: maxY > 1 ? Math.min(Math.max(p.y / maxY, 0), 1) : 0.5,
+          fx, fz,
+        });
+      }
+      fi++;
+    }
+  }
+  return puffs;
+}
+
+/**
+ * The deck. Returns `{ mesh, uniforms, update }`.
+ *
+ * `sunDir` and `camPos` must be the **same uniform objects** the rest of the
+ * scale holds — the sky, the terrain and the clouds have to agree about where
+ * the star is to within a frame, and sharing the object is the only way that
+ * cannot drift.
+ *
+ * `aerialGLSL` is `AERIAL_GLSL` from `src/aerial.js` when §9.3 is on, and ''
+ * when it is not; passing it in rather than importing it keeps this module from
+ * deciding whether the flag is set. When it is '', a no-op `aerial()` is
+ * supplied so the shader still compiles.
+ */
+export function makeCumulus({
+  sunDir, camPos, seed = 0, rand, tier = 'desktop',
+  T = 5778, base = 900, spacing = 3050, amount = 0.55, scale = 1,
+  aerialGLSL = '', aerialUniforms = {},
+} = {}) {
+  const grid = CUMULUS_GRID[tier] || CUMULUS_GRID.desktop;
+  const puffs = growCumulus(rand, { grid, spacing, base, scale });
+  const n = puffs.length;
+
+  const pos = new Float32Array(n * 4 * 3);
+  const cor = new Float32Array(n * 4 * 2);
+  const dat = new Float32Array(n * 4 * 3);
+  const fcen = new Float32Array(n * 4 * 2);
+  const idx = new Uint32Array(n * 6);
+  for (let i = 0; i < n; i++) {
+    const p = puffs[i];
+    for (let v = 0; v < 4; v++) {
+      const k = i * 4 + v;
+      pos[k * 3] = p.cx; pos[k * 3 + 1] = p.cy; pos[k * 3 + 2] = p.cz;
+      cor[k * 2] = (v === 1 || v === 3) ? 1 : -1;
+      cor[k * 2 + 1] = (v >= 2) ? 1 : -1;
+      dat[k * 3] = p.rad; dat[k * 3 + 1] = p.seed; dat[k * 3 + 2] = p.hf;
+      fcen[k * 2] = p.fx; fcen[k * 2 + 1] = p.fz;
+    }
+    const b = i * 4;
+    idx.set([b, b + 1, b + 2, b + 2, b + 1, b + 3], i * 6);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('corner', new THREE.BufferAttribute(cor, 2));
+  geo.setAttribute('pdata', new THREE.BufferAttribute(dat, 3));
+  geo.setAttribute('fcen', new THREE.BufferAttribute(fcen, 2));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  // The deck is bigger than any frustum test worth doing, and the vertex
+  // shader already culls per puff by pushing empties off-screen.
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, base, 0), grid * spacing);
+
+  const atlas = puffAtlas(seed);
+  const tex = new THREE.DataTexture(atlas.data, atlas.side, atlas.side, THREE.RGBAFormat);
+  tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+
+  const v3 = () => ({ value: new THREE.Vector3() });
+  const u = {
+    uPuff: { value: tex },
+    uSunDir: sunDir || { value: new THREE.Vector3(0, 1, 0) },
+    uCamPos: camPos || { value: new THREE.Vector3() },
+    uCloudDrift: { value: new THREE.Vector2(0, 0) },
+    uCloudAmount: { value: amount },
+    uCloudLum: { value: 1 },
+    uCTop: v3(), uCBody: v3(), uCTerm: v3(),
+    uCUnder: v3(), uCCore: v3(), uCRim: v3(),
+    uCSun: v3(), uCShadow: v3(),
+    ...aerialUniforms,
+  };
+
+  // A cloud shader with §9.3 switched off still has to compile, and a stub
+  // that returns full clarity is exactly what "no aerial perspective" means.
+  const air = aerialGLSL || /* glsl */`
+    vec4 aerial(vec3 c, float d, vec3 V, vec3 s, float y) { return vec4(c, 1.0); }
+  `;
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms: u,
+    vertexShader: CUMULUS_VERT,
+    fragmentShader: CUMULUS_FRAG(air),
+    transparent: true,
+    depthWrite: false,
+    // Standard over-composite on colour, and **coverage** on alpha. Alpha is
+    // §9.3's clarity channel, not a second copy of opacity: `src.a + dst.a *
+    // (1 - src.a)` makes a cloud core read as clear (sharp) and a wispy edge
+    // inherit the sky's own 0 (fully softened by §9.4 step 5), which is what a
+    // cumulus edge actually does. Three's default would square the source
+    // alpha here and darken the channel for no reason.
+    blending: THREE.CustomBlending,
+    blendSrc: THREE.SrcAlphaFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendSrcAlpha: THREE.OneFactor,
+    blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+  });
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 2;
+
+  /**
+   * Per frame. `drift` is the **shared wind field's** cloud-deck vector times
+   * elapsed time — §6 M3's "one global wind field sampled by everything, cloud
+   * advection named explicitly". `elevDeg` drives the same day/night clock the
+   * sky runs on, so the two can never disagree about the hour.
+   */
+  function update(elevDeg, drift) {
+    const a = airColoursQuantised(T, Math.max(elevDeg, 0.5));
+    u.uCTop.value.set(...a.cloudTop);
+    u.uCBody.value.set(...a.cloudBody);
+    u.uCTerm.value.set(...a.cloudTerm);
+    u.uCUnder.value.set(...a.cloudUnder);
+    u.uCCore.value.set(...a.cloudCore);
+    u.uCRim.value.set(...a.cloudRim);
+    u.uCSun.value.set(...a.sunLight);
+    u.uCShadow.value.set(...a.shadowTint);
+    const y = Math.sin((elevDeg * Math.PI) / 180);
+    // A cumulus deck is a kilometre up, so it keeps the sun after the valley
+    // has lost it and loses it before the valley is fully dark. The offset is
+    // what makes the last lit cloud the last lit thing in the frame.
+    u.uCloudLum.value = 0.045 + 0.955 * Math.min(Math.max((y + 0.16) / 0.30, 0), 1);
+    if (drift) u.uCloudDrift.value.set(drift.x, drift.y);
+  }
+  update(13.5);
+
+  return { mesh, uniforms: u, update, puffs: n };
+}

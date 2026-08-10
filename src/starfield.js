@@ -528,3 +528,121 @@ export function skyGLSL(tier = 'desktop', withSun = true) {
   const [w, d] = CIRRUS_OCTAVES[tier] || CIRRUS_OCTAVES.desktop;
   return (withSun ? SKY_SUN_GLSL : '') + SKY_UNIFORM_GLSL + skyBody(w, d);
 }
+
+/**
+ * The dome itself, plus the uniform block and the per-frame sync.
+ *
+ * `sunDir` must be the **same uniform object** the rest of the scale holds, not
+ * a copy — the sky, the terrain, the grass and the flare all have to agree
+ * about where the star is to within a frame, and sharing the object is the only
+ * way that cannot drift.
+ *
+ * `sunAng` is the **painted** angular radius, in radians: the caller has
+ * already multiplied the true `atan(rStar / a)` by §9.6's 3. Keeping the
+ * physics and the paint in the caller means this file never has to know which
+ * of the two it was handed.
+ */
+export function makeSurfaceSky({
+  sunDir, T = 5778, atmo = 1, sunAng = 0.012, cirrus = 0.45,
+  tier = 'desktop', radius = 20000,
+} = {}) {
+  const v3 = (c) => new THREE.Vector3(c[0], c[1], c[2]);
+  const u = {
+    uSunDir: sunDir || { value: new THREE.Vector3(0, 1, 0) },
+    uSkyZen: { value: new THREE.Vector3() },
+    uSkyUp: { value: new THREE.Vector3() },
+    uSkyMid: { value: new THREE.Vector3() },
+    uSkyHor: { value: new THREE.Vector3() },
+    uSkyAnti: { value: new THREE.Vector3() },
+    uSkyHorSun: { value: new THREE.Vector3() },
+    uSunGlow: { value: new THREE.Vector3() },
+    uSunDiscCol: { value: new THREE.Vector3() },
+    uSkyHaze: { value: new THREE.Vector3() },
+    uSkyMist: { value: new THREE.Vector3() },
+    uCirrusCol: { value: new THREE.Vector3() },
+    uSunAng: { value: Math.max(sunAng, 0.006) },
+    uSkyAir: { value: atmo },
+    uSkyLum: { value: 1 },
+    uCirrusAmt: { value: cirrus },
+    uCirrusDir: { value: new THREE.Vector2(1, 0) },
+    uCirrusDrift: { value: new THREE.Vector2(0, 0) },
+  };
+
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 48, 24),
+    new THREE.ShaderMaterial({
+      uniforms: u,
+      vertexShader: /* glsl */`
+        varying vec3 vDir;
+        void main() {
+          vDir = position;
+          gl_Position = (projectionMatrix * mat4(mat3(viewMatrix)) * vec4(position, 1.0)).xyww;
+        }
+      `,
+      fragmentShader: /* glsl */`
+        precision highp float;
+        ${skyGLSL(tier, false)}
+        varying vec3 vDir;
+        void main() {
+          float sm;
+          vec3 col = skyDome(normalize(vDir), sm);
+          // Alpha is clarity (src/aerial.js). The sky is at infinity, so it is
+          // the least clear thing in the frame and §9.4 step 5 gives it the
+          // full watercolour wash — which is what a painted sky wants.
+          gl_FragColor = vec4(col, 0.0);
+        }
+      `,
+      side: THREE.BackSide,
+      depthWrite: false,
+      depthTest: false,
+    }));
+  mesh.frustumCulled = false;
+  mesh.renderOrder = -1000;
+
+  /**
+   * Per frame. `elevDeg` is the star's elevation; everything else follows.
+   *
+   * The stops come from the **quantised** transfer, not the exact one: a
+   * spectral integral over fourteen — now twenty-one — stops costs 1.7 ms, and
+   * §5 makes 12 ms the whole CPU frame. The bucket is in airmass rather than
+   * elevation, for the reason `starlight.js` gives, and its worst step is
+   * below the display's own quantisation.
+   */
+  function update(elevDeg, { cirrusDrift, cirrusDir } = {}) {
+    // An airless world's star is not reddened by air it does not have, so the
+    // beam stops are evaluated at the zenith rather than at the true elevation.
+    // Without this a moon at sunset would have an orange sun, which is a lie
+    // the transfer would tell perfectly happily.
+    const air = clamp01(atmo);
+    const a = airColoursQuantised(T, Math.max(air > 0.15 ? elevDeg : 90, 0.5));
+    u.uSkyZen.value.set(...a.skyZenith);
+    u.uSkyUp.value.set(...a.skyUpper);
+    u.uSkyMid.value.set(...a.skyMid);
+    u.uSkyHor.value.set(...a.skyHorizon);
+    u.uSkyAnti.value.set(...a.skyAnti);
+    u.uSkyHorSun.value.set(...a.skyHorizonSun);
+    u.uSunGlow.value.set(...a.sunGlow);
+    u.uSunDiscCol.value.set(...a.sunDisc);
+    u.uSkyHaze.value.set(...a.haze);
+    u.uSkyMist.value.set(...a.mist);
+    u.uCirrusCol.value.set(...a.cirrus);
+
+    // The night floor. Civil twilight is about −6°, and below it the air is
+    // still lit by light it no longer receives directly — 0.055 rather than
+    // zero, which is `_syncAerial`'s own floor and §2.8's ruling that inside an
+    // atmosphere nothing reaches pure black.
+    const y = Math.sin((elevDeg * Math.PI) / 180);
+    u.uSkyLum.value = 0.055 + 0.945 * clamp01((y + 0.10) / 0.28);
+
+    if (cirrusDrift) u.uCirrusDrift.value.set(cirrusDrift.x, cirrusDrift.y);
+    if (cirrusDir) {
+      const L = Math.hypot(cirrusDir.x, cirrusDir.y) || 1;
+      u.uCirrusDir.value.set(cirrusDir.x / L, cirrusDir.y / L);
+    }
+  }
+  update(13.5);
+
+  return { mesh, uniforms: u, update };
+}
+
+const clamp01 = (x) => Math.min(Math.max(x, 0), 1);

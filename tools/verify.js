@@ -1229,9 +1229,28 @@ function suiteAerial() {
     // whole string and failed on the comment that *explains* the rule, which
     // is a test of the prose rather than of the code.
     const code = AERIAL_GLSL.replace(/\/\/[^\n]*/g, '');
+    // Assert the *property*, not one spelling of it.
+    //
+    // This used to read `code.includes('1.0 - smoothstep(8.0, 46.0, worldY)')`,
+    // an exact-literal match. It failed the moment the valley-mist term grew
+    // the `- uAirMistBase` it needed, which is a legitimate and necessary
+    // change — §9.3's 46 → 8 band is a height above the *valley floor*, and
+    // the reference can write it as an absolute only because its world has one
+    // floor at y ≈ 0. A test that breaks when correct code changes shape is
+    // testing the transcription, not the rule.
+    //
+    // The rule is: GLSL leaves `smoothstep(e0, e1, x)` undefined when e0 ≥ e1,
+    // so a descending band must be written as `1.0 - smoothstep(lo, hi, x)`.
+    // So: no descending numeric smoothstep anywhere, and the mist pool still
+    // built from the inverted ascending form.
+    const descending = [...code.matchAll(/smoothstep\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,/g)]
+      .filter((m) => parseFloat(m[1]) >= parseFloat(m[2]));
     ok('the GLSL never writes a descending smoothstep, which GLSL leaves undefined',
-      !/smoothstep\(\s*46\.0\s*,\s*8\.0/.test(code)
-      && code.includes('1.0 - smoothstep(8.0, 46.0, worldY)'));
+      descending.length === 0
+      && /1\.0\s*-\s*smoothstep\(\s*8\.0\s*,\s*46\.0\s*,\s*worldY/.test(code),
+      descending.length
+        ? `descending: ${descending.map((m) => m[0]).join(', ')}`
+        : 'mist band written as 1 - smoothstep(8, 46, ·), ascending edges throughout');
     ok('and it returns the fog fraction rather than hiding it in a global',
       /vec4 aerial\(/.test(code) && !/gFogAmt/.test(code));
 
