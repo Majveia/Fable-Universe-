@@ -1,0 +1,83 @@
+{
+  "schema": "aeon-capture/1",
+  "milestone": "RECK-default",
+  "seed": 20250601,
+  "extra": null,
+  "when": "2026-08-05T18:03:46.781Z",
+  "tiers": {
+    "desktop": {
+      "label": "desktop ref @1440p",
+      "viewport": {
+        "width": 2560,
+        "height": 1440
+      },
+      "deviceScaleFactor": 1,
+      "route": {
+        "galaxySeed": 443188473,
+        "starSeed": 2309765500,
+        "rocky": 0,
+        "giant": -1
+      },
+      "shots": [
+        {
+          "file": "01-desktop-cosmic-web.png",
+          "name": "cosmic-web",
+          "kind": "cosmic",
+          "url": "/index.html?seed=20250601",
+          "settleFrames": 220,
+          "settleTarget": 220,
+          "settledBy": "frames"
+        },
+        {
+          "file": "02-desktop-galaxy.png",
+          "name": "galaxy",
+          "kind": "galaxy",
+          "url": "/index.html?seed=20250601&g=443188473",
+          "settleFrames": 220,
+          "settleTarget": 220,
+          "settledBy": "frames"
+        },
+        {
+          "file": "03-desktop-star-system.png",
+          "name": "star-system",
+          "kind": "system",
+          "url": "/index.html?seed=20250601&g=443188473&s=2309765500",
+          "settleFrames": 220,
+          "settleTarget": 220,
+          "settledBy": "frames"
+        },
+        {
+          "file": "04-desktop-planet-orbit.png",
+          "name": "planet-orbit",
+          "kind": "planet",
+          "url": "/index.html?seed=20250601&g=443188473&s=2309765500&pl=0&quad=1&ap=0",
+          "settleFrames": 220,
+          "settleTarget": 220,
+          "settledBy": "frames"
+        },
+        {
+          "file": "05-desktop-surface.png",
+          "name": "surface",
+          "kind": "surface",
+          "url": "/index.html?seed=20250601&g=443188473&s=2309765500&p=0",
+          "settleFrames": 220,
+          "settleTarget": 220,
+          "settledBy": "frames"
+        },
+        {
+          "file": "06-desktop-black-hole.png",
+          "name": "black-hole",
+          "kind": "blackhole",
+          "url": "/index.html?seed=20250601&g=443188473&bh=1",
+          "settleFrames": 220,
+          "settleTarget": 220,
+          "settledBy": "frames"
+        }
+      ],
+      "perf": "perf-desktop.json",
+      "gateValid": true,
+      "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Laptop GPU (0x00002560) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "errors": []
+    }
+  }
+}

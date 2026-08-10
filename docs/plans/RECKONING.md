@@ -30,16 +30,29 @@ Here is the sum, as of M5.
 | **All of M3 — wind and grass — off** | 6 M3 | `?m3=1` |
 | **All of M5 — traversal — off** | 6 M5 | `?m5=1` |
 | The composition solver off | 9.7 | `?solve=1` |
-| §5's budgets measured with the grass off | 5 | 0.19 M tri p95 — of a frame nobody wants |
+| §5's budgets measured with the grass off | 5 | Still open, and for a *second* reason: `capture.js` benched the wrong software (`--extra` reached the stations, not the bench URL). Fixed; not yet re-run |
 | **M1's gate clause (b) still fails** | 6 M1 | **3** hue families of 4 (not 2 — ledger was stale); nine iterations; the fourth is blocked behind Act C. Needs a decision, see Act D |
 | ~~No plan for M4 or M7~~; none for M6 | 7.2 | **Act E closed** — `M4.md`, `M7.md` backfilled, marked retrospective |
-| **The critic has never run** | 8 | not once, in five milestones |
+| ~~**The critic has never run**~~ | 8 | **Act A closed** — scored blind on an RTX 3060, all-flags **3.00** vs default **2.43**. §8's gate still FAILS (needs ≥4/≥4.5) |
+| **The ground has no material** | 8 · 6 M3 | **NEW, and now the blocking axis.** Near-ground gradient 1.07/255; featureless at 5× magnification. Materials scored 1 and 2 |
+| **`planet-orbit` never reaches true black** | 2.8 | **NEW.** rgb(13,7,0), 0.0% of the frame at #000, both flag sets. `star-system` is correct, so it is specific to the planet scale |
 
 A visitor who opens the page gets the print, aerial perspective, a body, a
 camera and a mobile layer. They do not get the light model, the materials, the
 sea, the far ridges, the wind, the grass, the craft, or the composition. **The
 project's entire visual thesis is unshipped**, and each flag has a good reason
 that is true individually and indefensible in aggregate.
+
+**Act A has now answered the question this file was written around**, and the
+answer is two-sided. The flags *do* make the frame better — four hue families
+against two, 0.57 of a mean point, decided blind. And the frame they make is
+still not good enough: **3.00 against a gate of 4.5.**
+
+So the ledger's conclusion changes. Flipping the defaults is no longer the
+highest-value commit in the repo, because it would ship a frame that fails §8.
+The highest-value commit is whatever gives the ground a material — it is more
+than half of every frame, it carries neither texture nor directional light, and
+it is the single defect behind both failing axes.
 
 ---
 

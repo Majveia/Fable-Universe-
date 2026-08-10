@@ -1,0 +1,35 @@
+{
+  "schema": "aeon-blind/1",
+  "when": "2026-08-05T18:05:37.938Z",
+  "seed": "29adc329273b929f",
+  "sets": [
+    "RECK-default",
+    "RECK-allflags"
+  ],
+  "stations": {
+    "cosmic-web": {
+      "A": "RECK-default",
+      "B": "RECK-allflags"
+    },
+    "galaxy": {
+      "A": "RECK-default",
+      "B": "RECK-allflags"
+    },
+    "star-system": {
+      "A": "RECK-default",
+      "B": "RECK-allflags"
+    },
+    "planet-orbit": {
+      "A": "RECK-allflags",
+      "B": "RECK-default"
+    },
+    "surface": {
+      "A": "RECK-default",
+      "B": "RECK-allflags"
+    },
+    "black-hole": {
+      "A": "RECK-default",
+      "B": "RECK-allflags"
+    }
+  }
+}
