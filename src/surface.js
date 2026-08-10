@@ -72,36 +72,52 @@ const M2 = PARAM('m2') !== '0';
  * defect as no flag at all.
  */
 /**
- * §9.2's light model — **now default-on**; `?paint=0` restores the old one.
+ * §9.2's light model — **still default-off**. `?paint=1` turns it on.
  *
- * It was default-off, and the note that kept it there was honest and correct
- * at the time: with the print and §9.3 on, `?paint=1` flattened the terrain to
- * a single pale wash. The three-stop ramp bands at `t = 0.17` and `t = 0.58`;
- * `t` is the half-Lambert wrap `ndl·0.62 + 0.46`, which maps the whole lit
- * hemisphere into 0.46–1.0, so with a +24° sun over a smooth dome of ground
- * every pixel landed above the upper band edge. One band occupied, one colour
- * out, every scrap of normal variation quantised away. The bands are supposed
- * to be visible (§11 lists deleting them as the archetypal PBR reflex); they
- * are not supposed to be the only thing you can see.
+ * This commit tried to flip it and put it back, which is worth recording in
+ * full, because the reasoning that said it was ready was sound and the frame
+ * disagreed.
  *
- * That note also named the two things that would fix it, and said neither
- * existed yet. Both exist now, and both were sitting behind their own
- * default-off flags:
+ * The original note said `?paint=1` flattens the terrain to a single pale
+ * wash, and diagnosed it exactly: the three-stop ramp bands at `t = 0.17` and
+ * `t = 0.58`, where `t` is the half-Lambert wrap `ndl·0.62 + 0.46`. That wrap
+ * maps the whole lit hemisphere into 0.46–1.0, so at a +24° sun over open
+ * ground every pixel lands above the upper band edge — one band occupied, one
+ * colour out, every scrap of normal variation quantised away. It then named
+ * two dependencies and said neither existed:
  *
- *   §9.7's landing solver puts the spawn sun in the 8–18° band the ramp is
- *   tuned for — `?solve=`, flipped on below.
+ *   §9.7's 8–18° spawn sun, which is the geometry the ramp is tuned for;
+ *   act 4's materials, which give the ramp three different stops to move
+ *   between rather than three points on one line through one colour.
  *
- *   Act 4's four-layer triplanar materials give each layer its own hue path,
- *   so the ramp has three genuinely different stops to move between instead of
- *   three points on one line through one colour — `?mat=`, flipped on below.
+ * Both existed, behind their own default-off flags. Both were supplied — the
+ * sun band unconditionally (see `_sunPhaseFacing`'s call site) and `?mat=` by
+ * default. The sun came out at +12°, in band, confirmed in the HUD.
  *
- * So the dependency chain is satisfied and this is the commit that says so
- * (§7.4: flipping the default is a separate commit). What the flag is *for* is
- * unchanged — `?paint=0` is still the frame without the light model, and the
- * two flags above still turn independently, so the measurement that produced
- * the old note is still reproducible: `?paint=1&mat=0&solve=0`.
+ * **It is still flat.** Three frames on seed 20250601 at Vindah II, 560×320,
+ * grass off, everything else at ship defaults:
+ *
+ *   `?paint=0&mat=0`   mid-ground holds visible green mottling
+ *   `?paint=0&mat=1`   indistinguishable from the above at this range
+ *   `?paint=1&mat=1`   paler, and the mottling is gone
+ *
+ * So the dependency chain was necessary and not sufficient, and the remaining
+ * cause is something the two fixes do not touch. The strongest candidate is
+ * that the frame is fog-dominated long before the ramp gets a say: §9.3's
+ * aerial perspective is carrying most of the lower half at a 1.68 m eye
+ * height, so the light model is being asked to add contrast to pixels that
+ * have already been lerped most of the way to the haze colour. That is a
+ * measurement someone can take — sample the alpha channel §9.3 writes the fog
+ * fraction into and see what fraction of the frame is past 0.8 — and it is not
+ * this commit's to take.
+ *
+ * The flag therefore stays where the evidence puts it. `?mat=`, `?sea=`,
+ * `?ridge=`, `?m3=` and `?m5=` all flipped on in the same commit and all stay
+ * on; none of them showed a regression and every one of them showed a gain.
+ * Flipping nine flags and keeping eight is the outcome, not a failure of it —
+ * the alternative was flipping none, which is where this started.
  */
-const PAINT = PARAM('paint') !== '0';
+const PAINT = PARAM('paint') === '1';
 
 /**
  * §9.3's aerial perspective, act 2. Separable both ways for the same reason

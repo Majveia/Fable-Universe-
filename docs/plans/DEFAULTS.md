@@ -2,7 +2,8 @@
 
 **Governing document:** `CLAUDE.md`. This is a §7.4 commit — *"Build behind a
 flag, default-off. Flipping the default is a separate commit."* This is that
-separate commit, for eleven flags at once, and it says why for each.
+separate commit, for nine flags at once — eight of which stuck — and it says
+why for each.
 
 ---
 
@@ -19,23 +20,27 @@ The state before this commit, measured by loading the site and looking at it:
 | `?m1=` | the whole M1 cosmic-web enrichment | **off** |
 | `?web=` | the second hue channel, M1 §13 | **off** |
 | `?m1=` (post) | the ordered dither | **off** |
-| `?paint=` | §9.2's light model — the heart of the art bible | **off** |
+| `?paint=` | §9.2's light model — the heart of the art bible | **off** (stays off; §2) |
 | `?mat=` | §M2 act 4, four-layer triplanar materials | **off** |
 | `?sea=` | §M2 act 5, twelve Gerstner waves | **off** |
 | `?ridge=` | §M2 act 6, far ridges as silhouette | **off** |
 | `?m3=` | §M3 — **all the grass, and the wind field** | **off** |
 | `?m5=` | §M5 — the skiff, and the stream governor | **off** |
 
-Nine of those are finished, gated work. Two milestones — M3 and M5 — were
-*entirely* invisible. The frame a visitor actually landed on was, at surface
-scale, an untextured dome of ground under a flat wash of fog, with no grass, no
-materials, no sea, no far ridges and no light model; and at cosmic scale, the
-pre-M1 web.
+Eight of those turned out to be finished, gated work that needed nothing but
+the switch. The ninth, `?paint=`, was tried and put back — §2 records why, and
+records it in full, because the reasoning that said it was ready was sound and
+the frame disagreed.
+
+Two whole milestones — **M3 and M5 — were entirely invisible**. The frame a
+visitor actually landed on was, at surface scale, an untextured dome of ground
+under a flat wash of fog: no grass, no materials, no sea, no far ridges. At
+cosmic scale it was the pre-M1 web.
 
 That frame is the one the project was being judged on. "Washed out and a bit
-depressing" is an accurate description of it, and it is not a description of the
-software — it is a description of the ninth of the software that was switched
-on.
+depressing" is an accurate description of it — and it is not a description of
+the software. It is a description of the fraction of the software that was
+switched on.
 
 ---
 
@@ -68,12 +73,12 @@ four rings, the continuous density law, and the double thinning are in.
 from the tree's own measured refinement rate, so "no pop-in" became a property
 of the law rather than of the machine.
 
-**`?paint=` → on.** This is the interesting one, and it is the only flip whose
-stated blocker had to be *resolved* rather than re-read.
+**`?paint=` → tried, and put back off.** §2 below, in full: the reasoning that
+said it was ready was sound, and the frame disagreed.
 
 ---
 
-## 2 · `?paint=`, and the dependency nobody could satisfy
+## 2 · `?paint=`, and the dependency that turned out not to be sufficient
 
 The note that kept §9.2's light model off was honest and correct:
 
@@ -113,10 +118,40 @@ measurable cost.
 
 So the sun band is now unconditional and the expensive geometric solve stays
 exactly where it was, behind `?solve=1`. §9.2 gets the geometry it depends on;
-§5 pays nothing.
+§5 pays nothing. **That change is kept** — the golden-hour spawn is worth having
+on its own terms, and §9.7 asks for it regardless of what §9.2 does with it.
 
-The old measurement stays reproducible: `?paint=1&mat=0&solve=0` still produces
-the flat pale wash that the original note described.
+### And it was still not enough
+
+Three frames, seed 20250601, Vindah II, 560×320, grass off, everything else at
+ship defaults. The sun came out at **+12°**, in band, confirmed in the HUD:
+
+| flags | mid-ground |
+|---|---|
+| `?paint=0&mat=0` | visible green mottling |
+| `?paint=0&mat=1` | indistinguishable at this range |
+| `?paint=1&mat=1` | **paler, mottling gone** |
+
+The dependency chain was necessary and not sufficient. So `?paint=` goes back
+to default-off and the flip is withdrawn.
+
+### The candidate the evidence points at next
+
+Something the two named fixes do not touch. The strongest candidate is that the
+frame is **fog-dominated before the ramp gets a say**: §9.3's aerial perspective
+carries most of the lower half at a 1.68 m eye height, so §9.2 is being asked to
+add contrast to pixels that have already been lerped most of the way to the haze
+colour. Both of the "washed out" complaints — the light model's and the naked
+eye's — would then have one cause, and it would not be the light model.
+
+That is measurable rather than speculative, and cheaply: §9.3 writes the fog
+fraction into the **alpha channel** (that is the trick §9.4 step 5 spends). Read
+it back and histogram it. If most of the frame is past 0.8, the aerial
+perspective's `fogNear`/`fogFar`/exponent are the thing to argue with, not the
+ramp.
+
+Flipping nine flags and keeping eight is the outcome, not a failure of it. The
+alternative was flipping none, which is where this started.
 
 ---
 
