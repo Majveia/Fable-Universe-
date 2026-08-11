@@ -63,7 +63,7 @@ import {
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
 } from '../src/meadow.js';
-import { QUALITY } from '../src/quality.js';
+import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import { LFO_RATIOS, MODE_LADDER, chordPlan, deriveScore } from '../src/score.js';
 import {
   DIAGONAL, HOVER, Hover, MOUNT, Mount, STREAM, StreamGovernor, chordAt,
@@ -882,6 +882,50 @@ function tonemapRef(x, paint) {
   return v + (p - v) * paint;
 }
 
+/**
+ * The whole of §9.4 steps 1–4 on the CPU — the mirror of `grade()` in
+ * `print.js`, transcribed from it.
+ *
+ * It exists because the saturation step is the one part of the print whose
+ * failure is invisible in a still: a grade that quietly costs a quarter of the
+ * frame's colour still renders a perfectly good picture, just a paler one, and
+ * "washed out" is the only report it ever generates. Measuring it needs a
+ * function, not a screenshot.
+ */
+function gradeRef(c0, paint, satAmt = SAT_AMOUNT) {
+  const cl = (x, a, b) => (x < a ? a : x > b ? b : x);
+  const ss = (e0, e1, x) => { const t = cl((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+  const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const mx = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+
+  let c = c0.map((v) => tonemapRef(Math.max(v, 0), paint));
+  let l = lum(c);
+  const shadowPush = mx([0.90, 0.95, 1.16], [1, 1, 1], ss(0, 0.34, l));
+  const highPush = mx([1, 1, 1], [1.055, 1.012, 0.925], ss(0.44, 0.98, l));
+  c = c.map((v, i) => v * mx([1, 1, 1], shadowPush, 0.85 * paint)[i]);
+  c = c.map((v, i) => v * mx([1, 1, 1], highPush, 0.9 * paint)[i]);
+  const lift = [0.017 * paint, 0.021 * paint, 0.036 * paint];
+  c = c.map((v, i) => v * (1 - lift[i]) + lift[i]);
+  c = mx(c, c.map((v) => v * v * (3 - 2 * v)), 0.16 * paint);
+  l = lum(c);
+  const e = satAmt * paint * ss(0.10, 0.42, l) * (1 - ss(0.62, 0.96, l));
+  const d = c.map((v) => v - l);
+  let lim = 1e9;
+  for (const v of d) {
+    if (v > 1e-6) lim = Math.min(lim, (1 - l) / v);
+    else if (v < -1e-6) lim = Math.min(lim, -l / v);
+  }
+  const h = Math.max(lim - 1, 0);
+  const s = 1 + (e * h) / Math.max(e + h, 1e-6);
+  return d.map((v) => l + s * v);
+}
+
+/** HSV saturation — the measure `tools/tone.js` reports off a capture */
+const satOf = (c) => {
+  const hi = Math.max(...c), lo = Math.min(...c);
+  return hi < 1e-6 ? 0 : (hi - lo) / hi;
+};
+
 /** three's ACESFilmicToneMapping, for comparison only */
 function acesRef(x) {
   const a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
@@ -899,6 +943,88 @@ function suitePrint() {
 
   ok('both curves map black to black, so the blend does at every uPaint',
     PAINTS.every((p) => tonemapRef(0, p) === 0));
+
+  // --- §9.4 step 4, the saturation the print used to cost -----------------
+  //
+  // A meadow-ish spread of linear-light inputs. The point of naming them is
+  // that the failure was not uniform: the colours that lost most were the pale
+  // ones — horizon sky, sun, blossom — which is precisely the set
+  // `docs/plans/BENCHMARK.md` needs to stay coloured.
+  {
+    const SET = [
+      ['grass lit', [0.10, 0.26, 0.06]], ['grass shade', [0.03, 0.09, 0.03]],
+      ['grass tip', [0.22, 0.42, 0.10]], ['sky zenith', [0.09, 0.21, 0.52]],
+      ['sky horizon', [0.55, 0.62, 0.70]], ['warm soil', [0.18, 0.12, 0.06]],
+      ['blossom', [0.62, 0.28, 0.42]], ['cream sun', [0.95, 0.90, 0.72]],
+    ];
+    const ratio = (amt) => {
+      let a = 0, b = 0;
+      for (const [, c] of SET) { a += satOf(c); b += satOf(gradeRef(c, 1, amt)); }
+      return b / a;
+    };
+
+    // The regression this replaced, kept as a check so it cannot come back.
+    ok('§9.4 · the print no longer costs the frame its colour',
+      ratio(SAT_AMOUNT) > 1.0,
+      `mean saturation ${((ratio(SAT_AMOUNT) - 1) * 100).toFixed(1)}% vs input`
+      + ` at uSat ${SAT_AMOUNT} · was ${((ratio(0.16) - 1) * 100).toFixed(1)}% at the shipped 0.16`);
+
+    // The mechanism, which is what makes the larger number safe. The old step
+    // multiplied the distance from grey outright, so it walked channels out of
+    // [0,1]; 3.72% of this sweep went negative at 0.16 and the framebuffer
+    // clamped them to zero.
+    let out = 0, n = 0;
+    for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) for (let k = 0; k < 16; k++) {
+      for (const v of gradeRef([i / 15 * 1.4, j / 15 * 1.4, k / 15 * 1.4], 1)) {
+        if (v < -1e-6 || v > 1 + 1e-6) out++;
+        n++;
+      }
+    }
+    ok('and it walks up to the gamut wall rather than through it',
+      out === 0, `${n} channels over a 4096-colour sweep, ${out} outside [0,1]`);
+
+    // Neutrality outside the band. If the knee were applied to the factor
+    // rather than to the excess, every pixel with headroom would be pulled
+    // toward grey — a desaturation dressed as a boost.
+    //
+    // The colours have to be chosen by their luma *after* the grade, not
+    // before. A neutral input does not stay neutral: §9.4 step 2 tints shadows
+    // violet and highlights cream on purpose, so a mid grey arrives at the
+    // saturation step off the grey axis and inside the band, where a boost is
+    // exactly what it is supposed to get. The first version of this check
+    // asserted a mid grey was unmoved and failed — correctly, on a claim the
+    // code never made.
+    const dark = [0.001, 0.001, 0.001];
+    ok('and it is exactly neutral where the band asks for nothing',
+      gradeRef(dark, 1).every((v, i) => Math.abs(v - gradeRef(dark, 1, 0)[i]) < 1e-12),
+      'below the 0.10 rise, uSat moves nothing at all — bit-identical');
+
+    // And a fact about the *upper* edge, found by trying to test it and
+    // failing: it is nearly unreachable. §9.4 rolls the boost off by luma 0.96,
+    // but step 2's highlight push multiplies the top channel by 0.925 first, so
+    // a linear input of 3.0 — which the tonemap clamps to 1.0 — arrives at the
+    // saturation step at luma 0.899, still inside the band. Nothing a camera
+    // sees short of a specular hit gets past 0.96.
+    //
+    // That is not a defect, and it is not being "fixed" here: it means the
+    // roll-off protects specular highlights and blown sun discs and leaves
+    // ordinary bright sky alone, which is the right behaviour and the opposite
+    // of what the constant reads like. Recorded because the next person to read
+    // "rolling off by 0.96" will assume the sky is excluded, and it is not.
+    const white = gradeRef([3.0, 3.0, 3.0], 1);
+    const wl = 0.2126 * white[0] + 0.7152 * white[1] + 0.0722 * white[2];
+    ok('and the 0.96 roll-off sits above where the highlight push can reach',
+      wl < 0.96 && wl > 0.80,
+      `a clamped white arrives at luma ${wl.toFixed(3)}, inside the band, because`
+      + ' §9.4 step 2 scales the top channel by 0.925 before this step runs');
+
+    // §2.8 survives it: vacuum still reaches true zero, atmosphere still does not.
+    ok('§2.8 · black stays black in vacuum and stays lifted in atmosphere',
+      gradeRef([0, 0, 0], 0).every((v) => v === 0)
+      && gradeRef([0, 0, 0], 1).every((v) => v > 0.01),
+      `vacuum ${gradeRef([0, 0, 0], 0)[0]} · atmosphere `
+      + `[${gradeRef([0, 0, 0], 1).map((v) => v.toFixed(4)).join(', ')}]`);
+  }
   ok('the blend is monotone at every uPaint', (() => {
     for (const p of PAINTS) {
       let prev = -1;
