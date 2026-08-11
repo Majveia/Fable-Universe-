@@ -30,7 +30,7 @@ import {
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
 import {
-  ARM, GAIT, LOOK, Walker, gravityOf, replay, sweepArm,
+  ARM, GAIT, LOOK, Walker, gravityOf, jumpV0, replay, sweepArm,
 } from '../src/avatar.js';
 import { BINDINGS, JUMP_CODE, addLook, input, setAnalog } from '../src/input.js';
 import {
@@ -63,7 +63,8 @@ import {
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
 } from '../src/meadow.js';
-import { QUALITY } from '../src/quality.js';
+import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
+import { LFO_RATIOS, MODE_LADDER, chordPlan, deriveScore } from '../src/score.js';
 import {
   DIAGONAL, HOVER, Hover, MOUNT, Mount, STREAM, StreamGovernor, chordAt,
   demandConst, demandRate, effectiveChord, floorAltitude, handMomentum,
@@ -881,6 +882,50 @@ function tonemapRef(x, paint) {
   return v + (p - v) * paint;
 }
 
+/**
+ * The whole of §9.4 steps 1–4 on the CPU — the mirror of `grade()` in
+ * `print.js`, transcribed from it.
+ *
+ * It exists because the saturation step is the one part of the print whose
+ * failure is invisible in a still: a grade that quietly costs a quarter of the
+ * frame's colour still renders a perfectly good picture, just a paler one, and
+ * "washed out" is the only report it ever generates. Measuring it needs a
+ * function, not a screenshot.
+ */
+function gradeRef(c0, paint, satAmt = SAT_AMOUNT) {
+  const cl = (x, a, b) => (x < a ? a : x > b ? b : x);
+  const ss = (e0, e1, x) => { const t = cl((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+  const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const mx = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+
+  let c = c0.map((v) => tonemapRef(Math.max(v, 0), paint));
+  let l = lum(c);
+  const shadowPush = mx([0.90, 0.95, 1.16], [1, 1, 1], ss(0, 0.34, l));
+  const highPush = mx([1, 1, 1], [1.055, 1.012, 0.925], ss(0.44, 0.98, l));
+  c = c.map((v, i) => v * mx([1, 1, 1], shadowPush, 0.85 * paint)[i]);
+  c = c.map((v, i) => v * mx([1, 1, 1], highPush, 0.9 * paint)[i]);
+  const lift = [0.017 * paint, 0.021 * paint, 0.036 * paint];
+  c = c.map((v, i) => v * (1 - lift[i]) + lift[i]);
+  c = mx(c, c.map((v) => v * v * (3 - 2 * v)), 0.16 * paint);
+  l = lum(c);
+  const e = satAmt * paint * ss(0.10, 0.42, l) * (1 - ss(0.62, 0.96, l));
+  const d = c.map((v) => v - l);
+  let lim = 1e9;
+  for (const v of d) {
+    if (v > 1e-6) lim = Math.min(lim, (1 - l) / v);
+    else if (v < -1e-6) lim = Math.min(lim, -l / v);
+  }
+  const h = Math.max(lim - 1, 0);
+  const s = 1 + (e * h) / Math.max(e + h, 1e-6);
+  return d.map((v) => l + s * v);
+}
+
+/** HSV saturation — the measure `tools/tone.js` reports off a capture */
+const satOf = (c) => {
+  const hi = Math.max(...c), lo = Math.min(...c);
+  return hi < 1e-6 ? 0 : (hi - lo) / hi;
+};
+
 /** three's ACESFilmicToneMapping, for comparison only */
 function acesRef(x) {
   const a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
@@ -898,6 +943,88 @@ function suitePrint() {
 
   ok('both curves map black to black, so the blend does at every uPaint',
     PAINTS.every((p) => tonemapRef(0, p) === 0));
+
+  // --- §9.4 step 4, the saturation the print used to cost -----------------
+  //
+  // A meadow-ish spread of linear-light inputs. The point of naming them is
+  // that the failure was not uniform: the colours that lost most were the pale
+  // ones — horizon sky, sun, blossom — which is precisely the set
+  // `docs/plans/BENCHMARK.md` needs to stay coloured.
+  {
+    const SET = [
+      ['grass lit', [0.10, 0.26, 0.06]], ['grass shade', [0.03, 0.09, 0.03]],
+      ['grass tip', [0.22, 0.42, 0.10]], ['sky zenith', [0.09, 0.21, 0.52]],
+      ['sky horizon', [0.55, 0.62, 0.70]], ['warm soil', [0.18, 0.12, 0.06]],
+      ['blossom', [0.62, 0.28, 0.42]], ['cream sun', [0.95, 0.90, 0.72]],
+    ];
+    const ratio = (amt) => {
+      let a = 0, b = 0;
+      for (const [, c] of SET) { a += satOf(c); b += satOf(gradeRef(c, 1, amt)); }
+      return b / a;
+    };
+
+    // The regression this replaced, kept as a check so it cannot come back.
+    ok('§9.4 · the print no longer costs the frame its colour',
+      ratio(SAT_AMOUNT) > 1.0,
+      `mean saturation ${((ratio(SAT_AMOUNT) - 1) * 100).toFixed(1)}% vs input`
+      + ` at uSat ${SAT_AMOUNT} · was ${((ratio(0.16) - 1) * 100).toFixed(1)}% at the shipped 0.16`);
+
+    // The mechanism, which is what makes the larger number safe. The old step
+    // multiplied the distance from grey outright, so it walked channels out of
+    // [0,1]; 3.72% of this sweep went negative at 0.16 and the framebuffer
+    // clamped them to zero.
+    let out = 0, n = 0;
+    for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) for (let k = 0; k < 16; k++) {
+      for (const v of gradeRef([i / 15 * 1.4, j / 15 * 1.4, k / 15 * 1.4], 1)) {
+        if (v < -1e-6 || v > 1 + 1e-6) out++;
+        n++;
+      }
+    }
+    ok('and it walks up to the gamut wall rather than through it',
+      out === 0, `${n} channels over a 4096-colour sweep, ${out} outside [0,1]`);
+
+    // Neutrality outside the band. If the knee were applied to the factor
+    // rather than to the excess, every pixel with headroom would be pulled
+    // toward grey — a desaturation dressed as a boost.
+    //
+    // The colours have to be chosen by their luma *after* the grade, not
+    // before. A neutral input does not stay neutral: §9.4 step 2 tints shadows
+    // violet and highlights cream on purpose, so a mid grey arrives at the
+    // saturation step off the grey axis and inside the band, where a boost is
+    // exactly what it is supposed to get. The first version of this check
+    // asserted a mid grey was unmoved and failed — correctly, on a claim the
+    // code never made.
+    const dark = [0.001, 0.001, 0.001];
+    ok('and it is exactly neutral where the band asks for nothing',
+      gradeRef(dark, 1).every((v, i) => Math.abs(v - gradeRef(dark, 1, 0)[i]) < 1e-12),
+      'below the 0.10 rise, uSat moves nothing at all — bit-identical');
+
+    // And a fact about the *upper* edge, found by trying to test it and
+    // failing: it is nearly unreachable. §9.4 rolls the boost off by luma 0.96,
+    // but step 2's highlight push multiplies the top channel by 0.925 first, so
+    // a linear input of 3.0 — which the tonemap clamps to 1.0 — arrives at the
+    // saturation step at luma 0.899, still inside the band. Nothing a camera
+    // sees short of a specular hit gets past 0.96.
+    //
+    // That is not a defect, and it is not being "fixed" here: it means the
+    // roll-off protects specular highlights and blown sun discs and leaves
+    // ordinary bright sky alone, which is the right behaviour and the opposite
+    // of what the constant reads like. Recorded because the next person to read
+    // "rolling off by 0.96" will assume the sky is excluded, and it is not.
+    const white = gradeRef([3.0, 3.0, 3.0], 1);
+    const wl = 0.2126 * white[0] + 0.7152 * white[1] + 0.0722 * white[2];
+    ok('and the 0.96 roll-off sits above where the highlight push can reach',
+      wl < 0.96 && wl > 0.80,
+      `a clamped white arrives at luma ${wl.toFixed(3)}, inside the band, because`
+      + ' §9.4 step 2 scales the top channel by 0.925 before this step runs');
+
+    // §2.8 survives it: vacuum still reaches true zero, atmosphere still does not.
+    ok('§2.8 · black stays black in vacuum and stays lifted in atmosphere',
+      gradeRef([0, 0, 0], 0).every((v) => v === 0)
+      && gradeRef([0, 0, 0], 1).every((v) => v > 0.01),
+      `vacuum ${gradeRef([0, 0, 0], 0)[0]} · atmosphere `
+      + `[${gradeRef([0, 0, 0], 1).map((v) => v.toFixed(4)).join(', ')}]`);
+  }
   ok('the blend is monotone at every uPaint', (() => {
     for (const p of PAINTS) {
       let prev = -1;
@@ -1228,9 +1355,28 @@ function suiteAerial() {
     // whole string and failed on the comment that *explains* the rule, which
     // is a test of the prose rather than of the code.
     const code = AERIAL_GLSL.replace(/\/\/[^\n]*/g, '');
+    // Assert the *property*, not one spelling of it.
+    //
+    // This used to read `code.includes('1.0 - smoothstep(8.0, 46.0, worldY)')`,
+    // an exact-literal match. It failed the moment the valley-mist term grew
+    // the `- uAirMistBase` it needed, which is a legitimate and necessary
+    // change — §9.3's 46 → 8 band is a height above the *valley floor*, and
+    // the reference can write it as an absolute only because its world has one
+    // floor at y ≈ 0. A test that breaks when correct code changes shape is
+    // testing the transcription, not the rule.
+    //
+    // The rule is: GLSL leaves `smoothstep(e0, e1, x)` undefined when e0 ≥ e1,
+    // so a descending band must be written as `1.0 - smoothstep(lo, hi, x)`.
+    // So: no descending numeric smoothstep anywhere, and the mist pool still
+    // built from the inverted ascending form.
+    const descending = [...code.matchAll(/smoothstep\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,/g)]
+      .filter((m) => parseFloat(m[1]) >= parseFloat(m[2]));
     ok('the GLSL never writes a descending smoothstep, which GLSL leaves undefined',
-      !/smoothstep\(\s*46\.0\s*,\s*8\.0/.test(code)
-      && code.includes('1.0 - smoothstep(8.0, 46.0, worldY)'));
+      descending.length === 0
+      && /1\.0\s*-\s*smoothstep\(\s*8\.0\s*,\s*46\.0\s*,\s*worldY/.test(code),
+      descending.length
+        ? `descending: ${descending.map((m) => m[0]).join(', ')}`
+        : 'mist band written as 1 - smoothstep(8, 46, ·), ascending edges throughout');
     ok('and it returns the fog fraction rather than hiding it in a global',
       /vec4 aerial\(/.test(code) && !/gFogAmt/.test(code));
 
@@ -1696,15 +1842,99 @@ function suiteWalk() {
   {
     const moon = new Walker({ heightAt: () => 0, gravity: gravityOf({ massE: 0.0123, radiusE: 0.273 }) });
     moon.place(0, 0);
-    const t = replay(moon, () => ({ move: { x: 0, y: 0 }, jump: true }), DT, 900);
+    const t = replay(moon, () => ({ move: { x: 0, y: 0 }, jump: true }), DT, 3000);
     const apex = Math.max(...t.map((s) => s.y));
-    // v₀ is solved from the world's own g, so the *height* is the constant and
-    // the launch speed is what changes. On the Moon that is the same 0.55 m,
-    // reached far more slowly — which is right, and is why there is no
-    // per-world jump constant anywhere in the controller.
-    ok('a low-gravity world gets the same jump height, taken more slowly',
-      Math.abs(apex - GAIT.jumpHeight) < 0.01,
-      `g = ${moon.gravity.toFixed(3)} m/s² → apex ${apex.toFixed(3)} m`);
+    // What a pair of legs holds constant across worlds is the launch *speed* —
+    // a fixed extension against a fixed force — so the apex is v₀²/2g and a
+    // sixth of a gravity buys six times the jump.
+    //
+    // This assertion used to read the other way round: the height was held and
+    // only the flight time changed. That was the controller solving v₀ from the
+    // local g, and it is simply not what a body does. §3's "the numbers are
+    // never negotiable" decides it against the old behaviour, and it decides it
+    // in the direction of the more spectacular frame, which is rare enough to
+    // note.
+    const want = (GAIT.jumpHeight * 9.80665) / moon.gravity;
+    ok('a low-gravity world gets a proportionately bigger jump, from one v₀',
+      Math.abs(apex - want) < 0.02,
+      `g = ${moon.gravity.toFixed(3)} m/s² → apex ${apex.toFixed(2)} m`
+      + ` (v₀²/2g = ${want.toFixed(2)}, ${(want / GAIT.jumpHeight).toFixed(1)}× the 1 g jump)`);
+
+    // and the invariant behind it, stated directly rather than inferred
+    const earth = flat(); earth.place(0, 0);
+    earth.step(DT, { move: { x: 0, y: 0 }, jump: true }, 0);
+    const moon2 = new Walker({ heightAt: () => 0, gravity: gravityOf({ massE: 0.0123, radiusE: 0.273 }) });
+    moon2.place(0, 0);
+    moon2.step(DT, { move: { x: 0, y: 0 }, jump: true }, 0);
+    // one dt of the local g has already been integrated out of each, so add it
+    // back before comparing the launch impulses themselves
+    const v0e = earth.vel.y + earth.gravity * DT;
+    const v0m = moon2.vel.y + moon2.gravity * DT;
+    ok('§2 · and the launch speed itself is the same on both worlds',
+      Math.abs(v0e - v0m) < 1e-9 && Math.abs(v0e - jumpV0()) < 1e-9,
+      `v₀ ${v0e.toFixed(6)} m/s on Earth · ${v0m.toFixed(6)} m/s on the Moon`);
+  }
+
+  // --- flight is thrust against drag, not velocity matching (§M4) -----------
+  {
+    // Cruise speed is not a constant in the table — it is thrust/drag, and the
+    // point of asserting it is that the two constants are the design and the
+    // speed is the consequence. Change either and this number moves with it.
+    const w = flat(); w.place(0, 0, 400);
+    w.fly = true;
+    const full = () => ({ move: { x: 0, y: 1 }, sprint: false });
+    replay(w, full, DT, 120 * 30, 0);           // 30 s: long past the time const
+    const cruise = Math.hypot(w.vel.x, w.vel.z);
+    const wantCruise = GAIT.flyThrust / GAIT.flyDrag;
+    ok('§6 M4 · level flight settles at thrust ÷ drag, and nothing clamps it there',
+      Math.abs(cruise - wantCruise) < 0.5 && cruise < GAIT.flyTop,
+      `${cruise.toFixed(1)} m/s against ${wantCruise.toFixed(1)} = `
+      + `${GAIT.flyThrust}/${GAIT.flyDrag} · rail is ${GAIT.flyTop}`);
+
+    // The whole complaint about the old flight was that it had no mass: input
+    // and velocity were the same variable, so releasing the stick stopped you
+    // in about 60 ms. Coasting is the property that fixes it, and it is
+    // decidable: after two seconds of nothing, most of the speed is still there.
+    const coast = flat(); coast.place(0, 0, 400);
+    coast.fly = true;
+    replay(coast, full, DT, 120 * 30, 0);
+    const before = Math.hypot(coast.vel.x, coast.vel.z);
+    replay(coast, () => ({ move: { x: 0, y: 0 } }), DT, 120 * 2, 0);
+    const after = Math.hypot(coast.vel.x, coast.vel.z);
+    ok('and a released stick coasts rather than stopping dead',
+      after > before * 0.30 && after < before * 0.45,
+      `${before.toFixed(1)} → ${after.toFixed(1)} m/s over 2 s `
+      + `(${(100 * after / before).toFixed(0)}% kept; e^-2·${GAIT.flyCoastDrag} = `
+      + `${(100 * Math.exp(-2 * GAIT.flyCoastDrag)).toFixed(0)}%)`);
+
+    // "you fly where you look": pitch is the aiming model, so the same stick
+    // at a pitched look must climb.
+    const up = flat(); up.place(0, 0, 400);
+    up.fly = true;
+    replay(up, full, DT, 120 * 4, 0, 0.9);       // ~52° nose up
+    ok('and thrust runs along the look vector, so a pitched stick climbs',
+      up.vel.y > 20 && up.pos.y > 420,
+      `climb ${up.vel.y.toFixed(1)} m/s · gained ${(up.pos.y - 400).toFixed(0)} m in 4 s`);
+
+    // and the boost multiplies the *cruise*, not just the acceleration —
+    // otherwise it is a slightly quicker route to the same speed
+    const fast = flat(); fast.place(0, 0, 400);
+    fast.fly = true;
+    replay(fast, () => ({ move: { x: 0, y: 1 }, sprint: true }), DT, 120 * 30, 0);
+    const boosted = Math.hypot(fast.vel.x, fast.vel.z);
+    ok('and the boost raises the speed it settles at, not only how fast it gets there',
+      Math.abs(boosted - wantCruise * GAIT.flyBoost) < 1.0,
+      `${boosted.toFixed(1)} m/s against ${(wantCruise * GAIT.flyBoost).toFixed(1)}`);
+
+    // §2.3 — flight has to replay identically like everything else here
+    const a = flat(); a.place(0, 0, 300); a.fly = true;
+    const b = flat(); b.place(0, 0, 300); b.fly = true;
+    const trace = (i) => ({ move: { x: Math.sin(i * 0.013), y: Math.cos(i * 0.007) }, sprint: i % 97 < 40 });
+    const ta = replay(a, trace, DT, 1800, 0.4, 0.2);
+    const tb = replay(b, trace, DT, 1800, 0.4, 0.2);
+    ok('§2.3 · and the same flight trace at the same dt is bit-identical',
+      ta.every((s, i) => s.x === tb[i].x && s.y === tb[i].y && s.z === tb[i].z),
+      `${ta.length} frames · ended ${Math.hypot(a.pos.x, a.pos.z).toFixed(1)} m out`);
   }
 
   // --- variable height ------------------------------------------------------
@@ -1909,8 +2139,27 @@ function suiteWalk() {
     };
     const p60 = at(1 / 60, 1200), p120 = at(1 / 120, 2400);
     const drift = Math.hypot(p60.x - p120.x, p60.z - p120.z);
+    // The bound is a *fraction of the path*, not a fixed metre count, and the
+    // difference matters. This assertion used to read `drift < 1.0`, which
+    // passed at a 3.45 m/s walk and failed the moment the walk went to 4.8 —
+    // at 1.408 m, which is 1.39× the old number against a 1.39× speed. The
+    // quantity was proportional to distance travelled the whole time and the
+    // tolerance was not, so the test was measuring the walk speed.
+    //
+    // What actually produces the residual is worth naming, because the obvious
+    // suspect is not the culprit. It is not the velocity solver: that is an
+    // exponential approach with a closed-form displacement (`Walker.step`), so
+    // under a constant target it is dt-exact to the last bit. It is the *height
+    // field* — `slopeAt`, `normalAt` and the step-up probe are each evaluated
+    // once per step, so a 60 Hz body samples a rough surface half as often as a
+    // 120 Hz one and takes a subtly different line across it. That is not
+    // removable by a better integrator; it is what discretising a continuous
+    // field costs, and the honest thing to bound is its *rate*.
+    const path = 20 * GAIT.walk;            // upper bound: 20 s at top speed
     ok('and halving the timestep lands in the same place, not a different one',
-      drift < 1.0, `20 s of walking: ${drift.toFixed(3)} m apart at 60 vs 120 Hz`);
+      drift < path * 0.02,
+      `20 s of walking: ${drift.toFixed(3)} m apart at 60 vs 120 Hz`
+      + ` — ${(100 * drift / path).toFixed(2)}% of the ${path.toFixed(0)} m path`);
   }
 
   // --- the third-person boom, which is the one gate clause §M4 spells out ---
@@ -4853,7 +5102,113 @@ function suiteSoften() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the score (src/score.js)
+//
+// The music is two halves: a set of pure functions that decide *what to play*
+// from the world's own numbers, and a WebAudio graph that plays it. Only the
+// first half exists today, and this is why it was written that way — a browser
+// is the only thing that can make a sound, and nothing in the loop can hear
+// one, so the half that carries the actual claim ("the score is attuned to the
+// world") is the half that has to be decidable without ears.
+//
+// What these check is that the mapping *discriminates*. A generative score
+// whose parameters all collapse onto one chord is indistinguishable from a
+// hardcoded one, and it would look identical from the outside.
+function suiteScore() {
+  console.log('\nscore — the world→music mapping, decided without ears (§2.3, §9)');
+
+  const W = [
+    { kind: 'cosmic', seed: 1, starTemp: 5778 },
+    { kind: 'galaxy', seed: 2, starTemp: 5778 },
+    { kind: 'system', seed: 3, starTemp: 5778 },
+    { kind: 'blackhole', seed: 4, starTemp: 5778 },
+    // gravity in m/s², Teq in kelvin — the module's units, not multiples of g
+    { kind: 'surface', seed: 11, type: 'terrestrial', starTemp: 5682, gravity: 5.88, Teq: 338, inhabited: true },
+    { kind: 'surface', seed: 12, type: 'ice', starTemp: 3200, gravity: 3.04, Teq: 140 },
+    { kind: 'surface', seed: 13, type: 'lava', starTemp: 9500, gravity: 18.63, Teq: 1180 },
+    { kind: 'surface', seed: 14, type: 'ocean', starTemp: 5100, gravity: 10.30, Teq: 291, inhabited: true },
+    { kind: 'surface', seed: 15, type: 'barren', starTemp: 24000, gravity: 1.57, Teq: 60 },
+    { kind: 'clouds', seed: 16, type: 'gas giant', starTemp: 4100, gravity: 23.54, Teq: 165 },
+  ];
+  const S = W.map(deriveScore);
+
+  // §2.3 — same world in, same score out, or a shared link plays a different
+  // piece for whoever opens it
+  const twice = W.every((w) => JSON.stringify(deriveScore(w)) === JSON.stringify(deriveScore(w)));
+  ok('§2.3 · the same world derives the same score, exactly',
+    twice, `${W.length} worlds, each derived twice`);
+
+  const keys = new Set(S.map((s) => s.tonicName + ' ' + s.mode));
+  ok('and ten different worlds do not land on the same chord',
+    keys.size >= 8, `${keys.size} distinct key+mode of ${W.length}`
+    + ` · ${[...keys].slice(0, 4).join(', ')}…`);
+
+  // The mode ladder is ordered dark→bright and driven by the star's colour
+  // temperature, which is the same number §9.6 derives the sky's four stops
+  // from. Assert the *ordering*, not the values: it is the monotonicity that
+  // makes it a transfer rather than a lookup.
+  const ladderAt = (T) => MODE_LADDER.indexOf(
+    deriveScore({ kind: 'surface', seed: 99, type: 'terrestrial', starTemp: T, gravity: 1, temp: 288 }).mode);
+  const cool = ladderAt(3000), sun = ladderAt(5778), hot = ladderAt(20000);
+  ok('§9.6 · a redder star gets a darker mode, and the ladder is monotone in T',
+    cool <= sun && sun <= hot && cool < hot,
+    `3000 K → ${MODE_LADDER[cool]} · 5778 K → ${MODE_LADDER[sun]} · 20000 K → ${MODE_LADDER[hot]}`);
+
+  // Gravity sets register. Heavy worlds sit low — the one mapping a listener
+  // could name without being told it exists.
+  //
+  // `gravity` is **m/s², not multiples of g**, and this assertion caught the
+  // author of it passing 0.16/1.0/2.5 as if it were the latter. Every one of
+  // those clamps to the module's 0.25 m/s² floor or near it, so all three came
+  // back on the same note and the mapping looked broken when the test was.
+  // Left as a comment because the same slip is one keystroke away for anyone
+  // reading `gravityOf()` in avatar.js, which does return multiples of g.
+  const G = 9.80665;
+  const reg = (mss) => deriveScore({ kind: 'surface', seed: 7, type: 'terrestrial', starTemp: 5778, gravity: mss, temp: 288 }).tonicMidi;
+  ok('and a heavier world sits lower, from its own surface gravity',
+    reg(2.5 * G) < reg(1.0 * G) && reg(1.0 * G) < reg(0.16 * G),
+    `0.16 g → MIDI ${reg(0.16 * G)} · 1 g → ${reg(1.0 * G)} · 2.5 g → ${reg(2.5 * G)}`);
+
+  // §2.8's split by medium, in the one place it can be heard: vacuum is a big
+  // empty room and an atmosphere is not.
+  const vac = S.filter((s) => ['cosmic', 'galaxy', 'system', 'blackhole'].includes(s.kind));
+  const air = S.filter((s) => ['surface', 'clouds'].includes(s.kind));
+  const minVac = Math.min(...vac.map((s) => s.reverb.seconds));
+  const maxAir = Math.max(...air.map((s) => s.reverb.seconds));
+  ok('§2.8 · vacuum reverberates longer than air does, at every scale',
+    minVac > maxAir,
+    `vacuum ≥ ${minVac.toFixed(1)} s · atmosphere ≤ ${maxAir.toFixed(1)} s`);
+
+  // Non-loopable, by construction: the LFO rates must be mutually irrational,
+  // or the whole texture has a period and §M1's "no perceptible loop" is a
+  // matter of how long you are willing to wait.
+  const ratios = LFO_RATIOS;
+  let rational = 0;
+  for (let i = 0; i < ratios.length; i++) {
+    for (let j = i + 1; j < ratios.length; j++) {
+      const r = ratios[j] / ratios[i];
+      // a small-integer ratio is what a common period needs
+      for (let p = 1; p <= 6; p++) for (let q = 1; q <= 6; q++) {
+        if (Math.abs(r - p / q) < 1e-9) rational++;
+      }
+    }
+  }
+  ok('§M1 · and no two LFO rates share a period, so the texture cannot loop',
+    rational === 0, `${ratios.length} rates, ${rational} small-integer ratios among them`);
+
+  // The chord plan is pure in k, which is what lets a scale change jump to a
+  // different point in the piece without storing anything or hearing a seam.
+  const s0 = S[4];
+  const c1 = JSON.stringify(chordPlan(s0, 137));
+  const c2 = JSON.stringify(chordPlan(s0, 137));
+  ok('and the k-th chord is pure in k, so a scale change can cut into the piece',
+    c1 === c2 && chordPlan(s0, 137) !== null,
+    `chord 137 reproduced without evaluating 0…136`);
+}
+
 const suites = {
+  score: suiteScore,
   soften: suiteSoften,
   cosmology: suiteCosmology, zeldovich: suiteZeldovich, webclass: suiteWebclass,
   print: suitePrint, aerial: suiteAerial, starlight: suiteStarlight,

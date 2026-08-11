@@ -88,8 +88,14 @@
     text-shadow:0 1px 18px rgba(0,0,0,.8);
   }
 
+  /* The bottom-right strip. `env(safe-area-inset-bottom)` is not decoration:
+     without it the row sits under the home indicator on every notched phone,
+     and it is also the datum `#tt`'s thumb cluster is stacked above (see the
+     `body.coarse` block further down — the two must move together or they
+     collide again the moment one of them is tweaked). */
   #timectl{
-    right:26px; bottom:22px; display:flex; align-items:center; gap:14px;
+    right:26px; bottom:calc(22px + env(safe-area-inset-bottom));
+    display:flex; align-items:center; gap:14px;
     font-size:11px; letter-spacing:.2em; color:var(--ink-dim);
     font-variant-numeric: tabular-nums;
   }
@@ -100,6 +106,21 @@
   }
   #timectl button:hover{ border-color:var(--ink-dim); color:var(--ink); }
   #timectl .readout{ min-width:120px; text-align:right; text-transform:uppercase; }
+
+  /* ✦ — the one verb that is always available, at every scale, on both input
+     kinds: go somewhere wondrous. It lives *inside* `#timectl` rather than
+     beside it on purpose. §3's chrome ruling caps the HUD at three persistent
+     elements, and the three are `#crumbs`, `#stats` and this strip; a fourth
+     floating button would have bought the verb by breaking the rule it is
+     supposed to live under. As a member of the strip it inherits the 4 s idle
+     fade and dies with `H` like everything else. */
+  #timectl #t-wonder{
+    border-color:rgba(158,203,255,.34); color:var(--accent);
+    font-size:13px; margin-right:2px;
+  }
+  #timectl #t-wonder:hover{ border-color:var(--accent); color:#fff;
+    box-shadow:0 0 18px rgba(158,203,255,.22); }
+  #timectl #t-wonder:active{ background:rgba(158,203,255,.22); }
 
   #science{
     top:20px; right:26px; display:flex; flex-direction:column; align-items:flex-end; gap:12px;
@@ -241,6 +262,26 @@
   @media (pointer:coarse) and (max-width:900px){
     #stats{ display:none; }
     #crumbs{ max-width:86vw; }
+    /* The strip and the thumb cluster shared a bottom edge and a right edge,
+       so `#tt .ctx` (right:16 bottom:22+inset, 46 px) sat directly on top of
+       `#timectl` (right:26 bottom:22+inset, 30 px). Both were reachable only
+       by luck, and on the scales where ✦ is the primary tap the two ✦ buttons
+       were literally stacked.
+
+       The strip is the datum because it is the smaller and the more
+       peripheral of the two; the thumb cluster stacks above it, in
+       `src/touch.js`, at a height derived from these numbers. Tightened here
+       as well: 14 px of gap and a 120 px readout is 322 px of a 390 px screen
+       before the ✦ is added, and the row has to hold six children now. */
+    #timectl{ right:14px; gap:9px; }
+    #timectl button{ width:34px; height:34px; }
+    #timectl .readout{ min-width:0; font-size:10px; letter-spacing:.12em; }
+  }
+  /* Below this the readout is the first thing to go: the numbers are also in
+     `#crumbs` and on the science card, and a control you cannot hit is worth
+     less than a number you can read somewhere else. */
+  @media (pointer:coarse) and (max-width:400px){
+    #timectl .readout{ display:none; }
   }
 
   /* ------- M7 (?m7=1): three persistent elements, everything else summoned -

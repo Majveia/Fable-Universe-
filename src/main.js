@@ -26,6 +26,11 @@ import { Bench, BENCH_ON, BENCH_SEED } from './bench.js';
 import { Q, pixelRatio } from './quality.js';
 import { paintForScale } from './print.js';
 import { pinIdleClock, tickInput } from './input.js';
+import { gravityOf } from './avatar.js';
+
+// scratch for THREE.Color#getHSL — the score reads a world's palette hue, and
+// allocating an object per scale change to do it would be silly
+const HSL = { h: 0, s: 0, l: 0 };
 
 const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE, planet: PLANET_NOTE };
 const HINTS = {
@@ -97,7 +102,9 @@ class App {
     this.post = new Post(this.renderer);
     this.hud = new HUD(this);
     this.zoom = new Hyperzoom(this);
-    this.audio = new Ambience();
+    // the universe's own seed, so `keySeed` at the cosmic scale is this
+    // universe rather than 0 — without it every seed opens on the same chord
+    this.audio = new Ambience(this.seed);
     this.tour = new Tour(this);
     const unlock = () => {
       this.audio.unlock();
@@ -293,11 +300,48 @@ class App {
     }
   }
 
+  /**
+   * What the score needs to know about where you are standing (`src/score.js`).
+   *
+   * This used to hand over three fields and `null` at the four vacuum scales,
+   * while `deriveScore()` reads eight. The consequence was not a crash — every
+   * field is optional and defaults — it was worse than that: **every world was
+   * scored as if it orbited the Sun at one gravity**, and every universe opened
+   * on the same chord. A generative score whose inputs never vary is a
+   * hardcoded one wearing a costume, which is precisely the thing §1 says this
+   * project must not do in the one medium where nobody would check.
+   *
+   * Two seeds, and the difference is the point. `keySeed` fixes the key and
+   * hangs on the *star*, so every world in a system is in the same key and a
+   * dive from orbit to the ground changes register, mode and instrumentation
+   * but never modulates under you — §2.5, in the one medium where a cut would
+   * be inaudible as a cut and merely feel wrong. `seed` fixes everything else
+   * (the chord progression, where each generator starts) and is the world's
+   * own, so two planets of one star are the same key and different pieces.
+   *
+   * `blackhole` deliberately gets no star: its `ctx` carries only `bhMassMsun`,
+   * so `keySeed` falls through to the universe's seed and it plays in the
+   * universe's key. That is intentional and must not be "fixed" by handing over
+   * the accretion disc's temperature — the disc is the hottest thing in the
+   * project and the mode transfer would score the maw in Lydian.
+   */
   _worldInfo(s) {
-    if (s.kind === 'surface') return { type: s.pp.type, atmo: s.atmo, mood: s.pp.res?.id };
-    if (s.kind === 'clouds') return { type: s.pp.type, atmo: 1.5, mood: s.pp.res?.id };
-    if (s.kind === 'planet') return { type: s.pp.type, atmo: 0.55, mood: s.pp.res?.id };
-    return null;
+    const star = s.kind === 'system' ? s.params : (s.ctx?.system ?? null);
+    const keySeed = star?.seed ?? s.ctx?.starSeed ?? s.ctx?.galaxySeed ?? this.seed;
+    const base = { seed: keySeed, keySeed, starTemp: star?.temp };
+    const pp = s.pp;
+    if (!pp) return base;
+    return {
+      ...base,
+      seed: pp.seed ?? keySeed,
+      type: pp.type,
+      atmo: s.kind === 'surface' ? s.atmo : s.kind === 'clouds' ? 1.5 : 0.55,
+      mood: pp.res?.id,
+      Teq: pp.Teq,
+      gravity: gravityOf(pp),
+      hue: pp.colA?.getHSL ? pp.colA.getHSL(HSL).h : undefined,
+      inhabited: pp.inhabited,
+    };
   }
 
   /**

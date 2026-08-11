@@ -459,6 +459,35 @@ export class NBodySim {
   get densityPrevTexture() { return this.densityRef.texture; }
 
   /**
+   * −∇φ on the mesh, which the renderer reads to get the **tidal tensor**.
+   *
+   * The solver makes this for the kick and then throws the reference away; it
+   * costs nothing to expose, and it is the only place in the code where the
+   * simulated potential's second derivatives are one difference away. The web
+   * classification (Hahn et al. 2007) is defined on exactly those second
+   * derivatives, so this is what lets the N-body path classify structure from
+   * its own gravity instead of borrowing linear theory's answer — see the note
+   * in `cosmic.js`'s `M1_NB_VERT`.
+   *
+   * `FORCE_FRAG` writes it with a two-cell central difference, so differencing
+   * it again gives a two-cell second difference: smoother than the minimal
+   * stencil, which is welcome on a field with about one particle per cell.
+   */
+  get forceTexture() { return this.force.texture; }
+
+  /**
+   * The constant that puts the tidal eigenvalues into units where they sum
+   * to δ, which is the convention λ_th = 0.2 is quoted in.
+   *
+   * `GREEN_FRAG` solves φ_k = −1.5·Ωm·δ_k/(a·k²), so ∇²φ = (1.5·Ωm/a)·δ, and
+   * `FORCE_FRAG` divides by h = 2/G on the way out. Dividing the renderer's
+   * second difference by both recovers δ-normalised eigenvalues.
+   */
+  get tidalScale() {
+    return this.a / (1.5 * COSMO.OmegaM * (2 / G));
+  }
+
+  /**
    * The scale that turns a density difference into ∇·v in units of aHf.
    *
    * Continuity in *comoving* coordinates carries a 1/a on the divergence

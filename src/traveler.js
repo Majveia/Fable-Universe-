@@ -1,14 +1,28 @@
 // The traveler — because a universe this big deserves a witness you can see.
 //
-// Press C and the camera steps back: there you are, a small cloaked figure
-// under a straw hat, scarf leaning with your speed, a lantern warming your
-// hand after dark. The camera follows on a spring — drag still orbits, WASD
-// is camera-relative, and the figure turns to face wherever it's going.
+// Press C and the camera steps back: there you are. A long indigo coat with a
+// bone pauldron on the left shoulder, a strap across to the opposite hip, a
+// rust scarf streaming off the same shoulder as the coat, and one cold light
+// where a face would be. The camera follows on a spring — drag still orbits,
+// WASD is camera-relative, and the figure turns to face wherever it's going.
 //
 // Near the town plaza a hover-skiff waits, keel-light breathing. Walk up,
 // press E, and the world starts moving underneath you: banking turns, a
 // bobbing hover over land and sea alike, dust and spray kicked up behind.
 // E again steps off wherever you are; the skiff parks and keeps waiting.
+//
+// ---------------------------------------------------------------------------
+// What this file owns, and what `figure.js` owns
+//
+// The body — its proportion, its kit, its gait, its cloth and its light model —
+// is `src/figure.js`, and the reasoning for every one of those decisions lives
+// there. What is left here is placement: where the figure stands, which way it
+// faces, what the camera does about it, and the skiff.
+//
+// The split is not cosmetic. Everything in `figure.js` is a pure function of
+// the seed and of the walker's state; everything here reaches into `s` and
+// touches the scene graph. Keeping them apart is what lets the figure be
+// reasoned about — and, when it comes to it, tested — without a renderer.
 
 import * as THREE from 'three';
 import { RNG, arand, hash } from './rng.js';
@@ -16,44 +30,77 @@ import { softDotTexture } from './nebula.js';
 import { HOVER, Hover, MOUNT, Mount, handMomentum } from './vehicle.js';
 import { input, jumpHeld } from './input.js';
 import { GAIT, gravityOf } from './avatar.js';
+import { Figure } from './figure.js';
+import { lightFor } from './paint.js';
+import { SHADOW_GLSL, markCaster } from './shadow.js';
 
-const EYE = 1.8;
+/**
+ * The camera's height above the feet while riding, and *only* while riding.
+ *
+ * This constant used to be 1.8 and used to stand for the walker's eye as well,
+ * which was wrong by 12 cm the moment §M4 landed: `GAIT.eye` is 1.68 and
+ * `s.body.y` has been `walker.eyeY()` ever since. Every use of it against the
+ * body has been replaced with the walker's own feet, which is the only number
+ * that cannot drift out of step with the controller. What it still means, and
+ * legitimately, is where a rider's eye sits above the skiff's keel.
+ */
+const RIDE_EYE = 1.8;
 
-// §6 M5's half of this file. Default-off (§7.4), and the old path is left
-// intact underneath it — `?m5=0` is the rollback and it is the whole rollback.
-const M5 = new URL(window.location.href).searchParams.get('m5') === '1';
+/**
+ * §6 M5's half of this file. **Now default-on**, matching `surface.js:161`.
+ *
+ * It disagreed until this commit: `surface.js` flipped the default and this
+ * file kept `=== '1'`. Nothing threw, because both halves are individually
+ * coherent — the surface asked the hover for its position and got `null`, took
+ * the walker branch, and the old inline flight path kept flying the skiff. The
+ * symptom was that `?m5=1` and the default build ran *different vehicle
+ * physics* while claiming to be the same feature. One flag, one default.
+ */
+const M5 = new URL(window.location.href).searchParams.get('m5') !== '0';
 
 export function addTraveler(s) {
   const r = new RNG(hash(s.pp.seed, 0x77a7e1e5));
 
   // ------------------------------------------------------------ avatar ----
+  //
+  // §9.2's four light colours come from *this world's* star, through
+  // `starlight.js`'s transfer, at the sun's own elevation — so the coat is lit
+  // by the sun it is standing under rather than by a constant. `_syncLight()`
+  // below re-derives them as the day turns.
+  //
+  // The shadow sampler is passed only if this build has one. `?paint=` is
+  // default-off and `s.sunShadow` therefore usually does not exist; handing the
+  // figure a `null` there compiles a shader with `shadow = 1.0` folded in as a
+  // literal rather than one that samples a map nobody rendered.
+  const starT = s.ctx.system?.temp ?? 5778;
+  const sunElev = () => (Math.asin(Math.min(Math.max(s.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
+  const figure = new Figure({
+    seed: s.pp.seed,
+    sunDir: s.uSunDir,
+    light: lightFor(starT, Math.max(sunElev(), 0.5)),
+    shadowGLSL: s.sunShadow ? SHADOW_GLSL : null,
+    shadowUniforms: s.sunShadow ? s.sunShadow.uniforms : null,
+  });
+
   const avatar = new THREE.Group();
-  const cloak = new THREE.Mesh(
-    new THREE.ConeGeometry(0.42, 1.3, 9),
-    new THREE.MeshStandardMaterial({ color: 0x2c3350, roughness: 0.85 }));
-  cloak.position.y = 0.65;
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.16, 12, 10),
-    new THREE.MeshStandardMaterial({ color: 0xe6c6a4, roughness: 0.7 }));
-  head.position.y = 1.42;
-  const hat = new THREE.Mesh(
-    new THREE.ConeGeometry(0.44, 0.26, 10),
-    new THREE.MeshStandardMaterial({ color: 0xc9a86a, roughness: 0.9 }));
-  hat.position.y = 1.58;
-  const scarf = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.16, 0.55),
-    new THREE.MeshStandardMaterial({ color: 0xa33b2e, roughness: 0.8, side: THREE.DoubleSide }));
-  scarf.position.set(0, 1.15, -0.28);
-  scarf.rotation.x = 0.5;
+  avatar.add(figure.mesh);
+  // The lantern hangs from the right hand and is placed from that bone every
+  // frame, so it swings with the arm the gait is already swinging. A lantern
+  // pinned to the group is a lantern floating beside a person.
   const lantern = new THREE.Sprite(new THREE.SpriteMaterial({
     map: softDotTexture(32), color: new THREE.Color(1.3, 0.85, 0.45),
     transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
   }));
-  lantern.position.set(0.34, 0.75, 0.12);
   lantern.scale.setScalar(1.6);
-  avatar.add(cloak, head, hat, scarf, lantern);
+  avatar.add(lantern);
   avatar.visible = false;
+  // §9.2's shadow is opt-in by layer: an occluder has to be named, and a person
+  // standing in a meadow at a 13° sun is the most legible occluder in the frame.
+  markCaster(figure.mesh);
   s.scene.add(avatar);
+
+  const handPos = new THREE.Vector3();
+  let lightT = 1e9;      // seconds since the light table was last re-derived
 
   // ------------------------------------------------------------- skiff ----
   const skiff = new THREE.Group();
@@ -126,7 +173,7 @@ export function addTraveler(s) {
   const T = {
     third: false,
     riding: false,
-    avatar, skiff,
+    avatar, skiff, figure,
     hover, mount,
     _camSet: false,
     _face: skiff.rotation.y,
@@ -168,7 +215,7 @@ export function addTraveler(s) {
             w.vel.y = 0;          // the skiff's bob is not a jump
             w.grounded = true;
           }
-          s.body.set(hover.pos.x, (w ? w.eyeY() : ground(hover.pos.x, hover.pos.z) + EYE), hover.pos.z);
+          s.body.set(hover.pos.x, (w ? w.eyeY() : ground(hover.pos.x, hover.pos.z) + RIDE_EYE), hover.pos.z);
           s.vel.set(hover.vel.x, 0, hover.vel.z);
           // the craft settles where it was left, keel down
           skiff.position.set(hover.pos.x, ground(hover.pos.x, hover.pos.z) + 0.55, hover.pos.z);
@@ -193,7 +240,7 @@ export function addTraveler(s) {
           // and the walker's momentum goes with you — running at the skiff and
           // boarding should not stop you dead
           if (s.walker) handMomentum(s.walker.vel, hover.vel);
-          s.body.set(hover.pos.x, hover.pos.y + EYE, hover.pos.z);
+          s.body.set(hover.pos.x, hover.pos.y + RIDE_EYE, hover.pos.z);
           s.vel.set(hover.vel.x, 0, hover.vel.z);
           mount.begin(eye, { x: s.body.x, y: s.body.y, z: s.body.z }, s.vel);
           T._camSet = true;    // the spring owns the gap now, not a snap
@@ -205,7 +252,7 @@ export function addTraveler(s) {
         s.fly = false;
         s.body.x = skiff.position.x;
         s.body.z = skiff.position.z;
-        s.body.y = skiff.position.y + EYE;
+        s.body.y = skiff.position.y + RIDE_EYE;
         return 'mounted';
       }
       return null;
@@ -230,10 +277,10 @@ export function addTraveler(s) {
       // hover: ride the terrain and the sea at a steady keel height
       const g = ground(s.body.x, s.body.z);
       const hoverY = g + 3.4 + Math.sin(T._t * 2.1) * 0.24;
-      s.body.y += (hoverY + EYE - s.body.y) * (1 - Math.exp(-5 * dt));
+      s.body.y += (hoverY + RIDE_EYE - s.body.y) * (1 - Math.exp(-5 * dt));
 
       // the skiff itself: under the body, nose into the velocity, banking
-      skiff.position.set(s.body.x, s.body.y - EYE, s.body.z);
+      skiff.position.set(s.body.x, s.body.y - RIDE_EYE, s.body.z);
       const sp = Math.hypot(s.vel.x, s.vel.z);
       if (sp > 2) {
         const want = Math.atan2(-s.vel.x, -s.vel.z);
@@ -336,7 +383,7 @@ export function addTraveler(s) {
 
       T._face = hover.face;
       T._bank = hover.bank;
-      s.body.set(hover.pos.x, hover.pos.y + EYE, hover.pos.z);
+      s.body.set(hover.pos.x, hover.pos.y + RIDE_EYE, hover.pos.z);
       s.vel.set(hover.vel.x, hover.vel.y, hover.vel.z);
 
       skiff.position.set(hover.pos.x, hover.pos.y, hover.pos.z);
@@ -350,6 +397,95 @@ export function addTraveler(s) {
       // `_t` is advanced by `place()`, which also runs every frame — bumping it
       // here too would run the figure's clock at twice speed while riding
       T._wake(dt, sp);
+    },
+
+    /**
+     * Stand the figure up for this frame: where it is, which way it faces, and
+     * everything `figure.js` needs in order to know what it is doing.
+     *
+     * Two things here are worth stating rather than reading off:
+     *
+     * **The feet come from the walker, never from `s.body`.** `s.body.y` is the
+     * *eye*, and the eye is `walker.pos.y + GAIT.eye + walker.bobY` — so
+     * subtracting a constant from it puts the boots wherever the gait's bob
+     * happens to be, and the figure breathes up and down through the ground at
+     * a centimetre and a half. The controller already knows where its feet are.
+     *
+     * **The wind is sampled twice, at the hem and at the shoulder.** §6 M3's
+     * boundary layer is the whole reason a coat and a scarf move differently in
+     * the same gust, and one sample cannot express it. Two calls into
+     * `s.sampleWind()` — the same reading the grass, the rain, the god rays and
+     * the skiff's own wake all take (§6 M3: *one* field) — is the cheapest
+     * possible statement of a gradient.
+     */
+    _figure(dt) {
+      const w = s.walker;
+      // riding: seated on the deck rather than deleted. The figure used to be
+      // hidden while mounted, which meant §M5's forty-kilometre traverse was an
+      // empty craft flying itself — and a craft with nobody in it is a much
+      // worse advertisement for a hover-skiff than a slightly stiff sitting pose.
+      const riding = T.riding;
+      avatar.visible = true;
+
+      let fx, fy, fz, vel, speed;
+      if (riding) {
+        const hv = M5 ? hover : null;
+        fx = hv ? hv.pos.x : skiff.position.x;
+        fz = hv ? hv.pos.z : skiff.position.z;
+        fy = (hv ? hv.pos.y : skiff.position.y) + 0.30;   // the seat, above the keel
+        vel = hv ? hv.vel : s.vel;
+        speed = Math.hypot(vel.x, vel.z);
+        T._face = hv ? hv.face : T._face;
+        avatar.rotation.set(0, T._face, hv ? hv.bank : 0);
+      } else {
+        fx = w ? w.pos.x : s.body.x;
+        fy = w ? w.pos.y : s.body.y - GAIT.eye;
+        fz = w ? w.pos.z : s.body.z;
+        vel = w ? w.vel : s.vel;
+        speed = Math.hypot(vel.x, vel.z);
+        // face where you are going, and turn at a rate a body could turn at.
+        // Below 0.8 m/s the heading is held: a body shuffling in place should
+        // not spin to chase the noise on its own velocity.
+        if (speed > 0.8) {
+          const want = Math.atan2(-vel.x, -vel.z);
+          let dy = want - T._face;
+          dy = ((dy + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+          T._face += dy * Math.min(dt * 8, 1);
+        }
+        avatar.rotation.set(0, T._face, 0);
+      }
+      avatar.position.set(fx, fy, fz);
+
+      // the boundary layer, in two samples (see above)
+      const wind = s.sampleWind ? s.sampleWind(fx, fz, 0.45) : { x: 0, z: 0 };
+      const windUp = s.sampleWind ? s.sampleWind(fx, fz, 1.45) : wind;
+
+      figure.update(dt, {
+        walker: riding ? null : w,
+        speed,
+        vel,
+        face: T._face,
+        wind,
+        windUp,
+        mode: riding ? 'ride' : (w && w.fly) || s.fly ? 'fly' : 'walk',
+        sunY: s.uSunDir.value.y,
+        wet: s.uWet ? s.uWet.value : 0,
+      });
+
+      // §9.2's light table is a spectral integral and the sun moves slowly: one
+      // local day is seven real minutes, so re-deriving it four times a second
+      // is already forty times finer than anything the eye can catch on a coat.
+      lightT += dt;
+      if (lightT > 0.25) {
+        lightT = 0;
+        figure.setLight(lightFor(starT, Math.max(sunElev(), 0.5), true));
+      }
+
+      // the lantern rides the hand the gait is already swinging
+      figure.joint('handR', handPos);
+      lantern.position.copy(handPos);
+      const night = 1 - Math.min(Math.max((s.uSunDir.value.y + 0.12) * 3.5, 0), 1);
+      lantern.material.opacity = night * 0.85;
     },
 
     /** after movement: seat the camera (and the figure) for this frame */
@@ -368,24 +504,7 @@ export function addTraveler(s) {
         return;
       }
 
-      // the figure stands at the body's feet (hidden while riding)
-      avatar.visible = !T.riding;
-      if (!T.riding) {
-        avatar.position.set(s.body.x, s.body.y - EYE, s.body.z);
-        const sp = Math.hypot(s.vel.x, s.vel.z);
-        if (sp > 0.8) {
-          const want = Math.atan2(-s.vel.x, -s.vel.z);
-          let dy = want - T._face;
-          dy = ((dy + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-          T._face += dy * Math.min(dt * 8, 1);
-        }
-        avatar.rotation.y = T._face;
-        avatar.position.y += Math.abs(Math.sin(T._t * 7.5)) * Math.min(sp / 16, 1) * 0.09;
-        avatar.rotation.x = Math.min(sp / 60, 0.14);
-        scarf.rotation.x = 0.5 + Math.sin(T._t * 3.2) * 0.15 + Math.min(sp / 40, 0.6);
-        const night = 1 - Math.min(Math.max((s.uSunDir.value.y + 0.12) * 3.5, 0), 1);
-        lantern.material.opacity = night * 0.85;
-      }
+      T._figure(dt);
 
       if (!camera) return;   // §M4's rig owns the lens; the figure is done
 

@@ -264,6 +264,39 @@ export const STOPS = {
   ambSky: { hex: '#9EC6E6', view: 45 },
   ambGnd: { hex: '#AA9C64', beam: 1.0 },
   shadowTint: { hex: '#5C6E9E', view: 70 },
+
+  // §9.1's `clouds` group, which this file was missing and the cumulus deck
+  // needs. The reference paints seven of them and AEON cannot ship the hexes
+  // for the same reason it cannot ship the sky's: a cloud is a white object,
+  // and a white object is a mirror for whatever star is lighting it. Under an
+  // M dwarf a cumulus top is amber and its belly is olive, and any pipeline
+  // that renders it #FFF8EC has stopped telling the truth about the star.
+  //
+  // Each stop is a painting of a specific optical path, which is what decides
+  // its `beam` multiplier — how much air the light crossed before it arrived:
+  //
+  //   cloudRim   forward-scattered through the *thin* edge of the cloud, which
+  //              is the shortest path of the seven and therefore the least
+  //              reddened — this is why a silver lining is silver
+  //   cirrus     ice at 8 km, above most of the aerosol, so shorter still
+  //   cloudTop   the sunlit shoulder, a kilometre up: it has skipped the
+  //              boundary layer the ground is sitting in
+  //   cloudBody  the lit flank, slightly more grazing
+  //   cloudTerm  the terminator, where the beam grazes tangentially and so
+  //              crosses *more* air than anything on the ground does — the
+  //              reason the band just before the shadow is the warmest one
+  //
+  // The two shadowed stops take no beam at all. A cumulus belly is lit only by
+  // the sky dome above it and the ground beneath, so they are `view` stops at
+  // the elevations that dome subtends — which is why they come out violet
+  // rather than grey, by exactly the argument §9.2 makes about shadows.
+  cloudTop: { hex: '#FFF8EC', beam: 0.85 },
+  cloudBody: { hex: '#F6E7D2', beam: 0.95 },
+  cloudTerm: { hex: '#E8CFB4', beam: 1.15 },
+  cloudRim: { hex: '#FFEFBE', beam: 0.35 },
+  cirrus: { hex: '#F3E6D6', beam: 0.25 },
+  cloudUnder: { hex: '#B7ACC3', view: 40 },
+  cloudCore: { hex: '#9791B0', view: 70 },
 };
 
 /** the physical chromaticity a stop is a painting of, under a given star */
