@@ -16,6 +16,18 @@
 // Sun at one gravity. The patch is nine lines and is written out in
 // `docs/notes/score-integration.md`; `main.js` belongs to another agent.
 //
+// **CLOSED.** `main.js:328` now passes all eight fields — `starTemp` from the
+// star params, `gravity` through `gravityOf(pp)` in m/s², `Teq`, the palette
+// hue off `pp.colA`, `inhabited`, the mood id, and the two seeds (`keySeed`
+// hanging on the *star* so a system is one key, `seed` on the world so two
+// planets of one star are different pieces). The vacuum scales get the star
+// they are looking at rather than `null`. So the sentence above is history:
+// worlds are scored as themselves now, not as the Sun at one gravity.
+//
+// `blackhole` deliberately still gets no star temperature — the accretion disc
+// is the hottest thing in the project and the mode transfer would score the
+// maw in Lydian. `KIND_ARRANGEMENT.blackhole` holds it dark with `modeBias`.
+//
 // And the limit, stated here so it is not quietly forgotten now that a
 // synthesiser exists: **nothing in this repo can hear.** The checks establish
 // necessary conditions — the mapping discriminates, no chord holds a semitone,
