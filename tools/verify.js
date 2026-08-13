@@ -38,8 +38,11 @@ import {
   magnetosphere, speciesFor, wavelengthRGB, windPressure,
 } from '../src/magnetosphere.js';
 import {
-  ARM, GAIT, LOOK, Walker, gravityOf, replay, sweepArm,
+  ARM, FLOW_GAIT, GAIT, LOOK, Walker, gravityOf, launchSpeed, replay, sweepArm,
 } from '../src/avatar.js';
+import {
+  FLIGHT, FLOW_ARM, Flight, airColumn, flyReplay,
+} from '../src/flight.js';
 import { BINDINGS, JUMP_CODE, addLook, input, setAnalog } from '../src/input.js';
 import {
   LAYERS, MATERIAL_GLSL, blend, materialPalette, moistureAt, snowLine, worldBias,
@@ -78,6 +81,15 @@ import {
   maxSpeed, reachChords, wantedDepth,
 } from '../src/vehicle.js';
 import { FACES, surfaceRadius, uvToDir } from '../src/tilebuild.js';
+import {
+  ALPHA_1K, IRRATIONAL, IR_MAX_SECONDS, PEAK_AUDIO, PIPE_LENGTH, PLANCK_K,
+  ROOT_REF, SUN_T, X_PEAK, absorptionCorner, airShare, bedPartials,
+  boilingPoint, breathRate, diurnalSwing, envelopeAt, goldenWeight, grainEvent,
+  groundAcoustics, habitability, horizonTail, impulseResponse, inversion,
+  modulators, overtoneChord, pipeRoot, planckShape, spectralCentroid,
+  spectralTilt, speedOfSound, stepThermalLag, strideRate, tailConstant,
+  voiceEvent, voiceStream, voicing, voicingKey, windDrive,
+} from '../src/score.js';
 
 let failures = 0;
 let checks = 0;
@@ -5197,7 +5209,535 @@ function suiteNight() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// suite: score
+//
+// src/score.js claims the music is a readout rather than a mood board, which
+// is the same claim src/magnetosphere.js makes about the aurora and is worth
+// exactly as much as the checks under it. Every assertion here is either an
+// anchor somebody else measured — the speed of sound in air, the boiling point
+// of water at half an atmosphere, the Apollo lope — or an ordering that has to
+// hold between two worlds if the derivation is doing any work at all.
+//
+// The last two are the ones that matter musically: same seed, same voicing,
+// twice; and no lag of the composite envelope recovers the signal, which is
+// §M1's "no perceptible loop" measured rather than asserted.
+
+/** the fixture worlds — one temperate anchor and its interesting neighbours */
+const S_EARTH = {
+  seed: 20250601, typeId: 1, Teq: 255, massE: 1, radiusE: 1, atmo: 1, starT: SUN_T,
+};
+const S_COLD = { ...S_EARTH, Teq: 150, atmo: 0.25, starT: 3200 };
+const S_AIRLESS = { ...S_EARTH, typeId: 0, atmo: 0 };
+const S_GIANT = { ...S_EARTH, typeId: 5, Teq: 100, massE: 300, radiusE: 11 };
+
+/**
+ * Normalised autocorrelation of the composite modulation envelope, maximised
+ * over lags in `[lo, hi]`. A true loop returns 1.0 at its period; the ear
+ * needs about four seconds of one to learn it.
+ *
+ * Sampled through `envelopeAt` rather than re-summed from the modulator rates
+ * here, and that is the whole reason this check earns its keep. A test that
+ * models the signal instead of calling it can only ever measure the model:
+ * this one summed sines, and while it did, the wind drive that §7 rests on was
+ * invisible to it — as was, for two milestones, the fact that on a collapsed
+ * spectrum the sines alone recur at 0.982.
+ */
+function envelopeAutocorr(plan, mods, lo, hi, span = 900, sr = 8) {
+  const n = Math.round(span * sr);
+  const x = new Float64Array(n);
+  for (let i = 0; i < n; i++) x[i] = envelopeAt(plan, mods, i / sr);
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += x[i];
+  mean /= n;
+  let z = 0;
+  for (let i = 0; i < n; i++) { x[i] -= mean; z += x[i] * x[i]; }
+  let best = 0, at = 0;
+  for (let L = Math.round(lo * sr); L <= Math.round(hi * sr); L++) {
+    let s = 0;
+    for (let i = 0; i + L < n; i++) s += x[i] * x[i + L];
+    const c = (s / z) * (n / (n - L));
+    if (c > best) { best = c; at = L / sr; }
+  }
+  return { peak: best, lag: at };
+}
+
+/** every number in a nested plain object, flattened — for the NaN sweep */
+function numbersIn(v, out = []) {
+  if (typeof v === 'number') out.push(v);
+  else if (Array.isArray(v)) for (const e of v) numbersIn(e, out);
+  else if (v && typeof v === 'object') for (const k of Object.keys(v)) numbersIn(v[k], out);
+  return out;
+}
+
+function suiteScore() {
+  console.log('\nscore — the music as a readout of the world, not a mood board');
+
+  {
+    // The anchor the whole pitch model stands on. `c = sqrt(γRT/M)` has to
+    // return the value in the handbook for Earth's air, or every transposition
+    // below it is a transposition of nothing.
+    const c = speedOfSound(288.15, 1);
+    near('the speed of sound in Earth\'s air at 15 °C', c, 340.3, 0.002);
+    near('...and the pipe is defined by it, so Earth sounds A2 exactly',
+      pipeRoot(c), ROOT_REF, 1e-9);
+    ok('a 1.55 m open pipe — an instrument, not a preference',
+      PIPE_LENGTH > 1.5 && PIPE_LENGTH < 1.6,
+      `L = ${PIPE_LENGTH.toFixed(4)} m · a 5-foot organ stop`);
+  }
+
+  {
+    // And a second anchor at the far end of the range: an H₂/He giant at 165 K
+    // carries sound at about 900 m/s, which is the published Jovian figure.
+    // One formula, two atmospheres, both right.
+    const cJ = speedOfSound(165, 5);
+    ok('an H₂/He giant carries sound at ~900 m/s — the same formula, no branch',
+      cJ > 850 && cJ < 970,
+      `${cJ.toFixed(0)} m/s at 165 K (Jupiter, 1 bar: 800-900) ·`
+      + ` root ${pipeRoot(cJ).toFixed(1)} Hz against Earth's ${ROOT_REF}`);
+  }
+
+  {
+    // The point of §1: a cold world is *low* and it is low because cold air is
+    // slow, not because somebody transposed it. The gap is a real interval.
+    const warm = voicing(S_EARTH);
+    const cold = voicing(S_COLD);
+    const semis = 12 * Math.log2(warm.root / cold.root);
+    ok('a cold world sits lower, and the interval is the air rather than a choice',
+      cold.root < warm.root * 0.95 && semis > 2 && semis < 12,
+      `${cold.air.T.toFixed(0)} K → ${cold.root.toFixed(1)} Hz ·`
+      + ` ${warm.air.T.toFixed(0)} K → ${warm.root.toFixed(1)} Hz ·`
+      + ` ${semis.toFixed(1)} semitones apart`);
+  }
+
+  {
+    // The mapping is pinned by requiring the Sun's Wien peak to land on 330 Hz,
+    // and it has to be pinned by something because a blackbody is scale-
+    // invariant in ν/T: a T-dependent ratio would give every star in the
+    // universe the same timbre.
+    near('the optical→audio transfer puts the Sun\'s Wien peak on 330 Hz',
+      (PLANCK_K * PEAK_AUDIO) / SUN_T, X_PEAK, 1e-9);
+    const lo = planckShape(X_PEAK - 0.4), hi = planckShape(X_PEAK + 0.4);
+    ok('...and x = 2.8214 really is where the Planck function peaks',
+      planckShape(X_PEAK) > lo && planckShape(X_PEAK) > hi,
+      `B(${X_PEAK.toFixed(3)}) = ${planckShape(X_PEAK).toFixed(4)} >`
+      + ` ${lo.toFixed(4)} and ${hi.toFixed(4)}`);
+  }
+
+  {
+    // The timbre readout, over the whole main sequence. A cold star cannot
+    // hold an overtone; a hot one holds all of them and the loudest partial
+    // stops being the first. Monotone, or the star is not being read.
+    const cents = [2800, 3400, 4500, SUN_T, 7500, 12000, 25000]
+      .map((T) => spectralCentroid(bedPartials(ROOT_REF, T, 8)));
+    let rising = true;
+    for (let i = 1; i < cents.length; i++) if (cents[i] <= cents[i - 1]) rising = false;
+    ok('§9.6\'s discipline, in the audio band — the star writes the timbre',
+      rising && cents[0] < 200 && cents[cents.length - 1] > 500,
+      `centroid 2800 K → 25000 K: ${cents.map((c) => c.toFixed(0)).join(' → ')} Hz,`
+      + ' on one unchanged root');
+  }
+
+  {
+    // And it decides the harmony, not just the colour: a degree is available
+    // only if the source spectrum still contains the partial it was folded
+    // from. The root and the fifth are unconditional — that is what makes it a
+    // key rather than a texture.
+    const dwarf = overtoneChord(ROOT_REF, 3400).map((d) => d.partial);
+    const sun = overtoneChord(ROOT_REF, SUN_T).map((d) => d.partial);
+    const blue = overtoneChord(ROOT_REF, 12000).map((d) => d.partial);
+    ok('a red dwarf gets a triad, a G star gets the 11th, a blue star gets all of it',
+      dwarf.length < sun.length && sun.length < blue.length
+      && dwarf.includes(1) && dwarf.includes(3) && sun.includes(11),
+      `3400 K [${dwarf.join(' ')}] · ${SUN_T} K [${sun.join(' ')}] · 12000 K [${blue.join(' ')}]`
+      + ' — partials of the pipe, folded into two octaves');
+  }
+
+  {
+    // Above the fundamental the availability test only ever removes, because
+    // "the source contains this partial" is a yes/no. The bed's tilt is *not*
+    // clamped, which is what stops the timbre saturating at A-type — see the
+    // missing-fundamental note in §2 of the module header.
+    const hot = spectralTilt(ROOT_REF * 8, ROOT_REF, 25000);
+    const bed = bedPartials(ROOT_REF, 25000, 8);
+    let sum = 0;
+    for (const p of bed) sum += p.a;
+    ok('a blue star\'s loudest partial is not the first, and the ear supplies it',
+      hot > 1 && bed[7].a > bed[0].a * 2 && Math.abs(sum - 1) < 1e-9,
+      `tilt at the 8th partial ${hot.toFixed(1)}× the fundamental ·`
+      + ` bed [${bed.map((p) => p.a.toFixed(2)).join(' ')}] · sums to 1`);
+  }
+
+  {
+    // Classical absorption goes as f²/P, so halving the pressure halves the
+    // frequency that survives a given path. Earth's tail loses everything
+    // above ~2.2 kHz in the first second, which is what an outdoor tail does.
+    const e1 = absorptionCorner(1, 340.3, 1);
+    const e3 = absorptionCorner(3, 340.3, 1);
+    const thin = absorptionCorner(1, 340.3, 0.01);
+    near('air absorption at 1 kHz, 1 atm, in nepers per metre', ALPHA_1K, 5.757e-4, 1e-3);
+    ok('thin air carries the high end worse, by the square root of the pressure',
+      e1 > 2000 && e1 < 2500 && e3 < e1 && Math.abs(thin / e1 - 0.1) < 0.02,
+      `Earth: ${e1.toFixed(0)} Hz at 1 s, ${e3.toFixed(0)} at 3 s ·`
+      + ` at 0.01 atm: ${thin.toFixed(0)} Hz — a tenth, from α ∝ 1/P`);
+  }
+
+  {
+    // Two numbers and not one: a thing can be acoustically hard without
+    // sending anything back. Open water is the long quiet room, snow is the
+    // short one, meadow is the valley the reference stands in.
+    const meadow = groundAcoustics({ typeId: 1, Teq: 255, atmo: 1 });
+    const snow = groundAcoustics({ typeId: 3, Teq: 190, atmo: 1 });
+    const sea = groundAcoustics({ typeId: 2, Teq: 280, atmo: 1 });
+    const tM = 6.91 * tailConstant(340.3, meadow.absorb);
+    const tS = 6.91 * tailConstant(340.3, snow.absorb);
+    const tW = 6.91 * tailConstant(356.7, sea.absorb);
+    ok('snow is the shortest room in the project and open water the longest',
+      tS < tM && tM < tW && tM > 1.5 && tM < 4 && tS < 2,
+      `T60 — snow ${tS.toFixed(1)} s · meadow ${tM.toFixed(1)} · open water`
+      + ` ${tW.toFixed(0)} · and water scatters ${(meadow.scatter / sea.scatter).toFixed(1)}×`
+      + ' less back than a meadow, so it is long *and* quiet');
+  }
+
+  {
+    // The impulse response is generated, never loaded (§2.1) — and it is a ray
+    // budget, so thinning the air has to darken it. Zero-crossing rate stands
+    // in for brightness; it needs no FFT and cannot be argued with.
+    const zcr = (s, sr) => {
+      let z = 0;
+      for (let i = 1; i < s.length; i++) if ((s[i - 1] < 0) !== (s[i] < 0)) z++;
+      return z / (s.length / sr);
+    };
+    const pE = voicing(S_EARTH), pT = voicing({ ...S_EARTH, atmo: 0.012 });
+    const irE = impulseResponse(pE.reverb, 48000, 1, pE.seed)[0];
+    const irT = impulseResponse(pT.reverb, 48000, 1, pT.seed)[0];
+    let eE = 0, eT = 0;
+    for (const v of irE) eE += v * v;
+    for (const v of irT) eT += v * v;
+    ok('§2.1 · the room is synthesised, and thin air makes it dark',
+      zcr(irT, 48000) < zcr(irE, 48000) * 0.6
+      && Math.abs(eE - 1) < 1e-6 && Math.abs(eT - 1) < 1e-6
+      && pT.reverb.wet < pE.reverb.wet * 0.3,
+      `zero crossings ${zcr(irE, 48000).toFixed(0)} Hz → ${zcr(irT, 48000).toFixed(0)} Hz ·`
+      + ` wet ${pE.reverb.wet.toFixed(3)} → ${pT.reverb.wet.toFixed(3)} ·`
+      + ' both unit energy, so the send means the same thing on both');
+    ok('...and it decays: the second half of the tail is quieter than the first',
+      (() => {
+        const h = irE.length >> 1;
+        let a = 0, b = 0;
+        for (let i = 0; i < h; i++) a += irE[i] * irE[i];
+        for (let i = h; i < irE.length; i++) b += irE[i] * irE[i];
+        return b < a * 0.25;
+      })(),
+      `tail ${pE.reverb.tail.toFixed(2)} s, e-fold ${pE.reverb.tau.toFixed(2)} s,`
+      + ` horizon would cap it at ${pE.reverb.horizon.toFixed(0)} s`);
+  }
+
+  {
+    // The world with no air is the one the brief asks to be *demonstrably*
+    // different, and it is different in four ways at once rather than by being
+    // quieter: no room at all, no wet send, the direct path down to bone
+    // conduction, and — uniquely — a pitch that does not move with the weather,
+    // because with no air column nothing is transposing the instrument.
+    const air = voicing(S_EARTH);
+    const none = voicing(S_AIRLESS);
+    ok('§2.1 · an airless world is not a quiet world, it is a different treatment',
+      none.reverb.tail === 0 && none.reverb.wet === 0 && none.reverb.bodyConducted
+      && none.reverb.directCutoff < 1000 && air.reverb.directCutoff > 8000
+      && Math.abs(none.root - ROOT_REF) < 1e-9 && none.diurnal.swing === 0
+      && none.level > 0.1,
+      `tail ${none.reverb.tail.toFixed(2)} s vs ${air.reverb.tail.toFixed(2)} ·`
+      + ` direct ${none.reverb.directCutoff.toFixed(0)} Hz vs ${air.reverb.directCutoff.toFixed(0)}`
+      + ` · root pinned at ${none.root.toFixed(1)} Hz, no diurnal droop, still audible`
+      + ` at level ${none.level.toFixed(2)}`);
+    ok('...and the air column hands over smoothly, so Mars still has a voice',
+      airShare(0) === 0 && airShare(0.016 * 1.2249) > 0.99
+      && airShare(0.001 * 1.2249) > 0 && airShare(0.001 * 1.2249) < 1,
+      `0 ρ⊕ → ${airShare(0).toFixed(2)} · 0.001 → ${airShare(0.001 * 1.2249).toFixed(2)}`
+      + ` · 0.016 (Mars, where Perseverance recorded sound) → ${airShare(0.016 * 1.2249).toFixed(2)}`);
+  }
+
+  {
+    // Clausius–Clapeyron, checked against two numbers nobody has to take on
+    // trust: 354 K at half an atmosphere is the back of a pressure cooker, and
+    // 268 K at 0.006 is the triple point closing the liquid window by itself.
+    near('water boils at 373.15 K at one atmosphere', boilingPoint(1), 373.15, 1e-6);
+    near('...at 354 K at half of one', boilingPoint(0.5), 354.4, 2e-3);
+    ok('...and below freezing at 0.006 — the triple point, arrived at not written in',
+      boilingPoint(0.006) < 273.15 && boilingPoint(0.02) > 273.15,
+      `0.006 atm → ${boilingPoint(0.006).toFixed(1)} K, so the liquid window has`
+      + ` closed · 0.02 atm → ${boilingPoint(0.02).toFixed(1)} K, ${(boilingPoint(0.02) - 273.15).toFixed(0)} K wide`);
+  }
+
+  {
+    // Which is what decides whether anything organic is in the mix at all.
+    // Gated on terrestrial/ocean so it agrees with what life.js will render —
+    // insects over bare regolith is a §8 axis 8 failure however good the
+    // thermodynamics.
+    const wet = habitability({ typeId: 1, Teq: 255, atmo: 1 });
+    const frozen = habitability({ typeId: 1, Teq: 150, atmo: 1 });
+    const boiled = habitability({ typeId: 1, Teq: 400, atmo: 1 });
+    const marsish = habitability({ typeId: 1, Teq: 210, atmo: 0.006 });
+    const rock = habitability({ typeId: 0, Teq: 255, atmo: 1 });
+    ok('an organic layer exists exactly where liquid water does, and nowhere else',
+      wet > 0.9 && frozen === 0 && boiled === 0 && marsish === 0 && rock === 0,
+      `temperate ${wet.toFixed(2)} · frozen ${frozen.toFixed(2)} · boiling`
+      + ` ${boiled.toFixed(2)} · thin ${marsish.toFixed(2)} · bare rock ${rock.toFixed(2)}`);
+    const p = voicing({ ...S_EARTH, Teq: 150 });
+    ok('...so a frozen world has nothing moving in its texture, by construction',
+      p.organic.level === 0 && p.organic.rate === 0
+      && voicing(S_EARTH).organic.rate > 0,
+      `frozen rate ${p.organic.rate.toFixed(4)} Hz · temperate`
+      + ` ${voicing(S_EARTH).organic.rate.toFixed(4)} Hz — one call every`
+      + ` ${(1 / voicing(S_EARTH).organic.rate).toFixed(0)} s`);
+  }
+
+  {
+    // Froude 0.25 on a 0.9 m leg. Earth lands on the measured preferred stride
+    // rate and the Moon lands on the Apollo lope — neither was fitted.
+    near('preferred stride rate at 1 g', strideRate(9.80665), 0.93, 0.02);
+    ok('and 0.38 Hz at lunar gravity, which is the lope in the Apollo footage',
+      Math.abs(strideRate(1.62) - 0.38) < 0.02
+      && Math.abs(1 / breathRate(9.80665) - 17.2) < 0.4,
+      `Moon ${strideRate(1.62).toFixed(2)} Hz · a phrase is`
+      + ` ${(1 / breathRate(9.80665)).toFixed(0)} s on Earth,`
+      + ` ${(1 / breathRate(1.62)).toFixed(0)} s on a moon`);
+  }
+
+  {
+    // Diurnal range against three measured bodies, and then what it does to
+    // the pitch: the ground cools, the air slows, the instrument goes flat.
+    near('Earth\'s diurnal range, ~10 K of 288', diurnalSwing(1) * 288, 10.2, 0.12);
+    ok('...and Mars\' ~80 K of 210, and an airless body\'s ~280 of 250',
+      Math.abs(diurnalSwing(0.006) * 210 - 80) < 25 && diurnalSwing(0) * 250 > 250,
+      `1 atm ${(diurnalSwing(1) * 288).toFixed(1)} K · 0.006 atm`
+      + ` ${(diurnalSwing(0.006) * 210).toFixed(0)} K · vacuum`
+      + ` ${(diurnalSwing(0) * 250).toFixed(0)} K`);
+  }
+
+  {
+    // The lag is a first-order filter on the radiative drive, which is what
+    // thermal inertia is. Two consequences fall out and both are real: the
+    // hottest moment is after local noon, and the coldest is just before dawn.
+    const plan = voicing(S_EARTH);
+    const day = plan.diurnal.dayLength;
+    let s = 0, lo = 9, hi = -9, tLo = 0, tHi = 0;
+    for (let k = 0; k < day * 30; k++) {
+      const t = k / 10;
+      s = stepThermalLag(s, Math.sin((2 * Math.PI * t) / day) * 60, 0.1, day);
+      if (t > day * 2) {
+        const frac = (t % day) / day;
+        if (s < lo) { lo = s; tLo = frac; }
+        if (s > hi) { hi = s; tHi = frac; }
+      }
+    }
+    const T = plan.air.T, sw = plan.diurnal.swing;
+    const cents = 1200 * Math.log2(
+      pipeRoot(speedOfSound(T * (1 + sw * 0.5 * hi), 1))
+      / pipeRoot(speedOfSound(T * (1 + sw * 0.5 * lo), 1)));
+    ok('the day peaks after noon and bottoms out before dawn, from the lag alone',
+      tHi > 0.28 && tHi < 0.40 && (tLo < 0.05 || tLo > 0.95) && Number.isFinite(cents),
+      `warmest at day-fraction ${tHi.toFixed(2)} (noon is 0.25 — the real ~2 h lag)`
+      + ` · coldest at ${tLo.toFixed(2)}, just before sunrise`);
+    ok('...which drifts the whole instrument flat overnight, and further on thin air',
+      cents > 8 && cents < 40
+      && (() => {
+        const t2 = voicing({ ...S_EARTH, atmo: 0.05 });
+        return t2.diurnal.swing > plan.diurnal.swing * 3;
+      })(),
+      `${cents.toFixed(0)} cents of nightly droop at 1 atm ·`
+      + ` swing ×${(voicing({ ...S_EARTH, atmo: 0.05 }).diurnal.swing / sw).toFixed(1)}`
+      + ' at 0.05 atm — a slow flattening nobody will name');
+  }
+
+  {
+    // §9.7's golden hour is where paint() is tuned, so it is where the score is
+    // fullest; and the nocturnal inversion needs both a night and an atmosphere
+    // to invert, which is why it shares night.js's thresholds.
+    ok('the swell peaks on §9.7\'s 8-18° band and survives past sunset',
+      goldenWeight(13) > 0.9 && goldenWeight(60) < 0.05 && goldenWeight(-4) > 0.2
+      && goldenWeight(90) < 0.01,
+      `+13° ${goldenWeight(13).toFixed(2)} · +60° ${goldenWeight(60).toFixed(2)}`
+      + ` · −4° ${goldenWeight(-4).toFixed(2)}`);
+    ok('and the night room needs air to invert into — the same threshold night.js uses',
+      inversion(20, 1) === 0 && inversion(-14, 1) > 0.99 && inversion(-14, 0) === 0,
+      `+20° ${inversion(20, 1).toFixed(2)} · −14° with air ${inversion(-14, 1).toFixed(2)}`
+      + ` · −14° in vacuum ${inversion(-14, 0).toFixed(2)}`);
+  }
+
+  {
+    // §2.3, and the reason a shareable URL is worth anything: the same seed has
+    // to give the same music, including the parts that sound improvised.
+    const a = voicing(S_EARTH), b = voicing(S_EARTH);
+    const sa = voiceStream(a, 64).map((e) => `${e.f.toFixed(6)}@${e.t.toFixed(6)}`).join(',');
+    const sb = voiceStream(b, 64).map((e) => `${e.f.toFixed(6)}@${e.t.toFixed(6)}`).join(',');
+    const other = voiceStream(voicing({ ...S_EARTH, seed: 20250602 }), 64)
+      .map((e) => `${e.f.toFixed(6)}@${e.t.toFixed(6)}`).join(',');
+    ok('§2.3 · same seed, same voicing and the same 64 entries after it',
+      JSON.stringify(a) === JSON.stringify(b) && sa === sb && sa !== other
+      && voicingKey(S_EARTH) === voicingKey({ ...S_EARTH }),
+      `key ${a.key} · 64 entries identical across two builds, and different`
+      + ' under a different seed');
+    // and addressable rather than streamed, so a resume cannot drift
+    const mid = voiceEvent(a, 4000);
+    ok('...and every entry is addressed by index, so a resume replays exactly',
+      JSON.stringify(mid) === JSON.stringify(voiceEvent(voicing(S_EARTH), 4000))
+      && JSON.stringify(grainEvent(a, 900)) === JSON.stringify(grainEvent(b, 900)),
+      `entry 4000 is ${mid.f.toFixed(1)} Hz on partial ${mid.partial}, computed`
+      + ' without playing the 3999 before it');
+  }
+
+  {
+    // The shuffle bag: every degree gets used before any repeats, and the
+    // boundary between cycles is fixed so no pitch lands twice in a row. That
+    // is the difference between a key and a loop.
+    const plan = voicing(S_EARTH);
+    const seq = voiceStream(plan, 400);
+    let adjacent = 0;
+    for (let i = 1; i < seq.length; i++) if (seq[i].degree === seq[i - 1].degree) adjacent++;
+    const seen = new Set(seq.slice(0, plan.chord.length).map((e) => e.degree));
+    let gapsDiffer = 0;
+    for (let i = 1; i < seq.length; i++) if (Math.abs(seq[i].gap - seq[i - 1].gap) > 1e-9) gapsDiffer++;
+    ok('the pitch set recurs and the sequence does not — a key, not a loop',
+      adjacent === 0 && seen.size === plan.chord.length
+      && gapsDiffer === seq.length - 1,
+      `${plan.chord.length} degrees, all used in the first ${plan.chord.length} entries,`
+      + ` 0 immediate repeats in 400, and all 400 gaps distinct`);
+  }
+
+  {
+    // §M1's gate says motion must be "non-loopable because it is integrating".
+    // The ear is far less patient than the eye about this, so measure it: a
+    // true loop autocorrelates to 1.0 at its period. Nothing here comes close
+    // within a phrase or within seven minutes of one.
+    //
+    // Ten worlds, not four, and the four are kept at the front of the list
+    // because they are the ones that were here when this passed at 0.982.
+    const WORLDS = [
+      ['temperate', S_EARTH], ['a moon', { ...S_EARTH, massE: 0.2, radiusE: 0.6 }],
+      ['heavy', { ...S_EARTH, massE: 3, radiusE: 1.4 }], ['a giant', S_GIANT],
+      ['cold thin', S_COLD], ['airless', S_AIRLESS],
+      ['an m dwarf', { ...S_EARTH, starT: 3200 }], ['a hot star', { ...S_EARTH, starT: 25000 }],
+      ['lava', { ...S_EARTH, Teq: 736, atmo: 2 }],
+      ['a pebble', { ...S_EARTH, massE: 0.01, radiusE: 0.2 }],
+    ];
+    let worstNear = 0, worstFar = 0, where = '';
+    for (const [name, w] of WORLDS) {
+      const plan = voicing(w);
+      const mods = modulators(plan);
+      const phrase = 1 / plan.breath;
+      const near60 = envelopeAutocorr(plan, mods, phrase, 60);
+      const far = envelopeAutocorr(plan, mods, phrase, 240);
+      if (near60.peak > worstNear) { worstNear = near60.peak; where = name; }
+      if (far.peak > worstFar) worstFar = far.peak;
+    }
+    ok('§M1 · no lag recovers the envelope — the ear cannot learn it',
+      worstNear < 0.80 && worstFar < 0.88,
+      `worst over one phrase to a minute: ${worstNear.toFixed(3)} (${where}) ·`
+      + ` out to four minutes: ${worstFar.toFixed(3)} · a true loop returns 1.000`);
+
+    // The defect this replaced, kept as a check because it is the reason the
+    // drive exists and because "irrational rates are enough" is exactly the
+    // simplification a future tidy-up would make. Without the wind, a gas
+    // giant's two surviving partials recur inside a minute.
+    const giant = voicing(S_GIANT);
+    const sines = { ...giant, wind: null, air: { ...giant.air, column: 0 } };
+    const bare = envelopeAutocorr(sines, modulators(giant), 1 / giant.breath, 60);
+    ok('...and the sines alone would not manage it, on the world §2 predicts',
+      bare.peak > 0.9,
+      `a giant with the drive removed recurs at ${bare.peak.toFixed(3)} on a`
+      + ` ${bare.lag.toFixed(0)} s lag — 82% of its envelope is one partial`);
+
+    // §1's sentence, now true of the loudness as well as the pitch: with no
+    // air there is nothing to blow the pipe, so the drive is exactly 1.
+    const airless = voicing(S_AIRLESS);
+    let moved = 0;
+    for (let i = 0; i < 400; i++) moved += Math.abs(windDrive(airless, i * 2.3) - 1);
+    const temperate = voicing(S_EARTH);
+    const swing = [];
+    for (let i = 0; i < 2000; i++) swing.push(windDrive(temperate, i * 0.45));
+    const mean = swing.reduce((a, b) => a + b, 0) / swing.length;
+    const sd = Math.sqrt(swing.reduce((a, b) => a + (b - mean) ** 2, 0) / swing.length);
+    ok('§1 · an airless world\'s music does not move with a weather it has not got',
+      moved === 0 && sd > 0.15 && sd < 0.45 && Math.abs(mean - 1) < 0.15,
+      `drive is exactly 1 over 400 samples in vacuum · ±${(sd * 100).toFixed(0)}%`
+      + ` about ${mean.toFixed(2)} in Earth air, which is the field's own`
+      + ' turbulence intensity');
+    // and the mechanism, so a future edit that "tidies" the rates trips here
+    let rational = 0;
+    for (let i = 0; i < IRRATIONAL.length; i++) {
+      for (let j = i + 1; j < IRRATIONAL.length; j++) {
+        const r = IRRATIONAL[j] / IRRATIONAL[i];
+        if (Math.abs(r - Math.round(r)) < 1e-6) rational++;
+      }
+    }
+    ok('...because every modulator rate is an irrational multiple of the breath',
+      rational === 0 && IRRATIONAL[0] === 1,
+      `${IRRATIONAL.length} multipliers, 0 integer ratios among the`
+      + ` ${(IRRATIONAL.length * (IRRATIONAL.length - 1)) / 2} pairs`);
+  }
+
+  {
+    // The sweep. Every scale the app can reach, plus the corners that will
+    // never occur and would poison the whole graph if they did — one NaN in a
+    // gain and there is no sound at all, with nothing on screen to say why.
+    const corners = [];
+    for (const typeId of [0, 1, 2, 3, 4, 5, 6]) {
+      for (const Teq of [3, 90, 255, 700, 2200]) {
+        for (const atmo of [0, 1e-9, 0.25, 1, 3]) {
+          for (const starT of [1200, 3000, SUN_T, 40000]) {
+            corners.push({
+              seed: (typeId * 7919 + Teq) >>> 0, typeId, Teq, atmo, starT,
+              massE: typeId >= 5 ? 300 : 0.05, radiusE: typeId >= 5 ? 11 : 0.2,
+            });
+          }
+        }
+      }
+    }
+    let bad = null, worstLevel = 1, longest = 0;
+    for (const w of corners) {
+      const p = voicing(w);
+      const ns = numbersIn({
+        p, mods: modulators(p), voices: voiceStream(p, 8), grain: grainEvent(p, 3),
+      });
+      for (const v of ns) if (!Number.isFinite(v)) { bad = w; break; }
+      if (p.reverb.tail > 0.02) {
+        const ir = impulseResponse(p.reverb, 22050, 1, p.seed)[0];
+        for (let i = 0; i < ir.length; i += 37) {
+          if (!Number.isFinite(ir[i])) { bad = w; break; }
+        }
+      }
+      worstLevel = Math.min(worstLevel, p.level);
+      longest = Math.max(longest, p.reverb.tail);
+      if (bad) break;
+    }
+    ok('nothing returns NaN over 700 corner worlds, including the impossible ones',
+      bad === null,
+      bad ? `first failure: ${JSON.stringify(bad)}`
+        : `${corners.length} worlds — typeId 0-6 × 3-2200 K × 0-3 atm × 1200-40000 K star`
+        + ` · quietest level ${worstLevel.toFixed(2)}, longest tail ${longest.toFixed(2)} s`);
+    ok('...and every one of them stays inside the response budget',
+      longest <= IR_MAX_SECONDS + 1e-9 && worstLevel > 0.04,
+      `ceiling ${IR_MAX_SECONDS} s, and nothing fell silent —`
+      + ' a world with no music is a world with no §8 axis 4');
+  }
+
+  {
+    // The horizon term: nothing beyond sqrt(2Rh) can scatter back, so the
+    // reverb time is the size of the world. It only bites on small bodies,
+    // which is the honest result and worth pinning so a future edit that drops
+    // it has to argue with a number.
+    const big = horizonTail(1, 340.3);
+    const small = horizonTail(50 / 6371, 340.3);
+    ok('the reverb time is the size of the world, once the world is small enough',
+      big > 20 && small < IR_MAX_SECONDS && small > 1,
+      `Earth ${big.toFixed(0)} s — never binds · a 50 km body ${small.toFixed(1)} s —`
+      + ' inside the budget, so it does');
+  }
+}
+
 const suites = {
+  score: suiteScore,
   night: suiteNight,
   aurora: suiteAurora,
   soften: suiteSoften,

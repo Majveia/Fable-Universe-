@@ -41,9 +41,10 @@ import { MATERIAL_GLSL, materialPalette, worldBias } from './material.js';
 import {
   EXTINCTION as EXTINCTION_V, OCEAN_GLSL, buildWaves, significantHeight, waveUniforms,
 } from './ocean.js';
-import { GAIT, Walker, gravityOf } from './avatar.js';
+import { FLOW_GAIT, GAIT, Walker, gravityOf } from './avatar.js';
 import { CameraRig } from './camera.js';
-import { attachKeyboard, input, jumpHeld } from './input.js';
+import { FLIGHT, Flight, airColumn } from './flight.js';
+import { attachKeyboard, input, jumpHeld, keys } from './input.js';
 import { makeGround } from './ground.js';
 import {
   CLOUD_SPEEDUP, CLOUD_VEER, makeWind, meanFlow, windAt,
@@ -143,6 +144,41 @@ const M4 = PARAM('m4') !== '0';
  * stream, so there is nothing here to outrun.
  */
 const M5 = PARAM('m5') === '1';
+
+/**
+ * `?flow=1` — three changes to how the body moves. **Default-off** (§7.4), and
+ * the flag is one flag on purpose: the three are one intent.
+ *
+ *   1. **Pace.** `avatar.js`'s `FLOW_GAIT` row: 3.45 → 5.87 m/s, exactly 1.70×,
+ *      with the sprint carried along by the same multiplier and the gait clock
+ *      re-fitted so the cadence at the new speed is a real one. There is still
+ *      exactly one clock — §6 M4's — and the flight below deliberately stops it
+ *      rather than running a second.
+ *
+ *   2. **Jump.** The same row swaps the jump from height-constant to
+ *      work-constant, so the *impulse* is fixed and the world decides the leap:
+ *      1.15 m at 1 g, 9.07 m on Luna, 0.24 m on a 2.5 g super-earth. §M4 asks
+ *      for real `GM/R²`; this is what real `GM/R²` is *for*.
+ *
+ *   3. **Flight.** `src/flight.js` — a crouch-and-go launch, a target-velocity
+ *      chase with clamped along-track and lateral acceleration (so turns have a
+ *      radius), momentum that survives a released stick, air that thins with
+ *      altitude and takes the control authority with it, and the ground still
+ *      solid underneath. `Q`.
+ *
+ * The `F` noclip is untouched and stays exactly as it was — it is a debug
+ * camera and it is useful as one. This is additive.
+ *
+ * §2.4: the flag rides the URL like every other, and `main.js`'s teleport and
+ * logbook only ever delete the *place* keys, so `?flow=1` survives a jump
+ * across the universe. It creates no new kind of location, so there is nothing
+ * for the deep-link schema to learn.
+ */
+const FLOW = PARAM('flow') === '1';
+
+/** how high above the spawn the flight stays composed — the tile's bound, not
+ *  the world's, exactly like the ±EXT·0.48 clamp that has always been here */
+const FLOW_CEILING = 900;
 
 /** `?shdebug=1` — output the shadow term itself, so it can be looked at */
 const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');
@@ -657,6 +693,11 @@ export class SurfaceScale {
 
     this.yaw = 0; this.pitch = -0.04;
     this.fly = false;
+    /** `?flow=1`'s flight, or null — see FLOW above. The `F` noclip is `fly`
+     *  and is a different thing entirely; the two never both own the body. */
+    this.flow = null;
+    this._flowKey = false;
+    this._flowThird = false;
     this.vel = new THREE.Vector3();
     this.keys = new Set();
 
@@ -725,8 +766,31 @@ export class SurfaceScale {
         heightAt: (x, z) => this.heightAt(x, z),
         gravity: gravityOf(pp),
         seaLevel: this.seaLevel,
+        // §7.4 · one row swap is the whole of `?flow=1`'s ground half. Off, it
+        // is the identical object literal it has always been handed.
+        gait: FLOW ? FLOW_GAIT : GAIT,
       });
       this.walker.place(spawn.x, spawn.z, spawn.y);
+      if (FLOW) {
+        // The air the flight flies in is the air §9.3 fogs the frame through —
+        // same `T`, same `M`, same scale height — so the altitude at which the
+        // haze closes over and the altitude at which the flight stops holding
+        // you up are the same altitude, because they are the same number.
+        const air = airColumn(pp, this.atmo);
+        this.flow = new Flight({
+          groundAt: (x, z) => this.walker.groundAt(x, z),
+          gravity: gravityOf(pp),
+          air,
+          bound: EXT * 0.46,      // inside the hard clamp, so the soft edge acts first
+          ceiling: FLOW_CEILING,
+          baseY: spawn.y,
+        });
+        console.info(`[?flow=1] walk ${FLOW_GAIT.walk} m/s · sprint `
+          + `${(FLOW_GAIT.walk * FLOW_GAIT.sprint).toFixed(2)} m/s · jump `
+          + `${(FLOW_GAIT.pushDepth * (FLOW_GAIT.pushAccel - gravityOf(pp)) / Math.max(gravityOf(pp), 1e-6)).toFixed(2)} m`
+          + ` at g=${gravityOf(pp).toFixed(2)} · air H ${(air.H / 1000).toFixed(2)} km`
+          + ` · sound ${air.c.toFixed(0)} m/s`);
+      }
       this.rig = new CameraRig({
         camera: this.camera,
         walker: this.walker,
@@ -2159,6 +2223,110 @@ export class SurfaceScale {
     this.pitch = this.rig.pitch;
   }
 
+  // --------------------------------------------------------- `?flow=1` ----
+  /**
+   * `Q`, edge-detected against the shared key set rather than through `onKey`.
+   *
+   * `main.js`'s keydown handler has no `e.repeat` guard, so a held key arrives
+   * about thirty times a second — and a toggle driven off that launches and
+   * lands about thirty times a second too. `input.js` *does* drop repeats
+   * before it touches `keys`, but reading the edge here rather than the event
+   * makes that a property of this code instead of a property of somebody
+   * else's, which is the difference between working and happening to work.
+   */
+  _flowKeyEdge() {
+    const down = keys.has('KeyQ');
+    const edge = down && !this._flowKey;
+    this._flowKey = down;
+    return edge;
+  }
+
+  /**
+   * One step of the flow body: the crouch, the flight, or neither.
+   *
+   * The walker is never bypassed for longer than a flight lasts. Through the
+   * crouch it is still the thing integrating the body — the plant is a walk
+   * with the head lowered, not a fourth movement model — and the moment a
+   * flight ends the walker is handed the position and velocity it ended with,
+   * so the fall, the landing, the slope limit and the step-up are all §M4's
+   * tested code rather than a second copy of it inside the flight.
+   */
+  _stepFlow(dt) {
+    const f = this.flow;
+    const w = this.walker;
+    w.fly = this.fly;
+    w.seaLevel = this.seaLevel;
+
+    if (this._flowKeyEdge() && !this.inside && !this.fly) {
+      const what = f.press(w.grounded, w.pos, w.vel);
+      if (what === 'air') this._flowEnter();
+      else if (what === 'release') this.app.hud.setHint('falling · q catches you again');
+      else if (what === 'crouch') this.app.hud.setHint('');
+    }
+
+    if (f.mode === 'crouch') {
+      // the plant: the eye sinks, the body cannot walk out of it, and the
+      // walker keeps the ground honest underneath
+      const go = f.tickCrouch(dt);
+      w.sink = -FLIGHT.crouchDrop * f.crouchFrac;
+      w.step(dt, { move: { x: 0, y: 0 }, jump: false, sprint: false, up: 0 }, this.rig.yaw);
+      if (go) {
+        w.sink = 0;
+        f.launch(w.pos, w.vel);
+        this._flowEnter();
+      }
+    } else if (f.mode === 'fly') {
+      const wasLanded = f.landed;
+      f.step(dt, { move: input.move, sprint: input.down('sprint') },
+        this.rig.yaw, this.rig.pitch);
+      // the body *is* the flight while it lasts, so everything downstream —
+      // the tile clamp, the grass, the traveler's figure, the audio — keeps
+      // reading `walker.pos` and needs to know nothing about any of this
+      w.pos.x = f.pos.x; w.pos.y = f.pos.y; w.pos.z = f.pos.z;
+      w.vel.x = f.vel.x; w.vel.y = f.vel.y; w.vel.z = f.vel.z;
+      // A flight ends two ways and they are not the same state: touching down
+      // hands back a grounded body, letting go hands back a falling one.
+      w.grounded = f.landed > wasLanded;
+      w.sink = 0;
+      // the gait clock stops rather than running or resetting — §6 M4 has one
+      // clock and there is no gait in flight (`Walker.calm`)
+      w.calm(dt);
+      if (f.mode !== 'fly') this._flowExit();
+    } else {
+      w.sink = 0;
+      this._stepBody(dt);
+      return;
+    }
+
+    this.body.set(w.pos.x, w.eyeY(), w.pos.z);
+    this.vel.set(w.vel.x, w.vel.y, w.vel.z);
+    this.yaw = this.rig.yaw;
+    this.pitch = this.rig.pitch;
+  }
+
+  /** the flight has the body: the camera steps back and the boom grows out */
+  _flowEnter() {
+    this._flowThird = !!this.traveler?.third;
+    if (this.traveler) this.traveler.third = true;
+    if (this.rig) this.rig.beginFlow(this.flow);
+    this.app.hud.setHint('flight · look to steer · w opens the throttle · '
+      + 'shift for the boost · q lets go');
+  }
+
+  /** and gives it back, to whichever person was watching before it took it */
+  _flowExit() {
+    if (this.traveler) this.traveler.third = this._flowThird;
+    if (this.rig) {
+      this.rig.endFlow();
+      this.rig.third = this._flowThird;
+      // The boom is not retracted from here. The rig is back in whichever
+      // person it was in, and first person returns from `place()` before it
+      // reads `_armLen` at all — while third person eases the length back to
+      // §M4's 4.6 m on the `kIn` rate it already has. Either way there is
+      // nothing to reset, which is the point of it being one arm.
+    }
+  }
+
   /**
    * Adopt whatever the camera is currently pointing at. This is the handoff
    * primitive — the hyperzoom flies the camera and then hands it back, and
@@ -2397,7 +2565,7 @@ export class SurfaceScale {
           z: this.body.z,
           radius: PART_RADIUS,
           // nothing to part while flying, and nothing to part while still
-          push: (this.fly || riding) ? 0
+          push: (this.fly || riding || this.flow?.flying) ? 0
             : 0.75 * foot * Math.min(1, Math.hypot(this.vel?.x ?? 0, this.vel?.z ?? 0) / 1.5 + 0.35),
         };
       }
@@ -2432,6 +2600,8 @@ export class SurfaceScale {
       }
       if (this.traveler?.riding) {
         this.traveler.drive(dt);
+      } else if (this.flow) {
+        this._stepFlow(dt);
       } else if (M4) {
         this._stepBody(dt);
       } else {
@@ -2477,12 +2647,35 @@ export class SurfaceScale {
         // the body owns the tile clamp too, so the two cannot disagree
         this.walker.pos.x = this.body.x;
         this.walker.pos.z = this.body.z;
+        // ...and the flight is a third opinion about where the body is unless
+        // it is told. It has a soft edge 90 m inside this clamp so it should
+        // never reach here, and "should never" is exactly the class of thing
+        // that turns into a body and a camera in two different places.
+        if (this.flow?.flying) {
+          this.flow.pos.x = this.body.x;
+          this.flow.pos.z = this.body.z;
+        }
       }
       this._doorCheck(dt);
       // The rig places the camera in M4; `traveler.place` still runs so the
       // avatar mesh keeps following, but it is told not to touch the camera.
       if (M4 && !this.traveler?.riding) {
         this.traveler.place(dt, null);
+        // `place` stands the figure up and leans it into its ground speed,
+        // which is right for a walk and comic for someone doing 87 m/s. Laid
+        // out along the velocity afterwards rather than inside `traveler.js`,
+        // because the figure's own placer is shared with the `?flow=0` path
+        // and this must not be reachable from it.
+        if (this.flow?.flying && this.traveler.avatar) {
+          const f = this.flow;
+          const a = this.traveler.avatar;
+          const hz = Math.hypot(f.vel.x, f.vel.z);
+          const lay = Math.min(f.speed / 26, 1);         // upright below a jog
+          a.rotation.set(-1.42 * lay + Math.atan2(f.vel.y, Math.max(hz, 1e-3)) * lay,
+            hz > 0.4 ? Math.atan2(-f.vel.x, -f.vel.z) : a.rotation.y,
+            f.bank * lay, 'YXZ');
+          a.position.y = f.pos.y + 0.55 * lay;           // the cloak swings under
+        }
         this.rig.place(dt);
         // §M5's handover runs after the rig, for the same reason it runs after
         // the traveler's own arm: it closes a gap, it does not own a camera.
@@ -2499,7 +2692,10 @@ export class SurfaceScale {
   _doorCheck(dt) {
     if (!this.interior) return;
     this._doorCool = Math.max(0, this._doorCool - dt);
-    if (this._doorCool > 0 || this.fly || this.traveler?.riding) { this._nearDoor = false; return; }
+    // ...and a body that is crouching to launch, or already 300 m up, is not
+    // walking through the shrine door either
+    if (this._doorCool > 0 || this.fly || this.traveler?.riding
+      || (this.flow && this.flow.mode !== 'off')) { this._nearDoor = false; return; }
     const atDoor = Math.hypot(this.body.x - this.interior.doorThresh.x, this.body.z - this.interior.doorThresh.z) < 4.5;
     this._nearDoor = atDoor && !this.inside;
     if (atDoor && !this._warping2) this._crossThreshold(!this.inside);
@@ -2550,7 +2746,11 @@ export class SurfaceScale {
       ['surface gravity', g.toFixed(2) + ' g'],
       ['equilibrium temp', pp.Teq + ' K'],
       ['mode', this.traveler?.riding ? 'hover-skiff (e steps off)'
-        : this.fly ? 'flight (f to walk)' : 'on foot (f to fly)'],
+        : this.flow?.flying ? `flow · ${this.flow.speed.toFixed(0)} m/s`
+          + ` · mach ${this.flow.mach.toFixed(2)} · air ${(this.flow.rho * 100).toFixed(0)}%`
+        : this.flow?.crouching ? 'flow · winding up (q)'
+        : this.fly ? 'flight (f to walk)'
+        : this.flow ? 'on foot (q to fly · f to noclip)' : 'on foot (f to fly)'],
       ['view', this.traveler?.third ? 'third person (c)' : 'first person (c)'],
     ];
   }

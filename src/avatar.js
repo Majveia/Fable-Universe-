@@ -69,7 +69,95 @@ export const GAIT = {
   jumpHeight: 0.55,      // metres at 1 g — a standing jump, not a leap
   jumpCut: 0.45,         // releasing early keeps this much of the rise
   skin: 0.02,            // ground contact tolerance
+  /**
+   * The gait clock's own law: `cycles/s = cadence0 + cadenceK·v`, and `bobSat`
+   * is the speed at which the head bob reaches full amplitude.
+   *
+   * These were three literals inside `_gait`. They are in the table because a
+   * row that changes the walking speed has to be able to change the cadence
+   * with it — a body moved 1.7× faster on the old constants takes 6.4 footfalls
+   * a second, which is a sprinter's cadence at a jogger's speed. The values
+   * here are exactly the literals they replace, so nothing about the default
+   * row moves.
+   */
+  cadence0: 0.58,
+  cadenceK: 0.34,
+  bobSat: 3.6,
+  /**
+   * The jump, as a *height* — the launch speed is solved from the world's own
+   * `g`, so every world gives the same 0.55 m, reached more slowly on a moon.
+   *
+   * `pushAccel` null selects exactly that. Set it and the jump becomes the leg
+   * model in `launchSpeed()` instead, where the *impulse* is the constant and
+   * the height is what the world decides. See `FLOW_GAIT`.
+   */
+  pushDepth: null,       // m of crouch the legs push through
+  pushAccel: null,       // m/s² the legs can produce, against gravity
 };
+
+/**
+ * `?flow=1`'s row — CLAUDE.md §7.4, default-off. Three changes, no more.
+ *
+ * **Speed.** 3.45 → 5.87 m/s, exactly 1.70×. A human walks at 3.45 and this is
+ * a steady run; the honest name for the row is not "walk" any more. `sprint`
+ * stays a *multiplier*, so the sprint moves by the same 1.70× for free —
+ * 7.76 → 13.19 m/s — and the two can never drift apart, which they would if
+ * the sprint were an absolute speed edited alongside.
+ *
+ * **Cadence.** Fitted through two points a physiologist would recognise rather
+ * than scaled arbitrarily: 1.7 footfalls/s at a 1.5 m/s stroll and 2.8 at a
+ * 5.9 m/s run. That is `cadence0 = 0.66`, `cadenceK = 0.125`, and it puts the
+ * row's sprint at 4.6 footfalls/s at 13.2 m/s — which is very nearly world
+ * record pace, and correctly reads as one. `bobSat` moves by the same 1.70× so
+ * the head bob saturates at the same *fraction* of the row's own top speed.
+ *
+ * **Jump.** The default row holds the height and solves the speed. This row
+ * inverts it: the legs do a fixed amount of work, and what that buys you
+ * depends entirely on the world you are standing on. See `launchSpeed()`.
+ */
+export const FLOW_GAIT = {
+  ...GAIT,
+  walk: 5.87,
+  cadence0: 0.66,
+  cadenceK: 0.125,
+  bobSat: 6.12,
+  pushDepth: 0.42,       // the crouch a standing jump actually travels through
+  pushAccel: 36.6,       // 3.73 g of leg thrust — a good vertical, not a myth
+};
+
+/**
+ * The speed the body leaves the ground at.
+ *
+ * Two models, and the difference between them is the whole of the jump change.
+ *
+ * **Height-constant** (`pushAccel` null, the default row). `v₀ = √(2gh)`, so
+ * every world gives the same 0.55 m. Correct as far as it goes, and completely
+ * silent about gravity: a moon and a super-earth produce the same jump, taken
+ * at different speeds. There is nothing to feel.
+ *
+ * **Work-constant** (`?flow=1`). The legs push the body's mass through a crouch
+ * of depth `d` at an acceleration `a` they can produce and gravity opposes, so
+ *
+ *     ½v₀² = d·(a − g)   ⇒   v₀ = √(2d(a − g))   ⇒   apex = d(a − g)/g
+ *
+ * — and the apex is now *inversely* proportional to `g`, which is the whole
+ * point. On Earth `d = 0.42`, `a = 36.6` gives 4.74 m/s and a 1.15 m leap; on
+ * Luna's 1.62 m/s² the same legs give 5.42 m/s and **9.07 m**; on a 2.5 g
+ * super-earth, 0.24 m. The relationship §M4 asks for is not decoration on top
+ * of the number, it *is* the number.
+ *
+ * And the model has an edge, which is the tell that it is a model rather than a
+ * curve: at `g ≥ a` the legs cannot lift the body at all and `v₀` is zero. A
+ * world you cannot jump on is a real place, and it falls out rather than being
+ * special-cased.
+ */
+export function launchSpeed(gravity, gait = GAIT) {
+  if (gait.pushAccel === null || gait.pushAccel === undefined) {
+    return Math.sqrt(2 * gravity * gait.jumpHeight);
+  }
+  const net = gait.pushAccel - gravity;
+  return net <= 0 ? 0 : Math.sqrt(2 * gait.pushDepth * net);
+}
 
 /** surface gravity in m/s², from the world's own mass and radius (§6 M4) */
 export function gravityOf(world) {
@@ -96,6 +184,13 @@ export class Walker {
     this.vel = { x: 0, y: 0, z: 0 };
     this.grounded = false;
     this.fly = false;
+    /**
+     * A deliberate offset on the eye, in metres, that nothing in the controller
+     * writes. `?flow=1`'s crouch-and-go lowers the head through the plant with
+     * it; with the flag off it is zero for the life of the body and `eyeY()` is
+     * the expression it always was.
+     */
+    this.sink = 0;
 
     this._coyote = 0;      // time left in the grace window
     this._buffer = 0;      // time left on a buffered jump press
@@ -151,7 +246,7 @@ export class Walker {
 
   /** where the eye sits: the feet, plus standing height, plus the gait */
   eyeY() {
-    return this.pos.y + this.g.eye + this.bobY;
+    return this.pos.y + this.g.eye + this.bobY + this.sink;
   }
 
   /**
@@ -224,9 +319,11 @@ export class Walker {
     this._wasJump = jump;
 
     if (this._buffer > 0 && (this.grounded || this._coyote > 0)) {
-      // v0 from the height it should reach, so a low-gravity moon launches you
-      // properly instead of needing a per-world constant
-      this.vel.y = Math.sqrt(2 * this.gravity * g.jumpHeight);
+      // One line, two models — see `launchSpeed`. The default row solves v₀
+      // from the height it should reach, so a low-gravity moon launches you
+      // properly instead of needing a per-world constant; `?flow=1`'s row fixes
+      // the *work the legs do* instead, and lets the world decide the height.
+      this.vel.y = launchSpeed(this.gravity, g);
       this.grounded = false;
       this._coyote = 0;
       this._buffer = 0;
@@ -358,8 +455,10 @@ export class Walker {
    * out of sync." They cannot drift because there is nothing to drift from.
    */
   _gait(dt, moving) {
+    const g = this.g;
     const spd = Math.hypot(this.vel.x, this.vel.z);
-    this.stepFreq = (spd > 0.14 && this.grounded && !this.fly) ? 0.58 + 0.34 * spd : 0;
+    this.stepFreq = (spd > 0.14 && this.grounded && !this.fly)
+      ? g.cadence0 + g.cadenceK * spd : 0;
 
     const prev = this.stepPhase;
     this.stepPhase += this.stepFreq * dt;
@@ -367,7 +466,7 @@ export class Walker {
     if (Math.floor(this.stepPhase * 2) !== Math.floor(prev * 2)) this.steps++;
 
     const gp = this.stepPhase * Math.PI * 2;
-    const amp = this.fly ? 0 : clamp(spd / 3.6, 0, 1);
+    const amp = this.fly ? 0 : clamp(spd / g.bobSat, 0, 1);
     const kf = clamp(11 * dt, 0, 1);
     this.bobY += (Math.sin(gp * 2) * 0.0135 * amp - this.bobY) * kf;
     this.bobX += (Math.sin(gp) * 0.0095 * amp - this.bobX) * kf;
@@ -375,6 +474,27 @@ export class Walker {
     this.lean += (clamp(spd * 0.016, 0, 0.05) - this.lean) * clamp(4 * dt, 0, 1);
     this.breath += dt * 0.9;
     if (!moving && spd < 0.02) this.stepFreq = 0;
+  }
+
+  /**
+   * Let the gait go quiet without touching its clock.
+   *
+   * `?flow=1`'s flight takes the body away from the controller for as long as
+   * it lasts, so `_gait` stops running and the bob, the sway and the roll
+   * freeze at whatever fraction of a stride they were in — a permanent
+   * centimetre of head tilt for the whole flight. This eases those four to
+   * zero and **leaves `stepPhase` and `steps` exactly where they are**, which
+   * is the part that matters: §6 M4's clock is a *gait* clock, there is no gait
+   * in flight, and resetting or re-running it would be the second clock the
+   * milestone exists to forbid. It stops, and it resumes where it stopped.
+   */
+  calm(dt) {
+    const k = clamp(9 * dt, 0, 1);
+    this.bobY += (0 - this.bobY) * k;
+    this.bobX += (0 - this.bobX) * k;
+    this.roll += (0 - this.roll) * k;
+    this.lean += (0 - this.lean) * k;
+    this.stepFreq = 0;
   }
 
   /** everything a test or a camera needs, as plain numbers */
