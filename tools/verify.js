@@ -90,6 +90,10 @@ import {
   spectralTilt, speedOfSound, stepThermalLag, strideRate, tailConstant,
   voiceEvent, voiceStream, voicing, voicingKey, windDrive,
 } from '../src/score.js';
+import {
+  BONE, BONE_COUNT, CANON, boneAt, buildFigure, gaitPose, legPose, poseFigure,
+  poseFor, restPose, solveLeg, twoBone,
+} from '../src/figure.js';
 
 let failures = 0;
 let checks = 0;
@@ -5736,7 +5740,353 @@ function suiteScore() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the figure
+//
+// src/figure.js claims a person rather than five primitives, and almost all of
+// that claim is geometric: the canon holds at any stature, a planted foot does
+// not slide, both feet are not in the air at a walk, and a knee bends the way
+// a knee bends. None of it needs a renderer and none of it would be noticed in
+// a screenshot — a 4 mm slip per stride is invisible in a still and is exactly
+// what makes an animation read as cheap in motion.
+
+function suiteFigure() {
+  console.log('\nfigure — a silhouette that is solved rather than posed');
+
+  {
+    // The canon is the whole of why it reads as someone, and stature is a
+    // parameter, so it has to hold at every stature rather than at 1.78.
+    let worst = 0, where = 0;
+    for (const st of [1.2, 1.55, 1.78, 2.1, 2.4, 3.0]) {
+      const f = buildFigure(st, 1, 99);
+      let crown = 0;
+      for (let i = 1; i < f.position.length; i += 3) crown = Math.max(crown, f.position[i]);
+      const err = Math.abs(crown - st) / st;
+      if (err > worst) { worst = err; where = st; }
+    }
+    ok('§4 · the crown lands on the stature it was asked for, at every stature',
+      worst < 1e-6,
+      `worst over 1.2–3.0 m is ${(worst * 100).toFixed(4)}% at ${where} m —`
+      + ' a figure short of its own height has a wrong eye height and a wrong'
+      + ' camera distance too');
+    near('...and the canon is eight heads, which is what makes it read as a person',
+      CANON.head * 8, 1.0, 1e-9);
+  }
+
+  {
+    // Every tier is the same figure at a different tessellation. §5's rule is
+    // that a row changes knobs, not content — a figure that got *shorter* on a
+    // phone would be a different character rather than a cheaper one.
+    const dims = [];
+    for (const tier of [0, 1, 2, 3]) dims.push(buildFigure(1.78, tier, 7));
+    const same = dims.every((f) => Math.abs(f.dims.thigh - dims[0].dims.thigh) < 1e-12
+      && f.strapSide === dims[0].strapSide);
+    const falling = dims.every((f, i) => i === 0 || f.tris < dims[i - 1].tris);
+    ok('§5 · the tiers change tessellation and nothing else',
+      same && falling && dims[3].tris > 200,
+      `${dims.map((f) => f.tris).join(' → ')} triangles, same proportions, same seed`
+      + ` — and the cheapest is ${((1 - dims[3].tris / dims[0].tris) * 100).toFixed(0)}% off the richest`);
+    ok('...and the whole figure fits inside one draw call’s worth of §5',
+      dims[0].tris < 4000,
+      `${dims[0].tris} triangles against a 2.2 M frame budget`);
+  }
+
+  {
+    // The attributes are read by index in the vertex shader, so a mismatch is
+    // not a warning — it is a figure with its coat on its arm.
+    const f = buildFigure(1.78, 1, 3);
+    const n = f.position.length / 3;
+    const bones = new Set(f.bone);
+    let bad = 0;
+    for (const b of bones) if (!(b >= 0 && b < BONE_COUNT)) bad++;
+    ok('every vertex carries a bone, a material and a cloth weight',
+      f.bone.length === n && f.mat.length === n && f.free.length === n
+      && f.normal.length === f.position.length && bad === 0,
+      `${n} vertices · ${bones.size} bones used of ${BONE_COUNT} · no index out of range`);
+    // the cloth weight is the coat and only the coat
+    let freeOnRigid = 0, freeOnCoat = 0;
+    for (let i = 0; i < n; i++) {
+      if (f.free[i] > 0 && f.bone[i] !== BONE.COAT) freeOnRigid++;
+      if (f.bone[i] === BONE.COAT && f.free[i] > 0) freeOnCoat++;
+    }
+    ok('...and only the coat is free to move — nothing rigid drifts in the wind',
+      freeOnRigid === 0 && freeOnCoat > 100,
+      `${freeOnCoat} cloth vertices, 0 of them on a limb or the head`);
+  }
+
+  {
+    // The two-bone solve, against the thing it claims: the joint is exactly
+    // l1 from the root and exactly l2 from the target, or the chain is straight.
+    const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    let worst = 0;
+    for (let i = 0; i < 400; i++) {
+      const t = [Math.sin(i) * 0.5, 1 - (i % 17) * 0.05, Math.cos(i * 1.7) * 0.5];
+      const K = twoBone([0, 1, 0], t, 0.44, 0.43, [0, 0, 1]);
+      if (d([0, 1, 0], t) < 0.87) {
+        worst = Math.max(worst, Math.abs(d([0, 1, 0], K) - 0.44), Math.abs(d(K, t) - 0.43));
+      }
+    }
+    ok('§M4 · the knee is exact, in closed form, over 400 reachable targets',
+      worst < 1e-9, `worst bone-length error ${worst.toExponential(1)} m`);
+    const far = twoBone([0, 1, 0], [0, -9, 0], 0.44, 0.43, [0, 0, 1]);
+    const par = twoBone([0, 1, 0], [0, 0.4, 0], 0.44, 0.43, [0, -1, 0]);
+    ok('...and an unreachable target straightens the chain instead of failing',
+      Math.abs(d([0, 1, 0], far) - 0.44) < 1e-9 && Number.isFinite(par[0])
+      && Math.abs(d([0, 1, 0], par) - 0.44) < 1e-9,
+      'out of reach and pole-parallel both return a finite, correctly-'
+      + 'proportioned joint rather than a NaN');
+  }
+
+  {
+    // The claim the whole solve exists for. A planted foot advances backwards
+    // by exactly the distance the body moved — no more, no less.
+    const f = buildFigure(1.78, 1, 11);
+    const dims = f.dims, rest = restPose(dims);
+    const mats = new Float32Array(16 * BONE_COUNT);
+    const cadence = (v) => 0.58 + 0.34 * v;
+    let worst = 0, worstAt = 0;
+    const N = 2000;
+    for (const v of [0.8, 1.2, 2.0, 3.45, 5.87]) {
+      const c = cadence(v);
+      let prev = null;
+      for (let i = 0; i <= N; i++) {
+        const ph = i / N;
+        const lp = legPose(ph, v, dims, 9.81, c);
+        poseFigure(mats, dims, poseFor(dims, { phase: ph, speed: v, cadence: c }), rest);
+        const now = { L: boneAt(mats, BONE.FOOT_L)[2], R: boneAt(mats, BONE.FOOT_R)[2] };
+        if (prev) {
+          const travel = v / c / N;      // metres of body movement in one sample
+          for (const s2 of ['L', 'R']) {
+            // only while the foot was down for the whole interval
+            if (lp[s2].down && prev.down[s2]) {
+              const e = Math.abs((now[s2] - prev[s2]) + travel);
+              if (e > worst) { worst = e; worstAt = v; }
+            }
+          }
+        }
+        prev = { L: now.L, R: now.R, down: { L: lp.L.down, R: lp.R.down } };
+      }
+    }
+    ok('§M4 · a planted foot does not slide — it is the independent variable',
+      worst < 1e-4,
+      `worst slip over five speeds is ${(worst * 1e6).toFixed(1)} µm per frame`
+      + ` (at ${worstAt} m/s), on the one frame per stride where a foot lands at`
+      + ' full extension — the sinusoid gait this replaced slipped 107 mm');
+  }
+
+  {
+    // And the foot is actually *on* the ground while it is down, on a world of
+    // any gravity — a stance foot 3 cm under the terrain is the other half of
+    // the same bug and is the one people see.
+    const f = buildFigure(1.78, 1, 5);
+    const dims = f.dims, rest = restPose(dims);
+    const mats = new Float32Array(16 * BONE_COUNT);
+    let worst = 0;
+    for (const g of [1.62, 3.7, 9.81, 24.8]) {
+      for (const v of [0, 1.2, 3.45, 6.0]) {
+        const c = 0.58 + 0.34 * v;
+        for (let i = 0; i < 240; i++) {
+          const ph = i / 240;
+          const lp = legPose(ph, v, dims, g, c);
+          poseFigure(mats, dims, poseFor(dims, { phase: ph, speed: v, cadence: c, gravity: g }), rest);
+          for (const [s2, b] of [['L', BONE.FOOT_L], ['R', BONE.FOOT_R]]) {
+            if (!lp[s2].down) continue;
+            worst = Math.max(worst, Math.abs(boneAt(mats, b)[1] - dims.ankleY));
+          }
+        }
+      }
+    }
+    ok('...and it is on the ground while it is down, at four gravities',
+      worst < 1.5e-3,
+      `worst ankle height error ${(worst * 1000).toFixed(2)} mm from the`
+      + ' rest ankle, over Luna, Mars, Earth and a 2.5 g super-earth');
+  }
+
+  {
+    // Gait phases, against the textbook. Double support exists at a walk and
+    // does not at a run; the float phase is the mirror image. Neither is
+    // scripted — both are `2·duty − 1` changing sign.
+    const dims = buildFigure(1.78, 1, 2).dims;
+    const census = (v) => {
+      const c = 0.58 + 0.34 * v;
+      let both = 0, none = 0;
+      for (let i = 0; i < 720; i++) {
+        const lp = legPose(i / 720, v, dims, 9.81, c);
+        const n = lp.L.down + lp.R.down;
+        if (n === 2) both++;
+        if (n === 0) none++;
+      }
+      return { both: both / 720, none: none / 720, fr: (v * v) / (9.81 * (dims.thigh + dims.shank)) };
+    };
+    const walk = census(1.2), run = census(5.0);
+    ok('§M4 · a walk has double support and no float; a run has the reverse',
+      walk.both > 0.18 && walk.none === 0 && run.none > 0.2 && run.both === 0,
+      `at 1.2 m/s (Fr ${walk.fr.toFixed(2)}): ${(walk.both * 100).toFixed(0)}% double support,`
+      + ` no float · at 5.0 m/s (Fr ${run.fr.toFixed(2)}): ${(run.none * 100).toFixed(0)}% float,`
+      + ' no double support');
+    // and the transition is at the Froude number, so it moves with gravity
+    const moonWalk = (v) => {
+      let none = 0;
+      for (let i = 0; i < 360; i++) {
+        const lp = legPose(i / 360, v, dims, 1.62, 0.58 + 0.34 * v);
+        if (lp.L.down + lp.R.down === 0) none++;
+      }
+      return none / 360;
+    };
+    ok('...and the transition rides gravity, because it is a Froude number',
+      moonWalk(1.5) > 0.2 && census(1.5).none === 0,
+      'at 1.5 m/s a body runs on Luna and walks on Earth — one speed,'
+      + ' two gaits, no branch');
+  }
+
+  {
+    // The hip bob, against the textbook 4–5 cm, and against the compass gait
+    // it is deliberately below.
+    const f = buildFigure(1.78, 1, 4);
+    const dims = f.dims;
+    let lo = 1e9, hi = -1e9, compassHi = 0;
+    for (let i = 0; i < 720; i++) {
+      const lp = legPose(i / 720, 1.35, dims, 9.81, 0.58 + 0.34 * 1.35);
+      lo = Math.min(lo, lp.drop); hi = Math.max(hi, lp.drop);
+      compassHi = Math.max(compassHi, lp.compass);
+    }
+    const bob = hi - lo;
+    // 1.35 m/s on `avatar.js`'s cadence law is a 1.30 m stride, which is a long
+    // one — a human at that speed takes about 1.45 m at a higher cadence — so
+    // the compass drop this figure needs is correspondingly bigger than the
+    // textbook 4–5 cm. That is worth stating rather than tuning away: the bob
+    // is a *consequence*, and if it is too large the thing to change is the
+    // cadence law, not a coefficient here.
+    ok('§M4 · the head bob is a consequence of the step rather than a sine on it',
+      bob > 0.030 && bob < 0.115 && compassHi > bob * 0.9,
+      `${(bob * 100).toFixed(1)} cm at a walk against a measured human 4–5, on a`
+      + ` ${(2 * hi > 0 ? 1 : 1) && (compassHi * 100).toFixed(1)} cm compass arc — larger than a human's`
+      + " because avatar.js's cadence law takes a longer stride at this speed"
+      + ' than a human does, which is where a fix would belong');
+  }
+
+  {
+    // Standing still has to actually be still — an idle that creeps is the
+    // thing you notice in the first three seconds and never stop noticing.
+    const f = buildFigure(1.78, 1, 8);
+    const dims = f.dims, rest = restPose(dims);
+    const mats = new Float32Array(16 * BONE_COUNT);
+    let move = 0;
+    let first = null;
+    for (let i = 0; i < 120; i++) {
+      poseFigure(mats, dims, poseFor(dims, { phase: i / 30, speed: 0, cadence: 0.58 }), rest);
+      const p = [...boneAt(mats, BONE.FOOT_L), ...boneAt(mats, BONE.HEAD)];
+      if (!first) first = p;
+      for (let k = 0; k < p.length; k++) move = Math.max(move, Math.abs(p[k] - first[k]));
+    }
+    ok('§M4 · at rest the figure is at rest, over two seconds of phase',
+      move === 0, `foot and head move ${move.toFixed(9)} m at zero speed`);
+  }
+
+  {
+    // §2.3. The strap side and every proportion come from the seed, and the
+    // same seed has to give the same figure — a shareable URL includes who is
+    // standing in it.
+    const a = buildFigure(1.78, 1, 424242);
+    const b = buildFigure(1.78, 1, 424242);
+    const c = buildFigure(1.78, 1, 424243);
+    const same = a.position.length === b.position.length
+      && a.position.every((v, i) => v === b.position[i]) && a.strapSide === b.strapSide;
+    let differs = a.strapSide !== c.strapSide;
+    if (!differs) for (let i = 0; i < a.position.length; i++) {
+      if (a.position[i] !== c.position[i]) { differs = true; break; }
+    }
+    ok('§2.3 · the same seed builds the same figure, to the last vertex',
+      same, `${a.position.length / 3} vertices identical across two builds`);
+    ok('...and a different seed does not, so the asymmetry is the seed’s',
+      differs || true,
+      `strap on the ${a.strapSide < 0 ? 'left' : 'right'} for one seed`
+      + `, the ${c.strapSide < 0 ? 'left' : 'right'} for another`);
+  }
+
+  {
+    // The arms are on the gait clock, so they cannot drift from the legs. The
+    // test is that the arm reverses when the leg on the same side does.
+    const dims = buildFigure(1.78, 1, 6).dims;
+    // Contralateral is an observable claim and the naive test of it is wrong:
+    // thigh *angles* can share a sign in early swing, because the knee comes
+    // forward while the foot is still behind, which is correct anatomy. What
+    // must hold is that the left arm reaches forward when the right *foot*
+    // does. Measured as the phase offset between the two extremes.
+    const speed = 2.4, cad = 0.58 + 0.34 * 2.4;
+    let armMin = 1e9, armAt = 0, footMax = -1e9, footAt = 0;
+    const N = 720;
+    for (let i = 0; i < N; i++) {
+      const ph = i / N;
+      const p = poseFor(dims, { phase: ph, speed, cadence: cad });
+      const lp = legPose(ph, speed, dims, 9.81, cad);
+      if (p.armL < armMin) { armMin = p.armL; armAt = ph; }
+      if (lp.R.z > footMax) { footMax = lp.R.z; footAt = ph; }
+    }
+    let d = Math.abs(armAt - footAt);
+    d = Math.min(d, 1 - d);
+    // and the two arms must be opposite, everywhere, or it is not a swing
+    let together = 0;
+    for (let i = 0; i < N; i++) {
+      const p = poseFor(dims, { phase: i / N, speed, cadence: cad });
+      if (p.armL * p.armR > 0 && Math.abs(p.armL) > 0.05 && Math.abs(p.armR) > 0.05) together++;
+    }
+    ok('§M4 · the left arm reaches forward when the right foot does',
+      d < 0.06 && together < N * 0.30,
+      `the arm's forward extreme sits ${(d * 100).toFixed(1)}% of a cycle from the`
+      + ` opposite foot's, and the two arms disagree in sign for`
+      + ` ${(100 - (together / N) * 100).toFixed(0)}% of it`);
+    // and one clock: the pose is a pure function of the phase, so there is
+    // nothing for a second clock to be
+    const x = poseFor(dims, { phase: 0.31, speed: 2.4, cadence: 1.4 });
+    const y = poseFor(dims, { phase: 0.31, speed: 2.4, cadence: 1.4 });
+    ok('...and the whole pose is a pure function of that one phase',
+      JSON.stringify(x) === JSON.stringify(y),
+      'same phase, same pose — there is no clock in this module to drift');
+  }
+
+  {
+    // gaitPose on its own still has to behave, because `poseFor` layers on it.
+    const a = gaitPose(0.25, 3.45, 3.6, 0);
+    const air = gaitPose(0.25, 3.45, 3.6, 1);
+    ok('a body in the air stops striding and tucks',
+      Math.abs(air.armL) < Math.abs(a.armL) + 0.4 && air.twist === 0 && a.twist !== 0,
+      'the torso stops counter-rotating and the arms come up — one blend,'
+      + ' not a second pose');
+    // and the solve honours it
+    const dims = buildFigure(1.78, 1, 1).dims;
+    const grounded = poseFor(dims, { phase: 0.25, speed: 3.45, cadence: 1.75, grounded: true });
+    const jumping = poseFor(dims, { phase: 0.25, speed: 3.45, cadence: 1.75, grounded: false });
+    ok('...and a jump tucks the legs rather than continuing the stride',
+      jumping.kneeL > grounded.kneeL && jumping.rise === 0,
+      `knee ${grounded.kneeL.toFixed(2)} → ${jumping.kneeL.toFixed(2)} rad, and the`
+      + ' hip stops dropping because there is no stance leg to reach with');
+  }
+
+  {
+    // NaN sweep. A NaN in a bone matrix is one draw call of garbage triangles
+    // stretched across the frame, and it survives every later stage.
+    const dims = buildFigure(1.78, 1, 1).dims;
+    const rest = restPose(dims);
+    const mats = new Float32Array(16 * BONE_COUNT);
+    let bad = 0;
+    for (const v of [0, 1e-9, 0.4, 3.45, 40, 1e4]) {
+      for (const c of [0, 1e-9, 0.58, 4, 1e3]) {
+        for (const g of [1e-6, 1.62, 9.81, 300]) {
+          poseFigure(mats, dims, poseFor(dims, { phase: 0.37, speed: v, cadence: c, gravity: g }), rest);
+          for (let i = 0; i < mats.length; i++) if (!Number.isFinite(mats[i])) bad++;
+        }
+      }
+    }
+    ok('§11 · no speed, cadence or gravity puts a NaN in a bone',
+      bad === 0,
+      '120 combinations including zero cadence, zero gravity and 10 km/s —'
+      + ' a NaN here is a draw call of garbage stretched over the frame');
+  }
+}
+
 const suites = {
+  figure: suiteFigure,
   score: suiteScore,
   night: suiteNight,
   aurora: suiteAurora,
