@@ -10,6 +10,7 @@
 // Each resonance's score: [frequency, amplitude, waveform, breath-rate] per
 // partial. Tuned quiet — these sit under the wind, not over it.
 import { arand } from './rng.js';
+import { Score } from './score.js';
 
 const MOOD_SCORES = {
   counsel: [[73.4, 0.10, 'sawtooth', 0.028], [110, 0.06, 'sine', 0.041]],                       // D–A, monumental
@@ -34,6 +35,9 @@ export class Ambience {
     this.muted = localStorage.getItem('aeon-mute') === '1';
     this.level = 0.24;
     this._pendingScale = null;
+    /** `?score=1`'s derived score, or null — see `beginScore` */
+    this.derived = null;
+    this._pendingDerived = null;
   }
 
   /** must be called from a user gesture (autoplay policy) */
@@ -50,6 +54,7 @@ export class Ambience {
       this._noiseBuf = this._makeNoise();
       if (this._pendingScale) this.setScale(...this._pendingScale);
       if (this._pendingScore != null) { const r = this._pendingScore; this._pendingScore = null; this.surfaceScore(r); }
+      if (this._pendingDerived) { const d = this._pendingDerived; this._pendingDerived = null; this.beginScore(...d); }
     } catch (e) {
       console.warn('AEON: audio unavailable —', e.message);
       this.ctx = null;
@@ -272,6 +277,50 @@ export class Ambience {
     const t = this.ctx.currentTime;
     const target = Math.max(0, swell * (1 - hush * 0.82));
     this._score.out.gain.setTargetAtTime(target, t, 0.7);
+  }
+
+  // ------------------------------------------------------- the derived ----
+  //
+  // `?score=1` — `src/score.js` instead of the chord above. Same context, same
+  // master, same mute, so the two are interchangeable at the call site and the
+  // rest of the mix does not learn which one is playing.
+  //
+  // The chord above is a good chord and it is the same chord on every world:
+  // an add-9 on a root the seed transposed. What replaces it is an open pipe
+  // whose pitch is the speed of sound in *this* air, whose timbre is the star's
+  // own Planck curve read at the pipe's harmonics, whose reverb is a ray budget
+  // over the actual ground, and whose tempo is the gait clock. Both are kept
+  // until the derived one has been heard on enough worlds to retire the other
+  // (§7.4: flipping the default is a separate commit).
+
+  /** stand the derived score up for a world. Silent until `unlock()`. */
+  beginScore(world, tier = 1) {
+    if (!this.ctx) { this._pendingDerived = [world, tier]; return; }
+    if (this.derived) this.endScore();
+    this.derived = new Score({
+      seed: world?.seed ?? 0, context: this.ctx, destination: this.master, tier,
+    });
+    this.derived.start();
+    this.derived.update(world, 13.5, 0.016, 0);
+  }
+
+  /**
+   * Per frame. `hush` is the ruin duck the hand-written score already had — it
+   * is a property of where you are standing rather than of the world, so it
+   * rides on the outside as a level rather than entering the voicing.
+   */
+  updateScore(world, sunElevDeg, dt, t, hush = 0) {
+    if (!this.derived) return;
+    this.derived.levelScale = 1 - 0.82 * (hush ?? 0);
+    this.derived.update(world, sunElevDeg, dt, t);
+  }
+
+  endScore() {
+    if (!this.derived) { this._pendingDerived = null; return; }
+    const s = this.derived;
+    this.derived = null;
+    s.stop();
+    setTimeout(() => { try { s.dispose(); } catch { /* torn down */ } }, 2600);
   }
 
   surfaceScoreOff() {

@@ -233,12 +233,12 @@
 // whose music does not move with its weather. That sentence was already true
 // of the pitch. Now it is true of the loudness for the same reason.
 //
-// Measured, the same way the defect was: the giant falls 0.982 → 0.43, an M
-// dwarf 0.93 → 0.33, a lava world 0.92 → 0.41, and a temperate world — which
-// was passing anyway — 0.65 → 0.14. The worst of ten worlds is now the airless
-// one at 0.55, unmoved, because it is the only one with nothing to move it —
-// which is the right world to have as the hardest case and was not the right
-// world to be beaten by a gas giant.
+// Measured the same way the defect was, over four minutes of lag on ten
+// worlds: the giant falls 0.982 → 0.49, an M dwarf 0.93 → 0.31, a lava world
+// 0.92 → 0.41, and a temperate world — which was passing anyway — 0.65 → 0.19.
+// The worst of the ten is now the airless one at 0.65, unmoved, because it is
+// the only one with nothing to move it. That is the right world to have as the
+// hardest case, and it was not the right world to be beaten by a gas giant.
 //
 // ---------------------------------------------------------------------------
 // 8 · What it costs
@@ -276,6 +276,23 @@ const finite = (x, fallback) => (Number.isFinite(x) ? x : fallback);
 //
 // Each is measured, and each is written where the formula that consumes it can
 // be checked against a value somebody else published.
+
+/**
+ * Where a flue pipe stops answering its wind.
+ *
+ * Drive it past about twice its nominal pressure and it does not get twice as
+ * loud again: the jet's transit time falls out of step with the resonance, the
+ * fundamental saturates, and the pipe eventually jumps to the octave. Organ
+ * voicers work below this line on purpose and call the far side overblowing.
+ *
+ * It is here because the wind's own tail reaches 5.4× the mean over an hour on
+ * a gas giant, and a linear law would answer that with a fivefold swell — an
+ * ambience is not the place to be startled by a correctly-modelled gust. It
+ * costs nothing measurable: the worst world's four-minute autocorrelation moves
+ * 0.251 → 0.274 against a 0.88 gate, because it clips about one sample in a
+ * hundred and none of the structure.
+ */
+const OVERBLOW = 2;
 
 /** J/(mol·K) */
 const R_GAS = 8.314462618;
@@ -831,9 +848,10 @@ export function windDrive(plan, t) {
   const col = plan?.air?.column ?? 0;
   if (!plan?.wind || col <= 1e-4) return 1;
   const g = windAt(plan.wind, 0, 0, t, GAIT.eye).gustNorm;
-  // a gust cannot suck: below zero drive the pipe has stopped speaking, and
-  // the model does not describe what happens after that
-  return Math.max(1 + col * (finite(g, 1) - 1), 0);
+  // Below zero the pipe has stopped speaking and above `OVERBLOW` it has
+  // stopped listening — the model describes neither, so it says so at both ends
+  // rather than extrapolating through them.
+  return clamp(1 + col * (finite(g, 1) - 1), 0, OVERBLOW);
 }
 
 /**

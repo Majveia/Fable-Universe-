@@ -53,7 +53,8 @@ import { GrassRing, WindField } from './flora.js';
 import { PART_RADIUS, RINGS } from './meadow.js';
 import { HOVER } from './vehicle.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
-import { qArr, qInt } from './quality.js';
+import { TIER, qArr, qInt } from './quality.js';
+import { SCORE_FLAG, worldFromScale } from './score.js';
 
 const PARAM = (k) => {
   try { return new URL(window.location.href).searchParams.get(k); }
@@ -756,7 +757,8 @@ export class SurfaceScale {
     // a living score for the ground: it swells with the golden hour and
     // hushes at the ruins — tuned to this world's own resonance root
     this._scoreRoot = 130.8 * Math.pow(2, ((hash(pp.seed, 0x5c0e) % 5)) / 12);
-    this.app.audio?.surfaceScore?.(this._scoreRoot);
+    if (SCORE_FLAG) this.app.audio?.beginScore?.(worldFromScale(this), TIER);
+    else this.app.audio?.surfaceScore?.(this._scoreRoot);
     if (M4) {
       // §M4. The rig *is* the controls object — it implements the same
       // duck-typed `{ enabled, target, update() }` the hyperzoom has always
@@ -2584,7 +2586,16 @@ export class SurfaceScale {
     if (this.herds) this.herds.update(dt, this.uSunDir.value.y);
     // the score breathes with the light: it peaks as the sun rides low and
     // gold, thins at high noon and deep night, and hushes near a monument
-    if (this.app.audio?.surfaceScore) {
+    if (SCORE_FLAG) {
+      // The derived score works the golden hour out for itself — `goldenWeight`
+      // reads the same elevation, so the swell above is not passed in, only the
+      // elevation it was derived from. `uTime` is the scene clock, and it goes
+      // across so the drone swells on the gusts the grass is actually bending
+      // in rather than on a clock of its own (§7 of score.js).
+      const elev = Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180 / Math.PI;
+      this.app.audio?.updateScore?.(worldFromScale(this), elev, dt,
+        this.uTime.value, this.ruins?.hush ?? 0);
+    } else if (this.app.audio?.surfaceScore) {
       const e = this.uSunDir.value.y;
       const swell = Math.max(0, 1 - Math.abs(e - 0.08) * 4.5) * this.atmo;
       this.app.audio.surfaceSwell(swell, this.ruins?.hush ?? 0);
@@ -2762,11 +2773,22 @@ export class SurfaceScale {
 
   pick() { return null; }
   enter() { this.controls.enabled = true; }
-  exit() { this.controls.enabled = false; this.app.hud.showDiscovery(null); this.app.audio?.surfaceScoreOff?.(); }
-  resume() { this.controls.enabled = true; this.app.audio?.surfaceScore?.(this._scoreRoot); }
+  exit() {
+    this.controls.enabled = false;
+    this.app.hud.showDiscovery(null);
+    if (SCORE_FLAG) this.app.audio?.endScore?.();
+    else this.app.audio?.surfaceScoreOff?.();
+  }
+
+  resume() {
+    this.controls.enabled = true;
+    if (SCORE_FLAG) this.app.audio?.beginScore?.(worldFromScale(this), TIER);
+    else this.app.audio?.surfaceScore?.(this._scoreRoot);
+  }
 
   dispose() {
     this.ruins?.dispose?.();
+    if (SCORE_FLAG) this.app.audio?.endScore?.();
     this.app.audio?.surfaceScoreOff?.();
     window.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('keyup', this._onKeyUp);
