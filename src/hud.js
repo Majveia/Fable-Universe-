@@ -2,6 +2,7 @@
 // Everything fades; the universe is the UI.
 
 import { systemParams } from './system.js';
+import { wonderDestination, wonderScore } from './wonder.js';
 import { arand, faunaNames } from './rng.js';
 import { attachKeyboard, input } from './input.js';
 import { TouchLayer, coarsePointer, watchPointerKind } from './touch.js';
@@ -80,9 +81,8 @@ export class HUD {
     // three of the six scales it was already the primary tap, which says the
     // layer's own author thought it was the headline verb too.
     this.timectl.innerHTML = `
-      <button id="t-wonder" title="somewhere wondrous (g)">✦</button>
-      <span class="readout" id="time-readout"></span>
       <button id="t-wonder" title="somewhere wondrous (j)">✦</button>
+      <span class="readout" id="time-readout"></span>
       <button id="t-mute" title="sound (m)">♪</button>
       <button id="t-slow" title="slower">−</button>
       <button id="t-play" title="pause / play">⏸</button>
@@ -95,7 +95,6 @@ export class HUD {
     this.timectl.querySelector('#t-wonder').onclick = () => this._wondrous();
     this.playBtn = this.timectl.querySelector('#t-play');
     this.muteBtn = this.timectl.querySelector('#t-mute');
-    this.timectl.querySelector('#t-wonder').onclick = () => this._wondrous();
     this.timectl.querySelector('#t-slow').onclick = () => app.active()?.slowDown?.();
     this.timectl.querySelector('#t-fast').onclick = () => app.active()?.speedUp?.();
     this.playBtn.onclick = () => { app.active()?.togglePlay?.(); };
@@ -564,28 +563,18 @@ export class HUD {
 
       for (let i = 0; i < sp.planets.length; i++) {
         const p = sp.planets[i];
-        let sc = 0;
-        if (p.hasRings) sc += 3.2;                     // the single best silhouette
-        if (p.inhabited) sc += 2.4;                    // lit windows at dusk
-        if (p.moons >= 3) sc += 1.5;                   // a crowded sky
-        else if (p.moons >= 1) sc += 0.6;
-        if (p.typeId === 2) sc += 1.6;                 // ocean
-        if (p.typeId === 4) sc += 1.4;                 // lava
-        if (p.typeId === 3) sc += 0.8;                 // ice
-        if (p.typeId >= 5) sc += 1.0;                  // a giant to fall through
-        // a star that is not the Sun, seen from close in, is the cheapest
-        // wonder there is — an M dwarf's red daylight or an A-type's blue one
-        if (sp.temp < 4200 || sp.temp > 8000) sc += 1.2 * Math.min(1, 1 / Math.max(p.a, 0.2));
-        if (p.e > 0.25) sc += 0.5;                     // a visibly eccentric orbit
+        // The law is `src/wonder.js` and it is pure, so what this button will
+        // do is under test rather than a thing you find out by pressing it
+        // sixty-four times. Giants return −Infinity: they have no ground, and a
+        // destination you can only look at is half of what §4's verbs promise.
+        const base = wonderScore(p, sp.temp);
+        if (!Number.isFinite(base)) continue;
         // spread the field: without a jitter the same handful of archetypes win
         // every roll and the button becomes deterministic in feel if not in fact
-        sc += arand() * 1.8;
+        const sc = base + arand() * 1.8;
         if (sc > bestScore) {
           bestScore = sc;
-          // gas and ice giants have no ground — you arrive at the cloud deck.
-          // Everything else you arrive above, so the descent is still yours.
-          best = p.typeId >= 5 ? { g, s, p: i, cl: 1 } : { g, s, pl: i };
-        }
+          best = wonderDestination(g, s, i);        }
       }
     }
 

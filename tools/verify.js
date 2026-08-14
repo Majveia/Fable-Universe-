@@ -73,6 +73,7 @@ import {
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
+import { walkable, wonderDestination, wonderScore } from '../src/wonder.js';
 import {
   FLICKER_HZ, MAINS_HZ, MERCURY_LINES, isThin, lampColour, lampExposure, lampFlicker,
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
@@ -6098,7 +6099,98 @@ function suiteLiminal() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// somewhere wondrous (src/wonder.js)
+//
+// The button rolls worlds and takes you to the best one. Its scoring was right
+// about every term and wrong about the sum: giants took +1.0 for being a giant
+// and +3.2 for rings, which in this generator are very nearly the same fact, so
+// a giant walked in 2.6 points clear of anything else and the jitter could not
+// close it. Nobody wrote "prefer gas giants" — it is what the arithmetic said.
+
+function suiteWonder() {
+  console.log('\nwonder — what the button is actually promising');
+
+  const P = (o) => ({ typeId: 1, moons: 0, hasRings: false, inhabited: false, a: 1, e: 0, ...o });
+
+  {
+    // The fix is eligibility, not weighting. A giant has no ground, and §4's
+    // verbs are travel *and* look — a cloud deck supports one of them.
+    const giant = P({ typeId: 5, hasRings: true, moons: 8, inhabited: true });
+    const plain = P({ typeId: 0 });
+    ok('§4 · a giant is ineligible outright, not merely out-scored',
+      !walkable(giant) && wonderScore(giant) === -Infinity && Number.isFinite(wonderScore(plain)),
+      'the best possible giant — rings, eight moons, inhabited — scores −∞'
+      + ' against a bare rock, because the promise is a place you can be');
+    ok('...and every walkable type stays in the draw',
+      [0, 1, 2, 3, 4].every((t) => Number.isFinite(wonderScore(P({ typeId: t }))))
+      && [5, 6, 7].every((t) => wonderScore(P({ typeId: t })) === -Infinity),
+      'terrestrial, ocean, ice and lava are all still reachable; giants are'
+      + ' reachable from their own system, by choosing to go');
+  }
+
+  {
+    // The bug itself, as a regression check: the old sum let a ringed giant
+    // beat a ringed ocean world, which is exactly backwards.
+    const ringedGiant = P({ typeId: 5, hasRings: true });
+    const ringedOcean = P({ typeId: 2, hasRings: true });
+    const oldGiant = 3.2 + 1.0, oldOcean = 3.2 + 1.6;
+    ok('the double-counted bonus cannot come back',
+      wonderScore(ringedGiant) < wonderScore(ringedOcean)
+      && wonderScore(ringedOcean) > 4.7,
+      `a ringed ocean scores ${wonderScore(ringedOcean).toFixed(1)} and a ringed`
+      + ` giant −∞; under the old sum they were ${oldOcean.toFixed(1)} and`
+      + ` ${oldGiant.toFixed(1)} with giants taking rings almost exclusively`);
+  }
+
+  {
+    // The ordering the terms are supposed to express, stated once so a future
+    // tweak has to argue with something.
+    const rings = wonderScore(P({ hasRings: true }));
+    const lived = wonderScore(P({ inhabited: true }));
+    const many = wonderScore(P({ moons: 4 }));
+    const one = wonderScore(P({ moons: 1 }));
+    const bare = wonderScore(P({}));
+    ok('rings beat a settlement beats a crowded sky beats one moon beats rock',
+      rings > lived && lived > many && many > one && one > bare && bare === 0,
+      `${rings.toFixed(1)} · ${lived.toFixed(1)} · ${many.toFixed(1)} ·`
+      + ` ${one.toFixed(1)} · ${bare.toFixed(1)}`);
+    // and a strange star only counts when you are close enough to see it
+    const near = wonderScore(P({ a: 0.2 }), 3200);
+    const far = wonderScore(P({ a: 8 }), 3200);
+    ok("...and an M dwarf's red daylight only pays when you are near it",
+      near > far && far >= 0,
+      `a = 0.2 AU scores ${near.toFixed(2)}, a = 8 AU scores ${far.toFixed(2)}`);
+  }
+
+  {
+    // Every destination is a landing. The cloud-deck branch is gone rather
+    // than unreachable, which is one edit further from coming back.
+    const d = wonderDestination(11, 22, 3);
+    ok('every winner is a place you arrive on, not above',
+      d.pl === 3 && d.cl === undefined && d.p === undefined && d.g === 11 && d.s === 22,
+      `${JSON.stringify(d)} — a landing, with no cloud-deck branch left to`
+      + ' regress into');
+  }
+
+  {
+    // §11: the picker sees generator output, and generator output has holes.
+    let bad = 0;
+    for (const p of [null, undefined, {}, P({ moons: NaN }), P({ a: 0 }), P({ a: -1 }),
+      P({ e: NaN }), P({ typeId: NaN })]) {
+      const v = wonderScore(p, NaN);
+      if (!(Number.isFinite(v) || v === -Infinity)) bad++;
+    }
+    ok('§11 · a malformed planet record scores rather than throws',
+      bad === 0,
+      'eight degenerate records including null and NaN fields — every one'
+      + ' returns a number or −∞, because a button that throws is a button'
+      + ' that does nothing and says nothing');
+  }
+}
+
 const suites = {
+  wonder: suiteWonder,
   liminal: suiteLiminal,
   ascent: suiteAscent,
   plant: suitePlant,
