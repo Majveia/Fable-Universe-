@@ -370,6 +370,44 @@ export function roomDoors(galaxySeed, addr, scan, limit = 8) {
 }
 
 /**
+ * Where on a thin world's surface the floor gives way.
+ *
+ * The place has to come from somewhere, and there are two honest candidates.
+ * The stronger one is that a thin spot is where the *terrain generator itself*
+ * is ambiguous — where this world's height field and its address-neighbour's
+ * agree to within nothing, so the generator cannot say which of the two you are
+ * standing on. That is the truest statement of what thinness is, and it costs a
+ * search over the tile every time a world loads.
+ *
+ * The cheaper one, taken here, is that the location is *also* an address: the
+ * same prefix that names the room names the point, through the same hash. It is
+ * deterministic, free, and consistent with everything else in this file — a
+ * room is an address, so the door into it is too.
+ *
+ * What is not arbitrary is the **radius**. The more bits two worlds share, the
+ * less the generator can distinguish them and the wider the fold: the reach
+ * grows with depth past the threshold rather than being a constant, so a world
+ * that barely qualifies has a spot you could walk past and a world at a deep
+ * collision has one you would have to work to avoid. Rarity again doing the
+ * work that a tuning constant would otherwise do badly.
+ */
+export function thinPoint(addr, extent, depthFloor = 17) {
+  const h = (salt) => (hash(addr.prefix | 0, addr.depth | 0, salt) >>> 0) / 4294967296;
+  // kept off the spawn point and off the tile edge — a fold you fall into
+  // before you have looked around is a trapdoor, and one at the clamp is
+  // unreachable
+  const r = extent * (0.14 + h(0x51) * 0.28);
+  const a = h(0x52) * Math.PI * 2;
+  const over = Math.max(addr.depth - depthFloor, 0);
+  return {
+    x: Math.cos(a) * r,
+    z: Math.sin(a) * r,
+    // 1.1 m at the threshold, growing with every further bit of agreement
+    radius: 1.1 + over * 0.55,
+  };
+}
+
+/**
  * The whole room, ready to build: shape, doors, and the light it is under.
  *
  * One call so a consumer cannot assemble half of it — the lamp age belongs to

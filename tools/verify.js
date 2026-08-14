@@ -77,7 +77,7 @@ import { walkable, wonderDestination, wonderScore } from '../src/wonder.js';
 import {
   FLICKER_HZ, MAINS_HZ, MERCURY_LINES, isThin, lampColour, lampExposure, lampFlicker,
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
-  roomShape, sharedBits, starAt, thinDepth,
+  roomShape, sharedBits, starAt, thinDepth, thinPoint,
 } from '../src/liminal.js';
 import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
@@ -6056,6 +6056,31 @@ function suiteLiminal() {
       `${lo.toFixed(2)}–${hi.toFixed(2)} over a tenth of a second — a shallow`
       + ' ripple, not a strobe, which is the difference between a room that'
       + ' hums and a room that is broken');
+  }
+
+  {
+    // Where the floor gives way. The place is an address like everything else;
+    // the *reach* is not arbitrary — it grows with how little the generator can
+    // distinguish the two worlds.
+    const near = { prefix: 0x2de08000 >>> 0, depth: 17 };
+    const deep = { prefix: 0x2de08000 >>> 0, depth: 24 };
+    const a = thinPoint(near, 1400), b = thinPoint(deep, 1400);
+    const rad = (p) => Math.hypot(p.x, p.z);
+    ok('a thin spot sits on the tile, clear of both the spawn and the clamp',
+      rad(a) > 1400 * 0.13 && rad(a) < 1400 * 0.43
+      && rad(b) > 1400 * 0.13 && rad(b) < 1400 * 0.43,
+      `${rad(a).toFixed(0)} m and ${rad(b).toFixed(0)} m from spawn on a 1400 m`
+      + ' tile — a fold you fall into before looking around is a trapdoor, and'
+      + ' one at the clamp is unreachable');
+    ok('...and the deeper the collision, the wider the fold',
+      b.radius > a.radius && a.radius > 1 && b.radius < 12,
+      `${a.radius.toFixed(1)} m at the threshold, ${b.radius.toFixed(1)} m seven`
+      + ' bits deeper — a world that barely qualifies has a spot you could walk'
+      + ' past, and a deep collision has one you would work to avoid');
+    // §2.3 — the same world always gives way in the same place
+    ok('§2.3 · the same address always opens in the same place',
+      JSON.stringify(thinPoint(near, 1400)) === JSON.stringify(a),
+      'a shareable URL that landed you here has to land the next person here');
   }
 
   {

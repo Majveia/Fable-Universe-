@@ -293,6 +293,25 @@ class App {
   }
 
   /**
+   * The ground gave way. Replace the stack with the room.
+   *
+   * Not pushed *under* the world, because you did not descend into it and
+   * there is nothing above it to come back to — the way out of a room is a
+   * door, and the doors go to worlds (§6 of `src/liminal.js`).
+   */
+  enterRoom(galaxySeed, addr) {
+    if (this._warping) return;
+    this.audio?.warp?.('dive');
+    this.hud.warp(() => {
+      while (this.stack.length) { const s = this.stack.pop(); s.exit?.(); s.dispose?.(); }
+      this.stack.push(new RoomScale(this, { galaxySeed, addr }));
+      this.active().resume?.();
+      this._syncScale();
+      this._warping = false;
+    });
+  }
+
+  /**
    * A door in a room opens onto a world that shares its address.
    *
    * The world is real and addressable and may be anywhere — that is the entire
