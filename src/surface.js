@@ -43,6 +43,7 @@ import {
 } from './ocean.js';
 import { GAIT, Walker, gravityOf } from './avatar.js';
 import { ascentFraction, ascentState, handoff, releaseAltitude, stepAscent } from './ascent.js';
+import { isThin, roomAddress, thinPoint } from './liminal.js';
 import { CameraRig } from './camera.js';
 import { attachKeyboard, input, jumpHeld, keys } from './input.js';
 import { makeGround } from './ground.js';
@@ -172,6 +173,15 @@ const M5 = PARAM('m5') !== '0';
  * law and the reasoning; this is the twelve lines that call it.
  */
 const CLIMB = PARAM('climb') === '1';
+
+/**
+ * `?noclip=1` — the rooms between, entered from the ground. Default-off (§7.4).
+ *
+ * Only ~3.8% of worlds have anywhere to fall through, and that number is the
+ * birthday problem rather than a setting (`src/liminal.js` §2). On the rest
+ * this flag costs one `isThin` call at construction and then nothing at all.
+ */
+const NOCLIP = PARAM('noclip') === '1';
 
 /** `?shdebug=1` — output the shadow term itself, so it can be looked at */
 const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');
@@ -704,6 +714,8 @@ export class SurfaceScale {
     this.fly = false;
     /** `?climb=1`'s trigger — see src/ascent.js */
     this._ascent = ascentState();
+    /** `?noclip=1` — where this world gives way, or null if it does not */
+    this._fold = null;
     this._releaseAlt = releaseAltitude(EXT, GAIT.fov);
     this.vel = new THREE.Vector3();
     this.keys = new Set();
@@ -1256,6 +1268,7 @@ export class SurfaceScale {
     // Kept because it is the observer's place on the sphere, and latitude is
     // what decides whether the aurora is overhead, on the horizon, or absent.
     this._landingDir = ld;
+    if (NOCLIP) this._findFold();
     const g = this.ground = makeGround(pp, ld, { wind: this.wind });
     const type = pp.typeId;
     const noise = g.noise;
@@ -2560,6 +2573,7 @@ export class SurfaceScale {
         this.walker.pos.z = this.body.z;
       }
       this._climbCheck(dt);
+      this._foldCheck();
       this._doorCheck(dt);
       // The rig places the camera in M4; `traveler.place` still runs so the
       // avatar mesh keeps following, but it is told not to touch the camera.
@@ -2578,6 +2592,58 @@ export class SurfaceScale {
   }
 
   /** cross the threshold: walk into the shrine's door, or back out of it */
+  /**
+   * Does this world have a fold in it, and where?
+   *
+   * Called once, at construction. A world is thin when its star seed shares
+   * enough high bits with another for the generator to be unable to tell them
+   * apart (`src/liminal.js` §2), and roughly one world in twenty-six is —
+   * which is the birthday problem, not a setting.
+   */
+  _findFold() {
+    // The surface's own context carries the *system* and the host index, not
+    // the seeds that addressed it — so ask the scales it is standing on. That
+    // is not a workaround: the galaxy knows its seed and the system knows its
+    // star, and re-deriving either here would be a second opinion about an
+    // address, which is the one thing this whole feature cannot afford.
+    let galaxySeed = null, starSeed = this.ctx?.system?.seed;
+    for (const sc of this.app?.stack ?? []) {
+      if (Number.isFinite(sc?.ctx?.galaxySeed)) galaxySeed = sc.ctx.galaxySeed;
+      if (Number.isFinite(sc?.ctx?.starSeed)) starSeed = sc.ctx.starSeed;
+    }
+    if (!Number.isFinite(galaxySeed)) galaxySeed = hash(this.app?.seed ?? 0, 0xbe0) >>> 0;
+    if (!Number.isFinite(starSeed)) return;
+    // the index this star sits at is what `isThin` needs; the scale carries the
+    // seed rather than the index, so recover it from the generator's own map
+    let index = -1;
+    for (let i = 0; i < 4096; i++) {
+      if ((hash(galaxySeed >>> 0, i, 0x57a9) >>> 0) === (starSeed >>> 0)) { index = i; break; }
+    }
+    if (index < 0) return;
+    const t = isThin(galaxySeed >>> 0, index, 4096);
+    if (!t.thin) return;
+    const addr = roomAddress(t.seed, t.neighbourSeed);
+    const pt = thinPoint(addr, EXT, t.depth);
+    this._fold = { ...pt, addr, galaxySeed: galaxySeed >>> 0 };
+    console.info(`[noclip] this world is thin — ${(pt.radius).toFixed(1)} m fold at`
+      + ` ${pt.x.toFixed(0)}, ${pt.z.toFixed(0)} · opens on room ${addr.prefix.toString(16)}.${addr.depth}`);
+  }
+
+  /**
+   * Walk into the fold and the floor is not there.
+   *
+   * No prompt, no marker, no key. §4 forbids a game loop and a "press E to
+   * noclip" would be one; the fold is a place, and places do not ask. What it
+   * does instead is what a floor that is not there does: you are in the room.
+   */
+  _foldCheck() {
+    if (!this._fold || this._used || !this.walker || this.inside) return;
+    const f = this._fold;
+    if (Math.hypot(this.walker.pos.x - f.x, this.walker.pos.z - f.z) > f.radius) return;
+    this._used = true;
+    this.app.enterRoom?.(f.galaxySeed, f.addr);
+  }
+
   /**
    * `?climb=1` — has the ground let go?
    *
