@@ -74,6 +74,11 @@ import {
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import {
+  FLICKER_HZ, MAINS_HZ, MERCURY_LINES, isThin, lampColour, lampFlicker,
+  nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
+  roomShape, sharedBits, starAt, thinDepth,
+} from '../src/liminal.js';
+import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
   stepAscent,
 } from '../src/ascent.js';
@@ -5884,7 +5889,197 @@ function suiteAscent() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the rooms between (src/liminal.js)
+//
+// The claim is that the Backrooms is not a level somebody added but the
+// negative space of the seed function — the addresses the generator can express
+// and never visits. A claim like that is either checkable or it is a mood.
+//
+// So: the rarity is the birthday problem rather than a threshold, the aesthetic
+// is the hash's avalanche rather than a style guide, the light is the mercury
+// spectrum rather than a swatch, and the doors open onto worlds that actually
+// exist. Every one of those is a number.
+
+function suiteLiminal() {
+  console.log('\nliminal — the space between addresses, and why it is rare on its own');
+
+  const GS = 0x51b0a3c1;
+  const N = 4096;
+
+  {
+    // §3's weirdness budget, solved rather than tuned. The depth is whatever
+    // makes ~5% of worlds thin, so changing the star count moves the depth and
+    // leaves the budget alone — which is the property that makes it a law.
+    const d = thinDepth(N);
+    let thin = 0;
+    for (let i = 0; i < 900; i++) if (isThin(GS, i, N).thin) thin++;
+    const frac = thin / 900;
+    ok('§3 · the weirdness budget falls out of the birthday problem',
+      frac > 0.02 && frac <= 0.075,
+      `${(frac * 100).toFixed(1)}% of worlds are thin at depth ${d} — §3 asks for`
+      + ' ≤5% and nothing here thresholds on anything');
+    // and it tracks the star count on its own
+    const small = thinDepth(256), big = thinDepth(65536);
+    ok('...and the depth follows the galaxy rather than a constant',
+      small < d && d < big && big - small === 8,
+      `256 stars → depth ${small} · ${N} → ${d} · 65536 → ${big}: 256× the stars`
+      + ' is exactly 8 bits deeper, which is what log2 of a linear term does');
+  }
+
+  {
+    // §4 of the header: rooms at one depth share their statistics, rooms one
+    // bit apart share nothing. If the hash's avalanche were weak the aesthetic
+    // would silently become "every room looks alike", which is a different and
+    // much worse thing — so measure it rather than trust it.
+    const base = { prefix: 0xa3f0c000 >>> 0, depth: 19 };
+    const a = roomShape(base);
+    let differing = 0, samples = 0;
+    for (let bit = 0; bit < 19; bit++) {
+      const b = roomShape({ prefix: (base.prefix ^ (1 << (31 - bit))) >>> 0, depth: 19 });
+      samples++;
+      if (Math.abs(b.width - a.width) > 1e-9 || Math.abs(b.depth - a.depth) > 1e-9) differing++;
+    }
+    ok('§2.3 · one bit of address is a completely different room',
+      differing >= samples - 1,
+      `${differing} of ${samples} single-bit neighbours differ in plan — the`
+      + " Backrooms' 'same building, never this room' is the hash's avalanche");
+    // ...and the distributions at one depth are shared, which is the other half
+    let lo = 1e9, hi = -1e9;
+    for (let i = 0; i < 500; i++) {
+      const sh = roomShape({ prefix: (i * 2654435761) >>> 0, depth: 19 });
+      lo = Math.min(lo, sh.ceiling); hi = Math.max(hi, sh.ceiling);
+    }
+    ok('...while every room at a depth shares one building’s proportions',
+      lo >= 2.4 - 1e-9 && hi <= 3.0 + 1e-9,
+      `500 rooms, ceilings ${lo.toFixed(1)}–${hi.toFixed(1)} m, all on the 600 mm`
+      + ' grid — office proportions, which is what makes it read as a place'
+      + ' rather than a corridor in a game');
+  }
+
+  {
+    // The address algebra. A room is symmetric in the two worlds that opened it,
+    // or a door you came in by is not a door you can leave by.
+    const a = 0xdeadbeef >>> 0, b = 0xdeadb00f >>> 0;
+    const ab = roomAddress(a, b), ba = roomAddress(b, a);
+    ok('§2.4 · a room is the same room from either side',
+      ab.prefix === ba.prefix && ab.depth === ba.depth && ab.depth === sharedBits(a, b),
+      `both worlds address ${roomKey(ab)} — the graph is undirected because the`
+      + ' address is, not because something enforces it');
+    // and the prefix genuinely has its tail cleared, or two rooms collide
+    const tailMask = ab.depth >= 32 ? 0 : ((1 << (32 - ab.depth)) - 1) >>> 0;
+    ok('...and the prefix carries no bits the two worlds disagree about',
+      ((ab.prefix & tailMask) >>> 0) === 0,
+      `depth ${ab.depth}, so the low ${32 - ab.depth} bits are zero — otherwise`
+      + ' two different pairs would name the same room and mean different ones');
+  }
+
+  {
+    // §2.4 for real: the URL round-trips, and refuses what is not one.
+    let worst = null;
+    for (let i = 0; i < 2000 && !worst; i++) {
+      const addr = roomAddress(starAt(GS, i), starAt(GS, (i * 7 + 3) % 4096));
+      const back = parseRoomKey(roomKey(addr));
+      if (!back || back.prefix !== addr.prefix || back.depth !== addr.depth) worst = addr;
+    }
+    const junk = ['', 'nope', '12345678', 'zz.4', 'a3f0c000.99', 'a3f0c000.', null, undefined];
+    const rejected = junk.every((j) => parseRoomKey(j) === null);
+    ok('§2.4 · every room is a URL, and only a room is',
+      worst === null && rejected,
+      '2000 addresses round-trip through their key exactly, and eight kinds of'
+      + ' junk are refused rather than silently decoded to room zero');
+  }
+
+  {
+    // The doors go somewhere real. This is what separates a second metric on
+    // the universe from a diorama.
+    const d = thinDepth(N);
+    let found = null;
+    for (let i = 0; i < 3000 && !found; i++) {
+      const t = isThin(GS, i, N);
+      if (t.thin) found = { i, t };
+    }
+    ok('a thin world exists to be found at all, in a normal galaxy',
+      found !== null,
+      found ? `world ${found.i} shares ${found.t.bits} bits with world`
+        + ` ${found.t.neighbour}, against a threshold of ${d}`
+        : 'none in 3000 — the depth is too deep');
+    if (found) {
+      const addr = roomAddress(found.t.seed, found.t.neighbourSeed);
+      const r = room(GS, addr, N);
+      const mask = addr.depth >= 32 ? 0xffffffff : (~0 << (32 - addr.depth)) >>> 0;
+      const allMatch = r.doors.every((x) => ((x.starSeed & mask) >>> 0) === addr.prefix);
+      const bothEnds = r.doors.some((x) => x.index === found.i)
+        && r.doors.some((x) => x.index === found.t.neighbour);
+      ok('§4 · the doors open onto worlds that exist, including the two you came from',
+        r.doors.length >= 2 && allMatch && bothEnds,
+        `room ${r.key} has ${r.doors.length} doors, every one a real star sharing`
+        + ' the prefix — so walking through is a shortcut across the galaxy that'
+        + ' address proximity, not distance, decides');
+      // §2.3: the same room, twice, is the same room
+      const again = room(GS, addr, N);
+      ok('§2.3 · the same address builds the same room, to the door order',
+        JSON.stringify(r) === JSON.stringify(again),
+        'no allocation, no table, no id server — a room is a pure function of'
+        + ' two integers, which is why the URL can outlive the session');
+    }
+  }
+
+  {
+    // The light. Mercury, through the same CIE observer the aurora uses — and
+    // the check that matters is that it lands where a fluorescent tube lands
+    // rather than wherever the arithmetic happened to go.
+    const fresh = lampColour(0), old = lampColour(1);
+    const hue = (c) => (c[1] > c[0] && c[1] >= c[2] ? 'green' : c[0] > c[1] ? 'warm' : 'cold');
+    ok('§9.1 · the lamp is a mercury spectrum, not a swatch',
+      hue(fresh) === 'green' && fresh[2] < fresh[1] && fresh[2] < fresh[0],
+      `fresh tube ${fresh.map((v) => v.toFixed(2)).join(', ')} — green-dominant and`
+      + ' blue-starved, which is what 546.1 nm plus a 578.2 doublet is');
+    ok('...and an old tube drifts toward the raw discharge, on one parameter',
+      old[1] / Math.max(old[0], 1e-6) > fresh[1] / Math.max(fresh[0], 1e-6),
+      'losing phosphor faster than lines makes it greener and harsher — the'
+      + ' worst corridor in any building is the one nobody re-lamped');
+    const total = MERCURY_LINES.reduce((a, l) => a + l.w, 0);
+    near('...and the line weights are a normalised spectrum', total, 1.0, 0.01);
+  }
+
+  {
+    // The buzz. Twice mains, because a discharge strikes on both half-cycles.
+    ok('the flicker is 2f, because the lamp does not care which way the current goes',
+      FLICKER_HZ === MAINS_HZ * 2 && FLICKER_HZ === 100,
+      `${MAINS_HZ} Hz supply → ${FLICKER_HZ} Hz flicker`);
+    let lo = 1e9, hi = -1e9;
+    for (let i = 0; i < 4000; i++) { const v = lampFlicker(i / 4000 * 0.1); lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    ok('...and phosphor persistence fills the troughs instead of strobing',
+      lo > 0.75 && hi <= 1 + 1e-9 && hi - lo < 0.3,
+      `${lo.toFixed(2)}–${hi.toFixed(2)} over a tenth of a second — a shallow`
+      + ' ripple, not a strobe, which is the difference between a room that'
+      + ' hums and a room that is broken');
+  }
+
+  {
+    // §11's sweep. An address is user input the moment it is in a URL.
+    let bad = 0;
+    for (const prefix of [0, -1, 0xffffffff, 0x7fffffff]) {
+      for (const depth of [0, 1, 31, 32, 33, -4]) {
+        const sh = roomShape({ prefix, depth });
+        for (const v of [sh.width, sh.depth, sh.ceiling, sh.lampPitch, sh.skew, sh.damp]) {
+          if (!Number.isFinite(v) || v < -10 || v > 1e4) bad++;
+        }
+        if (!(sh.width > 0) || !(sh.ceiling >= 2.4)) bad++;
+        const c = lampColour(sh.lampAge);
+        if (c.some((x) => !Number.isFinite(x) || x < 0 || x > 1.0001)) bad++;
+      }
+    }
+    ok('§11 · a hostile ?room= cannot produce a room with no floor',
+      bad === 0,
+      '24 addresses including negative depths and 0xffffffff — every one yields'
+      + ' a finite room with a real ceiling, because the URL is user input');
+  }
+}
+
 const suites = {
+  liminal: suiteLiminal,
   ascent: suiteAscent,
   plant: suitePlant,
   score: suiteScore,

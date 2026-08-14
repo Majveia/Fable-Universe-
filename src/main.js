@@ -11,6 +11,7 @@ import * as THREE from 'three';
 import { Post } from './post.js';
 import { HUD } from './hud.js';
 import { Hyperzoom } from './transition.js';
+import { parseRoomKey, room as buildRoom } from './liminal.js';
 import { Ambience } from './audio.js';
 import { Tour } from './tour.js';
 import { CosmicScale, COSMIC_NOTE } from './cosmic.js';
@@ -212,6 +213,23 @@ class App {
           this.active().enter();
         }
       }
+    } else if (url.searchParams.get('room')) {
+      // §2.4 · `?room=a3f0c000.19` — the rooms between, `src/liminal.js`.
+      //
+      // A room is not a record anywhere: it *is* its address, so this decodes
+      // rather than looks up, and an address that is not one is refused instead
+      // of resolving to room zero. The scene that draws it lands next; the
+      // schema lands here because §2.4 requires it in the same commit as the
+      // feature that creates the location, and because a URL people may already
+      // be holding must never come to mean a different room later.
+      const addr = parseRoomKey(url.searchParams.get('room'));
+      if (addr) {
+        const g = parseInt(url.searchParams.get('g'));
+        this.pendingRoom = buildRoom(Number.isFinite(g) ? g >>> 0 : this.seed >>> 0, addr, 4096);
+        console.info(`[room] ${this.pendingRoom.key} · ${this.pendingRoom.shape.width.toFixed(1)}`
+          + `×${this.pendingRoom.shape.depth.toFixed(1)}×${this.pendingRoom.shape.ceiling.toFixed(1)} m`
+          + ` · ${this.pendingRoom.doors.length} doors`);
+      }
     } else if (url.searchParams.get('bh')) {
       const gal = this.active();
       gal.exit();
@@ -222,7 +240,7 @@ class App {
   /** roll a universe nobody has ever seen (a cold jump, honestly fresh) */
   freshUniverse() {
     const u = new URL(window.location.href);
-    for (const k of ['seed', 'g', 's', 'bh', 'p', 'moon', 'cl', 'pl']) u.searchParams.delete(k);
+    for (const k of ['seed', 'g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room']) u.searchParams.delete(k);
     window.location.href = u;
   }
 
@@ -230,7 +248,7 @@ class App {
   _reflectUrl() {
     const u = new URL(window.location.href);
     u.searchParams.set('seed', this.seed);
-    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl']) u.searchParams.delete(k);
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room']) u.searchParams.delete(k);
     for (const sc of this.stack) {
       if (sc.kind === 'galaxy') u.searchParams.set('g', sc.ctx.galaxySeed);
       if (sc.kind === 'system') u.searchParams.set('s', sc.ctx.starSeed);
@@ -654,7 +672,7 @@ class App {
   markPlace() {
     const u = new URL(window.location.href);
     const params = {};
-    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl']) {
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room']) {
       const v = u.searchParams.get(k);
       if (v !== null) params[k] = v;
     }
@@ -684,7 +702,7 @@ class App {
     if (e.seed !== this.seed) {
       // other universe: cold jump
       const u = new URL(window.location.href);
-      for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl']) u.searchParams.delete(k);
+      for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room']) u.searchParams.delete(k);
       u.searchParams.set('seed', e.seed);
       for (const [k, v] of Object.entries(e.params)) u.searchParams.set(k, v);
       window.location.href = u;
@@ -698,7 +716,7 @@ class App {
   teleport(params) {
     if (this._warping || this.zoom.busy) return;
     const u = new URL(window.location.href);
-    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl']) u.searchParams.delete(k);
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room']) u.searchParams.delete(k);
     u.searchParams.set('seed', this.seed);
     for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
     this._warping = true;
