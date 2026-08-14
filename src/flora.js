@@ -64,6 +64,19 @@ import {
  */
 export const WIND_PHASE = 3;
 
+/**
+ * `?bladedbg=1` — the instrument for "the meadow submits blades and the frame
+ * is empty". See the note in `BLADE_VERT`'s `main()`. Default-off; it costs one
+ * `mix()` and one `max()` per vertex when off, and it exists because that
+ * question is not answerable from a still.
+ */
+const BLADE_DBG = (() => {
+  try {
+    const v = parseInt(new URL(window.location.href).searchParams.get('bladedbg'));
+    return Number.isFinite(v) ? v : 0;
+  } catch { return 0; }
+})();
+
 // A RawShaderMaterial gets no preamble from three — not the attributes, not the
 // matrices, not `precision`. Everything it uses it declares. Omitting these two
 // is a compile error that only exists once the material is instantiated, which
@@ -277,6 +290,9 @@ const BLADE_VERT = /* glsl */`
   uniform vec2 uChunkOrigin;
   uniform vec3 uCam;
   uniform float uHeightScale;
+  uniform float uDbg;        // bladedbg level 1 — see the note in main()
+  uniform float uDbgFat;     // bladedbg level 2: make a blade unmissable
+  uniform float uDbgGround;  // the camera's own ground height, in metres
   uniform float uWidth;
   uniform float uForce;      // what the air can actually push with (rho U^2)
   uniform float uCurl;       // 0 for a ribbon, ~0.55 for a rolled leaf
@@ -301,13 +317,25 @@ const BLADE_VERT = /* glsl */`
   void main() {
     vec2 world = uChunkOrigin + aRoot;
     float ground = wTerrainH(world);
+    // bladedbg=1 -- seat every blade on a flat plane at the camera's own
+    // ground height instead of on the sampled field, and skip the thinning.
+    //
+    // The instrument, not the fix. A meadow that submits 1,703 instances across
+    // 38 draw calls with its nearest chunk at distance 0 and renders a
+    // completely featureless frame has exactly two possible causes -- the roots
+    // are somewhere you cannot see, or the blades collapse -- and no still can
+    // tell them apart. This separates them: with the height lookup bypassed, if
+    // blades appear the fault is wTerrainH, and if they do not it is the
+    // collapse. Same purpose as shdebug=1 for the shadow term and fogview=1 for
+    // the alpha channel, and it costs one mix() when off.
+    ground = mix(ground, uDbgGround, uDbg);
     vec3 base = vec3(world.x, ground, world.y);
     float d = length(base - uCam);
     vDist = d;
 
     // the fine thinning. Collapsing is a multiply, not a branch — see the note
     // in src/flora.js on why that matters at this vertex count.
-    float live = meadowKeep(d, aRand) ? 1.0 : 0.0;
+    float live = max(meadowKeep(d, aRand) ? 1.0 : 0.0, uDbg);
 
     vT = position.y;
     vSide = aSide;
@@ -330,6 +358,11 @@ const BLADE_VERT = /* glsl */`
 
     // tussocks are taller as well as differently coloured
     float h = aHeight * uHeightScale * live * (0.72 + 0.56 * tuss) * (0.86 + 0.28 * swale);
+    // bladedbg level 2: eight times tall, sixty times wide. If THAT does not
+    // appear, nothing is being drawn at all and the fault is the draw rather
+    // than any dimension in it.
+    h *= mix(1.0, 8.0, uDbgFat);
+    float wMul = mix(1.0, 60.0, uDbgFat);
 
     // the logarithmic boundary layer: roots barely move, tips whip
     float lean = windProfile(vT * max(h, 0.05)) * uForce;
@@ -340,7 +373,7 @@ const BLADE_VERT = /* glsl */`
     vec2 across = vec2(-fdir.y, fdir.x);
 
     vec3 p = base;
-    p.xz += across * position.x * uWidth * live;
+    p.xz += across * position.x * uWidth * wMul * live;
     p.y += vT * h;
     p.xz += fdir * bend * h;
     // §6 M3 · the walker parts the grass. Applied after the wind rather than
@@ -349,7 +382,7 @@ const BLADE_VERT = /* glsl */`
     p.xz += meadowPart(world, vT) * h * live;
     // the curve out of the blade's own plane, and the bow that shortens it —
     // a bending blade does not stretch
-    p.xz += fdir * position.z * uWidth * live;
+    p.xz += fdir * position.z * uWidth * wMul * live;
     p.y -= bend * bend * h * 0.35;
     vW = p;
 
@@ -603,6 +636,9 @@ export class GrassRing {
         uChunkOrigin: { value: new THREE.Vector2(0, 0) },
         uCam: { value: new THREE.Vector3() },
         uHeightScale: { value: 1 },
+        uDbg: { value: BLADE_DBG >= 1 ? 1 : 0 },
+        uDbgFat: { value: BLADE_DBG >= 2 ? 1 : 0 },
+        uDbgGround: { value: 0 },
         uWidth: { value: 0.028 },
         uCurl: { value: curved ? 0.55 : 0.0 },
         uWalker: { value: new THREE.Vector4(0, -1e6, 0, 0) },
@@ -722,6 +758,10 @@ export class GrassRing {
     // took, which is the other half of that budget
     // per ring, and therefore written once rather than once per chunk
     this.material.uniforms.uCam.value.set(camX, camY, camZ);
+    // the flat plane `?bladedbg=1` seats blades on: the camera's own ground,
+    // which is the one height in the scene we know is right because the body
+    // is standing on it
+    if (BLADE_DBG >= 1) this.material.uniforms.uDbgGround.value = camY - 1.68;
     this.material.uniforms.uWindTime.value = t;
     this.material.uniforms.uDusk.value = dusk;
     // Only the near ring can resolve a parted blade — at ring 1's 22 m a 1.2 m

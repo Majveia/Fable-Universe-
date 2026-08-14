@@ -61,8 +61,16 @@ const PARAM = (k) => {
   catch { return null; }
 };
 
-/** M1 — the ordered dither. Default-off (§7.4); see docs/plans/M1.md §5. */
-const M1 = PARAM('m1') === '1';
+/**
+ * M1 — the ordered dither. **Now default-on**; `?m1=0` goes back.
+ *
+ * §6 M1's gate clause (d) is "zero banding in the deep field at 8-bit", and
+ * the cosmic web is the worst banding case in the project — a smooth radial
+ * gradient over most of the frame, in a scale where §2.8 forbids lifting the
+ * blacks that would otherwise hide the steps. A dither that ships switched off
+ * is a gate clause nobody can pass.
+ */
+const M1 = PARAM('m1') !== '0';
 
 /**
  * M2 — the print (§9.4), which replaces ACES.
@@ -164,9 +172,6 @@ export class Post {
       this.printPass.uniforms.uGrain.value = ditherOff ? 0 : 1;
       // §9.3's alpha, made visible — see the uniform's note in print.js
       this.printPass.uniforms.uFogView.value = PARAM('fogview') === '1' ? 1 : 0;
-      // `?mood=1` — §9.4's grade, warmed. Default-off (§7.4); see the block
-      // in src/print.js for why this is a preference and not a physics change.
-      this.printPass.uniforms.uMood.value = PARAM('mood') === '1' ? 1 : 0;
       this.printPass.uniforms.uBloom.value = this.bloom.texture;
       this.composer.addPass(this.printPass);
     } else {

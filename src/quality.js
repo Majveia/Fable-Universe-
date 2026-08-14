@@ -132,6 +132,28 @@ export function qFloat(key, column) {
 }
 
 /**
+ * §9.4 step 4's midtone saturation, as the excess above unity at the peak of
+ * the band. `?sat=` overrides; `?sat=0.16` restores the look that shipped.
+ *
+ * It lives here rather than in `print.js` for one reason that is worth stating,
+ * because it is the same reason `A_START` lives in `cosmology.js` rather than
+ * in `cosmic.js`: **`print.js` imports THREE, so `tools/verify.js` cannot
+ * import it in node.** The print suite has always worked around that by keeping
+ * its own transcribed mirror of the tonemap — and a transcribed constant is
+ * exactly the two-definitions-free-to-drift fault §2.7 names for the height
+ * field and §11 lists as a trap. A knob the suite must assert against belongs
+ * somewhere the suite can reach.
+ *
+ * It is not a per-tier column. A low-end phone and a workstation should not
+ * disagree about how saturated the world is; tiers trade *detail* for frames,
+ * never palette (§9.1 — one table, one set of names, every device).
+ */
+export const SAT_AMOUNT = (() => {
+  const v = parseFloat(param('sat'));
+  return Number.isFinite(v) && v >= 0 ? v : 3.0;
+})();
+
+/**
  * A per-ring knob: same contract, comma-separated in the URL.
  *
  * §M3's grass multipliers and blade segments are one number per ring rather

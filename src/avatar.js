@@ -40,124 +40,113 @@ const G_EARTH = 9.80665;
 const clamp = (x, lo, hi) => (x < lo ? lo : x > hi ? hi : x);
 
 /**
- * Locomotion constants. The four that are not free choices:
+ * Locomotion constants.
  *
  *   `eye` 1.68 m and `fov` 52 are §6 M4's, and are also the reference's own
  *   (`hoshi-no-tani.html:181-185`) — the two documents agree to the digit,
  *   which is the tell that §M4 is transcribing that class.
  *
- *   `walk` 3.45 m/s is a human walking pace, and `sprint` 2.25× puts a run at
- *   7.8 m/s. The old 16 m/s walk and 60 m/s sprint were not speeds, they were
- *   a way of crossing a 1400 m tile before the interest ran out — which is
- *   what the skiff (M5) is for.
+ * ---------------------------------------------------------------------------
+ * On `walk`, `sprint` and `jumpHeight`, which have all moved
+ *
+ * The previous values were 3.45 m/s, ×2.25 and 0.55 m, and the note above them
+ * argued — correctly, against the 16/60 m/s arcade numbers they replaced —
+ * that those are what an unaugmented human body does. The complaint they earn
+ * in practice is that this is a person in a pressure suit standing on a world
+ * nobody has named, with a 1400 m tile to cross and a horizon fourteen
+ * kilometres out, and a 3.45 m/s stroll makes all of that feel like distance
+ * rather than freedom.
+ *
+ * The resolution is not to go back to 16 m/s. It is to say what the body *is*.
+ * A powered suit is the only thing that explains surviving 338 K and 0.6 g in
+ * the first place, and a powered suit has a stated capability: it moves a
+ * person at a fast run without their spending anything, and it stores enough
+ * in its legs for a two-storey standing jump. So `walk` is 4.8 m/s — a real
+ * jog, still visibly a gait and not a glide — and `sprint` ×3.0 puts a run at
+ * 14.4 m/s, which crosses the tile in a hundred seconds instead of seven
+ * minutes. Both remain speeds a body could have. Neither is a physical claim
+ * the HUD contradicts (§8 axis 8).
+ *
+ * ---------------------------------------------------------------------------
+ * The jump, and the bug that was hiding inside the old one
+ *
+ * `jumpHeight` is 1.45 m now rather than 0.55 m, for the same suit reason. But
+ * the more interesting change is what it means. The old controller solved
+ * `v₀ = √(2·g·jumpHeight)` from *the world's own g*, so the height was held
+ * constant everywhere and only the time of flight changed — the suite asserted
+ * exactly that, in the words "a low-gravity world gets the same jump height,
+ * taken more slowly."
+ *
+ * That is backwards, and §3's ruling that "the numbers are never negotiable"
+ * decides it. A leg extends over a fixed distance with a roughly fixed force,
+ * so what a body holds constant across worlds is its **launch velocity**, not
+ * its apex. Height then goes as v₀²/2g and a sixth of a gravity buys six times
+ * the jump. The old model quietly deleted the single most legible consequence
+ * of standing on another world — and it deleted it in the direction of *less*
+ * spectacle, which is the worst direction for a bug to point.
+ *
+ * So `jumpHeight` is now explicitly the apex **at one Earth gravity**, and
+ * `jumpV0` derives the constant launch speed from it once. `tools/verify.js`
+ * asserts the new relation.
  */
 export const GAIT = {
   eye: 1.68,
   fov: 52,
-  walk: 3.45,
-  sprint: 2.25,
-  fly: 16.0,
+  walk: 4.8,
+  sprint: 3.0,
   radius: 0.34,          // capsule radius, metres
-  accelGround: 9.5,      // m/s² toward the target velocity
-  accelStop: 12.0,       // stopping is quicker than starting
-  accelAir: 1.9,         // some authority in the air, not none
-  stepUp: 0.45,          // a kerb, a root, a low wall — not a cliff
+  accelGround: 11.0,     // m/s² toward the target velocity
+  accelStop: 13.5,       // stopping is quicker than starting
+  accelAir: 2.4,         // some authority in the air, not none
+  stepUp: 0.55,          // a kerb, a root, a low wall — not a cliff
   slopeLimit: 50,        // degrees; above this you slide instead of walking
   slideAccel: 0.62,      // fraction of the downhill gravity component
-  coyote: 0.12,          // seconds of grace after walking off an edge
+  coyote: 0.14,          // seconds of grace after walking off an edge
   jumpBuffer: 0.10,      // seconds a jump pressed just before landing survives
-  jumpHeight: 0.55,      // metres at 1 g — a standing jump, not a leap
+  jumpHeight: 1.45,      // metres **at 1 g**; elsewhere v₀ is what is held
   jumpCut: 0.45,         // releasing early keeps this much of the rise
   skin: 0.02,            // ground contact tolerance
+
   /**
-   * The gait clock's own law: `cycles/s = cadence0 + cadenceK·v`, and `bobSat`
-   * is the speed at which the head bob reaches full amplitude.
+   * Flight — "like Neo in The Matrix", which is a specific request and not a
+   * vague one. What distinguishes that from the flight this controller had is
+   * not the top speed, it is the **mass**.
    *
-   * These were three literals inside `_gait`. They are in the table because a
-   * row that changes the walking speed has to be able to change the cadence
-   * with it — a body moved 1.7× faster on the old constants takes 6.4 footfalls
-   * a second, which is a sprinter's cadence at a jogger's speed. The values
-   * here are exactly the literals they replace, so nothing about the default
-   * row moves.
-   */
-  cadence0: 0.58,
-  cadenceK: 0.34,
-  bobSat: 3.6,
-  /**
-   * The jump, as a *height* — the launch speed is solved from the world's own
-   * `g`, so every world gives the same 0.55 m, reached more slowly on a moon.
+   * The old `fly` was one number, 16 m/s, fed through the same exponential
+   * velocity-matching the walk uses at `accelStop` = 12/s. That is a 60 ms
+   * time constant: input and velocity are effectively the same variable, so
+   * the body has no momentum, cannot be *aimed*, stops dead the instant the
+   * stick centres, and reads as a camera on rails. Every frame of Neo flying
+   * is the opposite — a body that has to be pointed, that takes a moment to
+   * get going, that arrives somewhere and keeps going a little.
    *
-   * `pushAccel` null selects exactly that. Set it and the jump becomes the leg
-   * model in `launchSpeed()` instead, where the *impulse* is the constant and
-   * the height is what the world decides. See `FLOW_GAIT`.
+   * So flight is integrated as thrust against drag instead:
+   *
+   *     a = look · thrust · |input| · boost
+   *     v ← (v + a·dt) · exp(−drag·dt),   |v| ≤ top
+   *
+   * with a *higher* drag when there is no input, which is what gives the hover
+   * a settle instead of a coast to infinity. Terminal speed falls out of the
+   * two constants rather than being clamped into place: thrust/drag = 47.5 m/s
+   * cruising and 162 m/s boosted, and `top` is a safety rail above both rather
+   * than the thing you fly at.
+   *
+   * `rise` is the explicit vertical axis (R/F, or the pinch on glass), kept
+   * separate from the look vector so you can hold an altitude while looking
+   * down — the single most useful thing a flying camera can do and the thing
+   * pure look-directed thrust takes away.
    */
-  pushDepth: null,       // m of crouch the legs push through
-  pushAccel: null,       // m/s² the legs can produce, against gravity
+  flyThrust: 62,         // m/s² along the look vector at full deflection
+  flyBoost: 3.4,         // ×, on both thrust and the drag-limited top speed
+  flyDrag: 1.3,          // 1/s while thrusting — sets cruise at thrust/drag
+  flyCoastDrag: 0.55,    // 1/s with no input: a long, deliberate glide
+  flyHoverDrag: 2.6,     // 1/s with no input near the ground: settle, do not drift
+  flyRise: 30,           // m/s² on the explicit vertical axis
+  flyTop: 340,           // m/s hard rail; the drag law normally binds first
 };
 
-/**
- * `?flow=1`'s row — CLAUDE.md §7.4, default-off. Three changes, no more.
- *
- * **Speed.** 3.45 → 5.87 m/s, exactly 1.70×. A human walks at 3.45 and this is
- * a steady run; the honest name for the row is not "walk" any more. `sprint`
- * stays a *multiplier*, so the sprint moves by the same 1.70× for free —
- * 7.76 → 13.19 m/s — and the two can never drift apart, which they would if
- * the sprint were an absolute speed edited alongside.
- *
- * **Cadence.** Fitted through two points a physiologist would recognise rather
- * than scaled arbitrarily: 1.7 footfalls/s at a 1.5 m/s stroll and 2.8 at a
- * 5.9 m/s run. That is `cadence0 = 0.66`, `cadenceK = 0.125`, and it puts the
- * row's sprint at 4.6 footfalls/s at 13.2 m/s — which is very nearly world
- * record pace, and correctly reads as one. `bobSat` moves by the same 1.70× so
- * the head bob saturates at the same *fraction* of the row's own top speed.
- *
- * **Jump.** The default row holds the height and solves the speed. This row
- * inverts it: the legs do a fixed amount of work, and what that buys you
- * depends entirely on the world you are standing on. See `launchSpeed()`.
- */
-export const FLOW_GAIT = {
-  ...GAIT,
-  walk: 5.87,
-  cadence0: 0.66,
-  cadenceK: 0.125,
-  bobSat: 6.12,
-  pushDepth: 0.42,       // the crouch a standing jump actually travels through
-  pushAccel: 36.6,       // 3.73 g of leg thrust — a good vertical, not a myth
-};
-
-/**
- * The speed the body leaves the ground at.
- *
- * Two models, and the difference between them is the whole of the jump change.
- *
- * **Height-constant** (`pushAccel` null, the default row). `v₀ = √(2gh)`, so
- * every world gives the same 0.55 m. Correct as far as it goes, and completely
- * silent about gravity: a moon and a super-earth produce the same jump, taken
- * at different speeds. There is nothing to feel.
- *
- * **Work-constant** (`?flow=1`). The legs push the body's mass through a crouch
- * of depth `d` at an acceleration `a` they can produce and gravity opposes, so
- *
- *     ½v₀² = d·(a − g)   ⇒   v₀ = √(2d(a − g))   ⇒   apex = d(a − g)/g
- *
- * — and the apex is now *inversely* proportional to `g`, which is the whole
- * point. On Earth `d = 0.42`, `a = 36.6` gives 4.74 m/s and a 1.15 m leap; on
- * Luna's 1.62 m/s² the same legs give 5.42 m/s and **9.07 m**; on a 2.5 g
- * super-earth, 0.24 m. The relationship §M4 asks for is not decoration on top
- * of the number, it *is* the number.
- *
- * And the model has an edge, which is the tell that it is a model rather than a
- * curve: at `g ≥ a` the legs cannot lift the body at all and `v₀` is zero. A
- * world you cannot jump on is a real place, and it falls out rather than being
- * special-cased.
- */
-export function launchSpeed(gravity, gait = GAIT) {
-  if (gait.pushAccel === null || gait.pushAccel === undefined) {
-    return Math.sqrt(2 * gravity * gait.jumpHeight);
-  }
-  const net = gait.pushAccel - gravity;
-  return net <= 0 ? 0 : Math.sqrt(2 * gait.pushDepth * net);
-}
+/** the launch speed the legs produce, constant across worlds (see above) */
+export const jumpV0 = (gait = GAIT) => Math.sqrt(2 * G_EARTH * gait.jumpHeight);
 
 /** surface gravity in m/s², from the world's own mass and radius (§6 M4) */
 export function gravityOf(world) {
@@ -184,13 +173,11 @@ export class Walker {
     this.vel = { x: 0, y: 0, z: 0 };
     this.grounded = false;
     this.fly = false;
-    /**
-     * A deliberate offset on the eye, in metres, that nothing in the controller
-     * writes. `?flow=1`'s crouch-and-go lowers the head through the plant with
-     * it; with the flag off it is zero for the life of the body and `eyeY()` is
-     * the expression it always was.
-     */
-    this.sink = 0;
+
+    // the closed-form horizontal displacement for the step in progress; see
+    // the note in `step()`. Written every walking step, read once.
+    this._dx = 0;
+    this._dz = 0;
 
     this._coyote = 0;      // time left in the grace window
     this._buffer = 0;      // time left on a buffered jump press
@@ -246,7 +233,7 @@ export class Walker {
 
   /** where the eye sits: the feet, plus standing height, plus the gait */
   eyeY() {
-    return this.pos.y + this.g.eye + this.bobY + this.sink;
+    return this.pos.y + this.g.eye + this.bobY;
   }
 
   /**
@@ -257,7 +244,7 @@ export class Walker {
    * magnitude and the old touch layer threw it away by synthesizing keystrokes;
    * a keyboard simply reports 0 or ±1 into the same field.
    */
-  step(dt, input, yaw) {
+  step(dt, input, yaw, pitch = 0) {
     if (dt <= 0) return;
     const g = this.g;
     const move = input.move ?? { x: 0, y: 0 };
@@ -282,7 +269,17 @@ export class Walker {
     const wl = Math.hypot(wx, wz);
     if (wl > 1e-6) { wx /= wl; wz /= wl; }
 
-    const base = (this.fly ? g.fly : g.walk) * (input.sprint ? g.sprint : 1);
+    // Flight is a different integrator, not a different constant. It needs the
+    // *unnormalised* stick and the pitch, so it takes the branch before the
+    // ground model's target-velocity arithmetic runs at all.
+    if (this.fly) {
+      this._flyStep(dt, { fx, fz, rx, rz }, mx, mz, speedScale, pitch,
+        !!input.sprint, input.up ?? 0);
+      this._gait(dt, false);
+      return;
+    }
+
+    const base = g.walk * (input.sprint ? g.sprint : 1);
 
     // Uphill is slower and downhill a touch faster, from the ground's own
     // gradient rather than from a state machine.
@@ -296,34 +293,57 @@ export class Walker {
     // --- horizontal integration -------------------------------------------
     const tx = wx * target, tz = wz * target;
     const moving = wl > 1e-6;
-    const a = this.fly ? g.accelStop
-      : this.grounded ? (moving ? g.accelGround : g.accelStop)
-        : g.accelAir;
+    const a = this.grounded ? (moving ? g.accelGround : g.accelStop)
+      : g.accelAir;
     // Exponential approach rather than a lerp on dt: the rate is then a
     // property of the controller and not of the frame rate, which is what lets
     // the suite replay the same trace at three different dt and get the same
     // trajectory.
     const k = 1 - Math.exp(-a * dt);
+    const vx0 = this.vel.x, vz0 = this.vel.z;
     this.vel.x += (tx - this.vel.x) * k;
     this.vel.z += (tz - this.vel.z) * k;
 
-    if (this.fly) {
-      this.vel.y += ((input.up ?? 0) * base - this.vel.y) * k;
-      this._integrateFly(dt);
-      this._gait(dt, false);
-      return;
-    }
+    // The displacement that velocity produces, in closed form.
+    //
+    // Velocity was exactly dt-independent already; *position* was not, because
+    // `pos += vel·dt` is first-order and integrates the post-step velocity
+    // across the whole step. The residual is the acceleration transient, so it
+    // appears every time the stick moves and it scales with speed.
+    //
+    // This integral has an elementary answer. With v(t) = T + (v₀−T)e^{−at}
+    //
+    //     ∫₀^dt v dt = T·dt + (v₀ − T)(1 − e^{−a·dt})/a = T·dt + (v₀ − v₁)/a
+    //
+    // because v₁ − v₀ = (T − v₀)·k and k = 1 − e^{−a·dt} are the same k already
+    // computed above. So the exact displacement costs one subtract and one
+    // multiply by a reciprocal, and the horizontal trajectory becomes dt-exact
+    // under a constant target rather than merely close — the same upgrade the
+    // vertical axis got from its trapezoid, and for the same reason: a
+    // controller that lands somewhere different at 60 Hz than at 120 Hz will
+    // eventually be tuned until it looks right on one machine.
+    //
+    // Worth being precise about what this does *not* buy. The suite's 60-vs-120
+    // Hz walking drift over rough ground barely moves, because that residual is
+    // not the velocity transient at all — it is `slopeAt`/`normalAt`/the
+    // step-up probe each being sampled once per step, so two frame rates take
+    // two slightly different lines across the same height field. That is the
+    // cost of discretising a continuous field and no integrator removes it.
+    // This removes the part that *is* removable.
+    const inv = 1 / a;
+    this._dx = tx * dt + (vx0 - this.vel.x) * inv;
+    this._dz = tz * dt + (vz0 - this.vel.z) * inv;
 
     // --- jump: buffered, forgiving, and cuttable ---------------------------
     this._buffer = jump && !this._wasJump ? g.jumpBuffer : Math.max(0, this._buffer - dt);
     this._wasJump = jump;
 
     if (this._buffer > 0 && (this.grounded || this._coyote > 0)) {
-      // One line, two models — see `launchSpeed`. The default row solves v₀
-      // from the height it should reach, so a low-gravity moon launches you
-      // properly instead of needing a per-world constant; `?flow=1`'s row fixes
-      // the *work the legs do* instead, and lets the world decide the height.
-      this.vel.y = launchSpeed(this.gravity, g);
+      // The legs produce a launch *speed*, not a launch *height* — a fixed
+      // extension against a fixed force. So this constant does not read
+      // `this.gravity`, and the apex that follows is v₀²/2g: 1.45 m here,
+      // 8.8 m on a Moon-gravity world. See the note on GAIT.jumpHeight.
+      this.vel.y = jumpV0(g);
       this.grounded = false;
       this._coyote = 0;
       this._buffer = 0;
@@ -342,7 +362,63 @@ export class Walker {
     this._gait(dt, moving);
   }
 
-  _integrateFly(dt) {
+  /**
+   * Flight, as thrust against drag. See the note on `GAIT.flyThrust`.
+   *
+   * `basis` is the yaw frame the walk already computed — forward and right on
+   * the horizontal plane. Pitch tilts the forward axis out of that plane here
+   * rather than in the caller, so a controller that has no pitch (the suite,
+   * the autopilot) simply passes 0 and gets level flight.
+   *
+   * The one asymmetry worth naming: the *strafe* axis stays horizontal even
+   * when the look is pitched. Rolling the strafe with the pitch is what makes
+   * a free-flying camera feel like it is tumbling, and there is no roll input
+   * to correct it with.
+   */
+  _flyStep(dt, basis, mx, mz, mag, pitch, sprint, rise) {
+    const g = this.g;
+    const boost = sprint ? g.flyBoost : 1;
+
+    // the look vector: yaw's forward, tilted by pitch
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const lx = basis.fx * cp, ly = sp, lz = basis.fz * cp;
+
+    // Thrust along the look for the forward axis, along the horizontal right
+    // for strafe, and along world up for the explicit rise axis.
+    let ax = (lx * mz + basis.rx * mx) * g.flyThrust * boost;
+    let ay = (ly * mz) * g.flyThrust * boost + rise * g.flyRise * boost;
+    let az = (lz * mz + basis.rz * mx) * g.flyThrust * boost;
+
+    this.vel.x += ax * dt;
+    this.vel.y += ay * dt;
+    this.vel.z += az * dt;
+
+    // Drag. Thrusting, it is what sets cruise speed (thrust/drag). Idle, it is
+    // what ends the flight gracefully — and near the ground it is stronger
+    // still, so a hover a metre up settles instead of sliding away.
+    const thrusting = mag > 1e-3 || Math.abs(rise) > 1e-3;
+    let drag;
+    if (thrusting) drag = g.flyDrag;
+    else {
+      const clearance = this.pos.y - this.groundAt(this.pos.x, this.pos.z);
+      // blend over the first four metres: a landing approach damps, a cruise
+      // at altitude does not
+      const near = clamp(1 - clearance / 4, 0, 1);
+      drag = g.flyCoastDrag + (g.flyHoverDrag - g.flyCoastDrag) * near;
+    }
+    // Exponential, so the decay rate is a property of the controller and not
+    // of the frame rate — the same reason the ground model uses it.
+    const keep = Math.exp(-drag * dt);
+    this.vel.x *= keep; this.vel.y *= keep; this.vel.z *= keep;
+
+    // the hard rail; the drag law normally binds a long way below it
+    const sp2 = Math.hypot(this.vel.x, this.vel.y, this.vel.z);
+    const top = g.flyTop * boost;
+    if (sp2 > top) {
+      const s = top / sp2;
+      this.vel.x *= s; this.vel.y *= s; this.vel.z *= s;
+    }
+
     this.pos.x += this.vel.x * dt;
     this.pos.y += this.vel.y * dt;   // no gravity in flight, so no trapezoid
     this.pos.z += this.vel.z * dt;
@@ -358,8 +434,12 @@ export class Walker {
     const wasGrounded = this.grounded;
 
     // --- horizontal, with step-up and a slope limit ------------------------
-    const nx = this.pos.x + this.vel.x * dt;
-    const nz = this.pos.z + this.vel.z * dt;
+    // `_dx`/`_dz` are the closed-form displacement `step()` just computed, not
+    // `vel·dt`. See the note there.
+    const dx = this._dx ?? this.vel.x * dt;
+    const dz = this._dz ?? this.vel.z * dt;
+    const nx = this.pos.x + dx;
+    const nz = this.pos.z + dz;
 
     if (this.vel.x !== 0 || this.vel.z !== 0) {
       const here = this.groundAt(this.pos.x, this.pos.z);
@@ -384,8 +464,11 @@ export class Walker {
         const wallX = n.x / hl, wallZ = n.z / hl;
         const into = this.vel.x * wallX + this.vel.z * wallZ;
         if (into < 0) { this.vel.x -= wallX * into; this.vel.z -= wallZ * into; }
-        this.pos.x += this.vel.x * dt;
-        this.pos.z += this.vel.z * dt;
+        // The wall projection changed the velocity, so the closed form no
+        // longer describes this step — slide on the corrected velocity.
+        const slide = into < 0 ? (dx * wallX + dz * wallZ) : 0;
+        this.pos.x += dx - wallX * slide;
+        this.pos.z += dz - wallZ * slide;
       } else {
         this.pos.x = nx;
         this.pos.z = nz;
@@ -455,10 +538,8 @@ export class Walker {
    * out of sync." They cannot drift because there is nothing to drift from.
    */
   _gait(dt, moving) {
-    const g = this.g;
     const spd = Math.hypot(this.vel.x, this.vel.z);
-    this.stepFreq = (spd > 0.14 && this.grounded && !this.fly)
-      ? g.cadence0 + g.cadenceK * spd : 0;
+    this.stepFreq = (spd > 0.14 && this.grounded && !this.fly) ? 0.58 + 0.34 * spd : 0;
 
     const prev = this.stepPhase;
     this.stepPhase += this.stepFreq * dt;
@@ -466,7 +547,7 @@ export class Walker {
     if (Math.floor(this.stepPhase * 2) !== Math.floor(prev * 2)) this.steps++;
 
     const gp = this.stepPhase * Math.PI * 2;
-    const amp = this.fly ? 0 : clamp(spd / g.bobSat, 0, 1);
+    const amp = this.fly ? 0 : clamp(spd / 3.6, 0, 1);
     const kf = clamp(11 * dt, 0, 1);
     this.bobY += (Math.sin(gp * 2) * 0.0135 * amp - this.bobY) * kf;
     this.bobX += (Math.sin(gp) * 0.0095 * amp - this.bobX) * kf;
@@ -474,27 +555,6 @@ export class Walker {
     this.lean += (clamp(spd * 0.016, 0, 0.05) - this.lean) * clamp(4 * dt, 0, 1);
     this.breath += dt * 0.9;
     if (!moving && spd < 0.02) this.stepFreq = 0;
-  }
-
-  /**
-   * Let the gait go quiet without touching its clock.
-   *
-   * `?flow=1`'s flight takes the body away from the controller for as long as
-   * it lasts, so `_gait` stops running and the bob, the sway and the roll
-   * freeze at whatever fraction of a stride they were in — a permanent
-   * centimetre of head tilt for the whole flight. This eases those four to
-   * zero and **leaves `stepPhase` and `steps` exactly where they are**, which
-   * is the part that matters: §6 M4's clock is a *gait* clock, there is no gait
-   * in flight, and resetting or re-running it would be the second clock the
-   * milestone exists to forbid. It stops, and it resumes where it stopped.
-   */
-  calm(dt) {
-    const k = clamp(9 * dt, 0, 1);
-    this.bobY += (0 - this.bobY) * k;
-    this.bobX += (0 - this.bobX) * k;
-    this.roll += (0 - this.roll) * k;
-    this.lean += (0 - this.lean) * k;
-    this.stepFreq = 0;
   }
 
   /** everything a test or a camera needs, as plain numbers */
@@ -571,10 +631,10 @@ export function sweepArm(head, dir, maxDist, heightAt,
  * — a ballistic arc, an exact coyote window — rather than against a snapshot
  * of itself, which would only prove it had not changed.
  */
-export function replay(walker, trace, dt, frames, yaw = 0) {
+export function replay(walker, trace, dt, frames, yaw = 0, pitch = 0) {
   const out = [];
   for (let i = 0; i < frames; i++) {
-    walker.step(dt, trace(i, i * dt), yaw);
+    walker.step(dt, trace(i, i * dt), yaw, pitch);
     out.push(walker.state());
   }
   return out;

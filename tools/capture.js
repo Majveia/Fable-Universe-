@@ -209,12 +209,28 @@ for (const tier of tiers) {
   }
 
   // ---- the numbers, from the same cold start
-  console.log('  bench · 600 frames…');
-  await page.goto(`${site.origin}/index.html?bench=1&seed=${seed}&quad=1&tier=${tier}`, { waitUntil: 'load' });
+  //
+  // `extra` belongs here as much as it does on the stations, and the first real
+  // GPU run is what proved it: the bench URL was built separately and did not
+  // carry the flags, so `--extra "…&m3=1&…"` photographed a meadow and then
+  // benchmarked a frame that had none. Both sets came back at 0.19–0.20 M
+  // triangles — identical, because they were literally the same measurement run
+  // twice — and it read as a comfortable pass against §5's 2.2 M cap.
+  //
+  // That is precisely the defect `docs/plans/RECKONING.md` Act C exists to
+  // correct, reintroduced by the tool meant to settle it, and wearing a real
+  // renderer string. A number that cannot say which software produced it is
+  // worse than no number, so the flags now ride the bench URL and are recorded
+  // in the perf JSON beside the renderer.
+  const benchQuery = `bench=1&seed=${seed}&quad=1&tier=${tier}${extra ? '&' + extra : ''}`;
+  console.log(`  bench · 600 frames…${extra ? '  (' + extra + ')' : ''}`);
+  await page.goto(`${site.origin}/index.html?${benchQuery}`, { waitUntil: 'load' });
   let perf = null;
   try {
     await page.waitForFunction('window.AEON_BENCH_DONE === true', null, { timeout: benchTimeoutMs });
     perf = await page.evaluate(() => window.AEON_BENCH);
+    perf.flags = extra || null;
+    perf.benchQuery = benchQuery;
     await writeFile(join(outDir, `perf-${tier}.json`), JSON.stringify(perf, null, 2) + '\n');
     const o = perf.overall;
     console.log(`  fps p50/p95/p99 ${o.fps.p50}/${o.fps.p95}/${o.fps.p99}`

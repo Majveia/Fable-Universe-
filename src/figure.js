@@ -1,1028 +1,1461 @@
-// The figure — CLAUDE.md §4, §M4, and the one clause of §4 the human overrode.
+// The traveler's body — CLAUDE.md §4, §8 axis 1, §9.2.
 //
-// What stands here today is five primitives: a cone, a sphere, a cone, a plane
-// and a sprite. It reads at fifteen metres and it reads as five primitives at
-// three, and §8's first axis asks for a *"readable subject at three
-// distances"*, which is one out of three.
-//
-// §4 says **"No photoreal humanoid characters. Figures are silhouettes and
-// scale references."** That clause survives here intact, and this module is
-// written against it rather than around it, because the two halves of it point
-// in opposite directions and only one of them was ever the constraint:
-//
-//   · *photoreal* is genuinely forbidden and genuinely impossible — §2.1 bans
-//     the scan, the rig, the skin texture and the hair card, and nothing in
-//     this file would be improved by having them
-//   · *silhouette* is not a limitation. It is the brief. A silhouette is what
-//     §8 axis 1 scores, it is the whole of what a figure at forty metres in
-//     valley haze can be, and the most recognisable characters in any medium
-//     are recognisable in black at thumbnail size. The reference agrees by
-//     construction: its far ridges are *"pure haze, pure shape."*
-//
-// So: a figure with a *designed* silhouette, generated, at zero bytes. Not a
-// person rendered accurately — a person **drawn well**, which is a harder
-// problem and the right one.
+// What was here before is four primitives: a cone, a sphere, a smaller cone and
+// a plane, assembled into "a small cloaked figure". It has always been a
+// placeholder. This file is the figure.
 //
 // ---------------------------------------------------------------------------
-// 1 · The proportions are canon, and the canon is measured
+// The clause this file has to answer, and why it is not the constraint it looks
+// like
 //
-// Every length below is in head-heights, and the figure is eight of them. That
-// is not a stylisation: it is the artists' canon, it has been the canon since
-// Polykleitos, and it is what the eye checks first. A figure whose head is a
-// tenth of it reads as heroic and slightly inhuman; a figure at six reads as a
-// child. Eight is the one that reads as *someone*.
+// §4 says: *"No photoreal humanoid characters. Figures are silhouettes and
+// scale references."* The brief for this work says: make the character look
+// realistic and cool — a synthesis of the most iconic characters there are.
 //
-// The internal divisions come from the same place and are stated as fractions
-// of stature so they scale to any world's spawn height:
+// Those read as opposites and are not, and §3's method — find the reading where
+// both are right — settles it in one observation: **what makes a character
+// iconic is almost never facial detail.** The Man With No Name is a poncho, a
+// hat and a squint you cannot see. Samus is a shape. Vader is a shape. Ashitaka
+// is a red cloak on a red elk. Every one is recognisable at thumbnail size, in
+// pure black, from behind — which is the definition of a silhouette. §8's first
+// axis asks that question of everything in the frame; this file answers it.
 //
-//     crown        1.000        shoulder width  0.259
-//     chin         0.870        hip width       0.191
-//     shoulder     0.818        upper arm       0.186
-//     nipple       0.720        forearm         0.146
-//     navel        0.593        thigh           0.245
-//     hip          0.530        shank           0.246
-//     knee         0.285        foot length     0.152
-//     ankle        0.039
+// So the ruling this file is built on:
 //
-// These are Drillis & Contini's segment fractions, the ones every gait lab and
-// every crash-test model uses, and they are here rather than eyeballed for the
-// same reason `magnetosphere.js` computes its oval: the eye is extremely good
-// at spotting a wrong femur and extremely bad at saying why.
+//   **Coolness is carried by silhouette, proportion, stance, gait and material.
+//   Not by a face.** There is no face here — the hood holds a shadow void with
+//   one horizontal light in it. That is a stronger read at 40 px than any face
+//   could be, it is the only read that survives §2.1's zero-asset rule, and it
+//   is what §4 was protecting in the first place.
 //
-// ---------------------------------------------------------------------------
-// 2 · The silhouette is the design, and it is four decisions
-//
-// Everything cool about a figure at distance is in its outline, and an outline
-// has room for about four ideas before it turns to mush. These are the four:
-//
-//   **A long coat that breaks at the knee.** The single most load-bearing
-//   shape. It gives the figure one continuous vertical from shoulder to shin,
-//   it hides the leg geometry exactly where procedural legs look worst, and it
-//   is the shape that reads at any distance — it is why the ronin, the
-//   gunslinger, the duster, the greatcoat and the long coat recur across every
-//   medium that has ever needed a figure to be legible from behind.
-//
-//   **A raised collar and a hood that is down.** The head reads as a head
-//   because the collar frames it. A raised collar also solves the neck, which
-//   is the second-worst thing to generate.
-//
-//   **Asymmetry, once.** A single strap crossing the chest, on a side chosen
-//   by the seed. One asymmetry makes a figure look intentional; two make it
-//   look cluttered, and none makes it look like a mannequin.
-//
-//   **Hands and feet that are dark.** Value, not detail. Terminating the limbs
-//   in a darker tone reads as gloves and boots, gives the silhouette its
-//   punctuation, and costs one colour.
-//
-// What is deliberately absent: a face, fingers, hair strands, buckles, and any
-// surface detail that would be sub-pixel at the distance a third-person camera
-// actually sits (4.6 m per §M4, where the whole figure is about 380 px tall on
-// a 1440p frame and a knuckle is one).
+// The reference frames supplied for this milestone make the same argument from
+// the other end: their blossom tree reads entirely as a shape against a bright
+// sky, with no interior detail at all. The figure has to survive standing in
+// that, in grass that comes up past its hips.
 //
 // ---------------------------------------------------------------------------
-// 3 · The coat is cloth, and cloth samples the one wind field
+// The four things the silhouette is built out of
 //
-// §6 M3's thesis names the consumers: *"grass, foliage, dust, spores, cloth,
-// water ripple, cloud advection, smoke."* Cloth is on that list and this is the
-// only cloth in the project.
+// 1. **True human proportion — 7.5 heads, 1.80 m to the crown.** Not a stylistic
+//    choice: `avatar.js` puts the eye at 1.68 m and the whole world is scaled to
+//    that number. A figure of any other height makes the scale reference lie,
+//    and §8 axis 8 fails on a frame where a person is the ruler and the ruler is
+//    wrong. Every landmark in `P` below is measured off it, and the visor sits
+//    at exactly 1.68 m — so the third-person figure's eye and the first-person
+//    camera are the same height, and pressing C proves it.
 //
-// The coat's skirt is a cylinder of vertices free below the hip, and each one
-// is displaced by three things summed in the vertex shader:
+// 2. **One heavy diagonal.** A left pauldron, a strap from that shoulder to the
+//    opposite hip, a satchel on the right hip, a scarf off the left shoulder.
+//    Nothing mirrors. A bilaterally symmetric figure reads as a mannequin from
+//    every angle; one strong diagonal reads as a person who packed.
 //
-//   · the wind, sampled once per figure per frame on the CPU and passed as a
-//     uniform — one sample, because a coat is 1.1 m across and the field's
-//     smallest gust cell is 260 m, so sampling it per-vertex would cost
-//     forty lookups to compute forty copies of the same number
-//   · the figure's own motion, as the negative of its velocity: a coat trails,
-//     and a coat that trails is the difference between walking and gliding
-//   · a travelling ripple along the hem, phase-locked to the **gait clock**
+// 3. **A long coat, open at the front.** The coat is the mass — it is what makes
+//    the shoulders wide, the waist narrow and the hem heavy. Open at the front
+//    so the legs show through the gap: a closed skirt hides the gait, and the
+//    gait is half of what says "person" at distance. It is also the surface the
+//    wind acts on, which is §6 M3's thesis given a body to happen to.
 //
-// That last one is §M4's rule and it is why this file takes a `gait` object
-// rather than a time. *"One phase drives head bob, footstep audio, and the
-// grass the walker parts, so they can never drift out of sync."* The figure
-// standing in for that walker has to be on the same phase or the coat swings
-// on a beat the footsteps are not on — and the current figure does exactly
-// that, bobbing on `sin(t · 7.5)` with a hard-coded 7.5 while the walker's
-// cadence is `0.58 + 0.34·v`. At 3.45 m/s those are 1.19 Hz and 1.75 Hz. They
-// beat against each other every 1.8 seconds, forever.
-//
-// ---------------------------------------------------------------------------
-// 4 · The pose is solved, not keyframed
-//
-// §M4: *"Locomotion blends procedurally — no keyframed assets."*
-//
-// The arms and the torso are sinusoids on the gait phase, which is all they
-// need to be. The legs are not, and the first version of this file is the
-// argument for why: two sines on the thigh and the knee produced a figure
-// whose feet **never touched the ground** — lowest point five millimetres
-// below its own swing, and both feet in the air for a quarter of every cycle.
-// It marched. Every proportion in it was canon and it still read as wrong,
-// because the one thing the eye actually checks in a walk is whether the foot
-// stays where it was put.
-//
-// So the causality is inverted. The **foot** is authored and the leg is solved:
-//
-//   · in **stance** the foot is on the ground and stationary *in the world*,
-//     which in the body's frame means sliding backwards at exactly walking
-//     speed — no slip is possible, because the contact point is the
-//     independent variable rather than a consequence
-//   · in **swing** it arcs forward over the same ground, rising by a third of
-//     its half-excursion, which is a shape rather than a height and so scales
-//     with stature and speed without a second constant
-//   · the **duty factor** — how much of the cycle a foot is down — is 0.62 at
-//     a walk and falls to 0.34 as the Froude number passes 0.5. That is the
-//     walk-run transition, it is 0.5 on every world including the Moon, and
-//     nothing scripts it: double support and the float phase are `2·duty − 1`
-//     changing sign. Measured on the built figure: 24% double support and no
-//     airborne frames at 1.2 m/s, 0% and 32% at 3.45.
-//   · and the **hips fall out**. A planted foot half a step ahead is further
-//     from the hip than one underneath it, so the hip must drop to reach it,
-//     by `L − sqrt(L² − z²)`. That is the compass gait and it is the real
-//     reason walking bobs — so the head bob is now a consequence of the step
-//     length rather than a sine tuned to look like one.
-//
-// The compass over-predicts that bob about twofold, and the reason has a name:
-// the *determinants of gait*. A real pelvis rotates and lists and a real stance
-// knee stays flexed through mid-stance, and together they flatten the hip's arc
-// without shortening the step. Only one of those needs simulating and it is
-// free — drop the hip **less** than the compass demands and the solve has no
-// choice but to bend the stance knee to keep the foot where it was put. The
-// mechanism is the fix. Measured: 4.7 cm of bob at a walk against a textbook
-// 4–5, where the raw compass wanted 8.5.
+// 4. **One cold accent in a warm world.** A 15 cm horizontal light inside the
+//    hood. §8 axis 6 budgets three hue families plus one accent; the kit spends
+//    them as violet-indigo (coat, suit, boots), bone-cream (pauldron) and rust
+//    (scarf, lining, straps), and the visor is the accent. It dims at noon and
+//    burns at dusk, so it is a *reading light* rather than a decal.
 //
 // ---------------------------------------------------------------------------
-// 5 · What it costs
+// Why the geometry is skinned on the CPU
 //
-// One `BufferGeometry`, one draw call, built once per world. About 2,400
-// triangles at the top tier and 900 at the bottom — against §5's 2.2 M budget
-// it is a rounding error, and it is one call of the 900. The per-frame cost is
-// eighteen matrix composes and one wind sample; the coat is displaced on the
-// GPU.
+// About 1100 vertices, seventeen bones, one draw call. The bone matrices are
+// solved in JS and the vertices are transformed in JS into a preallocated
+// buffer, rather than uploading bone matrices and skinning in the vertex shader.
 //
-// It is one mesh rather than eighteen because a figure is one thing and
-// eighteen `Object3D`s would be eighteen draw calls and eighteen chances for
-// the aerial-perspective injection to be applied to seventeen of them.
+// Three reasons, in order of weight:
+//
+//   · **The shadow pass gets it for free.** `shadow.js` renders casters under an
+//     override material. A GPU-skinned mesh under an override material draws in
+//     its rest pose — a T-posed shadow under a running figure — and fixing that
+//     means a second skinned depth material kept permanently in step with the
+//     first. Baked positions have no rest pose to fall back to.
+//
+//   · **Cloth is not skinning.** The coat hem and the scarf are not driven by
+//     bones at all; they are driven by the wind field, the body's velocity and
+//     the gait clock, and they have to be *generated*, not transformed. Once
+//     half the mesh is written from the CPU every frame, the other half may as
+//     well be, and then there is one code path rather than two that disagree.
+//
+//   · It is free. 1100 vertices × two bone influences is roughly 70 k flops a
+//     frame against §5's 12 ms CPU budget. The meadow uploads two orders of
+//     magnitude more than this every frame without anyone noticing.
+//
+// ---------------------------------------------------------------------------
+// Determinism (§2.3)
+//
+// No `Math.random`, no clock. The mesh is a pure function of the seed; the pose
+// is a pure function of the walker's state, `dt` and the wind field, all three
+// of which are themselves deterministic. `?dt=` pins the figure exactly the way
+// it pins the body.
 
-// Nothing here imports three, on purpose, and it is the same reason
-// `score.js` and `magnetosphere.js` do not: the interesting claims are
-// geometric — that a heel never passes through the ground, that a shoulder
-// stays inside the coat, that the canon holds at every stature — and a claim
-// you can only check by looking at a screenshot is not under test. So the
-// geometry comes out as plain typed arrays and the skeleton as a flat
-// column-major `Float32Array`, which is what `mat4[]` wants anyway; the
-// caller wraps them in a `BufferGeometry` and a `ShaderMaterial` and that is
-// the entire three-facing surface.
+import * as THREE from 'three';
 import { RNG, hash } from './rng.js';
+import { PAINT_GLSL } from './paint.js';
+import { TIER } from './quality.js';
 
-/**
- * Knee flexion at mid-stance — the second determinant of gait, and about 20°
- * in every gait lab that has ever measured it. It is the only reason a human
- * hip does not trace the full compass arc, and it is the only part of that
- * mechanism worth simulating: it acts at the top of the arc, where nothing
- * depends on it, rather than at the extremes, where the foot does.
- */
-export const STANCE_KNEE_FLEX = 20 * Math.PI / 180;
-
-const clamp = (x, a, b) => Math.min(Math.max(x, a), b);
-const smoothstep = (e0, e1, x) => {
-  const t = clamp((x - e0) / (e1 - e0), 0, 1);
-  return t * t * (3 - 2 * t);
-};
-
-// --- the twenty lines of linear algebra this needs, rather than the library
+// ---------------------------------------------------------------------------
+// proportion
 //
-// Column-major, `m[col * 4 + row]`, because that is what a GLSL `mat4` uniform
-// is and a transpose in the middle is a bug waiting for a rest pose to be
-// asymmetric enough to reveal it.
+// The canonical 7.5-head figure, in metres, with the eye pinned to `GAIT.eye`.
+// A head is 1.80 / 7.5 = 0.24 m, which is a real head; the eye sits half a head
+// below the crown, which is where a real eye sits; and 1.80 − 0.12 = 1.68 is
+// `GAIT.eye` to the digit. The table exists so that identity holds exactly
+// rather than approximately.
 
-const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-const len3 = (a) => Math.hypot(a[0], a[1], a[2]);
+export const STATURE = 1.80;          // crown, metres
+export const HEAD = STATURE / 7.5;    // 0.24 m
 
-/** translation + an Euler in YXZ, the order three uses and the camera uses */
-export function compose(out, o, tx, ty, tz, rx, ry, rz) {
-  const ca = Math.cos(rx), sa = Math.sin(rx);
-  const cb = Math.cos(ry), sb = Math.sin(ry);
-  const cc = Math.cos(rz), sc = Math.sin(rz);
-  out[o + 0] = cb * cc + sb * sa * sc; out[o + 1] = ca * sc; out[o + 2] = cb * sa * sc - sb * cc; out[o + 3] = 0;
-  out[o + 4] = sb * sa * cc - cb * sc; out[o + 5] = ca * cc; out[o + 6] = sb * sc + cb * sa * cc; out[o + 7] = 0;
-  out[o + 8] = sb * ca; out[o + 9] = -sa; out[o + 10] = cb * ca; out[o + 11] = 0;
-  out[o + 12] = tx; out[o + 13] = ty; out[o + 14] = tz; out[o + 15] = 1;
-  return out;
-}
-
-/** `dst[d] = a[i] · b[j]`, all column-major, all in one flat array */
-export function mul(dst, d, a, i, b, j) {
-  for (let c = 0; c < 4; c++) {
-    const b0 = b[j + c * 4], b1 = b[j + c * 4 + 1], b2 = b[j + c * 4 + 2], b3 = b[j + c * 4 + 3];
-    for (let r = 0; r < 4; r++) {
-      dst[d + c * 4 + r] = a[i + r] * b0 + a[i + 4 + r] * b1 + a[i + 8 + r] * b2 + a[i + 12 + r] * b3;
-    }
-  }
-  return dst;
-}
-
-/** a point through a matrix in the same array */
-export function apply(m, i, x, y, z) {
-  return [
-    m[i] * x + m[i + 4] * y + m[i + 8] * z + m[i + 12],
-    m[i + 1] * x + m[i + 5] * y + m[i + 9] * z + m[i + 13],
-    m[i + 2] * x + m[i + 6] * y + m[i + 10] * z + m[i + 14],
-  ];
-}
-
-/**
- * The canon, in fractions of stature. Drillis & Contini (1966) for the
- * segment lengths; the eight-head division for the vertical stations.
- */
-export const CANON = {
-  head: 0.1250,          // crown to chin — the module the rest is counted in
-  chin: 0.8700,
-  shoulderY: 0.8180,
-  chestY: 0.7200,
-  waistY: 0.5930,
-  hipY: 0.5300,
-  kneeY: 0.2850,
-  ankleY: 0.0390,
-  shoulderW: 0.2590,     // acromion to acromion
-  hipW: 0.1910,
-  upperArm: 0.1860,
-  forearm: 0.1460,
-  thigh: 0.2450,
-  shank: 0.2460,
-  foot: 0.1520,
+export const P = {
+  crown: STATURE,             // 1.800
+  eye: STATURE - HEAD * 0.5,  // 1.680 — GAIT.eye, and the visor line
+  chin: STATURE - HEAD,       // 1.560
+  shoulder: 1.455,            // acromion: head + neck is about 1.4 heads
+  chest: 1.300,
+  waist: 1.080,
+  hip: 0.905,                 // greater trochanter — the leg's pivot
+  knee: 0.487,
+  ankle: 0.068,
+  elbow: 1.170,
+  wrist: 0.905,
+  shoulderHalf: 0.185,        // biacromial 0.37 m; the coat reads 0.44 across
+  hipHalf: 0.092,
 };
 
-/** §M4's third-person distance, and the reason nothing here has surface detail */
-export const VIEW_DIST = 4.6;
+// ---------------------------------------------------------------------------
+// the kit
+//
+// §9.1's structure — every colour in one table, sRGB hex, linear at load. What
+// is *not* §9.1's is that these do not vary by world, and that is deliberate.
+//
+// A seed-derived kit would make the traveler a different person on every planet,
+// and the traveler is the one thing in AEON that is the same across all 10²⁸ of
+// them. The pigments are fixed; the *light* on them is entirely seed-derived,
+// because `paint()`'s four light colours come from this world's own star through
+// `starlight.js`. Same coat, different sun — which is what wearing a coat across
+// a galaxy actually looks like.
+//
+// Each entry is a §9.2 three-stop hue *path*, not a lightness ramp: the shade
+// stop is cooler and more violet than the mid, and the lit stop is warmer and
+// desaturated toward the sky. That is what the ramp exists to walk along, and a
+// ramp between three points on one line through one colour is the specific
+// mistake `surface.js` documents as having flattened the terrain.
+
+const hexLin = (h) => [1, 3, 5].map((i) => {
+  const c = parseInt(h.slice(i, i + 2), 16) / 255;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+});
 
 /**
- * The gait, as four numbers on one phase.
+ * A material: three stops plus the four per-surface terms §9.2 takes.
  *
- * `phase` is `Walker.stepPhase` — cycles, not radians, and one cycle is two
- * footfalls. Taking it rather than a clock is the whole of §M4's "they can
- * never drift out of sync": there is nothing here to drift from.
+ * `rim` is the backlight weight. The reference annotates the rim as "the
+ * connective tissue of the whole image", and on a dark figure standing against
+ * a bright sky it is very nearly the entire read. Cloth gets the most of it;
+ * hard shell gets less, because a ceramic edge does not glow.
  *
- * `amp` saturates at the row's own `bobSat` so a `?flow=1` body running at
- * 5.87 m/s does not swing its arms 1.7× further than a body at 3.45 — it
- * swings them at the same *fraction* of its own top speed, which is what a
- * faster gait actually looks like.
+ * `ao` is baked cavity occlusion. There is no shadow map in the default build
+ * (`?paint=` is off, for reasons `surface.js` sets out at length), so this
+ * number is the only thing telling the eye that the inside of a hood is deeper
+ * than the outside of it.
  */
-export function gaitPose(phase, speed, sat = 3.6, airborne = 0) {
-  const a = Math.min(speed / Math.max(sat, 0.1), 1);
-  const p = phase * Math.PI * 2;
-  const s = Math.sin(p), c = Math.cos(p);
-  // in the air the limbs stop striding and tuck — one blend, not a second pose
-  const g = 1 - airborne;
+const mat = (shade, mid, lit, { rim = 1.0, ao = 1.0, emis = 0, trans = 0 } = {}) => ({
+  shade: hexLin(shade), mid: hexLin(mid), lit: hexLin(lit), rim, ao, emis, trans,
+});
+
+// ---------------------------------------------------------------------------
+// On the values below, which are two stops darker than the first pass
+//
+// The first version of this table was built by eye, as a coat one would want to
+// own. Captured at 17 m against this world's ground it was a **pale smudge the
+// same value as the meadow** — no silhouette at all, which is §8 axis 1 scoring
+// 2 and the benchmark's whole argument lost. Three causes, all in this file:
+//
+//   · §9.7 forces spawn into an 8–18° sun and §9.2's half-Lambert wrap maps the
+//     entire lit hemisphere into 0.46–1.0. Above the ramp's upper edge at 0.58
+//     everything resolves to the `lit` stop — so on a figure standing in open
+//     sun, `lit` is not an accent, it is *most of the body*. A `lit` stop chosen
+//     as "indigo in sunlight" has to be chosen as "the colour of the whole
+//     coat", and #8B95BA is a colour a coat is never any part of.
+//
+//   · The rim was weighted 1.30. `pow(1 − dot(N,V), 4.2)` is large within about
+//     20° of the silhouette edge, which at thirty metres is the entire figure —
+//     so the term that exists to *draw* an edge was filling the shape.
+//
+//   · `paint()`'s hemispheric fill and sun gain both add, and neither subtracts.
+//
+// So: every stop down in value and up in chroma, the rims cut by roughly half,
+// and a distance term in the shader that collapses the ramp toward `shade` (see
+// `figFragment`). The pauldron is the one thing that stays bright, because it is
+// the value contrast the silhouette is legible by.
+
+export const KIT = {
+  // the coat — deep indigo. Dark enough to read as a silhouette against a lit
+  // sky, violet enough that §9.2's shadow blend never lands on grey.
+  coat: mat('#10142A', '#1E2A50', '#4A5C90', { rim: 0.55 }),
+  coatWorn: mat('#0D1124', '#1A2547', '#415282', { rim: 0.48, ao: 0.92 }),
+  // the suit under it
+  suit: mat('#0C0E18', '#161A2C', '#333A58', { rim: 0.45 }),
+  // boots and gauntlets. Note the violet bias in the shade stop: leather this
+  // dark is exactly where an achromatic black creeps in, and §M2's gate calls a
+  // shadowed surface that has gone achromatic-dark a failure in those words.
+  leather: mat('#0A0B12', '#141626', '#2C3048', { rim: 0.35, ao: 0.94 }),
+  // the pauldron — bone ceramic. The one bright value on the figure, and the
+  // reason the shoulder line survives at 40 px against a dark coat. Everything
+  // else got darker; this deliberately did not.
+  shell: mat('#514F46', '#9C957E', '#E8DCBC', { rim: 0.40 }),
+  strap: mat('#1C130D', '#3A2718', '#6E5133', { rim: 0.40 }),
+  // the scarf. Cloth, so it transmits: §9.2's subsurface term is what makes a
+  // backlit scarf glow along its trailing edge instead of going flat.
+  scarf: mat('#33100C', '#7A2417', '#C05334', { rim: 0.85, trans: 0.85 }),
+  // the coat's lining, seen when the hem lifts or a panel blows open — and seen
+  // on every back face, which is the rule the shader states once.
+  lining: mat('#260C09', '#5C1D13', '#96432A', { rim: 0.60, trans: 0.55 }),
+  // the void inside the hood. Dark, and never neutral.
+  hollow: mat('#080914', '#0E101E', '#161A2A', { rim: 0.12, ao: 0.34 }),
+  // the accent
+  visor: mat('#123040', '#2E6E88', '#A8ECFF', { rim: 0.40, emis: 1 }),
+};
+
+// ---------------------------------------------------------------------------
+// the coat's hanging shape
+//
+// Shared by the builder and by the cloth update, because they are the same
+// surface and the first version wrote it out twice. Two copies of a
+// parameterisation is exactly the drift §2.7 legislates against one scale up:
+// change the flare in one and the rest pose and the live pose describe two
+// different coats, and the seam between them lights wrong.
+
+const COAT = {
+  top: P.waist - 0.085,   // 0.995 — where the skirt leaves the torso
+  drop: 0.640,            // hem at 0.355, a hand above the boot cuff
+  r0: 0.176,
+  flare: 0.250,           // 0.85 m across at the hem: the mass of the figure
+  gap0: 0.34,             // nearly closed at the belt…
+  gap1: 0.58,             // …and wide open over the legs
+};
+
+function coatRest(v, u) {
+  const gap = COAT.gap0 + COAT.gap1 * v ** 1.3;
   return {
-    // The arms are filled in by `poseFor` from the *solved* thigh angles rather
-    // than from a sine of their own, so contralateral swing is true by
-    // construction and cannot drift when the gait's shape changes. In phase it
-    // reads as a marionette, and that is the only thing anyone notices.
-    armL: 0, armR: 0,
-    elbowL: (0.22 + Math.max(s, 0) * 0.34) * a * g + 0.15,
-    elbowR: (0.22 + Math.max(-s, 0) * 0.34) * a * g + 0.15,
-    // the torso counter-rotates against the pelvis — small, and the frame
-    // looks dead without it
-    twist: c * 0.10 * a * g,
-    lean: Math.min(speed * 0.020, 0.13) * g,
-    amp: a,
-    // the legs are not here. See `legPose` — they are solved, and the hip
-    // height falls out of the solve rather than being a sine laid over it.
-    airborne,
+    a: FRONT + gap + u * (Math.PI * 2 - 2 * gap),
+    r: COAT.r0 + COAT.flare * v ** 1.15,
+    y: COAT.top - v * COAT.drop,
   };
 }
 
-/**
- * Where each foot is, and therefore where the hips must be.
- *
- * This is the part a sinusoid cannot do, and the first version of this file
- * proved it: swinging the thigh and bending the knee on two sines produced a
- * figure whose feet never touched the ground — lowest point 5 mm below the
- * swing, both feet airborne a quarter of every cycle. It marched. Everything
- * else about it was right and it still read as wrong, because the one thing
- * the eye actually checks in a walk is whether the foot stays where it was put.
- *
- * So the foot is authored and the leg is solved:
- *
- *   **Stance.** The foot is on the ground and *stationary in the world*. In the
- *   figure's own frame that means it slides backwards at exactly the walking
- *   speed, from half a step in front to half a step behind. No sliding is
- *   possible because there is nothing to slide — the contact point is the
- *   independent variable.
- *
- *   **Swing.** It arcs forward over the same distance, rising a sixth of the
- *   step length at the top. One constant, and it is a shape rather than a
- *   height, so it scales with stature and with speed on its own.
- *
- *   **Duty factor** — the fraction of the cycle a foot is down — is 0.62 at a
- *   walk and falls toward 0.34 as the Froude number climbs past 0.5, which is
- *   the walk-run transition and is where a real gait stops having a
- *   double-support phase at all. Below it, both feet are down for a quarter of
- *   the cycle and the figure is never airborne; above it, neither is, and it is.
- *   The transition is not scripted anywhere. It is `2·duty − 1` changing sign.
- *
- *   **The hips fall out.** A planted foot half a step ahead is further from the
- *   hip than a planted foot underneath it, so the hip has to drop to reach it —
- *   by exactly `L − sqrt(L² − z²)`. That is the compass gait, it is the real
- *   reason walking bobs, and it means the head bob is now a consequence of the
- *   step length rather than a sine that has to be tuned to look like one.
- */
-export function legPose(phase, speed, dims, gravity = 9.81, cadence = 0) {
-  const legL = dims.thigh + dims.shank;
-  const stature = dims.stature || 1.78;
-  // Froude number on the leg — dimensionless, so it says the same thing on
-  // every world. 0.5 is the walk-run transition, and it is 0.5 on the Moon too,
-  // at a speed a third of Earth's, which is why the Apollo footage lopes.
-  const fr = (speed * speed) / Math.max(gravity * legL, 1e-6);
-  // The stride is the distance between two contacts of the *same* foot, so it
-  // is one full cycle of body travel — `cadence` is cycles per second, and the
-  // two footfalls in a cycle belong to different feet.
-  const stride = cadence > 1e-3 ? speed / cadence : 0;
-  // The foot only slides backward for the part of the cycle it is *down*, so
-  // its excursion in the body's frame is a fraction `duty` of the stride and
-  // not the whole of it. Getting that wrong makes the stance foot travel
-  // further than the body did, so it slips — 107 mm per stride, a figure
-  // skating rather than walking, and the first version of this did exactly it.
-  let duty = clamp(0.62 - 0.28 * smoothstep(0.30, 0.95, fr), 0.34, 0.62);
-  // And the leg has a reach. When the stride is longer than the leg can cover
-  // in that fraction, the answer is **not** to clamp the excursion — a clamped
-  // foot is a sliding foot, which is the bug this whole solve exists to remove.
-  // It is to shorten the stance: a body outrunning its own legs picks the foot
-  // up earlier and spends longer in swing, which is what running *is*. So the
-  // reach limit lands on `duty`, and the excursion is always exactly reachable.
-  const REACH = 0.5;                    // of leg length, half the excursion
-  const maxDuty = stride > 1e-6 ? (2 * legL * REACH) / stride : 1;
-  const reached = maxDuty < duty;
-  duty = Math.max(Math.min(duty, maxDuty), 0.02);
-  const half = stride * duty * 0.5;
-  const lift = half * 0.32;
-  const out = { duty, stride, fr, airborne: 0, reach: reached };
+// ---------------------------------------------------------------------------
+// the skeleton
+//
+// Seventeen bones. Rest positions are absolute in figure space (+Y up, −Z
+// forward, +X the figure's right, matching `traveler.js`'s `_face` convention);
+// the constructor converts them to parent-relative offsets, so this table can be
+// read straight off the proportion table rather than as a chain of deltas
+// nobody can check against a body.
 
-  // How much of the cycle both feet are down. Above the walk-run transition
-  // this goes negative and there is a float phase instead; below it, it is the
-  // double-support interval, and it is where the hip's problem lives.
-  const overlap = Math.max(2 * duty - 1, 0);
-  const ov = duty > 1e-6 ? overlap / duty : 0;
+const BONES = [
+  ['root', -1, 0, 0.945, 0],
+  ['spine', 0, 0, 1.100, 0],
+  ['chest', 1, 0, 1.300, 0],
+  ['neck', 2, 0, 1.470, 0],
+  ['head', 3, 0, 1.545, 0],
 
-  // The residual this leaves is one 37 mm step in the hip's demand at each
-  // touchdown — the incoming foot lands at full extension while the outgoing
-  // one is still short of its own — which drags the outgoing foot by 67 µm on
-  // the single frame it happens. What removes it for real is the heel-and-toe
-  // rocker: a real foot lands on its heel *ahead* of the ankle and leaves over
-  // its toe *behind* it, so the ankle's excursion is shorter than the contact
-  // point's by most of a foot length, and the two demands meet. That is a
-  // second joint per leg and it is not here. 67 µm against the 107 mm this
-  // replaced is the right place to stop, and this paragraph is what stops the
-  // next reader from rediscovering the average.
-  let wSum = 0, dSum = 0;
-  for (const [foot, off] of [['L', 0], ['R', 0.5]]) {
-    const u = (phase + off) % 1;
-    let z, y, down, w = 0;
-    if (u < duty) {                       // stance: planted, sliding back
-      const t = u / duty;
-      z = (1 - 2 * t) * half;
-      y = 0;
-      down = 1;
-      // The hip is one point and both legs hang off it, so in double support
-      // it has to answer **the deeper of the two demands** — not the average,
-      // and that is worth writing down because the average is the appealing
-      // answer and it fails in a way that looks like success. Weighting each
-      // foot by the load it carries makes the hip's path beautifully smooth
-      // (a 37 mm step at touchdown becomes 0.45 mm) and un-plants the more
-      // extended foot by 39 mm, because a hip that has dropped the average
-      // distance cannot reach the further foot at all. Reachability is not a
-      // quantity to be traded against smoothness. It is a constraint.
-      w = 1;
-      wSum = 1;
-      dSum = Math.max(dSum, legL - Math.sqrt(Math.max(legL * legL - z * z, 0)));
-    } else {                              // swing: forward, over the same ground
-      const t = (u - duty) / (1 - duty);
-      z = (2 * t - 1) * half;
-      y = Math.sin(Math.PI * t) * lift;
-      down = 0;
+  ['armR', 2, P.shoulderHalf, P.shoulder, 0],
+  ['elbowR', 5, P.shoulderHalf + 0.018, P.elbow, 0.012],
+  ['handR', 6, P.shoulderHalf + 0.030, P.wrist, 0.020],
+
+  ['armL', 2, -P.shoulderHalf, P.shoulder, 0],
+  ['elbowL', 8, -(P.shoulderHalf + 0.018), P.elbow, 0.012],
+  ['handL', 9, -(P.shoulderHalf + 0.030), P.wrist, 0.020],
+
+  ['hipR', 0, P.hipHalf, P.hip, 0],
+  ['kneeR', 11, P.hipHalf + 0.006, P.knee, 0.006],
+  ['footR', 12, P.hipHalf + 0.008, P.ankle, 0],
+
+  ['hipL', 0, -P.hipHalf, P.hip, 0],
+  ['kneeL', 14, -(P.hipHalf + 0.006), P.knee, 0.006],
+  ['footL', 15, -(P.hipHalf + 0.008), P.ankle, 0],
+];
+
+const B = {};
+BONES.forEach(([n], i) => { B[n] = i; });
+export const BONE = B;
+
+// ---------------------------------------------------------------------------
+// detail rows (§5)
+//
+// Its own small table rather than a column in `quality.js`, because the figure
+// is one object and a column there is a promise made to every scale. One row
+// change still reconfigures the whole figure, which is the shape §5 asks for.
+
+const DETAIL = [
+  { sides: 7, coatU: 13, coatV: 5, scarfN: 11, scarfW: 3 },  // low
+  { sides: 8, coatU: 15, coatV: 6, scarfN: 13, scarfW: 3 },  // mobile
+  { sides: 10, coatU: 19, coatV: 7, scarfN: 14, scarfW: 4 }, // desktop
+  { sides: 12, coatU: 23, coatV: 8, scarfN: 17, scarfW: 4 }, // ultra
+];
+
+const FRONT = -Math.PI / 2;        // the azimuth the figure faces
+const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+
+// ---------------------------------------------------------------------------
+// the builder
+//
+// One primitive: a parametric grid. Everything — a limb, the hood, the coat, the
+// scarf, a strap — is a function G(i, j) sampled over a rectangle, with normals
+// taken analytically from the generator's own tangents.
+//
+// Taking the normal from the parameterisation rather than by accumulating face
+// normals is not a micro-optimisation, it is what makes the winding *provable*.
+// Fix the convention once — n = normalize(cross(∂G/∂i, ∂G/∂j)), and emit the
+// triangle (i,j)→(i+1,j)→(i+1,j+1), whose own edge cross product is that same
+// expression — and every surface in the figure is outward-facing by
+// construction. Accumulated normals give no such guarantee, and one inverted
+// normal reads as a lighting bug three files away from where it was made.
+
+class Mesh {
+  constructor() {
+    this.pos = []; this.nrm = []; this.rest = [];
+    this.shade = []; this.mid = []; this.lit = []; this.surf = [];
+    this.bA = []; this.bB = []; this.bw = [];
+    this.idx = [];
+    this.cloth = [];
+  }
+
+  get count() { return this.pos.length / 3; }
+
+  vert(p, n, m, bind, ao = 1) {
+    this.pos.push(p[0], p[1], p[2]);
+    this.nrm.push(n[0], n[1], n[2]);
+    this.rest.push(p[0], p[1], p[2]);
+    this.shade.push(m.shade[0], m.shade[1], m.shade[2]);
+    this.mid.push(m.mid[0], m.mid[1], m.mid[2]);
+    this.lit.push(m.lit[0], m.lit[1], m.lit[2]);
+    this.surf.push(m.rim, m.ao * ao, m.emis, m.trans);
+    this.bA.push(bind[0]); this.bB.push(bind[1]); this.bw.push(bind[2]);
+  }
+
+  /**
+   * Sample `gen(i, j)` over an (ni × nj) grid and emit it.
+   *
+   * `wrap` closes the ring (a limb, a torso); without it the sheet has two free
+   * edges (a coat panel, a strap). `flip` reverses the normal and the winding
+   * *together*, which is the only way to reverse either of them safely.
+   */
+  grid(gen, ni, nj, at, { wrap = false, flip = 1, cloth = null } = {}) {
+    const base = this.count;
+    const G = [];
+    for (let i = 0; i < ni; i++) {
+      G.push([]);
+      for (let j = 0; j < nj; j++) G[i].push(gen(i, j));
     }
-    out[foot] = { z, y, down, load: w };
+    for (let i = 0; i < ni; i++) {
+      for (let j = 0; j < nj; j++) {
+        const a = G[Math.max(i - 1, 0)][j], b = G[Math.min(i + 1, ni - 1)][j];
+        const jm = wrap ? (j - 1 + nj) % nj : Math.max(j - 1, 0);
+        const jp = wrap ? (j + 1) % nj : Math.min(j + 1, nj - 1);
+        const c = G[i][jm], d = G[i][jp];
+        const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+        const vx = d[0] - c[0], vy = d[1] - c[1], vz = d[2] - c[2];
+        let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        const l = Math.hypot(nx, ny, nz) || 1;
+        nx = flip * nx / l; ny = flip * ny / l; nz = flip * nz / l;
+        const s = at(i, j);
+        this.vert(G[i][j], [nx, ny, nz], s.m, s.bind, s.ao ?? 1);
+      }
+    }
+    const jMax = wrap ? nj : nj - 1;
+    for (let i = 0; i < ni - 1; i++) {
+      for (let j = 0; j < jMax; j++) {
+        const j2 = (j + 1) % nj;
+        const a = base + i * nj + j, b = base + (i + 1) * nj + j;
+        const c = base + (i + 1) * nj + j2, d = base + i * nj + j2;
+        if (flip > 0) this.idx.push(a, b, c, a, c, d);
+        else this.idx.push(a, c, b, a, d, c);
+      }
+    }
+    if (cloth) this.cloth.push({ ...cloth, base, ni, nj, flip });
+    return base;
   }
-  const compass = wSum > 0 ? dSum / wSum : 0;
-  out.airborne = out.L.down + out.R.down === 0 ? 1 : 0;
-  // The compass drop is not negotiable — it is the distance the hip has to
-  // come down for the stance leg to *reach* a foot it has already put on the
-  // ground, and taking any less of it hands `twoBone` a target outside its own
-  // reach, which it answers by straightening the chain and letting the foot
-  // hover four centimetres up. Reducing this was the obvious way to flatten
-  // the bob and it silently un-planted the foot the whole solve exists to
-  // plant. It is the fix that undoes the feature.
-  //
-  // The flattening comes from the other end instead: a real stance knee stays
-  // about 20° flexed through mid-stance — the second determinant of gait —
-  // which lowers the hip *at the top of its arc* and nowhere else. Added here
-  // as a term that is largest at mid-stance and exactly zero at the extremes,
-  // so it can flatten the arc and can never reach into the part of it the foot
-  // depends on.
-  const flex = legL * (1 - Math.cos(STANCE_KNEE_FLEX * 0.5));
-  const peak = legL - Math.sqrt(Math.max(legL * legL - half * half, 0));
-  out.drop = compass + flex * (1 - Math.min(compass / Math.max(peak, 1e-9), 1));
-  out.compass = compass;
-  out.legL = legL;
-  out.stature = stature;
-  return out;
-}
 
-/**
- * Solve one leg to its foot target and write the two angles the rig wants.
- *
- * The chain is planar — a leg does not need a third degree of freedom to walk —
- * so once `twoBone` has placed the knee, both angles are an `atan2`. Positive
- * `rx` swings the limb backwards, which is what the rest pose's local −y makes
- * it; the test asserts that rather than the comment.
- */
-export function solveLeg(dims, hipY, footZ, footY, sideX = 0) {
-  const H = [sideX, hipY, 0];
-  const F = [sideX, footY + dims.ankleY, footZ];
-  // the knee bends forward, always — a knee that can pick the other solution is
-  // a knee that will, on one frame in a thousand, and it will be memorable
-  const K = twoBone(H, F, dims.thigh, dims.shank, [0, 0, 1]);
-  const thigh = Math.atan2(-(K[2] - H[2]), -(K[1] - H[1]));
-  const shin = Math.atan2(-(F[2] - K[2]), -(F[1] - K[1]));
-  // the rig's knee angle is measured from the thigh, not from vertical
-  return { thigh, knee: shin - thigh, K };
-}
-
-/**
- * The whole pose for one frame: the arms and torso from the gait clock, the
- * legs from the solve, and the hip drop the solve demanded.
- *
- * One entry point so a caller cannot get half of it, which is the failure mode
- * a two-function version invites — arms swinging on a phase the legs are not on
- * is precisely the drift §M4 exists to forbid.
- */
-export function poseFor(dims, { phase = 0, speed = 0, cadence = 0, sat = 3.6,
-  gravity = 9.81, grounded = true, headYaw = 0, headPitch = 0 } = {}) {
-  const leg = legPose(phase, speed, dims, gravity, cadence);
-  // A body actually off the ground is a different thing from the float phase of
-  // a run: the run's float is part of the stride and keeps its shape, while a
-  // jump has no stride at all and the legs tuck. `air` is the second one.
-  const air = grounded ? 0 : 1;
-  const p = gaitPose(phase, speed, sat, air);
-  const hipY = dims.hipY - leg.drop;
-  const sx = dims.hipW * 0.42;
-  const L = solveLeg(dims, hipY, leg.L.z, leg.L.y, -sx);
-  const R = solveLeg(dims, hipY, leg.R.z, leg.R.y, sx);
-  const tuck = air * 0.9;
-  p.thighL = L.thigh * (1 - air) - tuck * 0.55;
-  p.thighR = R.thigh * (1 - air) - tuck * 0.55;
-  p.kneeL = L.knee * (1 - air) + tuck * 1.15;
-  p.kneeR = R.knee * (1 - air) + tuck * 1.15;
-  // Contralateral, and driven by where the opposite **foot** is rather than by
-  // the thigh angle above it. That distinction was not obvious and cost a
-  // failing check to find: a swing thigh reads as *forward* through most of
-  // swing, because the knee leads while the foot is still behind, so arms
-  // taken from thigh angles end up swinging together for half the cycle — the
-  // marionette this is supposed to avoid. The foot's fore-aft position is both
-  // the thing an observer actually reads and antiphase by construction, since
-  // the two feet are half a cycle apart no matter what shape the gait takes.
-  //
-  // ±0.5 rad at full stride, which is an arm swing.
-  const swing = 0.5 * (1 - air);
-  p.armL = -swing * (leg.R.z / Math.max(leg.stride * leg.duty * 0.5, 1e-6)) + air * 0.35;
-  p.armR = -swing * (leg.L.z / Math.max(leg.stride * leg.duty * 0.5, 1e-6)) + air * 0.35;
-  p.rise = -leg.drop * (1 - air);
-  p.headYaw = headYaw;
-  p.headPitch = headPitch;
-  p.duty = leg.duty;
-  p.stride = leg.stride;
-  p.fr = leg.fr;
-  p.contacts = leg.L.down + leg.R.down;
-  return p;
-}
-
-/**
- * The elbow (or knee) of a two-link chain, in closed form.
- *
- * Given a root, a target, two bone lengths and a pole direction, the middle
- * joint lies on a circle; the pole picks the point on it. If the target is out
- * of reach the chain straightens toward it rather than failing — which is the
- * correct behaviour and the reason this is not an iterative solver.
- */
-export function twoBone(root, target, l1, l2, pole) {
-  const raw = sub3(target, root);
-  const rawLen = len3(raw);
-  if (rawLen < 1e-5) return root.slice(0, 3);
-  const d = Math.min(rawLen, (l1 + l2) * 0.999);
-  const dir = [raw[0] / rawLen, raw[1] / rawLen, raw[2] / rawLen];
-  // the foot of the perpendicular from the joint onto the root→target line
-  const a = (d * d + l1 * l1 - l2 * l2) / (2 * d);
-  const h = Math.sqrt(Math.max(l1 * l1 - a * a, 0));
-  // the pole, orthogonalised against the chain, is the direction the bend goes
-  const k = dot3(pole, dir);
-  let up = [pole[0] - dir[0] * k, pole[1] - dir[1] * k, pole[2] - dir[2] * k];
-  let ul = len3(up);
-  if (ul < 1e-5) {
-    // The pole is parallel to the chain, so it says nothing about which way to
-    // bend. Cross with whichever axis the chain is *least* aligned to — the
-    // obvious fallbacks are not safe, because a chain pointing straight down
-    // +z and a fallback of +z are the same degenerate case again, which is
-    // exactly the one that produced a 32 cm bone.
-    const ax = Math.abs(dir[0]) < Math.abs(dir[1])
-      ? (Math.abs(dir[0]) < Math.abs(dir[2]) ? [1, 0, 0] : [0, 0, 1])
-      : (Math.abs(dir[1]) < Math.abs(dir[2]) ? [0, 1, 0] : [0, 0, 1]);
-    up = [
-      dir[1] * ax[2] - dir[2] * ax[1],
-      dir[2] * ax[0] - dir[0] * ax[2],
-      dir[0] * ax[1] - dir[1] * ax[0],
-    ];
-    ul = len3(up) || 1;
+  /** a fan cap over row `row` of a grid emitted at `base` with `cols` columns */
+  cap(centre, n, m, bind, base, cols, row, up) {
+    const c = this.count;
+    this.vert(centre, n, m, bind);
+    for (let j = 0; j < cols; j++) {
+      const a = base + row * cols + j, b = base + row * cols + (j + 1) % cols;
+      if (up) this.idx.push(c, b, a); else this.idx.push(c, a, b);
+    }
   }
-  return [
-    root[0] + dir[0] * a + (up[0] / ul) * h,
-    root[1] + dir[1] * a + (up[1] / ul) * h,
-    root[2] + dir[2] * a + (up[2] / ul) * h,
+}
+
+/** a stack of elliptical rings, closed around the Y axis: every limb, and the torso */
+function limb(M, rings, bindOf, matOf, sides, { capTop = true, capBot = true } = {}) {
+  const gen = (i, j) => {
+    const a = (j / sides) * Math.PI * 2;
+    const r = rings[i];
+    return [(r.cx ?? 0) + Math.cos(a) * r.rx, r.y, (r.cz ?? 0) + Math.sin(a) * r.rz];
+  };
+  const base = M.grid(gen, rings.length, sides,
+    (i) => ({ m: matOf(i), bind: bindOf(i), ao: rings[i].ao ?? 1 }), { wrap: true });
+  const n = rings.length;
+  if (capTop) {
+    const t = rings[n - 1];
+    M.cap([t.cx ?? 0, t.y + t.rx * 0.35, t.cz ?? 0], [0, 1, 0], matOf(n - 1),
+      bindOf(n - 1), base, sides, n - 1, true);
+  }
+  if (capBot) {
+    const t = rings[0];
+    M.cap([t.cx ?? 0, t.y - t.rx * 0.35, t.cz ?? 0], [0, -1, 0], matOf(0),
+      bindOf(0), base, sides, 0, false);
+  }
+  return base;
+}
+
+// ---------------------------------------------------------------------------
+// the figure, assembled
+//
+// Read what follows as a description of a person rather than as geometry. Every
+// number is either the proportion table or a decision about what the shape says,
+// and the ones that are decisions say so.
+
+function buildGeometry(seed, D) {
+  const M = new Mesh();
+  const rng = new RNG(hash(seed, 0x1f16e));
+  const bind = (a, b = a, w = 0) => [a, b, w];
+
+  // --- torso ---------------------------------------------------------------
+  // The coat *is* the torso: a coat over a chest is one silhouette, and
+  // modelling them separately buys nothing at any distance this is ever seen
+  // from. The waist is 0.161 against a 0.208 chest — that ratio is what reads as
+  // "shoulders", and a straight cylinder reads as a barrel no matter how it is
+  // shaded. The top ring collapses to 0.120 so the hood swallows it.
+  const torso = [
+    { y: 0.995, rx: 0.182, rz: 0.128 },
+    { y: 1.080, rx: 0.161, rz: 0.116 },
+    { y: 1.185, rx: 0.172, rz: 0.121 },
+    { y: 1.300, rx: 0.198, rz: 0.132 },
+    { y: 1.400, rx: 0.208, rz: 0.134 },
+    { y: 1.470, rx: 0.120, rz: 0.100, ao: 0.9 },
   ];
+  limb(M, torso, (i) => {
+    if (i <= 1) return bind(B.root, B.spine, i === 1 ? 0.45 : 0.10);
+    if (i === 2) return bind(B.spine, B.chest, 0.5);
+    return bind(B.chest);
+  }, (i) => (i <= 1 ? KIT.coatWorn : KIT.coat), D.sides);
+
+  // --- hood ----------------------------------------------------------------
+  // Not a ball on a stick. The rings lean forward through the brow and sweep
+  // back to a point above the crown, so the head reads as a *direction* even
+  // from behind — the cheapest possible statement of where a figure is looking,
+  // and the one that survives to 40 px.
+  //
+  // The front of the brow and mouth rings is pulled inward by `rec`, cutting a
+  // genuine concavity where a face would be. That hollow, not a face, is what
+  // the eye reads as a head — and it is §4's clause satisfied by construction
+  // rather than by restraint.
+  const hood = [
+    { y: 1.430, rx: 0.152, rz: 0.132, cz: 0.004 },
+    { y: 1.520, rx: 0.134, rz: 0.138, cz: -0.014 },
+    { y: 1.605, rx: 0.126, rz: 0.133, cz: -0.012 },
+    { y: 1.690, rx: 0.119, rz: 0.125, cz: -0.004 },
+    { y: 1.760, rx: 0.101, rz: 0.108, cz: 0.008 },
+    { y: 1.802, rx: 0.062, rz: 0.070, cz: 0.020 },
+    { y: 1.818, rx: 0.022, rz: 0.028, cz: 0.030 },
+  ];
+  // how far round the front an azimuth is: 1 dead ahead, 0 by ±60°
+  const frontness = (a) => {
+    const d = Math.atan2(Math.sin(a - FRONT), Math.cos(a - FRONT));
+    return Math.max(0, 1 - Math.abs(d) / 1.05) ** 1.5;
+  };
+  const hoodDepth = [0.35, 1.0, 0.85, 0.42, 0, 0, 0];
+  const hoodBase = M.grid((i, j) => {
+    const a = (j / D.sides) * Math.PI * 2;
+    const t = hood[i];
+    const rec = 1 - frontness(a) * 0.40 * hoodDepth[i];
+    return [Math.cos(a) * t.rx * rec, t.y, t.cz + Math.sin(a) * t.rz * rec];
+  }, hood.length, D.sides, (i, j) => {
+    const a = (j / D.sides) * Math.PI * 2;
+    const f = frontness(a);
+    const inVoid = f > 0.45 && i >= 1 && i <= 3;
+    return {
+      m: inVoid ? KIT.hollow : KIT.coat,
+      bind: i === 0 ? bind(B.neck, B.head, 0.45) : bind(B.head),
+      ao: inVoid ? 0.45 : 1 - f * 0.18,
+    };
+  }, { wrap: true });
+  M.cap([0.030, 1.828, 0.030], [0, 1, 0], KIT.coat, bind(B.head),
+    hoodBase, D.sides, hood.length - 1, true);
+
+  // --- the collar ----------------------------------------------------------
+  // High at the back, falling away at the front, rust on the inside — the back
+  // face rule in the shader gives it a lining without a single extra vertex.
+  // Its job is to separate the head from the shoulders in silhouette; without
+  // it the hood and the coat merge into one blob from behind, which is exactly
+  // what the figure it replaces did from every angle.
+  const cA0 = FRONT + 0.62, cA1 = FRONT + Math.PI * 2 - 0.62;
+  M.grid((i, j) => {
+    const t = j / (D.sides + 2);
+    const a = cA0 + (cA1 - cA0) * t;
+    const tall = Math.sin(Math.PI * t) ** 0.8;
+    const y = 1.408 + i * (0.055 + 0.145 * tall);
+    const flare = 1 + i * (0.16 + 0.20 * (1 - tall));
+    return [Math.cos(a) * 0.170 * flare, y, Math.sin(a) * 0.126 * flare];
+  }, 3, D.sides + 3, () => ({ m: KIT.coat, bind: bind(B.chest, B.neck, 0.35) }));
+
+  // --- the visor -----------------------------------------------------------
+  // The entire accent budget, 15 cm wide, at exactly `P.eye`. It sits *inside*
+  // the hood's recess, so the hood occludes it from above and from the sides and
+  // it only reads when the figure is turned toward you — which is what makes it
+  // feel like a look rather than a lamp.
+  M.grid((i, j) => {
+    const t = j / 6;
+    const a = FRONT - 0.62 + 1.24 * t;
+    const rr = 0.098 - 0.006 * Math.cos((t - 0.5) * Math.PI);
+    return [Math.cos(a) * rr, P.eye + (i - 0.5) * 0.021, Math.sin(a) * rr];
+  }, 2, 7, () => ({ m: KIT.visor, bind: bind(B.head) }));
+
+  // --- arms ----------------------------------------------------------------
+  // Sleeved to the wrist, then a gauntlet. The top of the upper arm is bound
+  // half to the chest so the deltoid does not tear off the shoulder when the arm
+  // swings — the cheapest possible substitute for a real shoulder weight map,
+  // and at this size an indistinguishable one.
+  for (const s of [1, -1]) {
+    const sh = s > 0 ? B.armR : B.armL;
+    const el = s > 0 ? B.elbowR : B.elbowL;
+    const hd = s > 0 ? B.handR : B.handL;
+    const x = s * P.shoulderHalf;
+    limb(M, [
+      { y: P.elbow + 0.012, rx: 0.049, rz: 0.052, cx: x + s * 0.018, cz: 0.012 },
+      { y: 1.300, rx: 0.058, rz: 0.060, cx: x + s * 0.010, cz: 0.006 },
+      { y: P.shoulder - 0.010, rx: 0.072, rz: 0.074, cx: x, cz: 0 },
+      { y: P.shoulder + 0.048, rx: 0.068, rz: 0.068, cx: x - s * 0.006, cz: 0 },
+    ], (i) => (i >= 3 ? bind(sh, B.chest, 0.55) : i === 2 ? bind(sh, B.chest, 0.22) : bind(sh)),
+    () => KIT.coat, D.sides, { capBot: false });
+    limb(M, [
+      { y: P.wrist - 0.005, rx: 0.040, rz: 0.042, cx: x + s * 0.030, cz: 0.020 },
+      { y: 1.020, rx: 0.046, rz: 0.048, cx: x + s * 0.025, cz: 0.017 },
+      { y: P.elbow + 0.020, rx: 0.056, rz: 0.058, cx: x + s * 0.017, cz: 0.011 },
+    ], (i) => (i === 2 ? bind(el, sh, 0.30) : bind(el)),
+    (i) => (i === 2 ? KIT.coat : KIT.suit), D.sides, { capBot: false, capTop: false });
+    limb(M, [
+      { y: P.wrist - 0.175, rx: 0.030, rz: 0.038, cx: x + s * 0.034, cz: 0.030 },
+      { y: P.wrist - 0.090, rx: 0.038, rz: 0.048, cx: x + s * 0.032, cz: 0.026 },
+      { y: P.wrist + 0.012, rx: 0.045, rz: 0.048, cx: x + s * 0.029, cz: 0.019 },
+    ], () => bind(hd), () => KIT.leather, D.sides);
+  }
+
+  // --- the pauldron: the asymmetry, and the one bright value ---------------
+  // Left shoulder only. A hard bone-ceramic shell over an indigo coat is the
+  // largest value contrast on the figure, and value contrast is what silhouette
+  // legibility *is* at 40 px — the shape survives because one corner of it is
+  // four stops brighter than the rest, not because the outline is complicated.
+  // It is a *shell*, not a ball: the first pass read as a sphere on a shoulder
+  // because the widest ring was the middle one and every ring was round. A
+  // pauldron is a plate that flares out and *down* over the deltoid and stops on
+  // a hard lip, so the widest ring is low, the sections are ovals wider
+  // front-to-back than across, and the bottom ring is a dark strap that reads as
+  // the edge the plate ends on.
+  limb(M, [
+    { y: 1.288, rx: 0.046, rz: 0.078, cx: -0.204, cz: 0.004 },
+    { y: 1.332, rx: 0.084, rz: 0.112, cx: -0.232, cz: 0.002 },
+    { y: 1.396, rx: 0.098, rz: 0.118, cx: -0.240, cz: 0 },
+    { y: 1.456, rx: 0.088, rz: 0.104, cx: -0.226, cz: -0.002 },
+    { y: 1.508, rx: 0.060, rz: 0.076, cx: -0.200, cz: -0.004 },
+    { y: 1.534, rx: 0.026, rz: 0.036, cx: -0.184, cz: -0.004 },
+  ], () => bind(B.armL, B.chest, 0.45), (i) => (i === 0 ? KIT.strap : KIT.shell), D.sides);
+
+  // --- the strap: the diagonal --------------------------------------------
+  // Left shoulder to right hip. One line across the chest is what stops the
+  // torso reading as a slab, and it is what tells you which way the figure is
+  // facing on every frame where the visor is not in view.
+  M.grid((i, j) => {
+    const t = i / 6;
+    const a = FRONT - 0.30 - t * 1.15;
+    const bulge = 1.012 + 0.02 * Math.sin(Math.PI * t);
+    const rx = (0.176 + 0.030 * Math.sin(Math.PI * t)) * bulge;
+    const rz = (0.122 + 0.016 * Math.sin(Math.PI * t)) * bulge;
+    const w = (j - 0.5) * 0.052;
+    return [Math.cos(a) * rx + w * 0.42, 1.470 - t * 0.44 + w * 0.86, Math.sin(a) * rz];
+  }, 7, 2, (i) => ({
+    m: KIT.strap, bind: i < 3 ? bind(B.chest) : bind(B.chest, B.spine, 0.5),
+  }), { flip: -1 });
+
+  // --- the satchel: the counterweight --------------------------------------
+  limb(M, [
+    { y: 0.905, rx: 0.072, rz: 0.048, cx: 0.196, cz: 0.026 },
+    { y: 0.985, rx: 0.084, rz: 0.056, cx: 0.202, cz: 0.022 },
+    { y: 1.062, rx: 0.070, rz: 0.046, cx: 0.196, cz: 0.018 },
+  ], () => bind(B.root, B.spine, 0.25),
+  (i) => (i === 2 ? KIT.strap : KIT.leather), Math.max(6, D.sides - 3));
+
+  // --- legs ----------------------------------------------------------------
+  // Present, and meant to be seen through the coat's front gap. The benchmark
+  // meadow is waist-deep, so from most distances most of this is inside the
+  // grass — which is precisely why the boot cuff is the widest thing on the leg.
+  // It is the part that shows above the sward when the figure stands in it.
+  for (const s of [1, -1]) {
+    const hp = s > 0 ? B.hipR : B.hipL;
+    const kn = s > 0 ? B.kneeR : B.kneeL;
+    const ft = s > 0 ? B.footR : B.footL;
+    const x = s * P.hipHalf;
+    limb(M, [
+      { y: P.knee + 0.010, rx: 0.056, rz: 0.060, cx: x + s * 0.006, cz: 0.006 },
+      { y: 0.700, rx: 0.067, rz: 0.072, cx: x + s * 0.004, cz: 0.004 },
+      { y: P.hip + 0.030, rx: 0.083, rz: 0.086, cx: x, cz: 0 },
+    ], (i) => (i === 2 ? bind(hp, B.root, 0.4) : bind(hp)),
+    () => KIT.suit, D.sides, { capBot: false, capTop: false });
+    // the shin's top ring stands *above* the thigh's last one, so the sleeve
+    // swallows the joint rather than leaving an annulus you can see through
+    limb(M, [
+      { y: 0.190, rx: 0.056, rz: 0.058, cx: x + s * 0.008, cz: 0.004 },
+      { y: 0.300, rx: 0.048, rz: 0.050, cx: x + s * 0.008, cz: 0.006 },
+      { y: 0.410, rx: 0.055, rz: 0.058, cx: x + s * 0.007, cz: 0.008 },
+      { y: 0.512, rx: 0.064, rz: 0.067, cx: x + s * 0.006, cz: 0.005 },
+    ], (i) => (i === 3 ? bind(kn, hp, 0.30) : bind(kn)),
+    (i) => (i <= 1 ? KIT.leather : KIT.suit), D.sides, { capBot: false, capTop: false });
+    limb(M, [
+      { y: 0.012, rx: 0.060, rz: 0.090, cx: x + s * 0.008, cz: -0.026 },
+      { y: 0.075, rx: 0.064, rz: 0.098, cx: x + s * 0.008, cz: -0.030 },
+      { y: 0.150, rx: 0.062, rz: 0.072, cx: x + s * 0.008, cz: -0.006 },
+      { y: 0.205, rx: 0.077, rz: 0.080, cx: x + s * 0.008, cz: 0.002 },
+      { y: 0.242, rx: 0.066, rz: 0.070, cx: x + s * 0.008, cz: 0.004 },
+    ], (i) => (i <= 1 ? bind(ft) : i === 2 ? bind(ft, kn, 0.5) : bind(kn)),
+    (i) => (i === 3 ? KIT.strap : KIT.leather), D.sides, { capTop: false });
+  }
+
+  // --- the coat skirt: the cloth -------------------------------------------
+  //
+  // An open-fronted panel from the waist to below the knee. Registering it as
+  // `cloth` hands every one of these vertices to the update pass, which rewrites
+  // them from the wind field each frame; none of it is skinned.
+  //
+  // The gap widens as it descends — 0.34 rad at the belt to 0.92 at the hem — so
+  // the coat is nearly closed at the waist and opens over the legs. A constant
+  // gap reads as a cut-out; a widening one reads as a coat that hangs.
+  // `flip: -1`, and it is not a taste. The grid convention is
+  // n = cross(∂G/∂i, ∂G/∂j) with i running *up*; on this surface i runs down
+  // the drop, so the cross product comes out inward. The first capture showed
+  // it plainly: the coat's whole belly rendered in the rust lining, because
+  // every outward-facing fragment was being told it was a back face.
+  M.grid((i, j) => {
+    const c = coatRest(i / (D.coatV - 1), j / (D.coatU - 1));
+    return [Math.cos(c.a) * c.r, c.y, Math.sin(c.a) * c.r * 1.06];
+  }, D.coatV, D.coatU, (i) => ({
+    m: i >= D.coatV - 2 ? KIT.coatWorn : KIT.coat,
+    bind: bind(B.root),
+    ao: 1 - 0.10 * (i / (D.coatV - 1)),
+  }), { flip: -1, cloth: { kind: 'coat' } });
+
+  // --- the scarf: the motion read at distance ------------------------------
+  //
+  // Anchored over the pauldron. At 40 px in waist-deep grass the legs are gone
+  // and the coat is half gone, and this is the only thing still moving — which
+  // is why it is long, why it is the warmest thing in the kit, and why it
+  // carries the highest rim and transmission weights in the table.
+  M.grid((i, j) => {
+    const t = i / (D.scarfN - 1);
+    const w = j / (D.scarfW - 1) - 0.5;
+    return [-0.150 + w * 0.10, 1.455 - t * 0.30, 0.020 + t * 0.360];
+  }, D.scarfN, D.scarfW, (i) => ({
+    m: KIT.scarf, bind: bind(B.chest), ao: 1 - 0.05 * (i / (D.scarfN - 1)),
+  }), { cloth: { kind: 'scarf' } });
+
+  // one wisp of per-traveler variation, drawn from the seed and nothing else
+  // (§2.3): how far the scarf trails.
+  return { M, scarfLen: 1.26 + rng.float(0, 0.36) };
 }
 
 // ---------------------------------------------------------------------------
-// geometry
+// the shader
 //
-// Everything is built into one non-indexed position/normal/uv/attribute set,
-// in a local space where the figure is `stature` tall and stands on y = 0.
-// Parts are tagged by a `bone` attribute so the vertex shader can transform
-// them: an eighteen-bone skin, with the skinning done by a uniform array of
-// matrices rather than by three.js's `SkinnedMesh`, because a skeleton whose
-// bind pose is generated has nothing to load and no reason to carry the rest
-// of the skinning machinery.
-
-/**
- * Material ids, carried per vertex in `aMat` and branched on in one fragment
- * shader — a figure is one draw call, and four `MeshStandardMaterial`s would
- * be four of them plus four chances for the aerial injection to reach three.
- */
-export const MAT = { BODY: 0, COAT: 1, SKIN: 2, BOOT: 3, STRAP: 4 };
-
-/** bone ids — the vertex shader indexes `uBones` with these */
-export const BONE = {
-  ROOT: 0, PELVIS: 1, SPINE: 2, CHEST: 3, NECK: 4, HEAD: 5,
-  SHOULDER_L: 6, UPPER_L: 7, FORE_L: 8, HAND_L: 9,
-  SHOULDER_R: 10, UPPER_R: 11, FORE_R: 12, HAND_R: 13,
-  THIGH_L: 14, SHANK_L: 15, FOOT_L: 16,
-  THIGH_R: 17, SHANK_R: 18, FOOT_R: 19,
-  COAT: 20,
-};
-export const BONE_COUNT = 21;
-
-/**
- * A tapered capsule along +y, in the local space of its bone.
- *
- * `sides` and `rings` are the tier's, and the shape is a superellipse in cross
- * section rather than a circle — `|x|^n + |z|^n = 1` at n ≈ 2.6, which is what
- * a limb actually is and what stops an arm reading as a pipe.
- */
-function limb(out, bone, len, r0, r1, sides, rings, mat, xf = null, squash = 1, dir = 1) {
-  const N = 2.6;
-  const ring = (t) => {
-    const pts = [];
-    const r = r0 + (r1 - r0) * t;
-    for (let i = 0; i < sides; i++) {
-      const a = (i / sides) * Math.PI * 2;
-      const ca = Math.cos(a), sa = Math.sin(a);
-      // superellipse, unit-normalised
-      const k = Math.pow(Math.pow(Math.abs(ca), N) + Math.pow(Math.abs(sa), N), -1 / N);
-      pts.push([ca * k * r * squash, t * len * dir, sa * k * r]);
-    }
-    return pts;
-  };
-  const rows = [];
-  for (let j = 0; j <= rings; j++) rows.push(ring(j / rings));
-  for (let j = 0; j < rings; j++) {
-    for (let i = 0; i < sides; i++) {
-      const i2 = (i + 1) % sides;
-      quad(out, rows[j][i], rows[j][i2], rows[j + 1][i2], rows[j + 1][i], bone, mat, xf);
-    }
-  }
-  // caps, so the silhouette closes — a limb open at the end reads as a hole
-  // exactly where the aerial perspective is brightest
-  cap(out, rows[0], [0, 0, 0], bone, mat, xf, true);
-  cap(out, rows[rings], [0, len * dir, 0], bone, mat, xf, false);
-}
-
-function cap(out, ring, centre, bone, mat, xf, flip) {
-  for (let i = 0; i < ring.length; i++) {
-    const i2 = (i + 1) % ring.length;
-    tri(out, centre, flip ? ring[i2] : ring[i], flip ? ring[i] : ring[i2], bone, mat, xf);
-  }
-}
-
-function push(out, v, bone, mat, xf) {
-  const p = xf ? apply(xf, 0, v[0], v[1], v[2]) : v;
-  out.pos.push(p[0], p[1], p[2]);
-  out.bone.push(bone);
-  out.mat.push(mat);
-}
-
-function tri(out, a, b, c, bone, mat, xf) {
-  push(out, a, bone, mat, xf); push(out, b, bone, mat, xf); push(out, c, bone, mat, xf);
-}
-
-function quad(out, a, b, c, d, bone, mat, xf) {
-  tri(out, a, b, c, bone, mat, xf);
-  tri(out, a, c, d, bone, mat, xf);
-}
-
-/**
- * The coat, which is the silhouette.
- *
- * A skirt from the chest to just below the knee, flaring as it falls, with a
- * front opening so it reads as a coat rather than a dress. Its vertices carry
- * a `free` weight in the uv's second channel — zero at the shoulder, one at
- * the hem — and the vertex shader uses that to decide how much of the wind and
- * the trail each one gets. That weight is the whole cloth simulation: a hem
- * that swings and a collar that does not is 95% of what cloth reads as, at
- * 0% of the cost of solving one.
- */
-function coat(out, s, sides, rings, seed) {
-  const top = s.chestY, bot = s.kneeY - 0.06;
-  const open = 0.34;              // radians of the front opening, half-angle
-  const rTop = s.shoulderW * 0.60, rBot = s.shoulderW * 0.92;
-  for (let j = 0; j < rings; j++) {
-    const t0 = j / rings, t1 = (j + 1) / rings;
-    for (let i = 0; i < sides; i++) {
-      const a0 = -Math.PI + ((i + 0.0) / sides) * Math.PI * 2;
-      const a1 = -Math.PI + ((i + 1.0) / sides) * Math.PI * 2;
-      // the front opening — the two panels stop short of meeting
-      if (Math.abs(a0) < open && Math.abs(a1) < open) continue;
-      const P = (t, a) => {
-        const y = top + (bot - top) * t;
-        // the flare is cubic, so the coat hangs straight and then breaks —
-        // a linear flare reads as a cone, which is what is standing there now
-        const r = rTop + (rBot - rTop) * (t * t * t * 0.55 + t * 0.45);
-        return [Math.sin(a) * r, y, Math.cos(a) * r * 1.12];
-      };
-      const A = P(t0, a0), B = P(t0, a1), C = P(t1, a1), D = P(t1, a0);
-      // A→D→C→B rather than A→B→C→D. The obvious winding puts the outward
-      // normal *inward* here: the ring runs from +z toward +x, so the cross
-      // product of (along the ring) with (down the coat) points into the
-      // garment, and the whole figure renders in its own lining.
-      quad(out, A, D, C, B, BONE.COAT, MAT.COAT, null);
-      // The free weight, per vertex, in the order `quad` pushed them — it
-      // emits (A,D,C) then (A,C,B), so the sequence is not simply t0,t1,t1,t0.
-      // Squared here rather than in the shader so the quartic falloff costs
-      // nothing per frame.
-      for (const w of [t0, t1, t1, t0, t1, t0]) out.free.push(w * w);
-    }
-  }
-  // the collar: a short flare the other way, framing the head
-  const cTop = s.chin - 0.012, cBot = s.shoulderY - 0.010;
-  for (let i = 0; i < sides; i++) {
-    const a0 = -Math.PI + (i / sides) * Math.PI * 2;
-    const a1 = -Math.PI + ((i + 1) / sides) * Math.PI * 2;
-    if (Math.abs(a0) < open * 0.9 && Math.abs(a1) < open * 0.9) continue;
-    const Q = (y, a, r) => [Math.sin(a) * r, y, Math.cos(a) * r * 1.1];
-    const rb = s.shoulderW * 0.30, rt = s.shoulderW * 0.42;
-    quad(out, Q(cBot, a0, rb), Q(cTop, a0, rt), Q(cTop, a1, rt), Q(cBot, a1, rb),
-      BONE.CHEST, MAT.COAT, null);
-    for (let k = 0; k < 6; k++) out.free.push(0);
-  }
-  return seed;
-}
-
-/**
- * Build the figure's geometry at a given stature and tier.
- *
- * `tier` is the quality row index — 0 ultra to 3 low — and it only ever
- * changes tessellation, never proportion. §5's rule: one row change
- * reconfigures the renderer, and a figure that got *shorter* on a phone would
- * be a different figure rather than a cheaper one.
- */
-export function buildFigure(stature = 1.78, tier = 1, seed = 0) {
-  const r = new RNG(hash(seed >>> 0, 0xf16));
-  const s = {};
-  for (const k of Object.keys(CANON)) s[k] = CANON[k] * stature;
-  s.stature = stature;
-  const SIDES = [12, 10, 8, 6][Math.min(tier, 3)];
-  const RINGS = [4, 3, 2, 2][Math.min(tier, 3)];
-  const CSIDES = [20, 16, 12, 10][Math.min(tier, 3)];
-  const CRINGS = [7, 6, 4, 3][Math.min(tier, 3)];
-
-  const out = { pos: [], bone: [], mat: [], free: [] };
-  const at = (x, y, z) => compose(new Float64Array(16), 0, x, y, z, 0, 0, 0);
-
-  // -- torso. Two segments so the twist reads; the chest is wider than deep,
-  //    which is the difference between a person and a barrel. The torso, the
-  //    neck and the head are authored in *root* space with an absolute
-  //    translation, because their bones sit at the origin; the limbs below are
-  //    authored in their own bone's space, hanging along −y, because that is
-  //    the direction the rest offsets chain them in. Authoring a limb along +y
-  //    puts every arm and leg inside the torso, pointing at the sky, and the
-  //    coat hides it well enough that the first render read as a figure with
-  //    no arms rather than as a figure with its arms on backwards.
-  limb(out, BONE.SPINE, s.chestY - s.hipY, s.hipW * 0.52, s.shoulderW * 0.40,
-    SIDES, RINGS, MAT.BODY, at(0, s.hipY, 0), 1.28);
-  limb(out, BONE.CHEST, s.shoulderY - s.chestY, s.shoulderW * 0.40, s.shoulderW * 0.36,
-    SIDES, RINGS, MAT.BODY, at(0, s.chestY, 0), 1.30);
-  limb(out, BONE.PELVIS, s.hipY - s.waistY * 0.86, s.hipW * 0.56, s.hipW * 0.52,
-    SIDES, 2, MAT.BODY, at(0, s.waistY * 0.86, 0), 1.16);
-
-  // -- head and neck. The head is an ovoid, longer than wide, and it is the
-  //    module everything else was counted in — get it wrong and nothing reads.
-  limb(out, BONE.NECK, s.chin - s.shoulderY, s.head * 0.30, s.head * 0.27,
-    SIDES, 1, MAT.SKIN, at(0, s.shoulderY, 0), 1.0);
-  // ...and the crown lands on `stature` exactly, because the canon is eight
-  // heads and a figure 1.5% short of its own stated height is a figure whose
-  // eye height, camera distance and scale reference are all 1.5% wrong.
-  limb(out, BONE.HEAD, stature - (s.chin - s.head * 0.06), s.head * 0.40, s.head * 0.30,
-    SIDES, RINGS + 1, MAT.SKIN, at(0, s.chin - s.head * 0.06, 0), 0.90);
-
-  // -- arms and legs, mirrored, each hanging along −y in its own bone's space
-  const DOWN = -1;
-  for (const side of [-1, 1]) {
-    const L = side < 0;
-    limb(out, L ? BONE.UPPER_L : BONE.UPPER_R, s.upperArm,
-      s.upperArm * 0.30, s.upperArm * 0.24, SIDES, RINGS, MAT.BODY, null, 1, DOWN);
-    limb(out, L ? BONE.FORE_L : BONE.FORE_R, s.forearm,
-      s.forearm * 0.28, s.forearm * 0.20, SIDES, RINGS, MAT.BODY, null, 1, DOWN);
-    // the hand: short, dark, and no fingers — value, not detail (§2 above)
-    limb(out, L ? BONE.HAND_L : BONE.HAND_R, s.head * 0.72,
-      s.head * 0.20, s.head * 0.15, Math.max(SIDES - 4, 5), 1, MAT.BOOT, null, 0.62, DOWN);
-    limb(out, L ? BONE.THIGH_L : BONE.THIGH_R, s.thigh,
-      s.hipW * 0.34, s.hipW * 0.26, SIDES, RINGS, MAT.BODY, null, 1, DOWN);
-    limb(out, L ? BONE.SHANK_L : BONE.SHANK_R, s.shank,
-      s.hipW * 0.27, s.hipW * 0.16, SIDES, RINGS, MAT.BODY, null, 1, DOWN);
-    // The boot: a wedge lying forward from the ankle. Rotated −90° about x,
-    // which takes the limb's own −y onto +z — so it points where the figure is
-    // facing rather than where its shins are.
-    limb(out, L ? BONE.FOOT_L : BONE.FOOT_R, s.foot,
-      s.hipW * 0.26, s.hipW * 0.17, Math.max(SIDES - 4, 5), 1, MAT.BOOT,
-      compose(new Float64Array(16), 0, 0, -s.hipW * 0.10, -s.foot * 0.28, -Math.PI / 2, 0, 0),
-      0.74, DOWN);
-  }
-
-  // everything so far is rigid, so its free weight is zero
-  while (out.free.length < out.pos.length / 3) out.free.push(0);
-
-  // -- the coat, last, because it is the only thing that moves on its own
-  coat(out, s, CSIDES, CRINGS, r.int(0, 1 << 20));
-  while (out.free.length < out.pos.length / 3) out.free.push(0);
-
-  // -- the strap: the one asymmetry (§2). A flat band across the chest, on a
-  //    side the seed picks, because a figure that is symmetric everywhere reads
-  //    as a mannequin and one that is asymmetric twice reads as clutter.
-  const strapSide = r.float(0, 1) < 0.5 ? -1 : 1;
-  {
-    const w = s.shoulderW * 0.085;
-    const A = [strapSide * s.shoulderW * 0.34, s.shoulderY - 0.01, s.shoulderW * 0.20];
-    const B = [-strapSide * s.hipW * 0.34, s.waistY, s.hipW * 0.30];
-    const ax = sub3(B, A);
-    const nl = Math.hypot(ax[1], ax[0]) || 1;
-    const nrm = [(-ax[1] / nl) * w, (ax[0] / nl) * w, 0];
-    const add = (p, q) => [p[0] + q[0], p[1] + q[1], p[2] + q[2]];
-    quad(out, add(A, nrm), sub3(A, nrm), sub3(B, nrm), add(B, nrm), BONE.CHEST, MAT.STRAP, null);
-    for (let k = 0; k < 6; k++) out.free.push(0);
-  }
-
-  const position = new Float32Array(out.pos);
-  return {
-    position,
-    normal: faceNormals(position),
-    bone: new Float32Array(out.bone),
-    mat: new Float32Array(out.mat),
-    free: new Float32Array(out.free),
-    dims: s, strapSide, tris: position.length / 9,
-  };
-}
-
-/**
- * Flat normals, per triangle, written to every vertex of it.
- *
- * Flat rather than smoothed, and that is the art direction rather than a
- * shortcut: §9.2's three-stop hue ramp puts a *visible* band edge at every
- * shading transition, and CLAUDE.md §11 is explicit that this is the thing a
- * PBR reflex will try to delete. A faceted figure banded by that ramp reads as
- * painted; a smooth one reads as plastic, because the ramp then has nowhere to
- * put its edges except across a gradient.
- */
-export function faceNormals(pos) {
-  const n = new Float32Array(pos.length);
-  for (let i = 0; i < pos.length; i += 9) {
-    const ax = pos[i + 3] - pos[i], ay = pos[i + 4] - pos[i + 1], az = pos[i + 5] - pos[i + 2];
-    const bx = pos[i + 6] - pos[i], by = pos[i + 7] - pos[i + 1], bz = pos[i + 8] - pos[i + 2];
-    let cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx;
-    const l = Math.hypot(cx, cy, cz) || 1;
-    cx /= l; cy /= l; cz /= l;
-    for (let k = 0; k < 9; k += 3) { n[i + k] = cx; n[i + k + 1] = cy; n[i + k + 2] = cz; }
-  }
-  return n;
-}
-
-// ---------------------------------------------------------------------------
-// the rig
+// §9.2 imported rather than restated — `PAINT_GLSL` is the light model and there
+// is exactly one of it. What this adds is per-vertex stops (so one draw call
+// carries nine materials), the back-face lining rule, and the visor.
 //
-// Eighteen matrices, composed on the CPU once a frame and uploaded as a
-// uniform array. Not `SkinnedMesh`: there is no bind pose to invert because
-// every vertex was authored in its own bone's local space at build time, which
-// is the one simplification a generated skeleton buys you over a loaded one.
+// On fog: there is none, deliberately. §9.3's `fogNear` is 70 m and this object
+// is the player — it is never further from the camera than the third-person
+// boom, 4.6 m, where the fog fraction is identically zero. Writing `a = 1.0` is
+// the correct answer under `AERIAL_ALPHA_IS_CLARITY`: alpha means *clear*, and
+// the figure genuinely is. Importing the fog to multiply by zero would be
+// ceremony, and it would couple this file to one being rewritten next door.
 
-/** the bind offsets — where each bone sits in its parent, at rest */
-export function restPose(s) {
-  const A = (x, y, z) => [x, y, z];
-  const rest = new Array(BONE_COUNT).fill(null).map(() => A(0, 0, 0));
-  rest[BONE.UPPER_L] = A(-s.shoulderW * 0.52, s.shoulderY - s.head * 0.10, 0);
-  rest[BONE.FORE_L] = A(0, -s.upperArm, 0);
-  rest[BONE.HAND_L] = A(0, -s.forearm, 0);
-  rest[BONE.UPPER_R] = A(s.shoulderW * 0.52, s.shoulderY - s.head * 0.10, 0);
-  rest[BONE.FORE_R] = A(0, -s.upperArm, 0);
-  rest[BONE.HAND_R] = A(0, -s.forearm, 0);
-  rest[BONE.THIGH_L] = A(-s.hipW * 0.42, s.hipY, 0);
-  rest[BONE.SHANK_L] = A(0, -s.thigh, 0);
-  rest[BONE.FOOT_L] = A(0, -s.shank, 0);
-  rest[BONE.THIGH_R] = A(s.hipW * 0.42, s.hipY, 0);
-  rest[BONE.SHANK_R] = A(0, -s.thigh, 0);
-  rest[BONE.FOOT_R] = A(0, -s.shank, 0);
-  return rest;
-}
+const FIG_VERT = /* glsl */`
+  attribute vec3 aShade;
+  attribute vec3 aMid;
+  attribute vec3 aLit;
+  attribute vec4 aSurf;      // rim, ao, emissive, transmission
+  attribute vec3 aRest;      // rest-pose position — see the note on jit
 
-/**
- * Compose the skeleton for one frame into `mats`, a flat column-major
- * `Float32Array(16 · BONE_COUNT)` — the exact thing `uniform mat4[]` wants, so
- * the per-frame path allocates nothing and copies nothing.
- *
- * Pure, and takes plain numbers, so `tools/verify.js` can assert on where a
- * heel ends up without a renderer. That is the only way to catch a leg passing
- * through the ground on one world in ten thousand: nobody is going to look.
- */
-export function poseFigure(mats, dims, pose, rest = restPose(dims)) {
-  const set = (i, parent, rx, ry = 0, rz = 0) => {
-    const o = rest[i];
-    compose(TMP, 0, o[0], o[1], o[2], rx, ry, rz);
-    if (parent < 0) for (let k = 0; k < 16; k++) mats[i * 16 + k] = TMP[k];
-    else mul(mats, i * 16, mats, parent * 16, TMP, 0);
-    return i;
-  };
-  const lean = pose.lean || 0, twist = pose.twist || 0, amp = pose.amp || 0;
-
-  compose(mats, BONE.ROOT * 16, 0, pose.rise || 0, 0, 0, 0, 0);
-  set(BONE.PELVIS, BONE.ROOT, 0, -twist * 0.5, 0);
-  set(BONE.SPINE, BONE.PELVIS, -lean * 0.55, twist, 0);
-  set(BONE.CHEST, BONE.SPINE, -lean * 0.45, twist * 0.4, 0);
-  set(BONE.NECK, BONE.CHEST, lean * 0.7, 0, 0);
-  set(BONE.HEAD, BONE.NECK, lean * 0.3 + (pose.headPitch || 0), pose.headYaw || 0, 0);
-  // The coat hangs off the root, not the chest. A coat is heavy: it does not
-  // take the torso's counter-rotation, and a coat that twists with the
-  // shoulders is the tell that a figure is wearing a decal rather than a garment.
-  set(BONE.COAT, BONE.ROOT, 0, 0, 0);
-
-  for (const [side, up, fore, hand, thigh, shank, foot, arm, elbow, thighA, kneeA] of [
-    [-1, BONE.UPPER_L, BONE.FORE_L, BONE.HAND_L, BONE.THIGH_L, BONE.SHANK_L, BONE.FOOT_L,
-      pose.armL, pose.elbowL, pose.thighL, pose.kneeL],
-    [1, BONE.UPPER_R, BONE.FORE_R, BONE.HAND_R, BONE.THIGH_R, BONE.SHANK_R, BONE.FOOT_R,
-      pose.armR, pose.elbowR, pose.thighR, pose.kneeR],
-  ]) {
-    // arms hang from the chest, so a twisting torso carries them — the tell
-    // that a figure is one body rather than a torso with limbs stapled on
-    set(up, BONE.CHEST, arm || 0, 0, side * (0.09 + amp * 0.05));
-    set(fore, up, -(elbow || 0), 0, 0);
-    set(hand, fore, -0.12, 0, 0);
-    set(thigh, BONE.PELVIS, thighA || 0, 0, side * 0.02);
-    set(shank, thigh, kneeA || 0, 0, 0);
-    // the ankle counter-rotates so the sole stays flat through the stride,
-    // which is the difference between walking and being dragged
-    set(foot, shank, -((thighA || 0) + (kneeA || 0)) * 0.55 - 0.06, 0, 0);
-  }
-  return mats;
-}
-
-/** scratch for one local transform — `poseFigure` runs every frame */
-const TMP = new Float64Array(16);
-
-/** where a bone's origin ends up, in figure space — for tests and for the hand */
-export function boneAt(mats, bone) {
-  const i = bone * 16;
-  return [mats[i + 12], mats[i + 13], mats[i + 14]];
-}
-
-// ---------------------------------------------------------------------------
-// the material
-//
-// Four values on one mesh, keyed by the `aMat` attribute: coat, skin, boot and
-// strap. §9.1's discipline — the palette is a table, converted once, injected
-// as literals — and §9.2's `paint()` does the lighting if `?paint=1` is on, so
-// nothing here duplicates a light model.
-
-export const FIGURE_VERT = /* glsl */`
-  attribute float aBone;
-  attribute float aMat;
-  attribute float aFree;
-  uniform mat4 uBones[${BONE_COUNT}];
-  uniform vec3 uCloth;      // wind + trail, in figure space, metres
-  uniform vec2 uHem;        // travelling ripple: amplitude, phase in cycles
-  varying float vMat;
-  varying vec3 vN;
   varying vec3 vW;
+  varying vec3 vN;
+  varying vec3 vShade;
+  varying vec3 vMid;
+  varying vec3 vLit;
+  varying vec4 vSurf;
+  varying vec3 vRest;
 
   void main() {
-    int b = int(aBone + 0.5);
-    mat4 B = uBones[b];
-    vec4 p = B * vec4(position, 1.0);
-    vec3 n = mat3(B) * normal;
-
-    // the cloth. aFree is zero at the collar and one at the hem, squared at
-    // build time, so the displacement is quartic in height — a hem that moves
-    // and a shoulder that does not, which is what cloth reads as.
-    if (aFree > 0.0) {
-      float w = aFree;
-      p.xyz += uCloth * w;
-      // and a ripple travelling around the hem on the gait's own phase, so the
-      // coat swings on the footfall rather than on a clock of its own (§3)
-      float a = atan(p.x, p.z);
-      p.x += sin(a * 3.0 + uHem.y * 6.2831853) * uHem.x * w;
-      p.z += cos(a * 3.0 + uHem.y * 6.2831853) * uHem.x * w * 0.6;
-      p.y -= (uCloth.x * uCloth.x + uCloth.z * uCloth.z) * 0.34 * w;   // it lifts as it swings
-    }
-
-    vMat = aMat;
-    vN = normalize(mat3(modelMatrix) * n);
-    vW = (modelMatrix * p).xyz;
-    gl_Position = projectionMatrix * modelViewMatrix * p;
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vW = wp.xyz;
+    vN = mat3(modelMatrix) * normal;
+    vShade = aShade; vMid = aMid; vLit = aLit; vSurf = aSurf; vRest = aRest;
+    gl_Position = projectionMatrix * viewMatrix * wp;
   }
 `;
 
-/**
- * Four colours, and the reason they are these four.
- *
- * The coat is a deep desaturated indigo rather than black: §9.1's shadow tint
- * is `#5C6E9E` and §9.2 is explicit that *"shadows change hue, they do not go
- * black"* — a black coat would be the one surface in frame that violates the
- * rule the whole light model is built on, and at surface scale §2.8 forbids it
- * outright. Indigo also does what black is usually chosen for: it reads as a
- * single dark mass at distance and holds its hue in the light.
- *
- * The lining is warm, because a coat that flares should show something when it
- * does, and warm-against-cool is the oldest way to make a shape read.
- */
-export const FIGURE_PALETTE = {
-  coat: 0x2A3050,
-  lining: 0x8C5A3C,
-  skin: 0xD9B08C,
-  boot: 0x1E2233,
-  strap: 0xB4753E,
-};
-
-/**
- * The shading, which is deliberately §9.2's shape and not a PBR one.
- *
- * A half-Lambert wrap and a three-stop ramp with visibly soft band edges —
- * §11 names this as the first thing a physically-based instinct will try to
- * delete and it is the art direction. On a figure it does more work than
- * anywhere else in the frame: a smoothly-shaded generated body reads as a
- * mannequin because the gradient has nothing to describe, while banded values
- * read as *drawn*, and the bands land on the anatomy that put them there.
- *
- * The lining shows on backfaces, which is the whole reason the material is
- * double-sided: a coat that flares should show something when it does, and
- * warm-inside against cool-outside is the oldest way to make a shape read.
- */
-export const FIGURE_FRAG = /* glsl */`
+const figFragment = (shadowGLSL) => /* glsl */`
   precision highp float;
-  uniform vec3 uSunDir;
-  uniform vec3 uCoat, uLining, uSkin, uBoot, uStrap;
-  varying float vMat;
-  varying vec3 vN;
+
   varying vec3 vW;
+  varying vec3 vN;
+  varying vec3 vShade;
+  varying vec3 vMid;
+  varying vec3 vLit;
+  varying vec4 vSurf;
+  varying vec3 vRest;
+
+  uniform vec3 uSunDir;
+  uniform vec3 uVisor;
+  uniform float uGlow;
+  uniform float uWet;
+
+  // The lining: every back face on the figure is the coat's rust interior.
+  // Stated once, as a rule, rather than carried as a per-vertex attribute — the
+  // only surfaces in this mesh with a visible back face are cloth, and cloth is
+  // the only thing that has a lining.
+  uniform vec3 uLineShade;
+  uniform vec3 uLineMid;
+  uniform vec3 uLineLit;
+
+  ${PAINT_GLSL}
+  ${shadowGLSL}
 
   void main() {
     vec3 N = normalize(vN);
-    vec3 V = normalize(cameraPosition - vW);
-    // Which of the five this triangle is. Ids rather than materials, because
-    // a figure is one draw call.
-    vec3 base = uCoat;
-    if (vMat < 0.5) base = uCoat;              // body: under the coat, same cloth
-    else if (vMat < 1.5) base = uCoat;         // the coat proper
-    else if (vMat < 2.5) base = uSkin;         // head and neck
-    else if (vMat < 3.5) base = uBoot;         // boots and gloves
-    else base = uStrap;
-    // ...and the inside of the coat, which is the whole reason for two faces
+    vec3 toEye = cameraPosition - vW;
+    float dist = length(toEye);
+    vec3 V = toEye / max(dist, 1e-4);
+
+    // §M2 act 6 says far ridges are "pure haze, pure shape" and §9.5 says
+    // across-blade detail should be dropped once a blade is two pixels wide.
+    // The same statement, made about a body: at thirty metres a person is 30 px
+    // tall, every stop above the shade one is sub-pixel, and the only thing that
+    // survives is the outline. This term is what turns the figure into that
+    // outline instead of letting it dissolve into ground of the same value.
+    float far = smoothstep(9.0, 30.0, dist);
+
+    vec3 shade = vShade, mid = vMid, lit = vLit;
+    float rim = vSurf.x, trans = vSurf.w;
     if (!gl_FrontFacing) {
       N = -N;
-      if (vMat > 0.5 && vMat < 1.5) base = uLining;
+      shade = uLineShade; mid = uLineMid; lit = uLineLit;
+      rim = 0.60; trans = max(trans, 0.55);
     }
+    // The rim draws an edge, and at range the whole figure is edge — so the
+    // term that exists to separate a silhouette from its background stops
+    // filling it in. This one line is most of the difference between a shape
+    // and a smudge at 17 m.
+    rim *= 1.0 - far * 0.88;
 
-    // §9.2's wrap. A grazing sun is the only sun this project spawns you under
-    // (§9.7 forces 8-18 degrees), and plain Lambert puts the whole figure in
-    // the shade band at that elevation.
-    float ndl = clamp(dot(N, normalize(uSunDir)) * 0.62 + 0.46, 0.0, 1.0);
-    // and the three-stop ramp, with soft-but-visible edges
-    float lo = smoothstep(0.10, 0.24, ndl);
-    float hi = smoothstep(0.50, 0.66, ndl);
-    vec3 shade = base * 0.62 + vec3(0.036, 0.043, 0.062);   // never toward black
-    vec3 mid = base;
-    vec3 lit = base * 1.22 + vec3(0.030, 0.026, 0.014);
-    vec3 col = mix(shade, mix(mid, lit, hi), lo);
+    Surf sf;
+    sf.N = N; sf.V = V; sf.L = uSunDir;
+    sf.shade = shade; sf.mid = mid; sf.lit = lit;
+    // §9.2's band edges, and §11's warning about them: a PBR reflex widens this
+    // until the bands disappear, and the bands are the art direction. 0.085 is
+    // soft enough that the edge is drawn rather than stepped, and hard enough
+    // that you can see where it is.
+    sf.soft = 0.085;
+    // the painterly wobble, locked to the REST pose. Keyed to the live position
+    // it would crawl across the coat as the body moved, which is the one thing a
+    // hand-painted band edge never does.
+    sf.jit = (sin(vRest.y * 8.3 + vRest.x * 5.7) + sin(vRest.z * 6.1 - vRest.y * 3.3)) * 0.011;
+    sf.shadow = ${shadowGLSL ? 'sunShadow(vW, dot(N, uSunDir))' : '1.0'};
+    sf.trans = trans; sf.transCol = lit * 1.15;
+    sf.rim = rim; sf.ao = vSurf.y; sf.ambient = 1.0;
+    vec3 col = paint(sf);
 
-    // the rim, which §9.2 calls the connective tissue of the whole image — and
-    // on a figure standing against a valley it is what separates the two
-    float rim = pow(1.0 - max(dot(N, V), 0.0), 4.2)
-      * smoothstep(0.05, 0.85, dot(V, -normalize(uSunDir)));
-    col += vec3(1.0, 0.86, 0.62) * rim * 0.42;
+    // wear: dust climbs the coat from the hem, rain darkens what it lands on.
+    // Both keyed to the rest pose, so a coat that has been walked in stays dirty
+    // in the same places rather than shimmering as the body moves.
+    float dust = smoothstep(0.62, 0.16, vRest.y) * 0.16;
+    col = mix(col, col * vec3(1.14, 1.05, 0.86), dust);
+    col *= 1.0 - uWet * 0.18 * smoothstep(1.9, 0.4, vRest.y);
+
+    // and the collapse toward shape. Note it is a mix toward the material's own
+    // *shade* stop rather than toward black: §2.8 gives vacuum true black and
+    // an atmosphere none, and a distant figure is emphatically inside an
+    // atmosphere. It goes dark and violet, not dark and empty.
+    col = mix(col, col * 0.38 + shade * 0.85, far);
+
+    // the accent. It is a light, so it is added rather than mixed, and it is
+    // gated on uGlow — bright noon does not need a lamp and dusk does. It is the
+    // one thing that does *not* fade with distance: at 40 px the visor is the
+    // pixel that says which way the figure is facing.
+    col += uVisor * vSurf.z * uGlow;
 
     gl_FragColor = vec4(col, 1.0);
   }
 `;
+
+// ---------------------------------------------------------------------------
+// the pose
+//
+// Every angle below is a function of ONE clock — `walker.stepPhase` — plus the
+// body's own velocity state. §6 M4 asks for that in those words, and the reason
+// is that a second clock is a thing that can drift: the head bob, the footfall
+// audio, the grass the walker parts and now every limb all read the same number,
+// so a foot cannot land at a different moment from the sound of it landing.
+
+/** a bump on the unit circle; the gait curves are all sums of these */
+const bump = (u, c, w) => {
+  let d = u - c;
+  d -= Math.round(d);
+  return Math.exp(-(d * d) / (w * w));
+};
+
+/**
+ * Knee flexion through one stride, as two bumps.
+ *
+ * A knee does not swing sinusoidally, and a sine is instantly readable as wrong:
+ * real flexion has a small absorption bump just after heel strike and a large
+ * one in mid-swing, with the leg nearly straight at contact. Two Gaussians
+ * reproduce that to well inside what a 40-px figure can resolve — and unlike a
+ * clip they are continuous in speed, so a walk becomes a run by moving two
+ * amplitudes rather than by crossfading two animations that were never measured
+ * against each other.
+ */
+const kneeCurve = (u, run) => bump(u, 0.14, 0.13) * (0.30 + 0.22 * run)
+  + bump(u, 0.74, 0.15) * (1.02 + 0.55 * run);
+
+export class Figure {
+  /**
+   * @param seed   the world seed. The kit is fixed; the scarf's trailing length
+   *               is the traveler's own (§2.3).
+   * @param sunDir the *same* uniform object the sky and the terrain hold, so the
+   *               figure cannot be lit by yesterday's sun.
+   * @param light  §9.2's four light colours for this world's star.
+   */
+  constructor({ seed = 1, sunDir, light, shadowGLSL = null, shadowUniforms = null }) {
+    this.D = DETAIL[clamp(TIER, 0, 3)];
+    const built = buildGeometry(seed, this.D);
+    const M = built.M;
+    this.scarfLen = built.scarfLen;
+    this.nv = M.count;
+    this.tris = M.idx.length / 3;
+
+    this.rest = new Float32Array(M.rest);
+    this.restN = new Float32Array(M.nrm);
+    this.bA = new Uint8Array(M.bA);
+    this.bB = new Uint8Array(M.bB);
+    this.bw = new Float32Array(M.bw);
+
+    const g = new THREE.BufferGeometry();
+    this.posAttr = new THREE.BufferAttribute(new Float32Array(M.pos), 3);
+    this.nrmAttr = new THREE.BufferAttribute(new Float32Array(M.nrm), 3);
+    this.posAttr.setUsage(THREE.DynamicDrawUsage);
+    this.nrmAttr.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('position', this.posAttr);
+    g.setAttribute('normal', this.nrmAttr);
+    g.setAttribute('aShade', new THREE.BufferAttribute(new Float32Array(M.shade), 3));
+    g.setAttribute('aMid', new THREE.BufferAttribute(new Float32Array(M.mid), 3));
+    g.setAttribute('aLit', new THREE.BufferAttribute(new Float32Array(M.lit), 3));
+    g.setAttribute('aSurf', new THREE.BufferAttribute(new Float32Array(M.surf), 4));
+    g.setAttribute('aRest', new THREE.BufferAttribute(new Float32Array(M.rest), 3));
+    g.setIndex(M.idx);
+    // The bounding sphere is set by hand and never recomputed. Every vertex
+    // moves every frame, and `computeBoundingSphere()` on a moving mesh is both
+    // a per-frame cost and a source of culling pop; a 1.75 m sphere around the
+    // navel contains every pose the body can reach, coat at full billow and
+    // scarf at full stream included, so this is simply correct.
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.95, 0), 1.75);
+    this.geometry = g;
+
+    const v3 = (c) => ({ value: new THREE.Vector3(c[0], c[1], c[2]) });
+    this.lightU = {
+      uPaintSun: v3(light.sun), uPaintAmbSky: v3(light.ambSky),
+      uPaintAmbGnd: v3(light.ambGnd), uPaintShadowTint: v3(light.shadowTint),
+    };
+    this.uGlow = { value: 0.4 };
+    this.uWet = { value: 0 };
+    this.material = new THREE.ShaderMaterial({
+      uniforms: {
+        ...this.lightU,
+        ...(shadowUniforms || {}),
+        uSunDir: sunDir,
+        uVisor: { value: new THREE.Vector3(...KIT.visor.lit).multiplyScalar(2.4) },
+        uGlow: this.uGlow,
+        uWet: this.uWet,
+        uLineShade: v3(KIT.lining.shade),
+        uLineMid: v3(KIT.lining.mid),
+        uLineLit: v3(KIT.lining.lit),
+      },
+      vertexShader: FIG_VERT,
+      fragmentShader: figFragment(shadowGLSL || ''),
+      // Cloth has two sides and the back of it is the lining. Closed solids
+      // never show a back face, so this costs the figure nothing it does not
+      // spend on purpose.
+      side: THREE.DoubleSide,
+    });
+
+    this.mesh = new THREE.Mesh(this.geometry, this.material);
+    this.mesh.frustumCulled = true;
+
+    this.bones = BONES.map(([name, parent, x, y, z]) => {
+      const p = parent >= 0 ? BONES[parent] : null;
+      return {
+        name,
+        parent,
+        off: new THREE.Vector3(x - (p ? p[2] : 0), y - (p ? p[3] : 0), z - (p ? p[4] : 0)),
+        rot: new THREE.Euler(0, 0, 0, 'YXZ'),
+        world: new THREE.Matrix4(),
+        restInv: new THREE.Matrix4().makeTranslation(x, y, z).invert(),
+      };
+    });
+    this.skin = new Float32Array(BONES.length * 12);
+    this._m = new THREE.Matrix4();
+    this._q = new THREE.Quaternion();
+    this._v = new THREE.Vector3();
+    this._one = new THREE.Vector3(1, 1, 1);
+
+    this.clothBlocks = M.cloth;
+    this.coat = M.cloth.find((c) => c.kind === 'coat');
+    this.scarfBlk = M.cloth.find((c) => c.kind === 'scarf');
+
+    // state that has to persist between frames: the hem lags the body, the
+    // scarf's direction is inertial, and a landing decays
+    this._hemX = 0; this._hemZ = 0;
+    this._scarf = new THREE.Vector3(0, -0.4, 1).normalize();
+    this._land = 0;
+    this._air = 0;
+    this._turn = 0;
+    this._face = 0;
+    this._rootY = 0;
+    this._rootX = 0;
+    this._landed = null;
+    this._vy = 0;
+    this._t = 0;
+  }
+
+  /** the world position of a named joint, in figure space — the lantern hangs here */
+  joint(name, out = new THREE.Vector3()) {
+    return out.setFromMatrixPosition(this.bones[B[name]].world);
+  }
+
+  dispose() {
+    this.geometry.dispose();
+    this.material.dispose();
+  }
+
+  /** §9.2's four light colours, as the sun moves */
+  setLight(L) {
+    this.lightU.uPaintSun.value.set(L.sun[0], L.sun[1], L.sun[2]);
+    this.lightU.uPaintAmbSky.value.set(L.ambSky[0], L.ambSky[1], L.ambSky[2]);
+    this.lightU.uPaintAmbGnd.value.set(L.ambGnd[0], L.ambGnd[1], L.ambGnd[2]);
+    this.lightU.uPaintShadowTint.value.set(L.shadowTint[0], L.shadowTint[1], L.shadowTint[2]);
+  }
+
+  /**
+   * One frame. `st` is the whole of what the figure knows:
+   *
+   *   walker  — the §M4 controller, or null (then the gait is synthesised)
+   *   speed   — horizontal m/s
+   *   vel     — world velocity {x, y, z}
+   *   face    — the yaw the mesh's group is rotated by
+   *   wind    — `s.sampleWind()` at hem height
+   *   windUp  — the same at shoulder height. The two together *are* the boundary
+   *             layer, which is the only reason there are two of them.
+   *   mode    — 'walk' | 'fly' | 'ride'
+   *   sunY    — sin(sun elevation), for the visor
+   *   wet     — the weather's wetness, 0..1
+   */
+  update(dt, st) {
+    this._t += dt;
+    this._pose(dt, st);
+    this._solve();
+    this._skin();
+    this._cloth(dt, st);
+    this.posAttr.needsUpdate = true;
+    this.nrmAttr.needsUpdate = true;
+
+    // The visor is a light, and a light is only visible against a dark enough
+    // ground. Full at civil twilight, a fifth of that at noon — the same curve
+    // the lantern uses, so the two accents rise together.
+    const night = 1 - clamp((st.sunY + 0.10) * 3.2, 0, 1);
+    this.uGlow.value = 0.22 + 0.95 * night;
+    this.uWet.value = st.wet ?? 0;
+  }
+
+  // -------------------------------------------------------------- pose ----
+
+  _pose(dt, st) {
+    const bones = this.bones;
+    for (const b of bones) b.rot.set(0, 0, 0);
+    this._rootY = 0;
+    this._rootX = 0;
+
+    const w = st.walker;
+    const spd = st.speed;
+    const grounded = w ? w.grounded : true;
+
+    // --- the impulses the pose is built on top of --------------------------
+    //
+    // Landing reads the controller's own `landed` counter rather than watching
+    // `grounded` go true, so the figure absorbs exactly the landings the physics
+    // recorded — including the ones a step-up deliberately does not count.
+    if (w) {
+      if (this._landed === null) this._landed = w.landed;
+      if (w.landed !== this._landed) {
+        this._land = clamp(Math.abs(this._vy) / 6.5, 0.25, 1.4);
+        this._landed = w.landed;
+      }
+      this._vy = w.vel.y;
+    }
+    this._land *= Math.exp(-dt * 5.2);
+    const airborne = st.mode === 'walk' && !grounded;
+    this._air += ((airborne ? 1 : 0) - this._air) * clamp(dt * 9, 0, 1);
+
+    // turning, banked into — anything carrying momentum through a curve leans
+    let dF = st.face - this._face;
+    dF = Math.atan2(Math.sin(dF), Math.cos(dF));
+    this._face = st.face;
+    this._turn += (clamp(dF / Math.max(dt, 1e-3), -3, 3) - this._turn) * clamp(dt * 6, 0, 1);
+
+    if (st.mode === 'ride') return this._poseRide();
+    if (st.mode === 'fly') return this._poseFly(st, spd);
+
+    // --- the walk ----------------------------------------------------------
+    const phase = w ? w.stepPhase : this._t * (0.58 + 0.34 * spd);
+    const u = phase - Math.floor(phase);
+    const gp = phase * Math.PI * 2;
+    // 0 standing, 1 walking, and past that into the run blend. GAIT.walk is
+    // 4.8 m/s and sprint ×3, so `run` reaches 1 at about 12 m/s — the amplitudes
+    // move continuously between them rather than a state machine switching.
+    const gait = clamp(spd / 3.2, 0, 1);
+    const run = clamp((spd - 4.2) / 8.0, 0, 1);
+    const air = this._air;
+    const ground = 1 - air;
+    // rising → 0, falling → 1. GAIT holds launch *speed* constant across worlds
+    // now, so on a sixth-gravity moon the apex is 8.8 m and this pose is on
+    // screen for ten seconds at a time. It has to be worth looking at.
+    const vy = clamp((st.vel ? st.vel.y : 0) / 6.0, -1.2, 1.2);
+    const tuck = smooth(0.6, -0.4, vy);
+
+    for (const s of [1, -1]) {
+      const hip = bones[s > 0 ? B.hipR : B.hipL];
+      const knee = bones[s > 0 ? B.kneeR : B.kneeL];
+      const foot = bones[s > 0 ? B.footR : B.footL];
+      const uu = s > 0 ? u : (u + 0.5) % 1;
+
+      // the thigh: forward at contact, extended at toe-off. A forward bias
+      // arrives with the run, because a running body's hip is in front of its
+      // foot for most of the cycle and a walking body's is not.
+      const swing = (0.40 + 0.42 * run) * gait;
+      hip.rot.x = Math.cos(uu * Math.PI * 2) * swing + 0.10 * gait * run;
+      hip.rot.z = s * 0.05 * gait * Math.sin(gp);
+      knee.rot.x = -kneeCurve(uu, run) * gait;
+      foot.rot.x = (bump(uu, 0.52, 0.10) * -0.55 + bump(uu, 0.80, 0.16) * 0.34) * gait;
+
+      // airborne: the cycle stops and the legs take a jump shape — trailing and
+      // tucked on the way up, reaching on the way down
+      const jHip = s > 0 ? (0.62 - 0.95 * tuck) : (-0.30 + 0.42 * tuck);
+      const jKnee = s > 0 ? -(1.15 - 0.75 * tuck) : -(0.55 + 0.30 * tuck);
+      hip.rot.x = hip.rot.x * ground + jHip * air;
+      knee.rot.x = knee.rot.x * ground + jKnee * air;
+      foot.rot.x = foot.rot.x * ground + (-0.30 + 0.55 * tuck) * air;
+      hip.rot.z *= ground;
+
+      // the landing absorb, on top of whatever the cycle was doing
+      knee.rot.x -= this._land * 0.85;
+      hip.rot.x += this._land * 0.42;
+      foot.rot.x += this._land * 0.30;
+
+      // idle: weight on one leg, the other soft. A figure standing with both
+      // knees locked and both feet square is a mannequin; this is the whole
+      // difference between that and a person waiting, and it costs three lines.
+      const idle = (1 - gait) * ground;
+      hip.rot.x += (s > 0 ? 0.05 : -0.10) * idle;
+      knee.rot.x -= (s > 0 ? 0.06 : 0.20) * idle;
+      hip.rot.z += s * 0.03 * idle;
+    }
+
+    // the pelvis: transverse rotation toward the swinging leg, a rise twice per
+    // stride, and a lateral shift onto the stance foot
+    const root = bones[B.root];
+    root.rot.y = 0.10 * gait * Math.cos(gp);
+    root.rot.z = -0.055 * gait * Math.sin(gp) - clamp(this._turn * 0.09, -0.22, 0.22);
+    root.rot.x = clamp(spd * 0.021, 0, 0.30) + this._land * 0.40 + air * 0.12
+      + (w ? w.lean : 0);
+    this._rootY = (Math.cos(gp * 2) * 0.018 - 0.018) * gait - this._land * 0.13 - air * 0.02;
+    this._rootX = 0.030 * gait * Math.sin(gp);
+
+    // spine and chest counter-rotate the pelvis. This is the single cue that
+    // separates a walk from a shuffle: shoulders and hips out of phase.
+    bones[B.spine].rot.y = -0.11 * gait * Math.cos(gp);
+    bones[B.spine].rot.z = clamp(this._turn * 0.05, -0.12, 0.12);
+    bones[B.chest].rot.y = -0.12 * gait * Math.cos(gp);
+    bones[B.chest].rot.x = -clamp(spd * 0.008, 0, 0.10)
+      + Math.sin((w ? w.breath : this._t) * 1.1) * 0.012;
+
+    // the head holds the horizon. A head that rides the shoulders exactly is the
+    // reason cheap walk cycles read as bobbing: real gaze is stabilised, so the
+    // neck spends the whole stride cancelling the chest.
+    bones[B.neck].rot.y = 0.16 * gait * Math.cos(gp);
+    bones[B.head].rot.x = -root.rot.x * 0.55 - this._land * 0.25;
+    bones[B.head].rot.y = 0.06 * gait * Math.cos(gp)
+      + Math.sin(this._t * 0.21) * 0.10 * (1 - gait);
+
+    // the arms counter the legs, and the elbow leads on the forward swing
+    for (const s of [1, -1]) {
+      const sh = bones[s > 0 ? B.armR : B.armL];
+      const el = bones[s > 0 ? B.elbowR : B.elbowL];
+      const uu = s > 0 ? u : (u + 0.5) % 1;
+      const armSwing = (0.32 + 0.46 * run) * gait;
+      sh.rot.x = -Math.cos(uu * Math.PI * 2) * armSwing;
+      sh.rot.z = s * (0.13 + 0.07 * run + 0.05 * gait);
+      el.rot.x = 0.22 + (0.36 + 0.55 * run) * gait * Math.max(0, -Math.cos(uu * Math.PI * 2))
+        + this._land * 0.5;
+      // airborne the arms come up and out — the balance reflex, and it reads as
+      // weightlessness from any distance
+      sh.rot.x = sh.rot.x * ground + (-0.75 + 0.35 * tuck) * air;
+      sh.rot.z = sh.rot.z * ground + s * 0.60 * air;
+      el.rot.x = el.rot.x * ground + 0.55 * air;
+      const idle = (1 - gait) * ground;
+      sh.rot.x += (s < 0 ? 0.06 : -0.02) * idle;
+      el.rot.x += (s < 0 ? 0.55 : 0.16) * idle;
+      sh.rot.z += s * 0.02 * Math.sin((w ? w.breath : this._t) * 1.1) * idle;
+    }
+  }
+
+  /**
+   * Flight — `GAIT.flyThrust` against `flyDrag`, so the body has mass and has to
+   * be *aimed*. The pose says exactly that: the torso lies along the track, the
+   * legs trail together, the arms sweep back, and the coat and the scarf stream
+   * off the whole length of it. A walk cycle held in mid-air says the opposite,
+   * which is what makes free-flight in most games read as a camera on rails.
+   */
+  _poseFly(st, spd) {
+    const bones = this.bones;
+    const v = st.vel || { x: 0, y: 0, z: 0 };
+    const horiz = Math.hypot(v.x, v.z);
+    // how far the body has tipped from standing to lying along its own track
+    const commit = clamp(spd / 26, 0, 1);
+    const climb = clamp(Math.atan2(v.y, Math.max(horiz, 0.1)), -1.2, 1.2);
+
+    bones[B.root].rot.x = 1.30 * commit - climb * 0.55 * commit;
+    bones[B.root].rot.z = -clamp(this._turn * 0.34, -0.5, 0.5);
+    bones[B.spine].rot.x = 0.10 * commit;
+    bones[B.chest].rot.x = 0.08 * commit;
+    // the head stays level with the horizon however far the body has tipped: you
+    // look where you are going, not where your chest happens to point
+    bones[B.head].rot.x = -1.07 * commit + climb * 0.30;
+
+    for (const s of [1, -1]) {
+      bones[s > 0 ? B.hipR : B.hipL].rot.x = -0.30 * commit + (s > 0 ? 0.06 : -0.04);
+      bones[s > 0 ? B.hipR : B.hipL].rot.z = -s * 0.05 * commit;
+      bones[s > 0 ? B.kneeR : B.kneeL].rot.x = -(0.22 + 0.30 * commit)
+        + (s > 0 ? -0.10 : 0.06) * commit;
+      bones[s > 0 ? B.footR : B.footL].rot.x = -0.55 * commit;
+      // arms back and in at speed, out and forward at a hover — a body with no
+      // airspeed has nothing to streamline against
+      bones[s > 0 ? B.armR : B.armL].rot.x = 0.55 * commit - 0.25 * (1 - commit);
+      bones[s > 0 ? B.armR : B.armL].rot.z = s * (0.10 + 0.16 * (1 - commit));
+      bones[s > 0 ? B.elbowR : B.elbowL].rot.x = 0.18 + 0.40 * (1 - commit);
+    }
+  }
+
+  /** seated on the skiff: hips and knees folded, hands forward on the helm */
+  _poseRide() {
+    const bones = this.bones;
+    bones[B.root].rot.x = 0.22;
+    bones[B.chest].rot.x = 0.10;
+    bones[B.head].rot.x = -0.26;
+    for (const s of [1, -1]) {
+      bones[s > 0 ? B.hipR : B.hipL].rot.x = 1.28;
+      bones[s > 0 ? B.hipR : B.hipL].rot.z = -s * 0.10;
+      bones[s > 0 ? B.kneeR : B.kneeL].rot.x = -1.42;
+      bones[s > 0 ? B.footR : B.footL].rot.x = 0.28;
+      bones[s > 0 ? B.armR : B.armL].rot.x = 0.62;
+      bones[s > 0 ? B.armR : B.armL].rot.z = s * 0.18;
+      bones[s > 0 ? B.elbowR : B.elbowL].rot.x = 0.72;
+    }
+  }
+
+  // ------------------------------------------------------------- solve ----
+
+  _solve() {
+    const bones = this.bones;
+    for (let i = 0; i < bones.length; i++) {
+      const b = bones[i];
+      this._q.setFromEuler(b.rot);
+      // the root carries the gait's own translation: the rise and fall of the
+      // centre of mass, and the sway onto the stance foot
+      this._v.set(b.off.x + (i === 0 ? this._rootX : 0),
+        b.off.y + (i === 0 ? this._rootY : 0), b.off.z);
+      this._m.compose(this._v, this._q, this._one);
+      if (b.parent >= 0) b.world.multiplyMatrices(bones[b.parent].world, this._m);
+      else b.world.copy(this._m);
+    }
+    // the skin matrix — current world × inverse rest world, flattened to the 3×4
+    // affine the inner loop actually uses
+    const S = this.skin;
+    for (let i = 0; i < bones.length; i++) {
+      this._m.multiplyMatrices(bones[i].world, bones[i].restInv);
+      const e = this._m.elements;    // column-major
+      const o = i * 12;
+      S[o] = e[0]; S[o + 1] = e[4]; S[o + 2] = e[8]; S[o + 3] = e[12];
+      S[o + 4] = e[1]; S[o + 5] = e[5]; S[o + 6] = e[9]; S[o + 7] = e[13];
+      S[o + 8] = e[2]; S[o + 9] = e[6]; S[o + 10] = e[10]; S[o + 11] = e[14];
+    }
+  }
+
+  /** two-bone linear blend, positions and normals, into the live buffers */
+  _skin() {
+    const POS = this.posAttr.array, NRM = this.nrmAttr.array;
+    const R = this.rest, RN = this.restN, S = this.skin;
+    for (let i = 0; i < this.nv; i++) {
+      const k = i * 3;
+      const x = R[k], y = R[k + 1], z = R[k + 2];
+      const nx = RN[k], ny = RN[k + 1], nz = RN[k + 2];
+      const a = this.bA[i] * 12, w = this.bw[i];
+      let px = S[a] * x + S[a + 1] * y + S[a + 2] * z + S[a + 3];
+      let py = S[a + 4] * x + S[a + 5] * y + S[a + 6] * z + S[a + 7];
+      let pz = S[a + 8] * x + S[a + 9] * y + S[a + 10] * z + S[a + 11];
+      let mx = S[a] * nx + S[a + 1] * ny + S[a + 2] * nz;
+      let my = S[a + 4] * nx + S[a + 5] * ny + S[a + 6] * nz;
+      let mz = S[a + 8] * nx + S[a + 9] * ny + S[a + 10] * nz;
+      if (w > 0.0005) {
+        const b = this.bB[i] * 12;
+        px += (S[b] * x + S[b + 1] * y + S[b + 2] * z + S[b + 3] - px) * w;
+        py += (S[b + 4] * x + S[b + 5] * y + S[b + 6] * z + S[b + 7] - py) * w;
+        pz += (S[b + 8] * x + S[b + 9] * y + S[b + 10] * z + S[b + 11] - pz) * w;
+        mx += (S[b] * nx + S[b + 1] * ny + S[b + 2] * nz - mx) * w;
+        my += (S[b + 4] * nx + S[b + 5] * ny + S[b + 6] * nz - my) * w;
+        mz += (S[b + 8] * nx + S[b + 9] * ny + S[b + 10] * nz - mz) * w;
+      }
+      POS[k] = px; POS[k + 1] = py; POS[k + 2] = pz;
+      const l = Math.hypot(mx, my, mz) || 1;
+      NRM[k] = mx / l; NRM[k + 1] = my / l; NRM[k + 2] = mz / l;
+    }
+  }
+
+  // ------------------------------------------------------------- cloth ----
+
+  /**
+   * The coat and the scarf, from the one wind field.
+   *
+   * §6 M3's thesis is that everything that moves samples one field — "grass,
+   * foliage, dust, spores, **cloth**, water ripple, cloud advection, smoke". The
+   * cloth is this file's entry on that list, and the field it reads is
+   * `s.sampleWind()`, which is `wind.js`'s `windAt()`: the CPU mirror the GPU
+   * pass is required to match, and the same reading the wake, the god rays, the
+   * rain and the festival lanterns already take.
+   *
+   * On why this is a CPU sample where the grass takes a GPU one: the wind target
+   * is 440 m across 256 texels, so one texel is 1.7 m. A coat is 0.6 m wide.
+   * Every vertex of it lands in the same texel, so a per-vertex fetch in a
+   * vertex shader would return the identical value at two hundred times the
+   * cost — the *spatial* detail the grass needs across a chunk does not exist
+   * across a garment. What is resolved at this scale is the *vertical* gradient,
+   * which is why the caller passes two samples, hem and shoulder. That pair is
+   * the boundary layer, and it is what makes the hem trail while the scarf whips.
+   */
+  _cloth(dt, st) {
+    // The air the cloth actually feels: the wind, minus the body's own motion.
+    // Running into still air is a headwind, and the only thing that tells a coat
+    // the difference between that and standing in a gale is which way the gust
+    // front is travelling — which this subtraction preserves exactly.
+    const wLow = st.wind || { x: 0, z: 0 };
+    const wHigh = st.windUp || wLow;
+    const v = st.vel || { x: 0, y: 0, z: 0 };
+    const cf = Math.cos(-st.face), sf = Math.sin(-st.face);
+    const lx = (wLow.x - v.x) * cf + (wLow.z - v.z) * sf;
+    const lz = -(wLow.x - v.x) * sf + (wLow.z - v.z) * cf;
+    const hx = (wHigh.x - v.x) * cf + (wHigh.z - v.z) * sf;
+    const hz = -(wHigh.x - v.x) * sf + (wHigh.z - v.z) * cf;
+    // a fall is a vertical wind, and it is what makes a long jump on a
+    // low-gravity world look like a long jump rather than a hop
+    const vy = -(v.y || 0);
+
+    this._coatCloth(dt, st, lx, lz, vy);
+    this._scarfCloth(dt, st, hx, hz, vy);
+    for (const blk of this.clothBlocks) this._clothNormals(blk);
+  }
+
+  _coatCloth(dt, st, wx, wz, vy) {
+    const c = this.coat;
+    if (!c) return;
+    const POS = this.posAttr.array;
+    const w = st.walker;
+    const S = this.skin, ro = B.root * 12;
+    const gait = clamp(st.speed / 3.2, 0, 1);
+    const phase = w ? w.stepPhase : this._t;
+    const gp = phase * Math.PI * 2;
+
+    // The hem lags the body: a coat does not change direction when you do. One
+    // exponential, and it is most of the reason the coat reads as heavy rather
+    // than as a decal that happens to be attached to a person.
+    const k = clamp(dt * 3.4, 0, 1);
+    this._hemX += (wx - this._hemX) * k;
+    this._hemZ += (wz - this._hemZ) * k;
+    const air = Math.hypot(this._hemX, this._hemZ);
+    const pushX = clamp(this._hemX * 0.030, -0.34, 0.34);
+    const pushZ = clamp(this._hemZ * 0.030, -0.34, 0.34);
+    // billow: fast air lifts a hem as well as pushing it
+    const lift = clamp(air * 0.016 + Math.max(vy, 0) * 0.020, 0, 0.22);
+    const flut = 0.006 + clamp(air * 0.0035, 0, 0.026) + (st.wind?.front ?? 0) * 0.010;
+
+    for (let i = 0; i < c.ni; i++) {
+      const vv = i / (c.ni - 1);
+      const hinge = vv * vv;                    // the coat swings from the waist
+      for (let j = 0; j < c.nj; j++) {
+        const rest = coatRest(vv, j / (c.nj - 1));
+        const a = rest.a, rr = rest.r, y0 = rest.y;
+        const ca = Math.cos(a), sa = Math.sin(a);
+        // the pelvis carries the top of the coat: the waist follows the body's
+        // lean and turn, and the wind offset below is added on top in figure
+        // space, where it belongs — the air does not rotate with the hips
+        const rx = ca * rr, rz = sa * rr * 1.06;
+        let x = S[ro] * rx + S[ro + 1] * y0 + S[ro + 2] * rz + S[ro + 3];
+        let y = S[ro + 4] * rx + S[ro + 5] * y0 + S[ro + 6] * rz + S[ro + 7];
+        let z = S[ro + 8] * rx + S[ro + 9] * y0 + S[ro + 10] * rz + S[ro + 11];
+
+        // a panel only feels the air that pushes on its own face; a panel
+        // edge-on to the flow is not pushed, it flutters
+        const press = clamp(-(ca * this._hemX + sa * this._hemZ) * 0.010, -0.6, 1.0);
+        const rip = Math.sin(a * 3.4 - this._t * 5.6 + vv * 3.1) * flut * hinge * 0.34;
+        const radial = rip + press * 0.055 * hinge;
+        // the gait: the front panels part around the leg on that side, and the
+        // phase they part on is the one clock, so the coat opens on the stride
+        const side = ca > 0 ? 0 : 0.5;
+        const lu = (phase + side) % 1;
+        const kick = Math.max(0, Math.cos(lu * Math.PI * 2)) * gait * 0.075 * hinge
+          * Math.max(0, -sa);
+
+        x += ca * radial + pushX * hinge;
+        y += lift * hinge + Math.sin(gp * 2) * 0.006 * gait * hinge;
+        z += sa * radial + pushZ * hinge - kick;
+        const o = (c.base + i * c.nj + j) * 3;
+        POS[o] = x; POS[o + 1] = y; POS[o + 2] = z;
+      }
+    }
+  }
+
+  _scarfCloth(dt, st, wx, wz, vy) {
+    const c = this.scarfBlk;
+    if (!c) return;
+    const POS = this.posAttr.array;
+    // tied over the pauldron, at the collar's lip — and carried by the chest
+    // bone, so the anchor moves with the shoulder while the rest obeys the air
+    const S = this.skin, co = B.chest * 12;
+    const ax = -0.150, ay = 1.455, az = 0.020;
+    let px = S[co] * ax + S[co + 1] * ay + S[co + 2] * az + S[co + 3];
+    let py = S[co + 4] * ax + S[co + 5] * ay + S[co + 6] * az + S[co + 7];
+    let pz = S[co + 8] * ax + S[co + 9] * ay + S[co + 10] * az + S[co + 11];
+
+    // The direction the air is going, smoothed. A scarf is nearly massless so it
+    // is almost pure air — but not instantly: the lag is what makes it crack
+    // rather than snap, and it is the hem's exponential at a faster rate.
+    const airSp = Math.hypot(wx, wz, vy);
+    const drape = 1 / (1 + airSp * 0.55);          // 1 when still, toward 0 in a gale
+    const tl = Math.max(airSp, 1e-4);
+    const k = clamp(dt * 5.0, 0, 1);
+    this._scarf.x += (wx / tl - this._scarf.x) * k;
+    this._scarf.y += (vy / tl - this._scarf.y) * k;
+    this._scarf.z += (wz / tl - this._scarf.z) * k;
+    this._scarf.normalize();
+
+    // ---- the chain ---------------------------------------------------------
+    //
+    // The first pass integrated a nearly-constant direction and produced a rigid
+    // rod — which is what every capture showed, a 1.3 m wire sticking out of the
+    // shoulder. Two things were missing and both are properties of a real
+    // ribbon:
+    //
+    //   · **Compliance grows along the length.** The end at the knot remembers
+    //     the shoulder; the free end remembers only the air. `follow` therefore
+    //     rises with t, so the scarf *bends* out of its launch direction over
+    //     its own length rather than translating along one.
+    //
+    //   · **Gravity is a per-segment acceleration, not a nudge.** It accumulates
+    //     down the chain and it is strongest where the air is weakest, so the
+    //     same code hangs the scarf at a standstill and streams it in a gust
+    //     with nothing switching between the two.
+    //
+    // It leaves the shoulder pointing out and back regardless, because a scarf
+    // is thrown over a shoulder and that is where the loose end starts.
+    const seg = this.scarfLen / (c.ni - 1);
+    let dx = -0.55, dy = -0.30, dz = 0.78;
+    const dl0 = Math.hypot(dx, dy, dz);
+    dx /= dl0; dy /= dl0; dz /= dl0;
+    const grav = 0.42 * drape + 0.06;
+    for (let i = 0; i < c.ni; i++) {
+      const t = i / (c.ni - 1);
+      if (i > 0) {
+        const follow = (0.10 + 0.42 * t) * (1 - drape * 0.55);
+        dx += (this._scarf.x - dx) * follow;
+        dy += (this._scarf.y - dy) * follow;
+        dz += (this._scarf.z - dz) * follow;
+        dy -= grav * (0.30 + 1.15 * t) * 0.42;
+        // the wave travels *along* the scarf, across the flow — the classic
+        // ribbon read, and the reason it never looks like a rod with a texture
+        const wob = Math.sin(t * 5.2 - this._t * 6.4) * (0.16 + 0.46 * (1 - drape)) * t;
+        dx += -this._scarf.z * wob * 0.6;
+        dz += this._scarf.x * wob * 0.6;
+        const dl = Math.hypot(dx, dy, dz) || 1;
+        dx /= dl; dy /= dl; dz /= dl;
+        px += dx * seg; py += dy * seg; pz += dz * seg;
+      }
+      // the ribbon's cross section, perpendicular to the run, twisting as it
+      // goes — a flat untwisted ribbon reads as tape
+      let sx = -dz, sz = dx;
+      const sl = Math.hypot(sx, sz) || 1;
+      sx /= sl; sz /= sl;
+      const tw = Math.sin(t * 4.2 - this._t * 3.4) * 0.62 * (1 - drape * 0.5);
+      const ct = Math.cos(tw);
+      const ux = sx * ct, uy = Math.sin(tw) * 0.9, uz = sz * ct;
+      // wide enough to be cloth. The first pass was 0.11 m across and read as a
+      // wire at every distance the figure is ever seen from.
+      const half = 0.082 * (1 - t * 0.30);
+      for (let j = 0; j < c.nj; j++) {
+        const q = (j / (c.nj - 1) - 0.5) * 2;
+        const o = (c.base + i * c.nj + j) * 3;
+        POS[o] = px + ux * half * q;
+        POS[o + 1] = py + uy * half * q;
+        POS[o + 2] = pz + uz * half * q;
+      }
+    }
+  }
+
+  /**
+   * Normals for a cloth block, by differencing the grid it was generated from.
+   *
+   * The same convention the builder uses — cross(∂P/∂i, ∂P/∂j) — so a cloth
+   * vertex and a skinned vertex agree about which way is out. They have to: the
+   * hem meets the coat's own back face along a shared silhouette, and a
+   * disagreement there shows up as a seam that lights the wrong way.
+   */
+  _clothNormals(blk) {
+    const POS = this.posAttr.array, NRM = this.nrmAttr.array;
+    const { base, ni, nj, flip } = blk;
+    const at = (i, j) => (base + i * nj + j) * 3;
+    for (let i = 0; i < ni; i++) {
+      for (let j = 0; j < nj; j++) {
+        const i0 = at(Math.max(i - 1, 0), j), i1 = at(Math.min(i + 1, ni - 1), j);
+        const j0 = at(i, Math.max(j - 1, 0)), j1 = at(i, Math.min(j + 1, nj - 1));
+        const ux = POS[i1] - POS[i0], uy = POS[i1 + 1] - POS[i0 + 1], uz = POS[i1 + 2] - POS[i0 + 2];
+        const vx = POS[j1] - POS[j0], vy = POS[j1 + 1] - POS[j0 + 1], vz = POS[j1 + 2] - POS[j0 + 2];
+        const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        const l = Math.hypot(nx, ny, nz) || 1;
+        const o = at(i, j);
+        NRM[o] = flip * nx / l; NRM[o + 1] = flip * ny / l; NRM[o + 2] = flip * nz / l;
+      }
+    }
+  }
+}
