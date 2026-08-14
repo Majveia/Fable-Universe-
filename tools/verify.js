@@ -75,6 +75,10 @@ import {
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import { walkable, wonderDestination, wonderScore } from '../src/wonder.js';
 import {
+  DRY_FRACTION, MIN_PAYLOAD, PROPELLANT, craftFor, deltaVToOrbit, escapeVelocity,
+  massRatio, orbitalVelocity, stagePayload, stagesFor, surfaceGravity,
+} from '../src/craft.js';
+import {
   FLICKER_HZ, MAINS_HZ, MERCURY_LINES, isThin, lampColour, lampExposure, lampFlicker,
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
   roomShape, sharedBits, starAt, thinDepth, thinPoint,
@@ -6214,7 +6218,130 @@ function suiteWonder() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the conjured craft (src/craft.js)
+//
+// The claim is that the ship is not an object but an *answer*: Tsiolkovsky
+// solved for the world you are standing on, then drawn. A claim like that is
+// checkable in the one place it matters — against the vehicle humanity actually
+// built to leave the one world we have left.
+
+function suiteCraft() {
+  console.log('\ncraft — the rocket equation, solved for where you are standing');
+
+  const EARTH = { massE: 1, radiusE: 1, atmo: 1 };
+  const LUNA = { massE: 0.0123, radiusE: 0.2725, atmo: 0 };
+  const MARS = { massE: 0.107, radiusE: 0.532, atmo: 0.006 };
+  const VENUS = { massE: 0.815, radiusE: 0.949, atmo: 92 };
+
+  {
+    // The anchors. Get these wrong and everything downstream is fiction.
+    near('Earth surface gravity', surfaceGravity(EARTH), 9.82, 0.002);
+    near('Luna surface gravity', surfaceGravity(LUNA), 1.62, 0.02);
+    near('Earth orbital velocity', orbitalVelocity(EARTH), 7910, 0.005);
+    near('Earth escape velocity', escapeVelocity(EARTH), 11186, 0.005);
+    near('Earth Δv to orbit, as flown', deltaVToOrbit(EARTH).total, 9560, 0.02);
+  }
+
+  {
+    // The whole feature, tested against the only ascent anybody has flown:
+    // ask the model what it takes to leave Earth and see if it returns a
+    // Saturn V. Nothing tells it to.
+    const c = craftFor(EARTH);
+    ok('§3 · asked how to leave Earth, the model returns a Saturn V',
+      c.feasible && c.stages === 3 && Math.abs(c.height - 110) < 1,
+      `${c.stages} stages, ${c.height.toFixed(0)} m — the vehicle that did it was`
+      + ' three stages and 110.6 m, and the stage count is not anchored: it is'
+      + ' whatever maximises what arrives');
+    ok('...and it carries a real payload fraction, not a token one',
+      c.payload > 0.06 && c.payload < 0.14,
+      `${(c.payload * 100).toFixed(1)}% of lift-off mass to orbit — Saturn V put`
+      + ' 140 t of 2970, which is 4.7%, so the model is optimistic by about the'
+      + ' margin real hardware spends on not exploding');
+  }
+
+  {
+    // The ordering the whole mechanic rests on: leaving is harder on bigger
+    // worlds, and the craft says so before you have read a number.
+    const sizes = [LUNA, MARS, EARTH].map((w) => craftFor(w).height);
+    ok('a smaller world conjures a smaller ship, monotonically',
+      sizes[0] < sizes[1] && sizes[1] < sizes[2],
+      `${sizes.map((h) => h.toFixed(0) + ' m').join(' → ')} — the shape *is* the`
+      + ' difficulty, so you can read the world off the vehicle');
+    ok('...and an airless world may be as fat as it likes',
+      craftFor(LUNA).height / craftFor(LUNA).diameter === 10
+      && craftFor(EARTH).height / craftFor(EARTH).diameter < 7,
+      'a vehicle that never meets a headwind is 10:1; one that climbs through'
+      + ' an atmosphere is not, because slenderness is bought from drag');
+  }
+
+  {
+    // The best thing in the file: some worlds you land on and never leave.
+    const venus = craftFor(VENUS);
+    const superE = craftFor({ massE: 10, radiusE: 1.8, atmo: 2.5 });
+    const twoG = craftFor({ massE: 5, radiusE: 1.6, atmo: 1.4 });
+    ok('§3 · a thick-aired super-earth is one-way, and the arithmetic says why',
+      !venus.feasible && !superE.feasible && twoG.feasible,
+      `Venus needs ${(venus.dv.total / 1000).toFixed(1)} km/s and a 3 g super-earth`
+      + ` ${(superE.dv.total / 1000).toFixed(1)} — no chemical rocket reaches either.`
+      + ` A 2 g world at ${(twoG.dv.total / 1000).toFixed(1)} still goes, in`
+      + ` ${twoG.stages} stages, so the wall is a wall and not a ceiling on ambition`);
+    ok('...and the refusal names the number instead of apologising',
+      /km\/s/.test(venus.why) && /%/.test(venus.why) && venus.height === undefined,
+      `"${venus.why}"`);
+  }
+
+  {
+    // The equation that makes the wall real. Without the payload term the model
+    // says Earth is one stage and Venus is two — both true and both useless,
+    // because a rocket that reaches orbit carrying nothing has not gone anywhere.
+    const ve = PROPELLANT.hydrolox;
+    const wall = ve * Math.log(1 / DRY_FRACTION);
+    ok('a stage delivering nothing is not a stage that works',
+      stagePayload(wall * 0.99, ve) > 0 && stagePayload(wall * 1.01, ve) < 0,
+      `one stage dies at ${(wall / 1000).toFixed(1)} km/s, where the tanks would`
+      + ' have to weigh less than nothing — that is the wall, as arithmetic');
+    // and staging is chosen for what arrives, not for the fewest parts
+    const st = stagesFor(deltaVToOrbit(EARTH).total, ve);
+    ok('...and staging maximises what arrives rather than minimising the count',
+      st.stages === 3 && st.payload > stagePayload(deltaVToOrbit(EARTH).total, ve),
+      `3 stages deliver ${(st.payload * 100).toFixed(1)}% against a single stage's`
+      + ` ${(stagePayload(deltaVToOrbit(EARTH).total, ve) * 100).toFixed(1)}% — so a`
+      + ' hydrolox SSTO from Earth is genuinely possible and simply carries less,'
+      + ' which is what the literature says and what nobody wants to fly');
+  }
+
+  {
+    // Hydrogen wins, and for the reason that is easy to get backwards.
+    const h = craftFor(EARTH, 'hydrolox'), k = craftFor(EARTH, 'kerolox');
+    ok('hydrogen beats kerosene, on molecular weight rather than energy',
+      h.payload > k.payload && h.height < k.height,
+      `${(h.payload * 100).toFixed(1)}% vs ${(k.payload * 100).toFixed(1)}% to orbit`
+      + ` · ${h.height.toFixed(0)} m vs ${k.height.toFixed(0)} m — light exhaust`
+      + ' leaves fast, which is the whole of it');
+  }
+
+  {
+    // §11: a world record is generator output and generator output has holes.
+    let bad = 0;
+    for (const w of [null, {}, { massE: 0 }, { radiusE: 0 }, { massE: NaN },
+      { massE: 1e6, radiusE: 1e3, atmo: 1e4 }, { massE: 1e-9, radiusE: 1e-9 },
+      { atmo: -5 }]) {
+      const c = craftFor(w);
+      const ns = [c.dv.total, c.ratio, c.payload ?? 0, c.height ?? 0, c.diameter ?? 0];
+      if (ns.some((n) => Number.isNaN(n))) bad++;
+      if (typeof c.feasible !== 'boolean' || typeof c.why !== 'string') bad++;
+    }
+    ok('§11 · no world record produces a NaN vehicle',
+      bad === 0,
+      'eight degenerate worlds including zero radius and a 10⁶ M⊕ monster —'
+      + ' every one returns a decision and a sentence, because the craft is'
+      + ' conjured from whatever the generator handed over');
+  }
+}
+
 const suites = {
+  craft: suiteCraft,
   wonder: suiteWonder,
   liminal: suiteLiminal,
   ascent: suiteAscent,
