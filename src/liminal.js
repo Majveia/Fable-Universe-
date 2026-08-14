@@ -192,6 +192,29 @@ export function lampFlicker(t, persistence = 0.82) {
   return persistence + (1 - persistence) * raw;
 }
 
+/**
+ * The lamp's brightness averaged over one frame's exposure.
+ *
+ * A frame does not sample an instant; it accumulates light for its whole
+ * duration. That distinction is usually pedantry and here it is load-bearing:
+ * the flicker is 100 Hz and a frame is 1/60 s, so **point-sampling aliases**,
+ * and it aliases to 40 Hz — a visible strobe that reads as a lamp failing
+ * rather than humming. The tempting fix is to slow the flicker until it looks
+ * right, which would mean deleting a real number to cover a sampling mistake.
+ *
+ * Integrating over `dt` is what a camera does and it removes the alias
+ * completely, at eight samples. The mean of a rectified sine has a closed form,
+ * but not one that stays simple once persistence is in it, and eight multiplies
+ * a frame is not a budget anybody needs to defend.
+ */
+export function lampExposure(t, dt, persistence = 0.82) {
+  const N = 8;
+  const step = Math.max(dt, 1e-6) / N;
+  let sum = 0;
+  for (let i = 0; i < N; i++) sum += lampFlicker(t + (i + 0.5) * step, persistence);
+  return sum / N;
+}
+
 // ---------------------------------------------------------------------------
 // the address space
 

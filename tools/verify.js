@@ -74,7 +74,7 @@ import {
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import {
-  FLICKER_HZ, MAINS_HZ, MERCURY_LINES, isThin, lampColour, lampFlicker,
+  FLICKER_HZ, MAINS_HZ, MERCURY_LINES, isThin, lampColour, lampExposure, lampFlicker,
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
   roomShape, sharedBits, starAt, thinDepth,
 } from '../src/liminal.js';
@@ -6055,6 +6055,26 @@ function suiteLiminal() {
       `${lo.toFixed(2)}–${hi.toFixed(2)} over a tenth of a second — a shallow`
       + ' ripple, not a strobe, which is the difference between a room that'
       + ' hums and a room that is broken');
+  }
+
+  {
+    // The sampling trap. A 100 Hz lamp point-sampled at 60 fps aliases to a
+    // 40 Hz strobe; integrating over the frame is what a camera does. Measured
+    // as the spread across a second of frames — the alias shows up as a wide
+    // one, the integral as a narrow one.
+    const spread = (fn, fps) => {
+      let lo = 1e9, hi = -1e9;
+      for (let i = 0; i < fps; i++) { const v = fn(i / fps, 1 / fps); lo = Math.min(lo, v); hi = Math.max(hi, v); }
+      return hi - lo;
+    };
+    const point = spread((t) => lampFlicker(t), 60);
+    const integrated = spread((t, dt) => lampExposure(t, dt), 60);
+    ok('the 100 Hz lamp does not alias into a 40 Hz strobe at 60 fps',
+      integrated < point * 0.5 && integrated < 0.05,
+      `point-sampled swings ${point.toFixed(3)} across a second of frames,`
+      + ` integrated over the exposure ${integrated.toFixed(3)} — the first is`
+      + ' a lamp failing, the second is a lamp humming, and only one of them'
+      + ' is what the lamp is doing');
   }
 
   {
