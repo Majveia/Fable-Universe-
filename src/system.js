@@ -34,6 +34,22 @@ const FREEZE_TINT = new THREE.Color(0.82, 0.86, 0.94);
 const MELT_SEA = new THREE.Color(0.06, 0.22, 0.42);
 const R_EXP = 0.62;      // orbital compression exponent
 
+/**
+ * `?giants=1` — put the gas and ice giants back.
+ *
+ * They are switched **off** by default at the human's instruction. Beyond the
+ * frost line a real disc makes envelopes, so the generator is not wrong; it is
+ * being asked to draw a universe of worlds you can stand on. Every downstream
+ * consequence follows on its own rather than being suppressed one at a time:
+ * the cloud-deck scale simply never opens, `wonder.js`'s eligibility rule stops
+ * having anything to exclude, and `craft.js` never has to explain that a giant
+ * has no ground.
+ */
+const GIANTS = (() => {
+  try { return new URL(window.location.href).searchParams.get('giants') === '1'; }
+  catch { return false; }
+})();
+
 const TYPE_IDS = { barren: 0, terrestrial: 1, ocean: 2, ice: 3, lava: 4, 'gas giant': 5, 'ice giant': 6 };
 
 const drawR = (au) => AU_DRAW * Math.pow(Math.max(au, 0.01), R_EXP);
@@ -125,8 +141,19 @@ export function systemParams(starSeed) {
     if (stage === 'neutron star') {
       type = pr.next() < 0.7 ? 'barren' : 'ice'; // second-generation rock
     } else if (a > frost) {
+      // §7.4 · `?giants=1` restores them. Beyond the frost line the accretion
+      // model says gas and ice giants, and it is right — this universe is
+      // simply not drawing them for now, at the human's instruction.
+      //
+      // The draw is *reweighted*, not filtered, and the difference matters for
+      // §2.3: skipping a roll would leave every seed's RNG stream where it was
+      // and quietly change nothing, while re-normalising the same `pr.next()`
+      // across the remaining outcomes keeps the stream aligned and keeps a
+      // shared URL meaning the same place. Beyond the frost line everything is
+      // ice, which is what is left when you take the envelopes away.
       const t = pr.next();
-      type = t < 0.5 ? 'gas giant' : t < 0.78 ? 'ice giant' : 'ice';
+      type = GIANTS ? (t < 0.5 ? 'gas giant' : t < 0.78 ? 'ice giant' : 'ice')
+        : (t < 0.62 ? 'ice' : 'barren');
     } else if (a > hz * 0.78 && a < hz * 1.6) {
       type = pr.next() < 0.62 ? 'terrestrial' : 'ocean';
     } else if (a < hz * 0.35) {
