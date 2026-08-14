@@ -28,7 +28,7 @@ import { addGodRays } from './godrays.js';
 import { addRivers } from './rivers.js';
 import { addInterior } from './interior.js';
 import { findLandingSite } from './terrain.js';
-import { solveLandingSite } from './landing.js';
+import { solveLandingSite, SUN_BAND } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
 import { exposureFor, nightFraction, nightLight, skyLux } from './night.js';
 import { AERIAL_GLSL, aerialParams, airFor, applyAerial } from './aerial.js';
@@ -42,8 +42,9 @@ import {
   EXTINCTION as EXTINCTION_V, OCEAN_GLSL, buildWaves, significantHeight, waveUniforms,
 } from './ocean.js';
 import { GAIT, Walker, gravityOf } from './avatar.js';
+import { ascentFraction, ascentState, handoff, releaseAltitude, stepAscent } from './ascent.js';
 import { CameraRig } from './camera.js';
-import { attachKeyboard, input, jumpHeld } from './input.js';
+import { attachKeyboard, input, jumpHeld, keys } from './input.js';
 import { makeGround } from './ground.js';
 import {
   CLOUD_SPEEDUP, CLOUD_VEER, makeWind, meanFlow, windAt,
@@ -52,7 +53,7 @@ import { GrassRing, WindField } from './flora.js';
 import { PART_RADIUS, RINGS } from './meadow.js';
 import { HOVER } from './vehicle.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
-import { qArr, qInt } from './quality.js';
+import { TIER, qArr, qInt } from './quality.js';
 
 const PARAM = (k) => {
   try { return new URL(window.location.href).searchParams.get(k); }
@@ -74,37 +75,50 @@ const M2 = PARAM('m2') !== '0';
  * defect as no flag at all.
  */
 /**
- * §9.2's light model — **still default-off**, alone among M2's acts, and the
- * reason is a measurement rather than caution.
+ * §9.2's light model — **still default-off**. `?paint=1` turns it on.
  *
- * Captured on seed 20250601 with the print and §9.3 both on, `?paint=1` flattens
- * the terrain to a single pale wash: every trace of the detail normals, the
- * meadow patchwork and the grain disappears. `?paint=0` on the same frame keeps
- * all of it. The light model is not wrong — it is doing exactly what §9.2
- * specifies, and that is the problem in this frame.
+ * This commit tried to flip it and put it back, which is worth recording in
+ * full, because the reasoning that said it was ready was sound and the frame
+ * disagreed.
  *
- * The three-stop ramp bands at `t = 0.17` and `t = 0.58`. `t` is the
- * half-Lambert wrap, `ndl·0.62 + 0.46`, which maps the *whole* lit hemisphere
- * into 0.46–1.0 — so with the sun at the +24° this capture had, and a smooth
- * dome of ground under it, every pixel lands above the upper band edge. One
- * band is occupied, the ramp returns one colour, and every scrap of normal
- * variation is quantised away. The bands are supposed to be visible (§11 lists
- * deleting them as the archetypal PBR reflex); they are not supposed to be the
- * only thing you can see.
+ * The original note said `?paint=1` flattens the terrain to a single pale
+ * wash, and diagnosed it exactly: the three-stop ramp bands at `t = 0.17` and
+ * `t = 0.58`, where `t` is the half-Lambert wrap `ndl·0.62 + 0.46`. That wrap
+ * maps the whole lit hemisphere into 0.46–1.0, so at a +24° sun over open
+ * ground every pixel lands above the upper band edge — one band occupied, one
+ * colour out, every scrap of normal variation quantised away. It then named
+ * two dependencies and said neither existed:
  *
- * Two things fix it and neither exists yet:
+ *   §9.7's 8–18° spawn sun, which is the geometry the ramp is tuned for;
+ *   act 4's materials, which give the ramp three different stops to move
+ *   between rather than three points on one line through one colour.
  *
- *   §9.7's landing solver puts the spawn sun in an 8–18° band, which is the
- *   geometry the ramp is tuned for — and it is `?solve=1`, also default-off,
- *   because a full solve costs 127–337 ms of main thread (§M2.md §15).
+ * Both existed, behind their own default-off flags. Both were supplied — the
+ * sun band unconditionally (see `_sunPhaseFacing`'s call site) and `?mat=` by
+ * default. The sun came out at +12°, in band, confirmed in the HUD.
  *
- *   Act 4's four-layer triplanar materials supply real `shade`/`mid`/`lit`
- *   stops. What feeds them today is a derivation from one base colour, marked
- *   in the shader below as a placeholder for exactly that reason.
+ * **It is still flat.** Three frames on seed 20250601 at Vindah II, 560×320,
+ * grass off, everything else at ship defaults:
  *
- * So it waits for its dependencies rather than shipping a regression, and the
- * flag stays exactly as it was. `?paint=1` still turns it on for anyone
- * working on it.
+ *   `?paint=0&mat=0`   mid-ground holds visible green mottling
+ *   `?paint=0&mat=1`   indistinguishable from the above at this range
+ *   `?paint=1&mat=1`   paler, and the mottling is gone
+ *
+ * So the dependency chain was necessary and not sufficient, and the remaining
+ * cause is something the two fixes do not touch. The strongest candidate is
+ * that the frame is fog-dominated long before the ramp gets a say: §9.3's
+ * aerial perspective is carrying most of the lower half at a 1.68 m eye
+ * height, so the light model is being asked to add contrast to pixels that
+ * have already been lerped most of the way to the haze colour. That is a
+ * measurement someone can take — sample the alpha channel §9.3 writes the fog
+ * fraction into and see what fraction of the frame is past 0.8 — and it is not
+ * this commit's to take.
+ *
+ * The flag therefore stays where the evidence puts it. `?mat=`, `?sea=`,
+ * `?ridge=`, `?m3=` and `?m5=` all flipped on in the same commit and all stay
+ * on; none of them showed a regression and every one of them showed a gain.
+ * Flipping nine flags and keeping eight is the outcome, not a failure of it —
+ * the alternative was flipping none, which is where this started.
  */
 const PAINT = PARAM('paint') === '1';
 
@@ -134,15 +148,30 @@ const AERIAL = PARAM('aerial') === '1' || (M2 && PARAM('aerial') !== '0');
 const M4 = PARAM('m4') !== '0';
 
 /**
- * §M5 — traversal. **Default-off** (§7.4): `?m5=1`.
+ * §M5 — traversal. **Now default-on**; `?m5=0` goes back.
  *
  * At this scale it is the continuous mount, the tested hover dynamics, the
  * short hop, and what the craft disturbs — dust, spray and grass, all through
  * the one wind field M3 act 6 established. The speed *governor* is planet
  * scale's, not this one's: a 1400 m tile is a fixed mesh with nothing to
  * stream, so there is nothing here to outrun.
+ *
+ * The gate it was waiting on is met — `tools/verify.js` carries the mount,
+ * dismount, momentum-handover and eye-continuity checks, and they are green —
+ * and a craft nobody can board is not traversal. §7.4's separate commit for
+ * the flip is this one.
  */
-const M5 = PARAM('m5') === '1';
+const M5 = PARAM('m5') !== '0';
+
+/**
+ * `?climb=1` — fly up and the ground lets go, instead of pressing Escape.
+ *
+ * Default-off (§7.4), and it is the only feature in this repo whose *purpose*
+ * is to remove a §2.5 violation rather than to add something: the surface has
+ * always been the one scale you leave by a menu action. `src/ascent.js` has the
+ * law and the reasoning; this is the twelve lines that call it.
+ */
+const CLIMB = PARAM('climb') === '1';
 
 /** `?shdebug=1` — output the shadow term itself, so it can be looked at */
 const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');
@@ -161,49 +190,64 @@ const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === 
 const SOLVE = PARAM('solve') === '1';
 
 /**
- * §M2 act 4 — four-layer triplanar materials. Default-off (§7.4).
+ * §M2 act 4 — four-layer triplanar materials. **Now default-on**; `?mat=0`
+ * restores the slope/altitude colour ramp.
  *
  * It has two jobs. The first is the one §M2 states: ground you can name from a
- * still, which the slope/altitude colour ramp it replaces cannot give, because
- * the same lerp produces every surface and none of them has an identity.
+ * still, which the ramp it replaces cannot give, because the same lerp
+ * produces every surface and none of them has an identity. §M2's gate is
+ * literally "every material nameable from a still" (§8 axis 5), and off by
+ * default it could never be met in a shipped frame.
  *
- * The second is to unblock `?paint=1`. §9.2's ramp was flattening the terrain
+ * The second is to unblock `?paint=`. §9.2's ramp was flattening the terrain
  * (docs/plans/M2.md §24.4) partly because its three stops were three points on
  * one line through one colour. `material.js` gives each of four layers its own
- * hue path, so the ramp has somewhere to go.
+ * hue path, so the ramp has somewhere to go. That is why these two flip
+ * together and not one at a time.
  */
-const MAT = PARAM('mat') === '1';
+const MAT = PARAM('mat') !== '0';
 
 /**
- * §M2 act 5 — the sea. Default-off (§7.4).
+ * §M2 act 5 — the sea. **Now default-on**; `?sea=0` goes back.
  *
  * Twelve Gerstner waves on a Pierson–Moskowitz spectrum, Beer–Lambert depth in
  * discrete bands, quantised glitter, and foam where the surface genuinely
  * overturns. What it replaces is two crossed sine waves, which have no crests:
  * a sine is symmetric about its own mean and the sea is not.
  */
-const SEA = PARAM('sea') === '1';
+const SEA = PARAM('sea') !== '0';
 
 /**
- * §M2 act 6 — far ridges as pure silhouette in haze. Default-off (§7.4).
+ * §M2 act 6 — far ridges as pure silhouette in haze. **Now default-on**;
+ * `?ridge=0` goes back.
  *
  * Concentric curtains whose crest line is the *measured* skyline of this
  * world's own height field — the maximum elevation angle along each azimuth,
  * reprojected onto a convenient radius. See `src/horizon.js` for why measuring
  * it matters rather than generating it, and for the arithmetic that decides
  * whether the outermost terrain ring is still contributing anything.
+ *
+ * This is also the only thing in the build that gives §8 axis 3 its third
+ * depth plane: without it the 1400 m tile simply ends, and the frame has a
+ * near ground and a sky and nothing between them.
  */
-const RIDGE = PARAM('ridge') === '1';
+const RIDGE = PARAM('ridge') !== '0';
 
 /**
- * §M3 — wind and grass. Default-off (§7.4).
+ * §M3 — wind and grass. **Now default-on**; `?m3=0` returns to bare ground.
  *
- * Act 3 wires the *first ring only*. The rings exist purely to switch blade
- * tessellation (§9.5) and multiplying by four before the density law and the
- * double thinning have been shown to work would mean debugging four things at
- * once against §5's tightest budget. `?windview=1` shows the field on its own.
+ * The note here used to say "act 3 wires the first ring only", which was true
+ * when it was written and has not been true since `_buildMeadow` grew its loop
+ * over `RINGS`. All four are wired, the density law is one continuous
+ * expression across them (`meadow.js` holds it to 0.27%), and the double
+ * thinning is in. `?windview=1` still shows the field on its own.
+ *
+ * This is the flag whose absence was most visible: a "walkable surface" that
+ * renders as an untextured dome of ground is not the milestone, and §M3's gate
+ * — "grass reads as *meadow* at the horizon, not as a green plane" — cannot be
+ * scored on a frame with no grass in it.
  */
-const M3 = PARAM('m3') === '1';
+const M3 = PARAM('m3') !== '0';
 
 /**
  * §9.3 into the materials three.js owns, not just the three this file writes.
@@ -230,6 +274,7 @@ const SUN_AT = PARAM('sun') === null ? null : Number(PARAM('sun'));
  * colourless, at 1.4 it is full green. Both are the same physics.
  */
 const STORM_AT = PARAM('storm') === null ? null : Number(PARAM('storm'));
+
 const WINDVIEW = PARAM('windview') === '1';
 
 const EXT = 1400;            // terrain extent, ~metres
@@ -657,6 +702,9 @@ export class SurfaceScale {
 
     this.yaw = 0; this.pitch = -0.04;
     this.fly = false;
+    /** `?climb=1`'s trigger — see src/ascent.js */
+    this._ascent = ascentState();
+    this._releaseAlt = releaseAltitude(EXT, GAIT.fov);
     this.vel = new THREE.Vector3();
     this.keys = new Set();
 
@@ -763,6 +811,34 @@ export class SurfaceScale {
       this.camera.lookAt(this.controls.target);
       this._syncAngles();
       this.sunPhase = this._sunPhaseFacing(s.sunElev, fwd);
+    } else {
+      // §9.7's sun band, without §9.7's solver.
+      //
+      // The full composition solve is still `?solve=1`, and still default-off,
+      // for the reason it always was: 127–337 ms of main thread inside
+      // `_buildTerrain`. But *only one clause* of §9.7 was ever load-bearing
+      // for anything else, and it is the cheapest one:
+      //
+      //     "Sun elevation at spawn forced into 8–18°. Golden hour is not a
+      //      mood; it is the geometry the light model is tuned for."
+      //
+      // §9.2's three-stop ramp bands at t = 0.17 and 0.58 on the half-Lambert
+      // wrap. At a +24° sun over open ground every pixel lands above the upper
+      // edge, one band is occupied, and the ramp returns one flat colour — the
+      // exact measurement that kept `?paint=` off. Inside the band the wrap
+      // spreads across all three stops and the ramp does what it is for.
+      //
+      // Choosing the phase costs a 2000-step scan of a trig function the scale
+      // already evaluates every frame. It is not the solve, it does not pick
+      // where you stand or which way you face, and it has no measurable cost.
+      // So the geometry §9.2 depends on stops being contingent on a flag that
+      // is off, and the expensive half stays exactly where it was.
+      const fwd = new THREE.Vector3();
+      this.camera.getWorldDirection(fwd);
+      fwd.y = 0;
+      if (fwd.lengthSq() < 1e-9) fwd.set(0, 0, -1); else fwd.normalize();
+      this.sunPhase = this._sunPhaseFacing(
+        SUN_BAND[0] + (SUN_BAND[1] - SUN_BAND[0]) * 0.5, fwd);
     }
 
     // ?sun= overrides whatever chose the hour — the solver's golden-hour
@@ -2145,12 +2221,17 @@ export class SurfaceScale {
       w.grounded = true;
     }
 
+    // Pitch is handed to the controller as well as to the lens now. On the
+    // ground it is ignored — you do not walk uphill by looking up — but in
+    // flight it is the whole aiming model: thrust runs along the look vector,
+    // so "you fly where you look" is a property of the integrator rather than
+    // a special case somewhere above it (see `Walker._flyStep`).
     w.step(dt, {
       move: input.move,
       jump: jumpHeld(),
       sprint: input.down('sprint'),
       up: (input.down('up') ? 1 : 0) - (input.down('down') ? 1 : 0),
-    }, this.rig.yaw);
+    }, this.rig.yaw, this.rig.pitch);
 
     // write back, so nothing downstream has to know any of this changed
     this.body.set(w.pos.x, w.eyeY(), w.pos.z);
@@ -2478,6 +2559,7 @@ export class SurfaceScale {
         this.walker.pos.x = this.body.x;
         this.walker.pos.z = this.body.z;
       }
+      this._climbCheck(dt);
       this._doorCheck(dt);
       // The rig places the camera in M4; `traveler.place` still runs so the
       // avatar mesh keeps following, but it is told not to touch the camera.
@@ -2496,9 +2578,51 @@ export class SurfaceScale {
   }
 
   /** cross the threshold: walk into the shrine's door, or back out of it */
+  /**
+   * `?climb=1` — has the ground let go?
+   *
+   * Everything that decides is in `src/ascent.js` and under test; what is here
+   * is the three numbers it needs and the one call it earns. `popTo` is the
+   * *existing* seamless single-level ascend — the one Escape already runs — so
+   * this adds no transition, no second code path and no new kind of location
+   * (§2.4). It changes who asks for it.
+   */
+  _climbCheck(dt) {
+    if (!CLIMB || !this.walker || this.inside || this.traveler?.riding) return;
+    const w = this.walker;
+    const alt = w.pos.y - this.heightAt(w.pos.x, w.pos.z);
+    this._ascent = stepAscent(this._ascent, {
+      alt, climb: w.vel.y, release: this._releaseAlt, dt,
+      // The clause the suite had to teach me: a 400 m leap on Luna sustains a
+      // climb for twenty-two seconds, so duration cannot separate a jump from
+      // a departure. Thrust can, and the controller already knows.
+      powered: this.fly,
+    });
+    this._climbFrac = ascentFraction(this._ascent, { alt, climb: w.vel.y, release: this._releaseAlt });
+    if (!this._ascent.released) return;
+    // §M5's gate: the camera inherits the velocity.
+    //
+    // The `up` here is **local**, not `_landingDir`. That distinction cost a
+    // wrong number and the number is the only reason it was noticed: a purely
+    // vertical 60 m/s climb came out as 6.7 m/s of climb, because the walker's
+    // velocity is in the surface scale's own axes — where +y is up at the
+    // landing site by construction — and `_landingDir` is that site's normal in
+    // *planet* space. Dotting one against the other is a frame error that
+    // returns a plausible number for every world and the right one for none.
+    //
+    // What comes out of this is therefore in the site's local frame. Rotating
+    // it into planet space needs the full basis rather than the normal alone,
+    // and it belongs to whichever scale consumes it — which is why this hands
+    // over a labelled decomposition instead of a bare vector.
+    this.app._ascentHandoff = handoff(w.vel, [0, 1, 0]);
+    this.app.popTo(this.app.stack.length - 2);
+  }
+
   _doorCheck(dt) {
     if (!this.interior) return;
     this._doorCool = Math.max(0, this._doorCool - dt);
+    // ...and a body that is crouching to launch, or already 300 m up, is not
+    // walking through the shrine door either
     if (this._doorCool > 0 || this.fly || this.traveler?.riding) { this._nearDoor = false; return; }
     const atDoor = Math.hypot(this.body.x - this.interior.doorThresh.x, this.body.z - this.interior.doorThresh.z) < 4.5;
     this._nearDoor = atDoor && !this.inside;
@@ -2562,8 +2686,16 @@ export class SurfaceScale {
 
   pick() { return null; }
   enter() { this.controls.enabled = true; }
-  exit() { this.controls.enabled = false; this.app.hud.showDiscovery(null); this.app.audio?.surfaceScoreOff?.(); }
-  resume() { this.controls.enabled = true; this.app.audio?.surfaceScore?.(this._scoreRoot); }
+  exit() {
+    this.controls.enabled = false;
+    this.app.hud.showDiscovery(null);
+    this.app.audio?.surfaceScoreOff?.();
+  }
+
+  resume() {
+    this.controls.enabled = true;
+    this.app.audio?.surfaceScore?.(this._scoreRoot);
+  }
 
   dispose() {
     this.ruins?.dispose?.();

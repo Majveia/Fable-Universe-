@@ -61,8 +61,16 @@ const PARAM = (k) => {
   catch { return null; }
 };
 
-/** M1 — the ordered dither. Default-off (§7.4); see docs/plans/M1.md §5. */
-const M1 = PARAM('m1') === '1';
+/**
+ * M1 — the ordered dither. **Now default-on**; `?m1=0` goes back.
+ *
+ * §6 M1's gate clause (d) is "zero banding in the deep field at 8-bit", and
+ * the cosmic web is the worst banding case in the project — a smooth radial
+ * gradient over most of the frame, in a scale where §2.8 forbids lifting the
+ * blacks that would otherwise hide the steps. A dither that ships switched off
+ * is a gate clause nobody can pass.
+ */
+const M1 = PARAM('m1') !== '0';
 
 /**
  * M2 — the print (§9.4), which replaces ACES.

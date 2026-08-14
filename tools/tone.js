@@ -41,6 +41,39 @@
 // What it is for is the comparison. Run it before and after a change that
 // touches the light model, the print, the bloom or the air, and if a fifth of
 // the frame's range has gone, it says so.
+//
+// ---------------------------------------------------------------------------
+// Global range is half a measurement, and it was the wrong half
+//
+// docs/plans/DEFAULTS.md §4 stacked every M2 and M3 flag and found the frame's
+// standard deviation down 26.8%, then stopped — because there was no way to
+// tell a frame that had been *compressed* from one that had been *washed out*,
+// and the two have opposite fixes. Global sd cannot separate them. A frame with
+// a bright sky over black ground has an enormous sd and no detail anywhere; a
+// frame with a narrow range and crisp texture in every square inch has a modest
+// one. Only the second is a picture.
+//
+// So two more numbers:
+//
+// **Local contrast** — the mean standard deviation inside 24 px tiles, which is
+// texture, edge and material, and is exactly what "washed out" means when
+// somebody says it about a screenshot. It is nearly independent of the global
+// range: lifting the shadows moves sd a long way and local contrast barely at
+// all, while blurring the frame does the reverse.
+//
+// **A band profile** — mean luma in eight horizontal bands, so a range that has
+// gone can be found rather than deduced. Sky, horizon and ground compress for
+// different reasons and a single number averages the argument away.
+//
+// ---------------------------------------------------------------------------
+// And the comparand, which is the point
+//
+// `--ref` measures `docs/reference/hoshi-no-tani.html` with the same
+// instrument. §9 says outright that where this document and the reference
+// disagree, *the reference wins* — so "how much compression is intended" is not
+// a matter of opinion here. It is a number the reference already has, and until
+// now nobody had read it. A stack that lands at the reference's local contrast
+// is doing what §9.4 asks. One that lands well under it is washed out.
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -113,9 +146,52 @@ function measure(png) {
     }
   }
   const mean = sum / n;
+
+  // Local contrast: the mean sd inside a tile, over tiles that are entirely
+  // inside the frame mask. 24 px is chosen against the thing being measured —
+  // wide enough to contain a material rather than a gradient, narrow enough
+  // that a tile spanning sky and ground is rare. A tile with fewer than half
+  // its pixels is dropped rather than partially counted, because a sliver at
+  // the mask edge has an sd of its own that means nothing.
+  const TILE = 24;
+  let tiles = 0, localSum = 0;
+  for (let ty = 0; ty + TILE <= H; ty += TILE) {
+    for (let tx = 0; tx + TILE <= W; tx += TILE) {
+      let m = 0, s = 0, s2 = 0;
+      for (let y = ty; y < ty + TILE; y++) {
+        for (let x = tx; x < tx + TILE; x++) {
+          if (!inFrame(x, y)) continue;
+          const i = (y * W + x) * 4;
+          const L = 0.2126 * p[i] + 0.7152 * p[i + 1] + 0.0722 * p[i + 2];
+          m++; s += L; s2 += L * L;
+        }
+      }
+      if (m < TILE * TILE * 0.5) continue;
+      const mu = s / m;
+      localSum += Math.sqrt(Math.max(s2 / m - mu * mu, 0));
+      tiles++;
+    }
+  }
+
+  // Eight horizontal bands, top to bottom: where the range went, rather than
+  // how much of it did.
+  const BANDS = 8;
+  const band = new Array(BANDS).fill(0), bandN = new Array(BANDS).fill(0);
+  for (let y = 0; y < H; y++) {
+    const b = Math.min(BANDS - 1, Math.floor((y / H) * BANDS));
+    for (let x = 0; x < W; x++) {
+      if (!inFrame(x, y)) continue;
+      const i = (y * W + x) * 4;
+      band[b] += 0.2126 * p[i] + 0.7152 * p[i + 1] + 0.0722 * p[i + 2];
+      bandN[b]++;
+    }
+  }
+
   return {
     W, H, n, mean, sd: Math.sqrt(sum2 / n - mean * mean), sat: satSum / n,
     minL, maxL, black: (black / n) * 100, white: (white / n) * 100, hist,
+    local: tiles ? localSum / tiles : 0, tiles,
+    band: band.map((v, i) => (bandN[i] ? v / bandN[i] : 0)),
   };
 }
 
@@ -135,6 +211,26 @@ const route = await page.evaluate(() => window.__route);
 const base = `seed=${seed}&g=${route.galaxySeed}&s=${route.starSeed}&p=${route.rocky}`;
 
 const rows = [];
+
+// The reference, first, so the table reads as "what §9 asks for" and then
+// "what we did". It has no `?dt=`, no route and no halt — it is somebody
+// else's page — so it is settled on wall time and its own load flag, and the
+// HUD mask is a no-op on it because its own HUD is 11 px at 0.62 opacity and
+// contributes nothing a mask would need to remove.
+if (arg('ref')) {
+  const url = `${site.origin}/docs/reference/hoshi-no-tani.html`;
+  await page.goto(url, { waitUntil: 'load' });
+  // it gates itself behind a button, and does not start building until pressed
+  await page.waitForSelector('#enter.on', { timeout: 240000 });
+  await page.click('#enter');
+  await page.waitForFunction(
+    () => !document.getElementById('veil') || getComputedStyle(document.getElementById('veil')).opacity < 0.02,
+    null, { timeout: 240000 },
+  ).catch(() => {});
+  await page.waitForTimeout(Number(arg('refsettle', 12)) * 1000);
+  rows.push({ build: 'the reference', ...measure(decodePNG(await page.screenshot())) });
+}
+
 for (const b of builds) {
   // `dt` pinned, always: without it the day clock runs on wall time and two
   // "identical" frames have the sun in different places. That cost two people
@@ -149,12 +245,36 @@ await browser.close();
 await site.close();
 
 console.log(`tone · seed ${seed} · ${rows[0].W}x${rows[0].H} · HUD masked\n`);
-console.log('  build                          mean     sd    sat    min    max  range   =0%  =255%');
+console.log('  build                          mean     sd  local    sat    min    max   =0%  =255%');
 for (const r of rows) {
   console.log(`  ${r.build.slice(0, 28).padEnd(30)}`
-    + `${r.mean.toFixed(1).padStart(5)} ${r.sd.toFixed(1).padStart(6)} ${r.sat.toFixed(3).padStart(6)}`
-    + `${r.minL.toFixed(0).padStart(7)}${r.maxL.toFixed(0).padStart(7)}${(r.maxL - r.minL).toFixed(0).padStart(7)}`
+    + `${r.mean.toFixed(1).padStart(5)} ${r.sd.toFixed(1).padStart(6)} ${r.local.toFixed(1).padStart(6)}`
+    + ` ${r.sat.toFixed(3).padStart(6)}`
+    + `${r.minL.toFixed(0).padStart(7)}${r.maxL.toFixed(0).padStart(7)}`
     + `${r.black.toFixed(2).padStart(6)}${r.white.toFixed(2).padStart(7)}`);
+}
+
+// The comparand, if there is one. Stated as a ratio because the absolute
+// numbers belong to two different worlds under two different suns and only the
+// relationship transfers.
+const ref = rows.find((r) => r.build === 'the reference');
+if (ref && rows.length > 1) {
+  console.log('\n  against the reference (§9: where we disagree, it wins)\n');
+  console.log('  build                            sd    local     sat');
+  for (const r of rows) {
+    if (r === ref) continue;
+    const pc = (a, b) => (((a - b) / b) * 100);
+    const f = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(0)}%`.padStart(8);
+    console.log(`  ${r.build.slice(0, 28).padEnd(30)}`
+      + f(pc(r.sd, ref.sd)) + f(pc(r.local, ref.local)) + f(pc(r.sat, ref.sat)));
+  }
+}
+
+console.log('\n  mean luma by band, sky → ground\n');
+console.log('   band' + rows.map((r) => r.build.slice(0, 9).padStart(10)).join(''));
+for (let b = 0; b < rows[0].band.length; b++) {
+  console.log(`  ${String(b + 1).padStart(4)} `
+    + rows.map((r) => r.band[b].toFixed(1).padStart(10)).join(''));
 }
 
 if (rows.length > 1) {

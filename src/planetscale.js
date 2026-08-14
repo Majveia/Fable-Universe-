@@ -666,7 +666,12 @@ export class PlanetScale {
     //
     // `?tau=` pins the measurement for a reproducible capture; without it the
     // governor learns this machine from the real worker round trip.
-    this.m5 = url.searchParams.get('m5') === '1';
+    // §M5, **now default-on**; `?m5=0` restores the old altitude throttle.
+    // The governor above is what made the flip safe: the speed bound is now
+    // derived from the tree's own measured refinement rate rather than from an
+    // undebated ×3.4, so "no pop-in" is a property of the law and not of the
+    // machine it happens to run on.
+    this.m5 = url.searchParams.get('m5') !== '0';
     const tauPin = parseFloat(url.searchParams.get('tau'));
     this.gov = new StreamGovernor(this.quad, {
       R: this.R, maxDepth: qdepth, splitK: this.quad.splitK,

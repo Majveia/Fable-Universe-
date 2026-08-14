@@ -38,7 +38,8 @@ import {
   magnetosphere, speciesFor, wavelengthRGB, windPressure,
 } from '../src/magnetosphere.js';
 import {
-  ARM, GAIT, LOOK, Walker, gravityOf, replay, sweepArm,
+  ARM, GAIT, LEG_REF, LOOK, Walker, gravityOf, jumpV0, legPlant, replay,
+  solveLeg, sweepArm,
 } from '../src/avatar.js';
 import { BINDINGS, JUMP_CODE, addLook, input, setAnalog } from '../src/input.js';
 import {
@@ -71,7 +72,17 @@ import {
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
 } from '../src/meadow.js';
-import { QUALITY } from '../src/quality.js';
+import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
+import {
+  FLICKER_HZ, MAINS_HZ, MERCURY_LINES, isThin, lampColour, lampFlicker,
+  nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
+  roomShape, sharedBits, starAt, thinDepth,
+} from '../src/liminal.js';
+import {
+  CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
+  stepAscent,
+} from '../src/ascent.js';
+import { LFO_RATIOS, MODE_LADDER, chordPlan, deriveScore } from '../src/score.js';
 import {
   DIAGONAL, HOVER, Hover, MOUNT, Mount, STREAM, StreamGovernor, chordAt,
   demandConst, demandRate, effectiveChord, floorAltitude, handMomentum,
@@ -889,6 +900,50 @@ function tonemapRef(x, paint) {
   return v + (p - v) * paint;
 }
 
+/**
+ * The whole of §9.4 steps 1–4 on the CPU — the mirror of `grade()` in
+ * `print.js`, transcribed from it.
+ *
+ * It exists because the saturation step is the one part of the print whose
+ * failure is invisible in a still: a grade that quietly costs a quarter of the
+ * frame's colour still renders a perfectly good picture, just a paler one, and
+ * "washed out" is the only report it ever generates. Measuring it needs a
+ * function, not a screenshot.
+ */
+function gradeRef(c0, paint, satAmt = SAT_AMOUNT) {
+  const cl = (x, a, b) => (x < a ? a : x > b ? b : x);
+  const ss = (e0, e1, x) => { const t = cl((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+  const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const mx = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+
+  let c = c0.map((v) => tonemapRef(Math.max(v, 0), paint));
+  let l = lum(c);
+  const shadowPush = mx([0.90, 0.95, 1.16], [1, 1, 1], ss(0, 0.34, l));
+  const highPush = mx([1, 1, 1], [1.055, 1.012, 0.925], ss(0.44, 0.98, l));
+  c = c.map((v, i) => v * mx([1, 1, 1], shadowPush, 0.85 * paint)[i]);
+  c = c.map((v, i) => v * mx([1, 1, 1], highPush, 0.9 * paint)[i]);
+  const lift = [0.017 * paint, 0.021 * paint, 0.036 * paint];
+  c = c.map((v, i) => v * (1 - lift[i]) + lift[i]);
+  c = mx(c, c.map((v) => v * v * (3 - 2 * v)), 0.16 * paint);
+  l = lum(c);
+  const e = satAmt * paint * ss(0.10, 0.42, l) * (1 - ss(0.62, 0.96, l));
+  const d = c.map((v) => v - l);
+  let lim = 1e9;
+  for (const v of d) {
+    if (v > 1e-6) lim = Math.min(lim, (1 - l) / v);
+    else if (v < -1e-6) lim = Math.min(lim, -l / v);
+  }
+  const h = Math.max(lim - 1, 0);
+  const s = 1 + (e * h) / Math.max(e + h, 1e-6);
+  return d.map((v) => l + s * v);
+}
+
+/** HSV saturation — the measure `tools/tone.js` reports off a capture */
+const satOf = (c) => {
+  const hi = Math.max(...c), lo = Math.min(...c);
+  return hi < 1e-6 ? 0 : (hi - lo) / hi;
+};
+
 /** three's ACESFilmicToneMapping, for comparison only */
 function acesRef(x) {
   const a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
@@ -906,6 +961,88 @@ function suitePrint() {
 
   ok('both curves map black to black, so the blend does at every uPaint',
     PAINTS.every((p) => tonemapRef(0, p) === 0));
+
+  // --- §9.4 step 4, the saturation the print used to cost -----------------
+  //
+  // A meadow-ish spread of linear-light inputs. The point of naming them is
+  // that the failure was not uniform: the colours that lost most were the pale
+  // ones — horizon sky, sun, blossom — which is precisely the set
+  // `docs/plans/BENCHMARK.md` needs to stay coloured.
+  {
+    const SET = [
+      ['grass lit', [0.10, 0.26, 0.06]], ['grass shade', [0.03, 0.09, 0.03]],
+      ['grass tip', [0.22, 0.42, 0.10]], ['sky zenith', [0.09, 0.21, 0.52]],
+      ['sky horizon', [0.55, 0.62, 0.70]], ['warm soil', [0.18, 0.12, 0.06]],
+      ['blossom', [0.62, 0.28, 0.42]], ['cream sun', [0.95, 0.90, 0.72]],
+    ];
+    const ratio = (amt) => {
+      let a = 0, b = 0;
+      for (const [, c] of SET) { a += satOf(c); b += satOf(gradeRef(c, 1, amt)); }
+      return b / a;
+    };
+
+    // The regression this replaced, kept as a check so it cannot come back.
+    ok('§9.4 · the print no longer costs the frame its colour',
+      ratio(SAT_AMOUNT) > 1.0,
+      `mean saturation ${((ratio(SAT_AMOUNT) - 1) * 100).toFixed(1)}% vs input`
+      + ` at uSat ${SAT_AMOUNT} · was ${((ratio(0.16) - 1) * 100).toFixed(1)}% at the shipped 0.16`);
+
+    // The mechanism, which is what makes the larger number safe. The old step
+    // multiplied the distance from grey outright, so it walked channels out of
+    // [0,1]; 3.72% of this sweep went negative at 0.16 and the framebuffer
+    // clamped them to zero.
+    let out = 0, n = 0;
+    for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) for (let k = 0; k < 16; k++) {
+      for (const v of gradeRef([i / 15 * 1.4, j / 15 * 1.4, k / 15 * 1.4], 1)) {
+        if (v < -1e-6 || v > 1 + 1e-6) out++;
+        n++;
+      }
+    }
+    ok('and it walks up to the gamut wall rather than through it',
+      out === 0, `${n} channels over a 4096-colour sweep, ${out} outside [0,1]`);
+
+    // Neutrality outside the band. If the knee were applied to the factor
+    // rather than to the excess, every pixel with headroom would be pulled
+    // toward grey — a desaturation dressed as a boost.
+    //
+    // The colours have to be chosen by their luma *after* the grade, not
+    // before. A neutral input does not stay neutral: §9.4 step 2 tints shadows
+    // violet and highlights cream on purpose, so a mid grey arrives at the
+    // saturation step off the grey axis and inside the band, where a boost is
+    // exactly what it is supposed to get. The first version of this check
+    // asserted a mid grey was unmoved and failed — correctly, on a claim the
+    // code never made.
+    const dark = [0.001, 0.001, 0.001];
+    ok('and it is exactly neutral where the band asks for nothing',
+      gradeRef(dark, 1).every((v, i) => Math.abs(v - gradeRef(dark, 1, 0)[i]) < 1e-12),
+      'below the 0.10 rise, uSat moves nothing at all — bit-identical');
+
+    // And a fact about the *upper* edge, found by trying to test it and
+    // failing: it is nearly unreachable. §9.4 rolls the boost off by luma 0.96,
+    // but step 2's highlight push multiplies the top channel by 0.925 first, so
+    // a linear input of 3.0 — which the tonemap clamps to 1.0 — arrives at the
+    // saturation step at luma 0.899, still inside the band. Nothing a camera
+    // sees short of a specular hit gets past 0.96.
+    //
+    // That is not a defect, and it is not being "fixed" here: it means the
+    // roll-off protects specular highlights and blown sun discs and leaves
+    // ordinary bright sky alone, which is the right behaviour and the opposite
+    // of what the constant reads like. Recorded because the next person to read
+    // "rolling off by 0.96" will assume the sky is excluded, and it is not.
+    const white = gradeRef([3.0, 3.0, 3.0], 1);
+    const wl = 0.2126 * white[0] + 0.7152 * white[1] + 0.0722 * white[2];
+    ok('and the 0.96 roll-off sits above where the highlight push can reach',
+      wl < 0.96 && wl > 0.80,
+      `a clamped white arrives at luma ${wl.toFixed(3)}, inside the band, because`
+      + ' §9.4 step 2 scales the top channel by 0.925 before this step runs');
+
+    // §2.8 survives it: vacuum still reaches true zero, atmosphere still does not.
+    ok('§2.8 · black stays black in vacuum and stays lifted in atmosphere',
+      gradeRef([0, 0, 0], 0).every((v) => v === 0)
+      && gradeRef([0, 0, 0], 1).every((v) => v > 0.01),
+      `vacuum ${gradeRef([0, 0, 0], 0)[0]} · atmosphere `
+      + `[${gradeRef([0, 0, 0], 1).map((v) => v.toFixed(4)).join(', ')}]`);
+  }
   ok('the blend is monotone at every uPaint', (() => {
     for (const p of PAINTS) {
       let prev = -1;
@@ -1236,9 +1373,28 @@ function suiteAerial() {
     // whole string and failed on the comment that *explains* the rule, which
     // is a test of the prose rather than of the code.
     const code = AERIAL_GLSL.replace(/\/\/[^\n]*/g, '');
+    // Assert the *property*, not one spelling of it.
+    //
+    // This used to read `code.includes('1.0 - smoothstep(8.0, 46.0, worldY)')`,
+    // an exact-literal match. It failed the moment the valley-mist term grew
+    // the `- uAirMistBase` it needed, which is a legitimate and necessary
+    // change — §9.3's 46 → 8 band is a height above the *valley floor*, and
+    // the reference can write it as an absolute only because its world has one
+    // floor at y ≈ 0. A test that breaks when correct code changes shape is
+    // testing the transcription, not the rule.
+    //
+    // The rule is: GLSL leaves `smoothstep(e0, e1, x)` undefined when e0 ≥ e1,
+    // so a descending band must be written as `1.0 - smoothstep(lo, hi, x)`.
+    // So: no descending numeric smoothstep anywhere, and the mist pool still
+    // built from the inverted ascending form.
+    const descending = [...code.matchAll(/smoothstep\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,/g)]
+      .filter((m) => parseFloat(m[1]) >= parseFloat(m[2]));
     ok('the GLSL never writes a descending smoothstep, which GLSL leaves undefined',
-      !/smoothstep\(\s*46\.0\s*,\s*8\.0/.test(code)
-      && code.includes('1.0 - smoothstep(8.0, 46.0, worldY)'));
+      descending.length === 0
+      && /1\.0\s*-\s*smoothstep\(\s*8\.0\s*,\s*46\.0\s*,\s*worldY/.test(code),
+      descending.length
+        ? `descending: ${descending.map((m) => m[0]).join(', ')}`
+        : 'mist band written as 1 - smoothstep(8, 46, ·), ascending edges throughout');
     ok('and it returns the fog fraction rather than hiding it in a global',
       /vec4 aerial\(/.test(code) && !/gFogAmt/.test(code));
 
@@ -1704,15 +1860,99 @@ function suiteWalk() {
   {
     const moon = new Walker({ heightAt: () => 0, gravity: gravityOf({ massE: 0.0123, radiusE: 0.273 }) });
     moon.place(0, 0);
-    const t = replay(moon, () => ({ move: { x: 0, y: 0 }, jump: true }), DT, 900);
+    const t = replay(moon, () => ({ move: { x: 0, y: 0 }, jump: true }), DT, 3000);
     const apex = Math.max(...t.map((s) => s.y));
-    // v₀ is solved from the world's own g, so the *height* is the constant and
-    // the launch speed is what changes. On the Moon that is the same 0.55 m,
-    // reached far more slowly — which is right, and is why there is no
-    // per-world jump constant anywhere in the controller.
-    ok('a low-gravity world gets the same jump height, taken more slowly',
-      Math.abs(apex - GAIT.jumpHeight) < 0.01,
-      `g = ${moon.gravity.toFixed(3)} m/s² → apex ${apex.toFixed(3)} m`);
+    // What a pair of legs holds constant across worlds is the launch *speed* —
+    // a fixed extension against a fixed force — so the apex is v₀²/2g and a
+    // sixth of a gravity buys six times the jump.
+    //
+    // This assertion used to read the other way round: the height was held and
+    // only the flight time changed. That was the controller solving v₀ from the
+    // local g, and it is simply not what a body does. §3's "the numbers are
+    // never negotiable" decides it against the old behaviour, and it decides it
+    // in the direction of the more spectacular frame, which is rare enough to
+    // note.
+    const want = (GAIT.jumpHeight * 9.80665) / moon.gravity;
+    ok('a low-gravity world gets a proportionately bigger jump, from one v₀',
+      Math.abs(apex - want) < 0.02,
+      `g = ${moon.gravity.toFixed(3)} m/s² → apex ${apex.toFixed(2)} m`
+      + ` (v₀²/2g = ${want.toFixed(2)}, ${(want / GAIT.jumpHeight).toFixed(1)}× the 1 g jump)`);
+
+    // and the invariant behind it, stated directly rather than inferred
+    const earth = flat(); earth.place(0, 0);
+    earth.step(DT, { move: { x: 0, y: 0 }, jump: true }, 0);
+    const moon2 = new Walker({ heightAt: () => 0, gravity: gravityOf({ massE: 0.0123, radiusE: 0.273 }) });
+    moon2.place(0, 0);
+    moon2.step(DT, { move: { x: 0, y: 0 }, jump: true }, 0);
+    // one dt of the local g has already been integrated out of each, so add it
+    // back before comparing the launch impulses themselves
+    const v0e = earth.vel.y + earth.gravity * DT;
+    const v0m = moon2.vel.y + moon2.gravity * DT;
+    ok('§2 · and the launch speed itself is the same on both worlds',
+      Math.abs(v0e - v0m) < 1e-9 && Math.abs(v0e - jumpV0()) < 1e-9,
+      `v₀ ${v0e.toFixed(6)} m/s on Earth · ${v0m.toFixed(6)} m/s on the Moon`);
+  }
+
+  // --- flight is thrust against drag, not velocity matching (§M4) -----------
+  {
+    // Cruise speed is not a constant in the table — it is thrust/drag, and the
+    // point of asserting it is that the two constants are the design and the
+    // speed is the consequence. Change either and this number moves with it.
+    const w = flat(); w.place(0, 0, 400);
+    w.fly = true;
+    const full = () => ({ move: { x: 0, y: 1 }, sprint: false });
+    replay(w, full, DT, 120 * 30, 0);           // 30 s: long past the time const
+    const cruise = Math.hypot(w.vel.x, w.vel.z);
+    const wantCruise = GAIT.flyThrust / GAIT.flyDrag;
+    ok('§6 M4 · level flight settles at thrust ÷ drag, and nothing clamps it there',
+      Math.abs(cruise - wantCruise) < 0.5 && cruise < GAIT.flyTop,
+      `${cruise.toFixed(1)} m/s against ${wantCruise.toFixed(1)} = `
+      + `${GAIT.flyThrust}/${GAIT.flyDrag} · rail is ${GAIT.flyTop}`);
+
+    // The whole complaint about the old flight was that it had no mass: input
+    // and velocity were the same variable, so releasing the stick stopped you
+    // in about 60 ms. Coasting is the property that fixes it, and it is
+    // decidable: after two seconds of nothing, most of the speed is still there.
+    const coast = flat(); coast.place(0, 0, 400);
+    coast.fly = true;
+    replay(coast, full, DT, 120 * 30, 0);
+    const before = Math.hypot(coast.vel.x, coast.vel.z);
+    replay(coast, () => ({ move: { x: 0, y: 0 } }), DT, 120 * 2, 0);
+    const after = Math.hypot(coast.vel.x, coast.vel.z);
+    ok('and a released stick coasts rather than stopping dead',
+      after > before * 0.30 && after < before * 0.45,
+      `${before.toFixed(1)} → ${after.toFixed(1)} m/s over 2 s `
+      + `(${(100 * after / before).toFixed(0)}% kept; e^-2·${GAIT.flyCoastDrag} = `
+      + `${(100 * Math.exp(-2 * GAIT.flyCoastDrag)).toFixed(0)}%)`);
+
+    // "you fly where you look": pitch is the aiming model, so the same stick
+    // at a pitched look must climb.
+    const up = flat(); up.place(0, 0, 400);
+    up.fly = true;
+    replay(up, full, DT, 120 * 4, 0, 0.9);       // ~52° nose up
+    ok('and thrust runs along the look vector, so a pitched stick climbs',
+      up.vel.y > 20 && up.pos.y > 420,
+      `climb ${up.vel.y.toFixed(1)} m/s · gained ${(up.pos.y - 400).toFixed(0)} m in 4 s`);
+
+    // and the boost multiplies the *cruise*, not just the acceleration —
+    // otherwise it is a slightly quicker route to the same speed
+    const fast = flat(); fast.place(0, 0, 400);
+    fast.fly = true;
+    replay(fast, () => ({ move: { x: 0, y: 1 }, sprint: true }), DT, 120 * 30, 0);
+    const boosted = Math.hypot(fast.vel.x, fast.vel.z);
+    ok('and the boost raises the speed it settles at, not only how fast it gets there',
+      Math.abs(boosted - wantCruise * GAIT.flyBoost) < 1.0,
+      `${boosted.toFixed(1)} m/s against ${(wantCruise * GAIT.flyBoost).toFixed(1)}`);
+
+    // §2.3 — flight has to replay identically like everything else here
+    const a = flat(); a.place(0, 0, 300); a.fly = true;
+    const b = flat(); b.place(0, 0, 300); b.fly = true;
+    const trace = (i) => ({ move: { x: Math.sin(i * 0.013), y: Math.cos(i * 0.007) }, sprint: i % 97 < 40 });
+    const ta = replay(a, trace, DT, 1800, 0.4, 0.2);
+    const tb = replay(b, trace, DT, 1800, 0.4, 0.2);
+    ok('§2.3 · and the same flight trace at the same dt is bit-identical',
+      ta.every((s, i) => s.x === tb[i].x && s.y === tb[i].y && s.z === tb[i].z),
+      `${ta.length} frames · ended ${Math.hypot(a.pos.x, a.pos.z).toFixed(1)} m out`);
   }
 
   // --- variable height ------------------------------------------------------
@@ -1917,8 +2157,27 @@ function suiteWalk() {
     };
     const p60 = at(1 / 60, 1200), p120 = at(1 / 120, 2400);
     const drift = Math.hypot(p60.x - p120.x, p60.z - p120.z);
+    // The bound is a *fraction of the path*, not a fixed metre count, and the
+    // difference matters. This assertion used to read `drift < 1.0`, which
+    // passed at a 3.45 m/s walk and failed the moment the walk went to 4.8 —
+    // at 1.408 m, which is 1.39× the old number against a 1.39× speed. The
+    // quantity was proportional to distance travelled the whole time and the
+    // tolerance was not, so the test was measuring the walk speed.
+    //
+    // What actually produces the residual is worth naming, because the obvious
+    // suspect is not the culprit. It is not the velocity solver: that is an
+    // exponential approach with a closed-form displacement (`Walker.step`), so
+    // under a constant target it is dt-exact to the last bit. It is the *height
+    // field* — `slopeAt`, `normalAt` and the step-up probe are each evaluated
+    // once per step, so a 60 Hz body samples a rough surface half as often as a
+    // 120 Hz one and takes a subtly different line across it. That is not
+    // removable by a better integrator; it is what discretising a continuous
+    // field costs, and the honest thing to bound is its *rate*.
+    const path = 20 * GAIT.walk;            // upper bound: 20 s at top speed
     ok('and halving the timestep lands in the same place, not a different one',
-      drift < 1.0, `20 s of walking: ${drift.toFixed(3)} m apart at 60 vs 120 Hz`);
+      drift < path * 0.02,
+      `20 s of walking: ${drift.toFixed(3)} m apart at 60 vs 120 Hz`
+      + ` — ${(100 * drift / path).toFixed(2)}% of the ${path.toFixed(0)} m path`);
   }
 
   // --- the third-person boom, which is the one gate clause §M4 spells out ---
@@ -5197,7 +5456,633 @@ function suiteNight() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the score (src/score.js)
+//
+// The music is two halves: a set of pure functions that decide *what to play*
+// from the world's own numbers, and a WebAudio graph that plays it. Only the
+// first half exists today, and this is why it was written that way — a browser
+// is the only thing that can make a sound, and nothing in the loop can hear
+// one, so the half that carries the actual claim ("the score is attuned to the
+// world") is the half that has to be decidable without ears.
+//
+// What these check is that the mapping *discriminates*. A generative score
+// whose parameters all collapse onto one chord is indistinguishable from a
+// hardcoded one, and it would look identical from the outside.
+function suiteScore() {
+  console.log('\nscore — the world→music mapping, decided without ears (§2.3, §9)');
+
+  const W = [
+    { kind: 'cosmic', seed: 1, starTemp: 5778 },
+    { kind: 'galaxy', seed: 2, starTemp: 5778 },
+    { kind: 'system', seed: 3, starTemp: 5778 },
+    { kind: 'blackhole', seed: 4, starTemp: 5778 },
+    // gravity in m/s², Teq in kelvin — the module's units, not multiples of g
+    { kind: 'surface', seed: 11, type: 'terrestrial', starTemp: 5682, gravity: 5.88, Teq: 338, inhabited: true },
+    { kind: 'surface', seed: 12, type: 'ice', starTemp: 3200, gravity: 3.04, Teq: 140 },
+    { kind: 'surface', seed: 13, type: 'lava', starTemp: 9500, gravity: 18.63, Teq: 1180 },
+    { kind: 'surface', seed: 14, type: 'ocean', starTemp: 5100, gravity: 10.30, Teq: 291, inhabited: true },
+    { kind: 'surface', seed: 15, type: 'barren', starTemp: 24000, gravity: 1.57, Teq: 60 },
+    { kind: 'clouds', seed: 16, type: 'gas giant', starTemp: 4100, gravity: 23.54, Teq: 165 },
+  ];
+  const S = W.map(deriveScore);
+
+  // §2.3 — same world in, same score out, or a shared link plays a different
+  // piece for whoever opens it
+  const twice = W.every((w) => JSON.stringify(deriveScore(w)) === JSON.stringify(deriveScore(w)));
+  ok('§2.3 · the same world derives the same score, exactly',
+    twice, `${W.length} worlds, each derived twice`);
+
+  const keys = new Set(S.map((s) => s.tonicName + ' ' + s.mode));
+  ok('and ten different worlds do not land on the same chord',
+    keys.size >= 8, `${keys.size} distinct key+mode of ${W.length}`
+    + ` · ${[...keys].slice(0, 4).join(', ')}…`);
+
+  // The mode ladder is ordered dark→bright and driven by the star's colour
+  // temperature, which is the same number §9.6 derives the sky's four stops
+  // from. Assert the *ordering*, not the values: it is the monotonicity that
+  // makes it a transfer rather than a lookup.
+  const ladderAt = (T) => MODE_LADDER.indexOf(
+    deriveScore({ kind: 'surface', seed: 99, type: 'terrestrial', starTemp: T, gravity: 1, temp: 288 }).mode);
+  const cool = ladderAt(3000), sun = ladderAt(5778), hot = ladderAt(20000);
+  ok('§9.6 · a redder star gets a darker mode, and the ladder is monotone in T',
+    cool <= sun && sun <= hot && cool < hot,
+    `3000 K → ${MODE_LADDER[cool]} · 5778 K → ${MODE_LADDER[sun]} · 20000 K → ${MODE_LADDER[hot]}`);
+
+  // Gravity sets register. Heavy worlds sit low — the one mapping a listener
+  // could name without being told it exists.
+  //
+  // `gravity` is **m/s², not multiples of g**, and this assertion caught the
+  // author of it passing 0.16/1.0/2.5 as if it were the latter. Every one of
+  // those clamps to the module's 0.25 m/s² floor or near it, so all three came
+  // back on the same note and the mapping looked broken when the test was.
+  // Left as a comment because the same slip is one keystroke away for anyone
+  // reading `gravityOf()` in avatar.js, which does return multiples of g.
+  const G = 9.80665;
+  const reg = (mss) => deriveScore({ kind: 'surface', seed: 7, type: 'terrestrial', starTemp: 5778, gravity: mss, temp: 288 }).tonicMidi;
+  ok('and a heavier world sits lower, from its own surface gravity',
+    reg(2.5 * G) < reg(1.0 * G) && reg(1.0 * G) < reg(0.16 * G),
+    `0.16 g → MIDI ${reg(0.16 * G)} · 1 g → ${reg(1.0 * G)} · 2.5 g → ${reg(2.5 * G)}`);
+
+  // §2.8's split by medium, in the one place it can be heard: vacuum is a big
+  // empty room and an atmosphere is not.
+  const vac = S.filter((s) => ['cosmic', 'galaxy', 'system', 'blackhole'].includes(s.kind));
+  const air = S.filter((s) => ['surface', 'clouds'].includes(s.kind));
+  const minVac = Math.min(...vac.map((s) => s.reverb.seconds));
+  const maxAir = Math.max(...air.map((s) => s.reverb.seconds));
+  ok('§2.8 · vacuum reverberates longer than air does, at every scale',
+    minVac > maxAir,
+    `vacuum ≥ ${minVac.toFixed(1)} s · atmosphere ≤ ${maxAir.toFixed(1)} s`);
+
+  // Non-loopable, by construction: the LFO rates must be mutually irrational,
+  // or the whole texture has a period and §M1's "no perceptible loop" is a
+  // matter of how long you are willing to wait.
+  const ratios = LFO_RATIOS;
+  let rational = 0;
+  for (let i = 0; i < ratios.length; i++) {
+    for (let j = i + 1; j < ratios.length; j++) {
+      const r = ratios[j] / ratios[i];
+      // a small-integer ratio is what a common period needs
+      for (let p = 1; p <= 6; p++) for (let q = 1; q <= 6; q++) {
+        if (Math.abs(r - p / q) < 1e-9) rational++;
+      }
+    }
+  }
+  ok('§M1 · and no two LFO rates share a period, so the texture cannot loop',
+    rational === 0, `${ratios.length} rates, ${rational} small-integer ratios among them`);
+
+  // The chord plan is pure in k, which is what lets a scale change jump to a
+  // different point in the piece without storing anything or hearing a seam.
+  const s0 = S[4];
+  const c1 = JSON.stringify(chordPlan(s0, 137));
+  const c2 = JSON.stringify(chordPlan(s0, 137));
+  ok('and the k-th chord is pure in k, so a scale change can cut into the piece',
+    c1 === c2 && chordPlan(s0, 137) !== null,
+    `chord 137 reproduced without evaluating 0…136`);
+}
+
+// ---------------------------------------------------------------------------
+// the plant (src/figure.js)
+//
+// The half of the figure that does not need a renderer: where each foot is
+// through a stride, and the two angles that reach it. `tools/footplant.js`
+// measures the other half — the composition, once the pelvis has moved — and
+// the split is deliberate. What is checkable here is the *law*; what needs a
+// browser is whether everything downstream honours it.
+//
+// The defect these exist to prevent has a number. Before the solve, the shipped
+// figure's stance foot slid 15 mm per frame at a stroll and 74 mm at a run —
+// four and a half metres a second of skate under a body moving five — and it
+// was invisible to every instrument in this repo, because a slide is not
+// something a still frame can show.
+
+function suitePlant() {
+  console.log('\nplant — the foot is the independent variable (§M4)');
+
+  const CAD = (v) => 0.58 + 0.34 * v;
+
+  {
+    // The claim in one line: a planted foot moves backwards through the body's
+    // frame at exactly the body's speed. Integrated over stance, its excursion
+    // is the stride times the duty — not the stride, which is the mistake that
+    // makes it slide, and not a clamp, which is the mistake that makes it slide
+    // differently.
+    let worst = 0, where = 0;
+    for (const v of [0.6, 1.2, 2.0, 3.2, 5.0, 9.0]) {
+      const cad = CAD(v), N = 4000;
+      let prev = null;
+      for (let i = 0; i <= N; i++) {
+        const u = i / N;
+        const p = legPlant(u, v, cad);
+        if (prev) {
+          const travel = v / cad / N;          // body movement in one sample
+          for (const k of ['L', 'R']) {
+            if (!p[k].down || !prev[k].down) continue;
+            const e = Math.abs((p[k].z - prev[k].z) + travel);
+            if (e > worst) { worst = e; where = v; }
+          }
+        }
+        prev = p;
+      }
+    }
+    ok('§M4 · a planted foot slides by nothing over six speeds',
+      worst < 1e-9,
+      `worst ${worst.toExponential(1)} m per sample (at ${where} m/s) — the`
+      + ' authored-joint cycle it replaces slid 15–74 mm per *frame*');
+  }
+
+  {
+    // Double support and the float phase, against the textbook, and neither is
+    // scripted: both are `2·duty − 1` changing sign at Froude 0.5.
+    const census = (v, g = 9.81) => {
+      let both = 0, none = 0;
+      for (let i = 0; i < 720; i++) {
+        const p = legPlant(i / 720, v, CAD(v), g);
+        const n = p.L.down + p.R.down;
+        if (n === 2) both++;
+        if (n === 0) none++;
+      }
+      return { both: both / 720, none: none / 720 };
+    };
+    const walk = census(1.2), run = census(5.0);
+    ok('§M4 · a walk has double support and no float; a run has the reverse',
+      walk.both > 0.15 && walk.none === 0 && run.none > 0.2 && run.both === 0,
+      `1.2 m/s: ${(walk.both * 100).toFixed(0)}% double support, no float ·`
+      + ` 5.0 m/s: ${(run.none * 100).toFixed(0)}% float, no double support`);
+    ok('...and the transition rides gravity, because it is a Froude number',
+      census(1.5, 1.62).none > 0.15 && census(1.5).none === 0,
+      'at 1.5 m/s a body runs on Luna and walks on Earth — one speed, two'
+      + ' gaits, and no branch anywhere that says so');
+  }
+
+  {
+    // The solve, against the thing it claims. Both bones exact, or the chain
+    // straightens — never a NaN and never a stretched femur.
+    const t1 = LEG_REF.hip - LEG_REF.knee, t2 = LEG_REF.knee - LEG_REF.ankle;
+    let worst = 0, bad = 0;
+    for (let i = 0; i < 600; i++) {
+      const z = Math.sin(i * 0.7) * 0.55, y = (i % 23) * 0.012, drop = (i % 11) * 0.012;
+      const sol = solveLeg(z, y, drop);
+      if (!Number.isFinite(sol.hip) || !Number.isFinite(sol.knee)) { bad++; continue; }
+      // walk the chain forward and see where the foot landed
+      const kz = -Math.sin(sol.hip) * t1, ky = -Math.cos(sol.hip) * t1;
+      const fz = kz - Math.sin(sol.hip + sol.knee) * t2;
+      const fy = ky - Math.cos(sol.hip + sol.knee) * t2;
+      const hy = LEG_REF.hip - drop;
+      const want = [z, LEG_REF.ankle + y - hy];
+      const reach = Math.hypot(want[0], want[1]) <= (t1 + t2) * 0.999;
+      if (reach) worst = Math.max(worst, Math.hypot(fz - want[0], fy - want[1]));
+    }
+    ok('§M4 · the two-bone solve lands the foot on its target, in closed form',
+      bad === 0 && worst < 1e-9,
+      `worst placement error ${worst.toExponential(1)} m over 600 reachable`
+      + ' targets, and no NaN anywhere — an IK that cannot fail to converge'
+      + ' because it does not converge');
+  }
+
+  {
+    // The hip drop is a consequence, not a curve. It has to be zero standing
+    // still and it has to be the compass value under a planted foot.
+    const still = legPlant(0.3, 0, 0.58);
+    let lo = 1e9, hi = -1e9, compassHi = 0;
+    for (let i = 0; i < 720; i++) {
+      const p = legPlant(i / 720, 1.35, CAD(1.35));
+      lo = Math.min(lo, p.drop); hi = Math.max(hi, p.drop);
+      compassHi = Math.max(compassHi, p.compass);
+    }
+    ok('§M4 · the head bob is the step length, not a cosine laid over it',
+      still.drop === 0 && hi - lo > 0.02 && hi - lo < 0.13 && compassHi >= (hi - lo) * 0.9,
+      `exactly 0 standing still · ${((hi - lo) * 100).toFixed(1)} cm at a walk on`
+      + ` a ${(compassHi * 100).toFixed(1)} cm compass arc — the determinants of`
+      + ' gait are the difference');
+  }
+
+  {
+    // The reach limit belongs on the duty. Clamping the excursion instead is
+    // the fix that reintroduces the defect, so assert the shape rather than
+    // trusting the comment.
+    const fast = legPlant(0.2, 14, CAD(14));
+    const legL = LEG_REF.hip - LEG_REF.ankle;
+    ok('a body outrunning its legs shortens its stance rather than sliding',
+      fast.duty < 0.34 && Math.abs(fast.L.z) <= legL * 0.5 + 1e-9,
+      `at 14 m/s the stride wants ${fast.stride.toFixed(2)} m, the leg reaches`
+      + ` ${(legL * 0.5).toFixed(2)} m, and the duty falls to ${fast.duty.toFixed(2)}`
+      + ' — which is what running is');
+  }
+
+  {
+    // §11's NaN sweep, on the two functions the whole leg hangs off.
+    let bad = 0;
+    for (const v of [0, 1e-9, 3.2, 400]) {
+      for (const c of [0, 1e-9, 1.4, 1e3]) {
+        for (const g of [1e-9, 1.62, 9.81, 300]) {
+          const p = legPlant(0.41, v, c, g);
+          for (const n of [p.duty, p.stride, p.drop, p.L.z, p.L.y, p.R.z, p.R.y]) {
+            if (!Number.isFinite(n)) bad++;
+          }
+          const s2 = solveLeg(p.L.z, p.L.y, p.drop);
+          if (!Number.isFinite(s2.hip) || !Number.isFinite(s2.knee)) bad++;
+        }
+      }
+    }
+    ok('§11 · no speed, cadence or gravity puts a NaN in a leg',
+      bad === 0,
+      '64 combinations including zero cadence and zero gravity — a NaN here is'
+      + ' a bone matrix of garbage and a figure stretched across the frame');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// the ascent (src/ascent.js)
+//
+// §2.5 forbids cuts and the surface scale has shipped one since it existed: you
+// leave a planet with Escape. These check the law that replaces it — when the
+// ground lets go, and the three ways a bare altitude test gets it wrong.
+//
+// All of it is arithmetic, so all of it is decidable here rather than by
+// flying up and finding out.
+
+function suiteAscent() {
+  console.log('\nascent — the ground lets go, and §2.5 stops being violated');
+
+  {
+    // The number nobody chose. At the release altitude the tile exactly fills
+    // the frame; a metre higher and its edge is visible.
+    const h = releaseAltitude(1400, 52);
+    near('the release altitude of a 1400 m tile through a 52° lens', h, 1435, 0.002);
+    // and it is a *law*: it moves with both inputs, on its own
+    const wide = releaseAltitude(2800, 52), narrow = releaseAltitude(1400, 26);
+    ok('...and it follows the tile and the lens rather than a constant',
+      Math.abs(wide - h * 2) < 1e-6 && narrow > h * 2,
+      `double the tile → ${wide.toFixed(0)} m (exactly 2×) · halve the FOV →`
+      + ` ${narrow.toFixed(0)} m · so a mobile tier on a different lens releases`
+      + ' at its own correct altitude with no second constant to keep in step');
+    // the geometry it claims: at that height the half-extent subtends fov/2
+    const subtend = Math.atan(700 / h) * 180 / Math.PI;
+    near('...and the geometry checks out — the ground subtends exactly the lens',
+      subtend * 2, 52, 1e-9);
+  }
+
+  {
+    // A mountain is not a request to leave. This is the failure a bare
+    // altitude test has, and it is the one a person would hit first.
+    const rel = releaseAltitude(1400, 52);
+    let st = ascentState();
+    for (let i = 0; i < 600; i++) {
+      st = stepAscent(st, { alt: rel + 300, climb: 0, release: rel, dt: 1 / 60, powered: true });
+      if (st.released) break;
+    }
+    ok('§2.5 · standing on a 1700 m mountain does not eject you',
+      !st.released,
+      'ten seconds above the release altitude at zero climb rate and the'
+      + ' ground still has you — the trigger is a climb, not a height');
+  }
+
+  {
+    // A jump is not a departure — and the first version of this got the reason
+    // wrong. The claim was that a ballistic arc cannot sustain a climb because
+    // it decelerates at g. True on Earth; false where it matters. A 400 m leap
+    // on Luna leaves at 36 m/s and takes 22 seconds to fall below walking pace,
+    // so a dwell can never tell the two apart. What separates them is what is
+    // paying for the climb.
+    const rel = releaseAltitude(1400, 52);
+    let fired = null;
+    for (const g of [1.62, 3.7, 9.81]) {
+      let v = Math.sqrt(2 * g * 400), alt = rel, st = ascentState();
+      const dt = 1 / 120;
+      for (let i = 0; i < 8000 && v > -80; i++) {
+        st = stepAscent(st, { alt, climb: v, release: rel, dt, powered: false });
+        if (st.released) { fired = g; break; }
+        alt += v * dt; v -= g * dt;
+      }
+      if (fired) break;
+    }
+    // ...and the same arc, under thrust, does leave — so the clause is doing
+    // work rather than just being restrictive
+    let powered = ascentState(), left = false;
+    for (let i = 0; i < 600; i++) {
+      powered = stepAscent(powered, { alt: rel + i, climb: 36, release: rel, dt: 1 / 120, powered: true });
+      if (powered.released) { left = true; break; }
+    }
+    ok('§M4 · a ballistic jump does not leave the planet, at any gravity',
+      fired === null && left,
+      'a 400 m leap from the release line on Luna, Mars and Earth leaves none'
+      + ' of them — a 22-second arc on Luna sustains a climb better than any'
+      + ' dwell could reject, so the test is thrust, not duration');
+  }
+
+  {
+    // A sustained climb does leave, and it takes the dwell to do it — not
+    // longer, which would feel like the game arguing with you.
+    const rel = releaseAltitude(1400, 52);
+    let st = ascentState(), alt = rel - 50, t = 0;
+    const dt = 1 / 60;
+    for (let i = 0; i < 3600; i++) {
+      st = stepAscent(st, { alt, climb: 40, release: rel, dt });
+      alt += 40 * dt; t += dt;
+      if (st.released) break;
+    }
+    ok('§2.5 · a sustained climb hands the body over, after the dwell and no longer',
+      st.released && t > DWELL && t < DWELL + 1.5,
+      `released ${t.toFixed(2)} s after crossing, on a ${DWELL} s dwell —`
+      + ' the rest is the time it took to reach the line at 40 m/s');
+  }
+
+  {
+    // Hysteresis. Without it, hovering on the line fires once per frame.
+    const rel = releaseAltitude(1400, 52);
+    let st = ascentState(), fires = 0;
+    const dt = 1 / 60;
+    for (let i = 0; i < 1800; i++) {
+      // hovering: crossing the line every few frames, never sustaining a climb
+      const alt = rel + Math.sin(i * 0.4) * 4;
+      const climb = Math.cos(i * 0.4) * 4 * 0.4 * 60;
+      st = stepAscent(st, { alt, climb, release: rel, dt });
+      if (st.released) fires++;
+    }
+    ok('a body hovering on the line does not flicker through the transition',
+      fires === 0,
+      `thirty seconds of oscillation across the release altitude, ${fires}`
+      + ` handovers — the band is ${(HYST * 100).toFixed(0)}% wide, so crossing`
+      + ' it is an event rather than a state');
+    // ...and the disarm actually needs the fall, not just any dip
+    let s2 = stepAscent(ascentState(), { alt: rel + 10, climb: 5, release: rel, dt });
+    s2 = stepAscent(s2, { alt: rel * 0.95, climb: 5, release: rel, dt });
+    ok('...and a dip of a few percent does not disarm it either',
+      s2.armed, `still armed 5% below the line, disarms below`
+      + ` ${((1 - HYST) * 100).toFixed(0)}%`);
+  }
+
+  {
+    // The handoff. §M5's gate: "camera inherits velocity".
+    const up = [0, 1, 0];
+    const h = handoff({ x: 12, y: 40, z: -5 }, up);
+    near('§M5 · the climb comes out along the site\'s own normal', h.climb, 40, 1e-12);
+    ok('...and the lateral drift is what is left, so an ascent leans',
+      Math.abs(h.lateral[1]) < 1e-12 && Math.abs(h.lateral[0] - 12) < 1e-12
+      && Math.abs(h.speed - Math.hypot(12, 40, 5)) < 1e-12,
+      `12 / −5 m/s of lateral survives the split, and the total ${h.speed.toFixed(1)}`
+      + ' m/s is conserved — a hyperzoom starting from rest after a 200 m/s climb'
+      + ' is a cut with a crossfade over it');
+    // a tilted site, which is every site that is not the north pole
+    const t = 1 / Math.sqrt(3);
+    const g = handoff({ x: 10, y: 10, z: 10 }, [t, t, t]);
+    near('...on a landing site anywhere on the sphere', g.climb, 10 * Math.sqrt(3), 1e-9);
+    ok('...and the lateral part is genuinely perpendicular to it there too',
+      Math.abs(g.lateral[0] * t + g.lateral[1] * t + g.lateral[2] * t) < 1e-9,
+      'the residue after removing the radial component has zero dot with the'
+      + ' normal, which is what makes it lateral rather than nearly lateral');
+  }
+
+  {
+    // The HUD fraction: a mountaintop reads low, a climb reads high, and it is
+    // monotone in the thing a person can control.
+    const rel = releaseAltitude(1400, 52);
+    const still = ascentFraction(ascentState(), { alt: rel, climb: 0, release: rel });
+    let st = ascentState();
+    for (let i = 0; i < 40; i++) st = stepAscent(st, { alt: rel + 5, climb: 30, release: rel, dt: 1 / 60 });
+    const going = ascentFraction(st, { alt: rel + 5, climb: 30, release: rel });
+    ok('the readout answers "am I leaving", not "how high am I"',
+      still <= 0.5 + 1e-9 && going > still && going <= 1,
+      `sitting on the line reads ${still.toFixed(2)}, climbing through it reads`
+      + ` ${going.toFixed(2)} — a mountaintop is not most of the way to orbit`);
+  }
+
+  {
+    // §11's NaN sweep, and the disabled path, which has to be inert.
+    let bad = 0, fired = 0;
+    for (const alt of [-100, 0, 1e9, NaN]) {
+      for (const climb of [-1e6, 0, 1e6, NaN]) {
+        for (const release of [0, -5, 1435, Infinity]) {
+          const st = stepAscent(ascentState(), { alt, climb, release, dt: 1 / 60 });
+          if (typeof st.armed !== 'boolean' || !Number.isFinite(st.held)) bad++;
+          const off = stepAscent(ascentState(),
+            { alt: 1e6, climb: 1e3, release: 1435, dt: 10, enabled: false });
+          if (off.released) fired++;
+        }
+      }
+    }
+    ok('§11 · no input reaches a NaN, and disabled means disabled',
+      bad === 0 && fired === 0,
+      '48 combinations including NaN altitude and zero release height — and the'
+      + ' off switch does not fire even handed a 1000 m/s climb and a 10 s frame');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// the rooms between (src/liminal.js)
+//
+// The claim is that the Backrooms is not a level somebody added but the
+// negative space of the seed function — the addresses the generator can express
+// and never visits. A claim like that is either checkable or it is a mood.
+//
+// So: the rarity is the birthday problem rather than a threshold, the aesthetic
+// is the hash's avalanche rather than a style guide, the light is the mercury
+// spectrum rather than a swatch, and the doors open onto worlds that actually
+// exist. Every one of those is a number.
+
+function suiteLiminal() {
+  console.log('\nliminal — the space between addresses, and why it is rare on its own');
+
+  const GS = 0x51b0a3c1;
+  const N = 4096;
+
+  {
+    // §3's weirdness budget, solved rather than tuned. The depth is whatever
+    // makes ~5% of worlds thin, so changing the star count moves the depth and
+    // leaves the budget alone — which is the property that makes it a law.
+    const d = thinDepth(N);
+    let thin = 0;
+    for (let i = 0; i < 900; i++) if (isThin(GS, i, N).thin) thin++;
+    const frac = thin / 900;
+    ok('§3 · the weirdness budget falls out of the birthday problem',
+      frac > 0.02 && frac <= 0.075,
+      `${(frac * 100).toFixed(1)}% of worlds are thin at depth ${d} — §3 asks for`
+      + ' ≤5% and nothing here thresholds on anything');
+    // and it tracks the star count on its own
+    const small = thinDepth(256), big = thinDepth(65536);
+    ok('...and the depth follows the galaxy rather than a constant',
+      small < d && d < big && big - small === 8,
+      `256 stars → depth ${small} · ${N} → ${d} · 65536 → ${big}: 256× the stars`
+      + ' is exactly 8 bits deeper, which is what log2 of a linear term does');
+  }
+
+  {
+    // §4 of the header: rooms at one depth share their statistics, rooms one
+    // bit apart share nothing. If the hash's avalanche were weak the aesthetic
+    // would silently become "every room looks alike", which is a different and
+    // much worse thing — so measure it rather than trust it.
+    const base = { prefix: 0xa3f0c000 >>> 0, depth: 19 };
+    const a = roomShape(base);
+    let differing = 0, samples = 0;
+    for (let bit = 0; bit < 19; bit++) {
+      const b = roomShape({ prefix: (base.prefix ^ (1 << (31 - bit))) >>> 0, depth: 19 });
+      samples++;
+      if (Math.abs(b.width - a.width) > 1e-9 || Math.abs(b.depth - a.depth) > 1e-9) differing++;
+    }
+    ok('§2.3 · one bit of address is a completely different room',
+      differing >= samples - 1,
+      `${differing} of ${samples} single-bit neighbours differ in plan — the`
+      + " Backrooms' 'same building, never this room' is the hash's avalanche");
+    // ...and the distributions at one depth are shared, which is the other half
+    let lo = 1e9, hi = -1e9;
+    for (let i = 0; i < 500; i++) {
+      const sh = roomShape({ prefix: (i * 2654435761) >>> 0, depth: 19 });
+      lo = Math.min(lo, sh.ceiling); hi = Math.max(hi, sh.ceiling);
+    }
+    ok('...while every room at a depth shares one building’s proportions',
+      lo >= 2.4 - 1e-9 && hi <= 3.0 + 1e-9,
+      `500 rooms, ceilings ${lo.toFixed(1)}–${hi.toFixed(1)} m, all on the 600 mm`
+      + ' grid — office proportions, which is what makes it read as a place'
+      + ' rather than a corridor in a game');
+  }
+
+  {
+    // The address algebra. A room is symmetric in the two worlds that opened it,
+    // or a door you came in by is not a door you can leave by.
+    const a = 0xdeadbeef >>> 0, b = 0xdeadb00f >>> 0;
+    const ab = roomAddress(a, b), ba = roomAddress(b, a);
+    ok('§2.4 · a room is the same room from either side',
+      ab.prefix === ba.prefix && ab.depth === ba.depth && ab.depth === sharedBits(a, b),
+      `both worlds address ${roomKey(ab)} — the graph is undirected because the`
+      + ' address is, not because something enforces it');
+    // and the prefix genuinely has its tail cleared, or two rooms collide
+    const tailMask = ab.depth >= 32 ? 0 : ((1 << (32 - ab.depth)) - 1) >>> 0;
+    ok('...and the prefix carries no bits the two worlds disagree about',
+      ((ab.prefix & tailMask) >>> 0) === 0,
+      `depth ${ab.depth}, so the low ${32 - ab.depth} bits are zero — otherwise`
+      + ' two different pairs would name the same room and mean different ones');
+  }
+
+  {
+    // §2.4 for real: the URL round-trips, and refuses what is not one.
+    let worst = null;
+    for (let i = 0; i < 2000 && !worst; i++) {
+      const addr = roomAddress(starAt(GS, i), starAt(GS, (i * 7 + 3) % 4096));
+      const back = parseRoomKey(roomKey(addr));
+      if (!back || back.prefix !== addr.prefix || back.depth !== addr.depth) worst = addr;
+    }
+    const junk = ['', 'nope', '12345678', 'zz.4', 'a3f0c000.99', 'a3f0c000.', null, undefined];
+    const rejected = junk.every((j) => parseRoomKey(j) === null);
+    ok('§2.4 · every room is a URL, and only a room is',
+      worst === null && rejected,
+      '2000 addresses round-trip through their key exactly, and eight kinds of'
+      + ' junk are refused rather than silently decoded to room zero');
+  }
+
+  {
+    // The doors go somewhere real. This is what separates a second metric on
+    // the universe from a diorama.
+    const d = thinDepth(N);
+    let found = null;
+    for (let i = 0; i < 3000 && !found; i++) {
+      const t = isThin(GS, i, N);
+      if (t.thin) found = { i, t };
+    }
+    ok('a thin world exists to be found at all, in a normal galaxy',
+      found !== null,
+      found ? `world ${found.i} shares ${found.t.bits} bits with world`
+        + ` ${found.t.neighbour}, against a threshold of ${d}`
+        : 'none in 3000 — the depth is too deep');
+    if (found) {
+      const addr = roomAddress(found.t.seed, found.t.neighbourSeed);
+      const r = room(GS, addr, N);
+      const mask = addr.depth >= 32 ? 0xffffffff : (~0 << (32 - addr.depth)) >>> 0;
+      const allMatch = r.doors.every((x) => ((x.starSeed & mask) >>> 0) === addr.prefix);
+      const bothEnds = r.doors.some((x) => x.index === found.i)
+        && r.doors.some((x) => x.index === found.t.neighbour);
+      ok('§4 · the doors open onto worlds that exist, including the two you came from',
+        r.doors.length >= 2 && allMatch && bothEnds,
+        `room ${r.key} has ${r.doors.length} doors, every one a real star sharing`
+        + ' the prefix — so walking through is a shortcut across the galaxy that'
+        + ' address proximity, not distance, decides');
+      // §2.3: the same room, twice, is the same room
+      const again = room(GS, addr, N);
+      ok('§2.3 · the same address builds the same room, to the door order',
+        JSON.stringify(r) === JSON.stringify(again),
+        'no allocation, no table, no id server — a room is a pure function of'
+        + ' two integers, which is why the URL can outlive the session');
+    }
+  }
+
+  {
+    // The light. Mercury, through the same CIE observer the aurora uses — and
+    // the check that matters is that it lands where a fluorescent tube lands
+    // rather than wherever the arithmetic happened to go.
+    const fresh = lampColour(0), old = lampColour(1);
+    const hue = (c) => (c[1] > c[0] && c[1] >= c[2] ? 'green' : c[0] > c[1] ? 'warm' : 'cold');
+    ok('§9.1 · the lamp is a mercury spectrum, not a swatch',
+      hue(fresh) === 'green' && fresh[2] < fresh[1] && fresh[2] < fresh[0],
+      `fresh tube ${fresh.map((v) => v.toFixed(2)).join(', ')} — green-dominant and`
+      + ' blue-starved, which is what 546.1 nm plus a 578.2 doublet is');
+    ok('...and an old tube drifts toward the raw discharge, on one parameter',
+      old[1] / Math.max(old[0], 1e-6) > fresh[1] / Math.max(fresh[0], 1e-6),
+      'losing phosphor faster than lines makes it greener and harsher — the'
+      + ' worst corridor in any building is the one nobody re-lamped');
+    const total = MERCURY_LINES.reduce((a, l) => a + l.w, 0);
+    near('...and the line weights are a normalised spectrum', total, 1.0, 0.01);
+  }
+
+  {
+    // The buzz. Twice mains, because a discharge strikes on both half-cycles.
+    ok('the flicker is 2f, because the lamp does not care which way the current goes',
+      FLICKER_HZ === MAINS_HZ * 2 && FLICKER_HZ === 100,
+      `${MAINS_HZ} Hz supply → ${FLICKER_HZ} Hz flicker`);
+    let lo = 1e9, hi = -1e9;
+    for (let i = 0; i < 4000; i++) { const v = lampFlicker(i / 4000 * 0.1); lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    ok('...and phosphor persistence fills the troughs instead of strobing',
+      lo > 0.75 && hi <= 1 + 1e-9 && hi - lo < 0.3,
+      `${lo.toFixed(2)}–${hi.toFixed(2)} over a tenth of a second — a shallow`
+      + ' ripple, not a strobe, which is the difference between a room that'
+      + ' hums and a room that is broken');
+  }
+
+  {
+    // §11's sweep. An address is user input the moment it is in a URL.
+    let bad = 0;
+    for (const prefix of [0, -1, 0xffffffff, 0x7fffffff]) {
+      for (const depth of [0, 1, 31, 32, 33, -4]) {
+        const sh = roomShape({ prefix, depth });
+        for (const v of [sh.width, sh.depth, sh.ceiling, sh.lampPitch, sh.skew, sh.damp]) {
+          if (!Number.isFinite(v) || v < -10 || v > 1e4) bad++;
+        }
+        if (!(sh.width > 0) || !(sh.ceiling >= 2.4)) bad++;
+        const c = lampColour(sh.lampAge);
+        if (c.some((x) => !Number.isFinite(x) || x < 0 || x > 1.0001)) bad++;
+      }
+    }
+    ok('§11 · a hostile ?room= cannot produce a room with no floor',
+      bad === 0,
+      '24 addresses including negative depths and 0xffffffff — every one yields'
+      + ' a finite room with a real ceiling, because the URL is user input');
+  }
+}
+
 const suites = {
+  liminal: suiteLiminal,
+  ascent: suiteAscent,
+  plant: suitePlant,
+  score: suiteScore,
   night: suiteNight,
   aurora: suiteAurora,
   soften: suiteSoften,

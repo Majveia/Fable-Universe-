@@ -14,10 +14,17 @@ import { hash, RNG, starName, planetName } from './rng.js';
 import { applyResonance } from './resonance.js';
 import { makeSkyDome, makeGalaxySkyFromWithin } from './starfield.js';
 import { softDotTexture, nebulaTexture } from './nebula.js';
+// `blackbodyRGB` still lights the *planets*: it is Tanner Helland's fit, it is
+// cheap, and a lambertian term does not care about the last percent of
+// chromaticity. What it no longer does is decide what the star's own pixels
+// look like — that is `starChroma()` below, Planck through the CIE 1931
+// observer, the same transfer §9.6 derives the sky stops from. Two functions,
+// two jobs, and the one that has to survive §8 axis 8 is the rigorous one.
 import {
   makeSurfaceMaterial, makeCloudMaterial, makeAtmosphereMaterial,
-  makeStarSurfaceMaterial, makeRingMaterial, blackbodyRGB,
+  makeRingMaterial, blackbodyRGB, NOISE_GLSL,
 } from './planet.js';
+import { planck, spectrumToXYZ, xyzToLinearSRGB, toGamut } from './starlight.js';
 
 const AU_DRAW = 46;      // display units at 1 AU
 
@@ -256,6 +263,556 @@ function keplerPos(el, tYears, massStar, out) {
   return out;
 }
 
+// ===========================================================================
+// THE STAR
+//
+// What was here before was a white sphere inside a Gaussian sprite ten stellar
+// radii across, tinted by `planet.js`'s `blackbodyRGB()`. Measured on the
+// capture at `?seed=20250601&g=443188473&s=2309765500`, that frame was **99.2%
+// achromatic**, 70.6% of it lit, and the star — a G-class 5,682 K star, which
+// the HUD says out loud — arrived as a flat grey egg filling most of the
+// screen. §8 axis 6 asks for nothing clipping and §8 axis 8 asks whether the
+// pixels contradict the physics the HUD asserts. Both failed, and the second
+// one failed hard: the temperature was simply not on screen.
+//
+// Three separate faults, and it is worth naming each because each has its own
+// fix below.
+//
+//  1. **The colour was never warm.** `blackbodyRGB()` is the Tanner Helland
+//     fit, which returns (1.00, 0.944, 0.893) at 5,682 K. The CIE integral of
+//     the actual Planck spectrum returns (1.00, 0.870, 0.799) — nearly twice
+//     the chroma. `starlight.js` already owns that integral (it is how §9.6's
+//     sky stops are derived), so the star now goes through the same transfer
+//     the air does. One definition, per §2.7's discipline.
+//
+//  2. **The glow was a sprite, not a corona.** `dR · 10` at `AU_DRAW = 46`
+//     means a halo wider than one astronomical unit, with a Gaussian profile
+//     that has no physical referent at all. A real corona is *six orders of
+//     magnitude* fainter than the disc and dies inside four stellar radii; the
+//     wide halo in any real photograph of a star is the instrument's point
+//     spread function, which in AEON is `bloom.js` and is bounded on purpose.
+//
+//  3. **Everything clipped.** `uColor · granule · limb · 2.6` puts the disc
+//     centre near 3.4 in the linear buffer, where `1 − exp(−1.32c)` has no
+//     slope left, so granulation, limb darkening and hue all resolved to the
+//     same white.
+
+/**
+ * A star's chromaticity, from Planck's law through the CIE 1931 observer.
+ *
+ * Returned at **unit luminance**, because the brightness is a separate physical
+ * quantity (Stefan–Boltzmann, below) and mixing the two is what bleaches a
+ * palette — §9.2 gives exactly this rule for hemispheric ambient: "normalise
+ * the hemi colour to unit luminance so it can rotate hue without ever bleaching
+ * the palette."
+ */
+function starChroma(T) {
+  const rgb = toGamut(xyzToLinearSRGB(spectrumToXYZ((l) => planck(l, Math.min(Math.max(T, 900), 60000)))));
+  const y = Math.max(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2], 1e-6);
+  return [rgb[0] / y, rgb[1] / y, rgb[2] / y];
+}
+
+/** the same thing as a THREE.Color, renormalised so no channel exceeds 1 —
+ *  for the places that want a tint rather than a radiance */
+function starTint(T) {
+  const c = starChroma(T);
+  const m = Math.max(c[0], c[1], c[2]);
+  return new THREE.Color(c[0] / m, c[1] / m, c[2] / m);
+}
+
+// How far either side of T_eff the photosphere ramp has to reach. The low end
+// is a sunspot umbra (~0.62 T_eff on the Sun); the high end is the deepest
+// layer a grazing sightline reaches plus the hottest granule.
+const RAMP_LO = 0.55, RAMP_HI = 1.16, RAMP_N = 12;
+
+/** T/T_eff → chromaticity, sampled for one star, as a GLSL-ready ramp */
+function chromaRamp(Teff) {
+  const out = [];
+  for (let i = 0; i < RAMP_N; i++) {
+    const f = RAMP_LO + (RAMP_HI - RAMP_LO) * (i / (RAMP_N - 1));
+    const c = starChroma(Teff * f);
+    out.push(new THREE.Vector3(c[0], c[1], c[2]));
+  }
+  return out;
+}
+
+/**
+ * Exposure, and the one place the photosphere is *not* literal.
+ *
+ * Surface brightness is σT⁴ and is distance-independent, so an honest render
+ * puts a 3,200 K M dwarf at 11% of the Sun's radiance per unit area and a
+ * 33,000 K O star at 1,068× it. That range does not fit in a frame, and §3
+ * rules that "the numbers are never negotiable; the palette always is" — so the
+ * numbers stay in the HUD and the *ordering* is what reaches the pixels, through
+ * a monotone compression rather than a lie. Same move `cosmic.js` makes for the
+ * divergence in `compressTheta()`, and the same argument §9.6 makes for the sky:
+ * derive it through a fixed transfer rather than choose it by eye.
+ *
+ * Exponent 0.9 on (T/T☉) instead of 4: strictly increasing, so hotter is always
+ * brighter, and clamped so neither end of the main sequence can blow the frame
+ * or vanish from it.
+ */
+function starExposure(Teff) {
+  return Math.min(Math.max(0.78 * Math.pow(Teff / 5772, 0.9), 0.42), 1.45);
+}
+
+// ---------------------------------------------------------------------------
+// the photosphere
+
+const PHOTO_VERT = /* glsl */`
+  out vec3 vN;
+  out vec3 vObj;
+  out vec3 vW;
+  void main() {
+    vN = normalize(mat3(modelMatrix) * normal);
+    vObj = normalize(position);
+    vec4 w = modelMatrix * vec4(position, 1.0);
+    vW = w.xyz;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+
+const PHOTO_FRAG = /* glsl */`
+  precision highp float;
+  uniform vec3  uRamp[${RAMP_N}];
+  uniform float uExposure;
+  uniform float uTime;
+  uniform float uSeed;
+  uniform float uSpots;      // magnetic activity, 0 = quiet, 1 = heavily spotted
+  uniform float uGran;       // granulation contrast, in fractions of T_eff
+  uniform vec3  uCamPos;
+  in vec3 vN;
+  in vec3 vObj;
+  in vec3 vW;
+  out vec4 fragColor;
+  ${NOISE_GLSL}
+
+  /** T/T_eff → chromaticity at unit luminance; the CPU built this ramp from
+   *  the same CIE integral src/starlight.js uses for the sky (§9.6) */
+  vec3 chroma(float t) {
+    float x = clamp((t - ${RAMP_LO.toFixed(3)}) / ${(RAMP_HI - RAMP_LO).toFixed(3)}, 0.0, 1.0)
+            * ${(RAMP_N - 1).toFixed(1)};
+    int i = int(floor(x));
+    return mix(uRamp[i], uRamp[min(i + 1, ${RAMP_N - 1})], x - float(i));
+  }
+
+  void main() {
+    vec3 n = normalize(vN);
+    vec3 viewDir = normalize(uCamPos - vW);
+    float mu = clamp(dot(n, viewDir), 0.0, 1.0);
+
+    // ---- limb darkening AND limb reddening, from one relation -------------
+    //
+    // A grey atmosphere in radiative equilibrium has T⁴(τ) = ¾·T_eff⁴·(τ + ⅔)
+    // (Eddington 1926). A sightline at angle μ reaches unit optical depth at
+    // vertical τ = μ, so what you see at that point on the disc is a blackbody
+    // at
+    //
+    //     T(μ) = T_eff · [¾·(μ + ⅔)]^¼
+    //
+    // — 1.057·T_eff at disc centre, 0.841·T_eff at the extreme limb. Its
+    // radiance is T⁴, i.e. ¾(μ + ⅔), which *is* the classical Eddington limb
+    // darkening law I(μ)/I(1) = (2 + 3μ)/5. So the darkening and the reddening
+    // are the same statement made once, and the edge of the disc goes orange
+    // because it is genuinely a thousand kelvin cooler — not because a curve
+    // was tuned. This is the single thing that puts the HUD's temperature on
+    // the screen (§8 axis 8).
+    float t4 = 0.75 * (mu + 0.6666667);
+
+    // ---- granulation ------------------------------------------------------
+    // Convection cells: hot upwellings a couple of hundred kelvin above the
+    // mean, separated by cooler downflow lanes. On the Sun that is ±2–3% in T
+    // on a ~1 Mm cell, overturning in minutes. Because colour comes from T, the
+    // lanes are perceptibly redder than the granules — which is true, and which
+    // no amount of multiplying one tint by a noise field can reproduce.
+    vec3 p = vObj * 7.5 + vec3(uSeed);
+    float g = fbm(p + vec3(0.0, uTime * 0.035, 0.0));
+    float fine = snoise(p * 3.1 - vec3(uTime * 0.02));
+    t4 *= 1.0 + uGran * (1.35 * g + 0.45 * fine);
+
+    // ---- starspots --------------------------------------------------------
+    // Umbra ~0.62 T_eff, penumbra ~0.85, and coverage rises steeply toward the
+    // late types: an M dwarf can be tens of percent spotted, an A star is not
+    // spotted at all. Its own noise field, an octave below the granulation.
+    float sp = fbm3(vObj * 1.9 - vec3(uSeed * 0.37));
+    float spot = uSpots * smoothstep(0.34, 0.62, sp);
+
+    float tRatio = pow(max(t4, 0.02), 0.25) * (1.0 - 0.38 * spot);
+    // radiance is T⁴ by Stefan–Boltzmann — the same t4 that set the colour
+    float rad = pow(tRatio, 4.0) * uExposure;
+
+    vec3 col = chroma(tRatio) * rad;
+
+    // ---- faculae ----------------------------------------------------------
+    // Bright magnetic walls between granules. They are invisible at disc
+    // centre and conspicuous near the limb, because that is where you see the
+    // hot side wall of the granule rather than its cool floor — so the term is
+    // gated on (1 − μ), which is also what stops it from washing the centre.
+    col += chroma(1.06) * smoothstep(0.55, 0.95, g) * (1.0 - mu) * 0.34 * uExposure;
+
+    // ---- chromosphere -----------------------------------------------------
+    // A thin shell above the photosphere, optically thin except in the Balmer
+    // lines, which is why the flash spectrum is red. It is only visible where
+    // the sightline grazes: μ → 0.
+    col += vec3(0.62, 0.11, 0.13) * pow(1.0 - mu, 6.0) * 1.15 * uExposure;
+
+    // §11: never hand a non-finite texel to the bloom pyramid.
+    col = mix(vec3(0.0), col, vec3(equal(col, col)));
+    fragColor = vec4(clamp(col, 0.0, 24.0), 1.0);
+  }
+`;
+
+/** the photosphere of one star, from its effective temperature alone */
+function makePhotosphereMaterial(Teff, seed, camPosUniform, timeUniform) {
+  // magnetic activity is a strong function of spectral type: late-type stars
+  // have deep convective envelopes and dynamos to match, early types do not
+  const spots = Math.min(Math.max((6200 - Teff) / 2600, 0), 1) ** 1.4 * 0.85;
+  return new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {
+      uRamp: { value: chromaRamp(Teff) },
+      uExposure: { value: starExposure(Teff) },
+      uTime: timeUniform,
+      uSeed: { value: seed },
+      uSpots: { value: spots },
+      // Solar granulation contrast is about 15% in intensity at 500 nm. This
+      // uniform perturbs T^4, which *is* intensity, so 0.075 against the
+      // 1.35 g + 0.45 fine weighting below lands in that band rather than
+      // wherever a number chosen by eye would have.
+      uGran: { value: 0.075 },
+      uCamPos: camPosUniform,
+    },
+    vertexShader: PHOTO_VERT,
+    fragmentShader: PHOTO_FRAG,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// the corona
+
+const BILLBOARD_VERT = /* glsl */`
+  uniform float uScale;
+  out vec2 vXY;
+  out vec3 vW;
+  void main() {
+    vXY = position.xy;
+    // billboard about the object's own origin, so it turns with the camera and
+    // keeps its scale under the parent's transform (a red giant's corona grows
+    // with the star, which is right)
+    vec4 mv = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+    mv.xy += position.xy * uScale;
+    vW = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const CORONA_OUTER = 4.6;   // stellar radii; van de Hulst is already ~0 by here
+
+const CORONA_FRAG = /* glsl */`
+  precision highp float;
+  uniform vec3  uChroma;
+  uniform float uGain;
+  uniform float uTime;
+  uniform float uSeed;
+  in vec2 vXY;
+  in vec3 vW;
+  out vec4 fragColor;
+  ${NOISE_GLSL}
+
+  void main() {
+    // vXY spans ±1 at the billboard edge; uScale was set so that is uOuter R★
+    float r = length(vXY) * ${CORONA_OUTER.toFixed(2)};
+    if (r < 1.0) discard;          // behind the photosphere
+
+    // ---- van de Hulst (1950), the measured K-corona ----------------------
+    //
+    //   B_K(r)/B̄☉ = 10⁻⁶ · (0.0532 r^−2.5 + 1.425 r^−7 + 2.565 r^−17)
+    //
+    // Three terms because the corona is three things: a near-limb cusp, the
+    // streamer base, and the extended electron halo. This is the falloff §M's
+    // brief asked to be "motivated rather than a fat sprite" — and the honest
+    // consequence of the 10⁻⁶ is that a corona is *invisible* beside its own
+    // photosphere. What surrounds a star in any real photograph is the
+    // instrument's point spread function, and AEON's is src/bloom.js, bounded
+    // to about 64 source pixels on purpose (§2.8). So the halo comes from
+    // there, and this draws the thing an eclipse would show.
+    float ir = 1.0 / r;
+    float r2 = ir * ir;
+    float r7 = r2 * r2 * r2 * ir;
+    // The 1e-6 is part of the formula, not a fudge: van de Hulst's coefficients
+    // are quoted against 10^-6 of the mean solar disc brightness. Leaving it
+    // out and letting uGain absorb it -- which is what the first version of
+    // this shader did -- puts the r = 1.05 rim at 5.7e5 times the disc instead
+    // of a bit over half of it, and the result is not a corona, it is a white
+    // rectangle the size of the billboard with a faint star in the middle.
+    // That capture is the reason this line carries a comment.
+    float bK = 1e-6 * (0.0532 * pow(ir, 2.5) + 1.425 * r7 + 2.565 * r7 * r7 * ir * ir * ir);
+
+    // ---- streamers -------------------------------------------------------
+    // The corona is not spherical: closed field lines near the equator hold
+    // plasma in helmet streamers, open polar field lines let it go. At minimum
+    // the equatorial excess is roughly 2×, with structure on ~20° in position
+    // angle.
+    float ang = atan(vXY.y, vXY.x);
+    float lat = abs(vXY.y) / max(length(vXY), 1e-4);
+    float belt = mix(1.9, 0.55, smoothstep(0.35, 0.95, lat));
+    float fil = 0.62 + 0.75 * fbm3(vec3(cos(ang) * 2.4, sin(ang) * 2.4, uSeed + uTime * 0.012));
+    float b = bK * uGain * belt * fil;
+
+    // Electron (Thomson) scattering is achromatic, so the corona wears the
+    // star's own colour exactly — which is how the temperature stays legible
+    // all the way out (the brief's "carried all the way out through the
+    // corona"). Only the F-corona, which is dust, reddens, and that is the
+    // ecliptic disc below.
+    vec3 col = uChroma * b;
+    col = mix(vec3(0.0), col, vec3(equal(col, col)));
+    fragColor = vec4(clamp(col, 0.0, 8.0), 1.0);
+  }
+`;
+
+function makeCorona(Teff, radiusDraw, seed, timeUniform) {
+  const c = starChroma(Teff);
+  const mat = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {
+      uChroma: { value: new THREE.Vector3(c[0], c[1], c[2]) },
+      // The exposure a coronagraph applies, and the only free number in this
+      // shader. 1.5e5 puts the r = 1.02 rim at about 0.47 of the disc's own
+      // radiance, r = 1.5 at 0.016, r = 3 at 0.0006 — which prints as a bright
+      // limb ring dissolving into structure that is gone by four radii. That is
+      // an eclipse photograph. Anything larger is a sprite wearing a citation.
+      uGain: { value: 1.5e5 * starExposure(Teff) },
+      uTime: timeUniform,
+      uSeed: { value: seed },
+      uScale: { value: radiusDraw * CORONA_OUTER },
+    },
+    vertexShader: BILLBOARD_VERT,
+    // `CORONA_OUTER` is interpolated into the source at definition time, above.
+    // An earlier draft also ran a `.replace('${OUTER}', …)` here, which found
+    // nothing and did nothing — the placeholder had already been substituted by
+    // the template literal itself. Removed rather than left as a no-op: dead
+    // string surgery on a shader is exactly the kind of thing that reads as
+    // load-bearing during the next debugging session.
+    fragmentShader: CORONA_FRAG,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+// ---------------------------------------------------------------------------
+// the interplanetary dust cloud — the F-corona, continued outward
+//
+// The same population. Close to the star it is the F-corona; at 90° elongation
+// it is the zodiacal light; and it is the reason the plane of a solar system is
+// visible at all. Three measured facts carry the whole shader:
+//
+//   · number density falls as r^−1.3 (Leinert et al. 1998, from Helios)
+//   · the cloud is a *fan*: thickness grows linearly with r, so a line of sight
+//     in the plane crosses far more of it than one across the plane — which is
+//     why it is a band and not a haze
+//   · the grains scatter strongly forward, g ≈ 0.6, so the cloud brightens
+//     toward the star and toward the far side of the disc
+//
+// Put together with the 1/r² irradiance, surface brightness goes as
+// r^−1.3 · r^−2 · r = r^−2.3, which is the exponent the zodiacal light is
+// actually observed to follow. Nothing here is tuned; the only free number is
+// one overall gain.
+
+const DUST_VERT = /* glsl */`
+  out vec3 vW;
+  out float vR;
+  void main() {
+    vec4 w = modelMatrix * vec4(position, 1.0);
+    vW = w.xyz;
+    vR = length(position.xz);
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+
+const DUST_FRAG = /* glsl */`
+  precision highp float;
+  uniform vec3  uChroma;
+  uniform vec3  uStar;
+  uniform vec3  uCamPos;
+  uniform float uGain;
+  uniform float uRefDraw;    // draw units at the reference radius (1 AU)
+  uniform float uSubDraw;    // sublimation radius, draw units — no dust inside
+  uniform float uFlatDraw;   // where the power law turns over, ~6 r_sub
+  uniform float uOuterDraw;
+  uniform float uBandDraw;   // asteroid-belt dust band centre, 0 = none
+  uniform float uSeed;
+  in vec3 vW;
+  in float vR;
+  out vec4 fragColor;
+  ${NOISE_GLSL}
+
+  void main() {
+    float r = max(vR, 1e-3);
+    // the dust-free zone: grains sublimate where T > ~1500 K, which for a
+    // Sun-like star is 0.03 AU and is a real, sharp inner edge
+    // The inner fade runs all the way to the turnover radius rather than
+    // stopping at 2.2 r_sub. It used to stop early, which left a constant-
+    // brightness plateau between the end of the fade and the start of the
+    // power law — a bright annulus with a dark hole punched in it, and in the
+    // capture that read as two dark lobes flanking the star rather than as a
+    // dust-free zone. One monotone fade from the sublimation radius to where
+    // the cloud starts obeying its power law.
+    float inner = smoothstep(uSubDraw, uFlatDraw, r);
+    // A long outer fade, because a short one is a *rim*: at 0.72 the cloud was
+    // still bright where it started fading, so the edge of the mesh drew a
+    // horizon line across the frame and the plane read as a solid table.
+    float outer = 1.0 - smoothstep(uOuterDraw * 0.30, uOuterDraw, r);
+    if (inner * outer < 1e-4) discard;
+
+    float x = r / uRefDraw;                       // radius in reference units
+    // Two populations, because a real system has two.
+    //
+    //   the zodiacal cloud — n ∝ r^−1.3 (Leinert 1998), irradiance 1/r², fan
+    //   thickness ∝ r, so surface brightness ∝ r^−2.3, which is the exponent
+    //   the zodiacal light is observed to follow. Inside the sublimation zone
+    //   the power law turns over rather than running away: there is no dust
+    //   left there to be bright.
+    //
+    //   the debris disc — the collisional cascade off the belt and whatever
+    //   Kuiper analogue this system has, spread far more evenly. This is the
+    //   component that is actually *imaged* around other stars in scattered
+    //   light, and it is what keeps the plane legible past a few AU instead of
+    //   collapsing the whole cloud into a cusp at the star.
+    float xs = max(x, uFlatDraw / uRefDraw);
+    float col = pow(xs, -2.3) + 0.16 * pow(x, -0.9);
+
+    // the IRAS dust bands: collisional debris from the asteroid families, a
+    // real local enhancement at the belt's own radius
+    if (uBandDraw > 0.0) {
+      float d = (r - uBandDraw) / (uBandDraw * 0.22);
+      col *= 1.0 + 0.85 * exp(-d * d);
+    }
+
+    // the fan seen edge-on: a sightline nearly in the plane crosses far more
+    // dust than one looking down on it. This is why the zodiacal light is a
+    // *band* rather than a haze, and why the plane of a system announces
+    // itself the moment the camera drops toward it.
+    vec3 V = normalize(uCamPos - vW);
+    float path = 1.0 / (abs(V.y) + 0.055);
+
+    // Henyey–Greenstein: interplanetary grains scatter forward. g = 0.35 is
+    // inside the measured range for the zodiacal cloud and — unlike the 0.6 the
+    // inner cloud prefers — keeps the forward lobe to about 4× the 90° value
+    // instead of 25×, which is the difference between a bright far side and a
+    // clipped one. Normalised at 90 degrees so uGain keeps one meaning here.
+    vec3 L = normalize(vW - uStar);
+    float ct = clamp(dot(L, V), -1.0, 1.0);
+    const float g = 0.35, g2 = 0.1225;
+    float hg = ((1.0 - g2) / pow(1.0 + g2 - 2.0 * g * ct, 1.5)) / 0.7379;
+
+    // grains are a little redder than the light they scatter (Mie on ~10 µm
+    // silicates), which is measured and is why the zodiacal light is warm
+    vec3 tint = uChroma * vec3(1.06, 1.0, 0.90);
+
+    float grain = 0.82 + 0.30 * fbm3(vec3(vW.xz * (0.9 / uRefDraw), uSeed));
+    // one stated ceiling on the geometry terms, so an edge-on sightline through
+    // the forward lobe brightens the plane instead of clipping it
+    float boost = min(path * hg, 9.0);
+    float b = col * boost * grain * uGain * inner * outer;
+    vec3 c = tint * b;
+    c = mix(vec3(0.0), c, vec3(equal(c, c)));
+    fragColor = vec4(clamp(c, 0.0, 4.0), 1.0);
+  }
+`;
+
+/** a log-spaced annulus in the ecliptic — linear rings would spend their
+ *  vertices where an r^−2.3 profile has nothing left to say */
+function dustDiscGeometry(rIn, rOut, radial = 80, around = 200) {
+  const pos = new Float32Array((radial + 1) * (around + 1) * 3);
+  const idx = [];
+  const lnIn = Math.log(rIn), lnOut = Math.log(rOut);
+  let p = 0;
+  for (let i = 0; i <= radial; i++) {
+    const r = Math.exp(lnIn + (lnOut - lnIn) * (i / radial));
+    for (let j = 0; j <= around; j++) {
+      const th = (j / around) * Math.PI * 2;
+      pos[p++] = r * Math.cos(th); pos[p++] = 0; pos[p++] = r * Math.sin(th);
+    }
+  }
+  const row = around + 1;
+  for (let i = 0; i < radial; i++) {
+    for (let j = 0; j < around; j++) {
+      const a = i * row + j, b = a + 1, c = a + row, d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), rOut);
+  return geo;
+}
+
+// ---------------------------------------------------------------------------
+// the belt
+//
+// It was 3,200 grey icosahedra on a `MeshBasicMaterial`, which is to say it
+// received no light information at all — §8 axis 2's exact failure. Rock is
+// lit by the star it orbits: irradiance falls as 1/r², Lambert gives the
+// terminator, and a rough regolith backscatters near opposition (the opposition
+// surge is why a full moon is more than twice as bright as a half moon, and it
+// is what makes a belt read as *rock* rather than as confetti).
+
+const BELT_VERT = /* glsl */`
+  out vec3 vN;
+  out vec3 vW;
+  out vec3 vTint;
+  void main() {
+    mat4 m = modelMatrix * instanceMatrix;
+    vN = normalize(mat3(m) * normal);
+    vec4 w = m * vec4(position, 1.0);
+    vW = w.xyz;
+    #ifdef USE_INSTANCING_COLOR
+      vTint = instanceColor;
+    #else
+      vTint = vec3(1.0);
+    #endif
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }
+`;
+
+const BELT_FRAG = /* glsl */`
+  precision highp float;
+  uniform vec3  uChroma;
+  uniform vec3  uStar;
+  uniform vec3  uCamPos;
+  uniform float uRefDraw;
+  uniform float uGain;
+  in vec3 vN;
+  in vec3 vW;
+  in vec3 vTint;
+  out vec4 fragColor;
+
+  void main() {
+    vec3 d = vW - uStar;
+    float r = max(length(d) / uRefDraw, 0.02);
+    vec3 L = -d / max(length(d), 1e-4);
+    vec3 V = normalize(uCamPos - vW);
+    vec3 n = normalize(vN);
+    float ndl = max(dot(n, L), 0.0);
+    // opposition surge: shadow hiding in a porous regolith, sharply peaked
+    // within a few degrees of zero phase (Hapke)
+    float phase = 1.0 + 0.9 * pow(max(dot(L, V), 0.0), 24.0);
+    // §9.2's half-Lambert wrap is an atmosphere-scale rule and this is vacuum,
+    // so the terminator stays hard — but airless rock is not black on its night
+    // side either: it sees the rest of the belt. One faint achromatic fill,
+    // which is the least §8 axis 2 will accept.
+    float lit = ndl * phase + 0.035;
+    vec3 c = vTint * uChroma * (uGain * lit / (r * r));
+    c = mix(vec3(0.0), c, vec3(equal(c, c)));
+    fragColor = vec4(clamp(c, 0.0, 6.0), 1.0);
+  }
+`;
+
 // ------------------------------------------------------------- the scale ----
 
 export class SystemScale {
@@ -287,11 +844,47 @@ export class SystemScale {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.06;
     this.controls.rotateSpeed = 0.55;
+    // The dolly is taken off `OrbitControls` and implemented in `onWheel()`
+    // below, for the reason written out at length in `cosmic.js`: `main.js` and
+    // `touch.js` synthesise a pinch into `active().onWheel?.({ deltaY })`, a
+    // plain object, and `OrbitControls` binds a real DOM `wheel` listener to
+    // the canvas. The two never meet, so pinch-to-zoom did nothing at this
+    // scale on any build — invisible on desktop because the wheel event is real
+    // there, and the wheel is the only zoom a desktop test ever exercises.
+    this.controls.enableZoom = false;
     this.controls.minDistance = 2.2;
     this.controls.maxDistance = far * 4 + 200;
+    // exp(k · 100) = 0.95^−1.7, one notch is 9.25% — the same law and the same
+    // feel `cosmic.js` and `galaxy.js` use, so the gesture means one thing at
+    // every scale. The 2.9× on a coarse pointer is arithmetic, not taste:
+    // `touch.js` scales finger travel by 3.2, so a full-screen pinch arrives as
+    // |deltaY| ≈ 1,600, and a comfortable one-pinch traverse of this scale's
+    // useful range wants about 4,600.
+    this._zoomK = 8.845e-4
+      * (window.matchMedia && matchMedia('(pointer: coarse)').matches ? 2.9 : 1);
     this._prevTarget = new THREE.Vector3();
 
-    this.bloomSettings = { strength: 0.75, radius: 0.65, threshold: 0.0 };
+    // The threshold used to be 0, which means every lit pixel blooms — and
+    // `bloom.js`'s bright pass collapses to `w = 1` there, so the whole frame
+    // was being blurred and added back to itself. In vacuum that is a pedestal
+    // under a field §2.8 requires to reach zero, and it is half of why the old
+    // star capture had 70.6% of the frame lit and 22% true black.
+    //
+    // 0.30 sits above the dust (which peaks near 0.1 at a normal viewing angle)
+    // and below the photosphere (0.5 at the limb, 1.5 at disc centre), so what
+    // glows is the star, and what the star glows *into* is a bounded 64-pixel
+    // reach rather than the whole frame. §9.4 calls the halo around a light the
+    // instrument's point spread function; this is the aperture setting.
+    // Measured, twice. At threshold 0.3 / strength 0.45 the blurred copy still
+    // landed +0.1 linear across the whole disc, and the limb — which is where
+    // the temperature actually lives — printed at 4.4% saturation against the
+    // 17.6% the limb-darkening law predicts for it. A bloom whose reach (~64
+    // source pixels) is comparable to the disc it is blooming does not make a
+    // halo, it makes a fill.
+    //
+    // 0.55 is above the limb (0.48 linear) and below disc centre (1.04), so
+    // only the centre seeds the halo and the limb keeps its own colour.
+    this.bloomSettings = { strength: 0.3, radius: 0.8, threshold: 0.55 };
     if (this.params.pulsar) this.noteOverride = PULSAR_NOTE;
 
     // arriving from another star: come in hot on the old flight vector,
@@ -360,24 +953,51 @@ export class SystemScale {
     window.addEventListener('keyup', this._relKu);
 
     // -- star (or binary pair)
-    const glowTex = softDotTexture();
+    //
+    // What was here: a `SphereGeometry` wearing `makeStarSurfaceMaterial`, plus
+    // an additively-blended soft-dot Sprite scaled to **ten times the star's
+    // own draw radius** and tinted with `blackbodyRGB`. At `dR` up to 30 that
+    // is a 300-unit disc of additive white over a 46-unit AU, which is why a
+    // 5,682 K G-class star — a warm yellow-white object — filled two thirds of
+    // the frame as flat, clipped **grey**. Additive blending saturates to
+    // white, and a tint applied to something that saturates is a tint you have
+    // thrown away. §8 axis 6 says nothing clips; axis 8 asks whether the pixels
+    // contradict the physics the HUD asserts. Both failed, on the same sprite.
+    //
+    // The replacement is two objects and no sprite:
+    //
+    //   the photosphere — limb-darkened, granulated, and coloured through the
+    //   *same* Planck → CIE → sRGB transfer §9.6 derives the sky stops from, so
+    //   the temperature in the HUD and the colour on the screen come from one
+    //   function rather than two;
+    //
+    //   the corona — van de Hulst's measured K-corona brightness, which falls
+    //   as r^−2.5 + r^−7 + r^−17 and is genuinely gone by a few stellar radii.
+    //
+    // The wide halo that a photograph of a star actually shows is the
+    // *instrument's* point spread function, not the corona, and AEON already
+    // has one of those: `src/bloom.js`, bounded to about 64 source pixels on
+    // purpose. So the glow is left to the bloom chain, where it is bounded,
+    // rather than painted on at ten radii, where it was not.
     const mkStar = (temp, radiusSun) => {
       const color = blackbodyRGB(temp);
       const dR = Math.min(Math.max(5.5 * Math.pow(radiusSun, 0.5), 2.2), 30);
+      const seed = r.float(0, 90);
       const mesh = new THREE.Mesh(
         new THREE.SphereGeometry(dR, 64, 48),
-        makeStarSurfaceMaterial(color, r.float(0, 90), this.uCamPos, this.uTime));
-      const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: glowTex, color: color.clone().multiplyScalar(0.8),
-        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-      }));
-      glow.scale.setScalar(dR * (P.binary ? 6.5 : 10));
-      mesh.add(glow);
+        makePhotosphereMaterial(temp, seed, this.uCamPos, this.uTime));
+      // A child, so a binary's second corona tracks its own component without a
+      // second update path. Note it inherits the *position* only: the billboard
+      // applies its scale in view space, so `uScale` has to be driven by hand
+      // when the star's radius changes (see `_updateDeepTime`).
+      const corona = makeCorona(temp, dR, seed, this.uTime);
+      mesh.add(corona);
       this.scene.add(mesh);
-      return { mesh, dR, color };
+      return { mesh, dR, color, corona };
     };
     this.primary = mkStar(P.temp, P.radiusSun);
     this.starMesh = this.primary.mesh;
+    this.starCorona = this.primary.corona;
     this.starColor = this.primary.color;
     this.starDrawR = this.primary.dR;
     this.secondary = null;
@@ -389,7 +1009,10 @@ export class SystemScale {
       };
     }
 
-    if (P.stage === 'neutron star') this._buildPulsar(r, glowTex);
+    // The pulsar's beams keep the soft dot: a neutron star *is* a point source
+    // at any drawable scale, so a sprite is the honest primitive there — it was
+    // only wrong as a stand-in for a resolved photosphere and its corona.
+    if (P.stage === 'neutron star') this._buildPulsar(r, softDotTexture());
 
     // -- planets
     this.planetNodes = [];
@@ -493,6 +1116,58 @@ export class SystemScale {
     // -- asteroid belt
     if (P.belt) this._buildBelt(P.belt, r);
     if (P.comet) this._buildComet(P.comet, r);
+    // -- and the dust the whole system is swimming in
+    this._buildDust();
+  }
+
+  /**
+   * The interplanetary dust cloud: the thing that makes a star system a *place*
+   * rather than two spheres and an ellipse on black.
+   *
+   * It is one population and one shader, and it is the same population as the
+   * corona above — F-corona near the star, zodiacal light at 1 AU, debris disc
+   * further out. Every radius here is derived rather than chosen:
+   *
+   *   inner edge   grains sublimate at ~1,500 K, and T = 278·L^¼/√r gives
+   *                r_sub = (278/1500)²·√L AU. A real, sharp, dust-free zone.
+   *   band         the IRAS dust bands — collisional debris from the asteroid
+   *                families, sitting at the belt's own radius.
+   *   outer edge   past the last planet, where there is nothing left to grind.
+   */
+  _buildDust() {
+    const P = this.params;
+    const rSub = Math.max(0.0344 * Math.sqrt(Math.max(P.lum, 1e-4)), 0.004);
+    const aMax = P.planets.length ? P.planets[P.planets.length - 1].a : 3;
+    // 1.5 rather than 2.4 times the last orbit. The far sheet was still "lit"
+    // by the gate's 0.02 cut while carrying only three or four levels of
+    // spread between its channels — chromatic in ratio, achromatic in print —
+    // so it was spending two thirds of the frame to say nothing, and taking
+    // §2.8's true black with it.
+    const rOut = aMax * 1.5;
+    const geo = dustDiscGeometry(drawR(rSub), drawR(rOut));
+    const c = starChroma(P.temp);
+    this.dust = new THREE.Mesh(geo, new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        uChroma: { value: new THREE.Vector3(c[0], c[1], c[2]) },
+        uStar: this.uSunPos,
+        uCamPos: this.uCamPos,
+        uGain: { value: 0.0016 },
+        uRefDraw: { value: AU_DRAW },
+        uSubDraw: { value: drawR(rSub) },
+        uFlatDraw: { value: drawR(rSub * 6) },
+        uOuterDraw: { value: drawR(rOut) },
+        uBandDraw: { value: P.belt ? drawR(P.belt.a) : 0 },
+        uSeed: { value: (hash(P.seed, 0xd057) >>> 8) / 65536 },
+      },
+      vertexShader: DUST_VERT,
+      fragmentShader: DUST_FRAG,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }));
+    this.scene.add(this.dust);
   }
 
   /** lighthouse beams, wind glow, and the wreckage shell of the supernova */
@@ -556,8 +1231,24 @@ export class SystemScale {
   _buildBelt(belt, r) {
     const N = 3200;
     const geo = new THREE.IcosahedronGeometry(0.16, 0);
-    const mat = new THREE.MeshBasicMaterial({ color: 0x8a827a });
-    // basic material — lit look faked by distance dimming below
+    const c = starChroma(this.params.temp);
+    // Lit by the star it orbits, rather than by a flat `MeshBasicMaterial`
+    // hex. One draw call either way; the difference is that §8 axis 2 —
+    // "any surface receiving no light information at all?" — now has an answer.
+    const mat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        uChroma: { value: new THREE.Vector3(c[0], c[1], c[2]) },
+        uStar: this.uSunPos,
+        uCamPos: this.uCamPos,
+        uRefDraw: { value: AU_DRAW },
+        // one AU of irradiance is the unit; the 1/r² in the shader does the
+        // rest, so a belt around a bright star is genuinely brighter
+        uGain: { value: 0.62 * Math.min(Math.max(this.params.lum, 0.05), 40) ** 0.35 },
+      },
+      vertexShader: BELT_VERT,
+      fragmentShader: BELT_FRAG,
+    });
     this.beltMesh = new THREE.InstancedMesh(geo, mat, N);
     this.beltMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.beltData = [];
@@ -810,6 +1501,31 @@ export class SystemScale {
     this.rel.dir.addScaledVector(right, -dx).addScaledVector(up, -dy).normalize();
   }
 
+  /**
+   * The dolly, geometric, about whatever the camera is looking at — so it works
+   * from a pinch as well as a wheel (see the note beside `enableZoom` above).
+   *
+   * Geometric because the range is: from 2.2 units, which is inside a planet's
+   * own orbit, out past the last world, and a linear step cannot serve both
+   * ends. Cruise mode owns the camera outright, so the gesture stands down
+   * there rather than fighting the flight vector.
+   */
+  onWheel(e) {
+    if (this.rel.on) return false;
+    const dy = Number(e?.deltaY) || 0;
+    if (!dy) return true;
+    // DOM_DELTA_LINE reports notches rather than pixels; one line is about 16
+    const k = this._zoomK * (e.deltaMode === 1 ? 16 : 1);
+    const t = this.controls.target;
+    const d = this.camera.position.clone().sub(t);
+    const len = Math.min(Math.max(d.length() * Math.exp(k * dy),
+      this.controls.minDistance), this.controls.maxDistance);
+    this.camera.position.copy(t).addScaledVector(d.normalize(), len);
+    // a glide in flight would fight the dolly and win, so the gesture cancels it
+    this._glideTo = null;
+    return true;
+  }
+
   pick(raycaster) {
     const meshes = this.planetNodes.map(n => n.mesh).concat(this.allMoons);
     const hits = raycaster.intersectObjects(meshes, false);
@@ -977,17 +1693,46 @@ export class SystemScale {
     D.L = st.L;
 
     // -- the star itself
+    //
+    // The lever moves T_eff over more than a decade — 3,350 K on the red-giant
+    // ascent, 70,000 K at envelope ejection — so everything the photosphere is
+    // made of has to move with it: the chromaticity ramp, the Stefan–Boltzmann
+    // exposure, the spot coverage, and the corona's radius and colour.
+    //
+    // The ramp is the expensive one. Rebuilding it is twelve CIE integrals over
+    // 201 wavelengths, which is nothing once and about 2 ms per frame if it is
+    // done every frame while the key is held. It is only *visibly* wrong once
+    // the temperature has moved a percent or so, so it is rebuilt on that
+    // threshold rather than on the clock — the same "set once, not per frame"
+    // discipline §11 asks for, applied to a CPU cost instead of a GPU one.
     const dR = this._starDrawROf(st.R);
     this.starMesh.scale.setScalar(dR / this.starDrawR);
-    const col = blackbodyRGB(st.T);
-    this.starMesh.material.uniforms.uColor.value.copy(col);
-    // a bigger disk covers more of the frame, so ease its surface exposure and
-    // bloom back to keep the giant readable instead of a white blowout
+    const su = this.starMesh.material.uniforms;
+    if (!(Math.abs(st.T - (this._rampT ?? 0)) < this._rampT * 0.01)) {
+      this._rampT = st.T;
+      su.uRamp.value = chromaRamp(st.T);
+      const c = starChroma(st.T);
+      this.starCorona.material.uniforms.uChroma.value.set(c[0], c[1], c[2]);
+    }
+    const expo = starExposure(st.T);
+    su.uExposure.value = expo;
+    su.uSpots.value = Math.min(Math.max((6200 - st.T) / 2600, 0), 1) ** 1.4 * 0.85;
+
+    // The corona is a child of the star mesh, so it *follows* the star — but
+    // `BILLBOARD_VERT` applies `uScale` in view space, after the model-view
+    // transform has been collapsed onto the origin, so the parent's scale never
+    // reaches it. A red giant's corona has to be told to grow.
+    const cu = this.starCorona.material.uniforms;
+    cu.uScale.value = dR * CORONA_OUTER;
+    cu.uGain.value = 1.5e5 * expo;
+
+    // A bigger disc covers more of the frame. The radiance itself no longer
+    // needs easing — Stefan–Boltzmann already puts a 3,350 K giant at 11% of a
+    // G star's surface brightness, which is the honest reason a red giant is
+    // not a blowout — but the *bloom* still reads area, so a star that fills the
+    // frame gets less of it.
     const cover = Math.min(dR / 40, 1);
-    this.starMesh.material.uniforms.uBright.value = 1 - 0.72 * cover;
-    const glow = this.starMesh.children.find(c => c.isSprite);
-    if (glow) glow.material.color.copy(col).multiplyScalar(0.8 * (1 - 0.7 * cover));
-    this.bloomSettings.strength = 0.75 - 0.5 * cover;
+    this.bloomSettings.strength = 0.3 - 0.15 * cover;
     if (this.app.active() === this) this.app.post.tune(this.bloomSettings);
 
     // -- supernova: one violent frame at the crossing

@@ -5,3 +5,13 @@
 # are few. Force-add the frames from a real-GPU run:
 #     git add -f docs/captures/M0/*.png
 docs/captures/**/*.png
+
+# The dev instruments (tools/*.js) drive Playwright, which some machines have
+# globally and some do not. A local `npm i playwright` is how you get a capture
+# out of a container that has the browsers but not the module — and it must
+# never reach the repo. §2.2 keeps the *runtime* dependency-free and
+# `python3 -m http.server 8080` sufficient forever; a node_modules committed
+# here would read as a walk-back of that, and it is not one.
+node_modules/
+package.json
+package-lock.json

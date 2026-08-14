@@ -99,6 +99,9 @@ export const TIERS = {
 
 export async function launch(pw) {
   return pw.chromium.launch({
+    // A machine that keeps its browsers outside the Playwright cache (the
+    // remote container does) still has to be able to shoot a capture set.
+    ...(process.env.AEON_CHROME ? { executablePath: process.env.AEON_CHROME } : {}),
     args: [
       '--use-gl=angle', '--use-angle=default', '--enable-unsafe-swiftshader',
       '--no-sandbox', '--disable-dev-shm-usage', '--enable-gpu-rasterization',

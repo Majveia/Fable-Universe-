@@ -236,6 +236,15 @@ export class GalaxyScale {
     this.controls.rotateSpeed = 0.5;
     this.controls.minDistance = 8;
     this.controls.maxDistance = R * 9;
+    // The dolly is ours, for the reason `cosmic.js` documents at `onWheel`:
+    // `main.js` and `touch.js` both synthesise a pinch into
+    // `active().onWheel?.({ deltaY })`, and `OrbitControls` listens for real
+    // DOM wheel events on the canvas, which a plain object is not. Leaving the
+    // zoom with `OrbitControls` means two fingers on the glass do nothing here.
+    this.controls.enableZoom = false;
+    // one 100-unit notch is 9.25%, matching the tuned `zoomSpeed = 1.7` feel
+    this._zoomK = Math.log(Math.pow(0.95, -1.7)) / 100;
+    if (window.matchMedia && matchMedia('(pointer: coarse)').matches) this._zoomK *= 2.9;
 
     this.bloomSettings = { strength: 0.75, radius: 0.75, threshold: 0.0 };
 
@@ -726,6 +735,28 @@ export class GalaxyScale {
   }
 
   onKey() { return false; }
+
+  /**
+   * Zoom, owned here rather than by `OrbitControls`, so that the pinch works.
+   * The argument is `cosmic.js`'s at its own `onWheel`, and this is the same
+   * bug at the next scale down: a synthesised `{ deltaY }` is not a DOM wheel
+   * event, so `OrbitControls` never saw one and two fingers did nothing.
+   *
+   * Geometric rather than linear, because 8 to R·9 is a factor of several
+   * thousand and a fixed step is unusable at one end of that or the other.
+   */
+  onWheel(e) {
+    const dy = Number(e?.deltaY) || 0;
+    if (!dy) return true;
+    // DOM_DELTA_LINE reports notches, not pixels; one line is about 16 px
+    const k = this._zoomK * (e.deltaMode === 1 ? 16 : 1);
+    const t = this.controls.target;
+    const d = this.camera.position.clone().sub(t);
+    const len = Math.min(Math.max(d.length() * Math.exp(k * dy),
+      this.controls.minDistance), this.controls.maxDistance);
+    this.camera.position.copy(t).addScaledVector(d.normalize(), len);
+    return true;
+  }
   enter() {}
   exit() { this.controls.enabled = false; }
   resume() { this.controls.enabled = true; }

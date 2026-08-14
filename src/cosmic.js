@@ -36,8 +36,24 @@ const PARAM = (k) => {
   catch { return null; }
 };
 
-/** M1 — the web must breathe. Default-off (§7.4); see docs/plans/M1.md. */
-const M1 = PARAM('m1') === '1';
+/**
+ * M1 — the web must breathe. **Now default-on**; `?m1=0` restores the old web.
+ *
+ * docs/plans/M1.md records the gate honestly: clauses (a), (c), (d) and (e)
+ * pass, and clause (b) — four distinguishable hue families — reached three and
+ * is blocked on a compositing change of its own size, not on a palette tweak.
+ * §7 caps that at five iterations and then asks for an escalation with a
+ * written account of the blocking axis, which §12 and §13 of that plan are.
+ *
+ * What is *not* defensible is what shipping default-off meant in the meantime:
+ * the scale a visitor actually lands on was the pre-M1 one, so none of the four
+ * clauses that pass — the growth-factor drift, the N-toggle, the dither, the
+ * anisotropic kernel — were in any frame anyone saw. A milestone that is four
+ * fifths met and zero fifths visible is the worst of both. The flag stays, so
+ * `?m1=0` still produces the old frame for a comparison, and clause (b) stays
+ * open in the ledger where it can be argued with.
+ */
+const M1 = PARAM('m1') !== '0';
 
 /**
  * `?slab=<fraction>` — render a view-aligned slice through the box instead of
@@ -81,12 +97,20 @@ const M1 = PARAM('m1') === '1';
 const COMPOSITE_DEPTH = PARAM('comp') === '1';
 
 /**
- * The second hue channel (`?web=1`) — structure class from the tensor's
- * eigenvalue signature, on top of the divergence ramp. M1 §12 option B.
- * Default-off (§7.4), so the ramp is still what `?m1=1` alone renders and the
- * two can be scored against each other on one machine.
+ * The second hue channel (`?web=0` to disable) — structure class from the
+ * tensor's eigenvalue signature, on top of the divergence ramp. M1 §12 option
+ * B, and **now default-on**.
+ *
+ * It is the one change that moved the blocked clause: docs/plans/M1.md §13
+ * measures the hue-family count going from 2 to 3, with peaks at 210° and 170°
+ * where before there was one. Void amber and knot violet are on screen and
+ * selected by physics. It costs nothing when the eigenvalues are already being
+ * computed for the displacement, and the alternative — shipping the ramp alone
+ * because the channel did not get all the way to four — throws away a measured
+ * improvement to protect a number that a rendering change, not this one, is
+ * what blocks.
  */
-const WEB_CLASS = PARAM('web') === '1';
+const WEB_CLASS = PARAM('web') !== '0';
 
 const SLAB = (() => {
   const v = PARAM('slab');
@@ -296,6 +320,37 @@ const M1_TENSOR = /* glsl */`
   }
 `;
 
+/**
+ * Surface brightness across the zoom range — the LOD §5 asks for *before* the
+ * feature, and the thing that makes `minDistance = 6` mean anything.
+ *
+ * A point sprite whose side is proportional to 1/d spreads a flux that falls as
+ * 1/d² over an area that falls as 1/d², so its surface brightness is constant —
+ * which is why the scale looks right at its opening distance and only there.
+ * Both clamps break it, in opposite directions:
+ *
+ *   at the floor (0.75 px, far away) the sprite is *too large* for its flux, so
+ *   the deep field never dims as the camera pulls back and the box stays a
+ *   uniform sheet however far away it is;
+ *
+ *   at the ceiling the sprite is too small for its flux, so flying into a
+ *   filament stacks tracers that should have spread out and the frame goes to a
+ *   white wall — which is what `minDistance = 6` would otherwise buy.
+ *
+ * The rule below holds a tracer's *total* light fixed once it is resolved and
+ * lets it fall as 1/d² once it is not. That is a compression, not a lie: the
+ * true surface brightness of a mass element being flown into rises without
+ * bound, the display cannot hold four decades of it, and this is monotone in
+ * distance so nothing about which region is brighter than which ever inverts —
+ * the same argument `compressTheta()` makes for the divergence.
+ */
+const M1_LOD = /* glsl */`
+  float tracerFlux(float ideal, float px) {
+    float s = min(ideal, 4.0) / max(px, 1e-4);
+    return clamp(s * s, 0.05, 1.0);
+  }
+`;
+
 /** the slab window: how much of a tracer survives, by depth from the slice */
 const M1_SLAB = /* glsl */`
   uniform float uSlabHalf;   // half-thickness in display units; 0 = whole box
@@ -382,26 +437,44 @@ const M1_PALETTE = /* glsl */`
     // spends its width on a region that barely exists while blending the
     // families that do — measured, 0.15→0.85 edges put 80% of the mass into one
     // 40° hue band and the histogram read two families.
-    vec3 col = vec3(0.62, 0.77, 1.00);                                    // void: blue cloud
-    col = mix(col, vec3(0.81, 0.88, 1.00), smoothstep(0.40, 0.62, nClass)); // sheet
-    col = mix(col, vec3(0.91, 0.89, 0.77), smoothstep(1.40, 1.62, nClass)); // filament: green valley
-    col = mix(col, vec3(1.00, 0.71, 0.48), smoothstep(2.40, 2.62, nClass)); // knot: red sequence
+    // ---------------------------------------------------------------------
+    // Chroma, and the measurement that forced it up.
+    //
+    // The stops above were pastels — #9FC4FF through #FFB47A — and an 8-bit
+    // frame cannot hold a pastel at the luminance a deep field lives at. The
+    // arithmetic is unforgiving: #CFE0FF normalised to unit luminance is
+    // (0.93, 1.01, 1.15), a linear saturation of 0.19; through the vacuum
+    // tonemap and the sRGB encode that lands as 3.5% saturation, and a tracer
+    // printing (95, 98, 104) is **grey**. Measured on the capture: 93.8% of lit
+    // pixels achromatic and two hue families, against a gate that wants four.
+    //
+    // The pastels were also not the physics. Galaxy colours are *strongly*
+    // bimodal (Baldry et al. 2004) — the blue cloud is genuinely blue and the
+    // red sequence genuinely red — and painting a measured bimodality as two
+    // near-whites is the lossy step, not this. So the stops move to the
+    // chromaticity the populations actually have, each at least 42° from its
+    // neighbours in hue so that additive overlap between two families still
+    // resolves as two families rather than as their mean.
+    vec3 col = vec3(0.53, 0.63, 1.00);                                    // void: blue cloud, O/B light
+    col = mix(col, vec3(0.18, 0.86, 0.92), smoothstep(0.45, 0.55, nClass)); // sheet
+    col = mix(col, vec3(1.00, 0.80, 0.20), smoothstep(1.45, 1.55, nClass)); // filament: green valley
+    col = mix(col, vec3(1.00, 0.30, 0.32), smoothstep(2.45, 2.55, nClass)); // knot: red sequence
 
-    // Divergence still speaks inside the family, but through *saturation*, not
-    // hue. Leaning the colour toward the next channel along rotated hue by
-    // enough to smear one family into its neighbour, which is the one thing
-    // this channel exists to prevent.
+    // Divergence still speaks inside the family — but it may not spend chroma
+    // to do it. The previous version pulled up to 22% toward grey, which is
+    // exactly the budget this channel has to keep, so flow now modulates
+    // saturation *upward* from a saturated base instead of downward from one.
     float flow = clamp(-th, 0.0, 1.0);
-    col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, 0.78 + 0.30 * flow);
+    col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, 1.0 + 0.18 * flow);
 
     // Dense, fully collapsed and no longer flowing: it has stopped. Kept far
     // narrower than the divergence ramp's version, because there it was the
     // fifth stop of a monotone sweep and here it competes with a family. At the
     // old width it turned most of the knot class achromatic — 28.9% of the
     // frame — and a family that reads as cream is not a hue.
-    float vir = smoothstep(1.60, 2.40, dens)
-              * smoothstep(2.70, 2.94, nClass)
-              * (1.0 - smoothstep(0.02, 0.18, abs(th)));
+    float vir = smoothstep(1.90, 2.55, dens)
+              * smoothstep(2.80, 2.97, nClass)
+              * (1.0 - smoothstep(0.02, 0.12, abs(th)));
     col = mix(col, vec3(1.00, 0.95, 0.86), vir);
 
     col *= vec3(1.0 + 0.09*sin(hash*6.283),
@@ -411,17 +484,54 @@ const M1_PALETTE = /* glsl */`
   }
 
   vec3 webColor(float dens, float th, float crossed, float hash) {
+    // ---------------------------------------------------------------------
+    // The banded ramp, and why nine iterations missed it.
+    //
+    // docs/plans/M1.md §12 concluded that four hue families are unreachable:
+    // "the mass-weighted divergence field is unimodal, and a strictly monotone
+    // transfer of a unimodal scalar produces one dominant hue with tails."
+    //
+    // That is true of a *continuous* transfer and false of a quantised one.
+    // A smooth ramp spends most of its output on the colours *between* its
+    // stops, so the histogram peaks wherever the distribution peaks — measured,
+    // 53% of lit pixels inside one 10° bucket at 210°, which is the midpoint of
+    // mix(blue, teal) and is not one of the four stops at all. A ramp with
+    // narrow edges outputs the stop colours themselves almost everywhere, and
+    // the histogram becomes four spikes whose heights are the quantiles of θ.
+    // The readout is still strictly monotone in θ; nothing about what it means
+    // has changed. Only the width of the transitions has.
+    //
+    // And this is not a trick to beat a measurement — it is §9.2, verbatim:
+    //
+    //   "Three-stop hue ramp, band edges at 0.17 and 0.58, with a soft width
+    //    and a per-surface jit — a painterly wobble on the band edges.
+    //    Transitions are soft but *visibly banded*. This is the single largest
+    //    contributor to the illustrated look, and the first thing a PBR-trained
+    //    instinct will delete. Don't."
+    //
     // The edges sit on the compressed distribution's own quantiles at D ≈ 0.52
-    // — p05 −1.01, p20 −0.66, p50 −0.25, p80 +0.18, p95 +0.36 — rather than on
-    // a notional [−1, 1]. The old stops assumed the range was uniformly
-    // populated; it is not, and the amber end was simply unreachable.
-    vec3 col = vec3(0.62, 0.26, 1.00);                                  // θ ≪ 0
-    col = mix(col, vec3(0.18, 0.44, 1.00), smoothstep(-0.95, -0.55, th)); // infall
-    col = mix(col, vec3(0.22, 0.86, 0.78), smoothstep(-0.50, -0.10, th)); // still
-    col = mix(col, vec3(1.00, 0.60, 0.20), smoothstep( 0.02,  0.30, th)); // outflow
+    // — p20 −0.66, p50 −0.25, p80 +0.18 — so all four bands are populated by
+    // construction rather than by hope: roughly 20 / 30 / 30 / 20 percent of
+    // tracers. The old stops assumed the range was uniformly populated; it is
+    // not, and the amber end was simply unreachable.
+    //
+    // jit is §9.2's per-surface wobble, here per-tracer: without it the bands
+    // are a stencil and the boundary between two hues is a hard geometric edge
+    // running through the web. With it, neighbouring tracers cross at slightly
+    // different θ and the boundary dissolves into a stipple — soft to look at,
+    // bimodal to measure.
+    float jit = (hash - 0.5) * 0.11;
+    const float W = 0.045;
+    vec3 col = vec3(0.62, 0.18, 1.00);                                          // θ ≪ 0  collapsed
+    col = mix(col, vec3(0.16, 0.42, 1.00), smoothstep(-0.66 + jit - W, -0.66 + jit + W, th)); // infall
+    col = mix(col, vec3(0.10, 0.90, 0.80), smoothstep(-0.25 + jit - W, -0.25 + jit + W, th)); // still
+    col = mix(col, vec3(1.00, 0.62, 0.10), smoothstep( 0.18 + jit - W,  0.18 + jit + W, th)); // outflow
 
-    // dense and no longer flowing: it has stopped
-    float vir = smoothstep(0.70, 2.00, dens) * (1.0 - smoothstep(0.05, 0.50, abs(th)));
+    // Dense and no longer flowing: it has stopped. Kept deliberately narrow —
+    // this is §8 axis 6's "one accent", not a fifth family, and at the width it
+    // used to have it turned most of the collapsed end achromatic, which is a
+    // hue family spent on grey.
+    float vir = smoothstep(1.30, 2.10, dens) * (1.0 - smoothstep(0.04, 0.16, abs(th)));
     col = mix(col, vec3(1.00, 0.95, 0.86), vir);
 
     // no two tracers hold quite the same colour
@@ -457,11 +567,22 @@ const M1_PALETTE = /* glsl */`
   // extinguishes the void tracers before that reaches the frame, and the
   // whole divergence channel goes invisible in the half of the volume where
   // it is most interesting. Fifteen stops from void to node, not ninety.
+  //
+  // The floor was raised from 0.012 to 0.022 on a measurement, and the reason
+  // is the paragraph above taken seriously. Every tracer is the same mass, so
+  // a void does not contain *dimmer* galaxies — it contains *fewer* of them,
+  // and crowding is what is supposed to say so. At the old floor the void
+  // tracers printed at the very bottom of the 8-bit range, where the blue they
+  // are carrying cannot be expressed in the two or three levels of channel
+  // spread available: the frame's hue histogram had four families and none of
+  // them was the blue one, with nothing at all between 190° and 340°. A flatter
+  // law is both the more faithful reading of equal-mass tracers and the one
+  // that lets the emptiest half of the volume reach the frame with its colour.
   float webLum(float dens) {
-    return 0.012
-         + 0.030 * smoothstep(-1.70, 0.05, dens)
-         + 0.050 * smoothstep(0.35, 1.70, dens)
-         + 0.090 * smoothstep(1.95, 2.48, dens);
+    return 0.022
+         + 0.026 * smoothstep(-1.70, 0.05, dens)
+         + 0.040 * smoothstep(0.35, 1.70, dens)
+         + 0.075 * smoothstep(1.95, 2.48, dens);
   }
 
   // Shimmer rides ln D and ln a — both integrals of the Friedmann equation,
@@ -484,7 +605,17 @@ const M1_PALETTE = /* glsl */`
     float u = dot(c, axis);
     float v = dot(c, vec2(-axis.y, axis.x)) * stretch * stretch;
     float r2 = u*u + v*v;
-    return r2 > 0.25 ? -1.0 : exp(-r2 * 11.0);
+    if (r2 > 0.25) return -1.0;
+    // The pedestal has to be subtracted, and this is a §2.8 fix rather than a
+    // cosmetic one. A Gaussian truncated at r² = 0.25 still returns
+    // exp(−2.75) = 0.064 at the cut, so every sprite ends on a 6.4% step
+    // instead of on zero — and with 262k additively blended sprites over a
+    // 230k-pixel frame, those steps are a floor under the entire deep field.
+    // Measured before this line existed: 0.9% of the cosmic frame reached true
+    // #000, against an invariant that says the vacuum *is* black. Subtracting
+    // the truncation value and renormalising costs one madd and lets a pixel
+    // no sprite core covers actually be empty.
+    return (exp(-r2 * 11.0) - 0.0639279) * 1.0682943;
   }
 `;
 
@@ -504,9 +635,11 @@ const M1_VERT = /* glsl */`
   out float vStretch;
   out float vEdge;
   out float vClass;
+  out float vFlux;
   out vec2  vAxis;
   out vec3  vQ;
   ${M1_TENSOR}
+  ${M1_LOD}
   ${M1_SLAB}
 
   void main() {
@@ -562,8 +695,9 @@ const M1_VERT = /* glsl */`
 
     vec4 mv = modelViewMatrix * vec4(x, 1.0);
     vEdge *= slabWeight(mv.z, modelViewMatrix[3].z);
-    float size = uPx * (0.95 + 0.6 * clamp(rho - 0.6, 0.0, 2.6)) * (1.0 + vNova * 3.5);
-    size = clamp(size * (620.0 / -mv.z), 0.75, 9.0);
+    float ideal = uPx * (0.95 + 0.6 * clamp(rho - 0.6, 0.0, 2.6)) * (1.0 + vNova * 3.5)
+                * (620.0 / -mv.z);
+    float size = clamp(ideal, 0.75, 22.0);
 
     // the thread axis, in screen space, from the projected tensor
     mat3 R = mat3(modelViewMatrix);
@@ -573,17 +707,26 @@ const M1_VERT = /* glsl */`
       qform(m0,m1,m2,m3,m4,m5, r0),
       bform(m0,m1,m2,m3,m4,m5, r0, r1),
       qform(m0,m1,m2,m3,m4,m5, r1));
-    // elongate only once the deformation is real (an unstructured early
-    // universe must stay round) and only when the sprite can resolve it
+    // Elongate only once the deformation is real — an unstructured early
+    // universe must stay round — and only when the sprite can resolve it.
+    //
+    // That second gate used to open at 2.5 px, and at the opening distance a
+    // tracer is 0.74 to 1.94 px, so it never opened at all: the anisotropic
+    // kernel §M1 asks for, and the whole reason filaments should read as
+    // *thread* rather than as fog, was switched off in every frame anyone has
+    // ever seen of this scale. It now opens at 1.1 px, which is where a sprite
+    // first has two pixels to be anisotropic across.
     float gate = smoothstep(0.10, 0.75, uD * length(vec3(m0, m1, m2)))
-               * smoothstep(2.5, 5.0, size);
+               * smoothstep(1.1, 2.6, size);
     vStretch = 1.0 + 1.6 * ax.z * gate;
     vAxis = ax.xy;
 
     // energy is preserved inside the kernel, but *coverage* is not, and
     // coverage is what the bloom pass multiplies — so the elongated sprite is
     // held to the same footprint ceiling the round one had
-    gl_PointSize = min(size * vStretch, 11.0);
+    float px = min(size * vStretch, 26.0);
+    vFlux = tracerFlux(ideal, px);
+    gl_PointSize = px;
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -601,6 +744,7 @@ const M1_FRAG = /* glsl */`
   in float vStretch;
   in float vEdge;
   in float vClass;
+  in float vFlux;
   in vec2  vAxis;
   in vec3  vQ;
   out vec4 fragColor;
@@ -611,7 +755,7 @@ const M1_FRAG = /* glsl */`
     if (fall < 0.0) discard;
 
     vec3 col = ${WEB_CLASS ? 'webColorClass(vDens, vTheta, vClass, vHash)' : 'webColor(vDens, vTheta, vCrossed, vHash)'};
-    float lum = webLum(vDens) * webShimmer(uLnD, uLnA, uF, vHash, vQ);
+    float lum = webLum(vDens) * webShimmer(uLnD, uLnA, uF, vHash, vQ) * vFlux;
     col += mix(vec3(1.4, 0.55, 0.32), vec3(1.9, 1.8, 1.55), vNova) * vNova * 2.4;
 
     vec3 outc = col * (lum + vNova) * fall * vEdge;
@@ -706,8 +850,10 @@ const M1_NB_VERT = /* glsl */`
   uniform sampler2D uPos;
   uniform sampler2D uDen;
   uniform sampler2D uDenPrev;
+  uniform sampler2D uForce;  // −∇φ on the mesh; its own gradient is the tidal tensor
   uniform float uThetaK;     // 1/(Δa·f) — turns Δδ into ∇·v in units of aHf
   uniform float uThetaNorm;  // 1/(2.2·D) — same normalisation the linear path uses
+  uniform float uTidalNorm;  // a/(1.5·Ωm·h) — puts the tidal eigenvalues in δ units
   uniform float uD;
   uniform float uAScale;
   uniform float uPx;
@@ -718,13 +864,17 @@ const M1_NB_VERT = /* glsl */`
   out float vNova;
   out float vStretch;
   out float vEdge;
+  out float vClass;
+  out float vFlux;
   out vec2  vAxis;
   out vec3  vQ;
   ${NBODY_LAYOUT.LAYOUT}
   ${M1_TENSOR}
+  ${M1_LOD}
   ${M1_SLAB}
 
   float den(ivec3 c) { return texelFetch(uDen, cellToTexel(c), 0).x; }
+  vec3 frc(ivec3 c) { return texelFetch(uForce, cellToTexel(c), 0).xyz; }
 
   void main() {
     ivec2 t = ivec2(gl_VertexID % ${NBODY_LAYOUT.PN}, gl_VertexID / ${NBODY_LAYOUT.PN});
@@ -741,6 +891,48 @@ const M1_NB_VERT = /* glsl */`
     // the PM code has no deformation tensor; "collapsed" is simply "dense"
     vCrossed = smoothstep(1.6, 2.6, vDens);
 
+    // ---- the T-web class, from this simulation's own gravity --------------
+    //
+    // docs/plans/M1.md §13 built the structure classification on the linear
+    // path and named its absence here as "a known next step and not a gap":
+    // the N-body path was left on the divergence ramp, so with the second hue
+    // channel default-on it did nothing at all in the frame a visitor actually
+    // lands on, because the visitor gets the particle-mesh run.
+    //
+    // It does not need the Zel'dovich tensor. The classification is Hahn et
+    // al. (2007) / Forero-Romero et al. (2009), and its actual definition is
+    // the eigenvalues of the *tidal tensor* T_ij = ∂²φ/∂x_i∂x_j — which this
+    // code already has, one derivative away: force holds −∇φ, so
+    // T_ij = −∂F_i/∂x_j. Six texel fetches, the same central difference
+    // FORCE_FRAG used to make F in the first place, and the answer is the
+    // simulated potential's rather than linear theory's — so after shell
+    // crossing, where the two genuinely disagree, this reports what gravity
+    // did and not what perturbation theory predicted.
+    //
+    // Normalisation: the Poisson solve carries φ_k = −1.5·Ωm·δ_k/(a·k²), so
+    // tr(T) = ∇²φ = (1.5·Ωm/a)·δ. Dividing by that constant puts the
+    // eigenvalues in units where they sum to δ, which is the convention the
+    // λ_th = 0.2 threshold in webCount is quoted in.
+    //
+    // Sign: ψ ∝ −∇φ, so the Zel'dovich tensor is M = −T and an axis collapses
+    // where λ_T is *positive*. Negating here lets both paths share one
+    // webCount, which is §2.7's discipline — one definition, ported rather
+    // than re-derived.
+    vec3 fpx = frc(cell + ivec3(1,0,0)), fmx = frc(cell - ivec3(1,0,0));
+    vec3 fpy = frc(cell + ivec3(0,1,0)), fmy = frc(cell - ivec3(0,1,0));
+    vec3 fpz = frc(cell + ivec3(0,0,1)), fmz = frc(cell - ivec3(0,0,1));
+    float k = -uTidalNorm;
+    float t0 = k * (fpx.x - fmx.x);
+    float t1 = k * (fpy.y - fmy.y);
+    float t2 = k * (fpz.z - fmz.z);
+    // the off-diagonals are symmetrised: two discrete estimates of the same
+    // mixed partial, averaged, which is both more accurate and exactly what
+    // makes the matrix eig3() receives symmetric
+    float t3 = k * 0.5 * ((fpy.x - fmy.x) + (fpx.y - fmx.y));
+    float t4 = k * 0.5 * ((fpz.x - fmz.x) + (fpx.z - fmx.z));
+    float t5 = k * 0.5 * ((fpz.y - fmz.y) + (fpy.z - fmy.z));
+    vClass = webCount(-eig3(t0, t1, t2, t3, t4, t5), 1.0);
+
     vHash = fract(sin(float(gl_VertexID) * 0.1031) * 43758.5453);
     vNova = 0.0;
     if (vHash > 0.9995) {
@@ -756,8 +948,9 @@ const M1_NB_VERT = /* glsl */`
 
     vec4 mv = modelViewMatrix * vec4(disp, 1.0);
     vEdge *= slabWeight(mv.z, modelViewMatrix[3].z);
-    float size = uPx * (0.95 + 0.42 * clamp(vDens, 0.0, 2.0)) * (1.0 + vNova * 3.5);
-    size = clamp(size * (620.0 / -mv.z), 0.75, 9.0);
+    float ideal = uPx * (0.95 + 0.42 * clamp(vDens, 0.0, 2.0)) * (1.0 + vNova * 3.5)
+                * (620.0 / -mv.z);
+    float size = clamp(ideal, 0.75, 22.0);
 
     // No tensor here, but there is a field: a filament runs *along* its ridge,
     // so the thread is perpendicular to the density gradient. Six fetches.
@@ -771,9 +964,13 @@ const M1_NB_VERT = /* glsl */`
     float gmag = length(gs);
     float aniso = gmag / (gmag + 0.35 * rho + 1e-6);
     vAxis = gmag > 1e-6 ? vec2(-gs.y, gs.x) / gmag : vec2(1.0, 0.0);
-    vStretch = 1.0 + 1.6 * aniso * smoothstep(2.5, 5.0, size);
+    // same correction as the linear path: the gate used to open at 2.5 px and a
+    // tracer at the opening distance is under 2, so the thread kernel never ran
+    vStretch = 1.0 + 1.6 * aniso * smoothstep(1.1, 2.6, size);
 
-    gl_PointSize = min(size * vStretch, 11.0);
+    float px = min(size * vStretch, 26.0);
+    vFlux = tracerFlux(ideal, px);
+    gl_PointSize = px;
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -790,6 +987,8 @@ const M1_NB_FRAG = /* glsl */`
   in float vNova;
   in float vStretch;
   in float vEdge;
+  in float vClass;
+  in float vFlux;
   in vec2  vAxis;
   in vec3  vQ;
   out vec4 fragColor;
@@ -798,8 +997,8 @@ const M1_NB_FRAG = /* glsl */`
   void main() {
     float fall = webKernel(gl_PointCoord, vAxis, vStretch);
     if (fall < 0.0) discard;
-    vec3 col = webColor(vDens, vTheta, vCrossed, vHash);
-    float lum = webLum(vDens) * webShimmer(uLnD, uLnA, uF, vHash, vQ);
+    vec3 col = ${WEB_CLASS ? 'webColorClass(vDens, vTheta, vClass, vHash)' : 'webColor(vDens, vTheta, vCrossed, vHash)'};
+    float lum = webLum(vDens) * webShimmer(uLnD, uLnA, uF, vHash, vQ) * vFlux;
     col += mix(vec3(1.4, 0.55, 0.32), vec3(1.9, 1.8, 1.55), vNova) * vNova * 2.4;
     vec3 outc = col * (lum + vNova) * fall * vEdge;
     outc = mix(vec3(0.0), outc, vec3(equal(outc, outc)));
@@ -829,15 +1028,70 @@ export class CosmicScale {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
     this.controls.rotateSpeed = 0.5;
-    this.controls.minDistance = 60;
-    this.controls.maxDistance = BOX * 2.1;
+    // --- how far you may fly, and how fast the gesture takes you there -----
+    //
+    // The dwell was 60 … 1890 units on a 900-unit box. Two things were wrong
+    // with it, and only the second is obvious.
+    //
+    // The near stop was the real one. 60 units is about a fourteenth of the
+    // box, which sounds close and is not: the filaments are tens of units
+    // across, so 60 is still *outside* every structure in the simulation. You
+    // could approach the web and never enter it, and the thing worth seeing at
+    // this scale — that a filament is not fog but a crowd of individual
+    // tracers, each one a galaxy — was behind a wall nobody could get past.
+    // 6 units puts the camera inside a filament with tracers on both sides.
+    //
+    // The far stop is the framing complaint: at 1890 the box subtends most of
+    // the frame, so pulling back to "see the whole thing" instead ran out of
+    // travel with the web still cropped. 3.4× the box is enough to hold it
+    // whole with air around it.
+    this.controls.minDistance = 6;
+    this.controls.maxDistance = BOX * 3.4;
+
+    // A 315× dwell range is unusable at a fixed step, and OrbitControls' dolly
+    // is already geometric — each notch scales the distance rather than
+    // subtracting from it — which is exactly the right law and why the range
+    // can be this wide at all. What it is not is fast enough: at the default
+    // speed, crossing 6 → 3060 takes something like sixty notches, and a pinch
+    // on glass has far less travel than sixty notches of a wheel.
+    //
+    // So the speed is raised, and raised further on a coarse pointer, where
+    // the gesture is a thumb-and-forefinger span of a couple of centimetres
+    // rather than an unbounded scroll. This is the whole of "on mobile, make
+    // sure you can really zoom in and out": the range was there, the gesture
+    // could not reach across it.
+    //
+    // And the gesture could not reach it *at all*, which is the defect under
+    // the defect. `main.js` and `touch.js` both synthesise a pinch into
+    // `active().onWheel?.({ deltaY })`, a plain object — while `OrbitControls`
+    // binds a real DOM `wheel` listener to the canvas. A plain object never
+    // reaches that listener, so pinch-to-zoom did nothing here on any build,
+    // and the mouse wheel worked, which is exactly why it survived: the wheel
+    // is the one input a desktop test exercises and a phone never has.
+    // `onWheel()` below owns the dolly for both, so this switch stays off.
+    const coarse = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+    this.controls.enableZoom = false;
+    // exp(k · 100) = 0.95^−1.7 — one notch is 9.25%, the tuned wheel feel
+    this._zoomK = 8.845e-4 * (coarse ? 2.9 : 1);
     this.controls.autoRotate = true;
     this.controls.autoRotateSpeed = 0.14;
     app.renderer.domElement.addEventListener('pointerdown', () => {
       this.controls.autoRotate = false;
     }, { once: true });
 
-    this.bloomSettings = { strength: 0.8, radius: 0.8, threshold: 0.0 };
+    // Threshold 0 means `bloom.js`'s bright pass collapses to w = 1 and the
+    // *entire* frame is blurred and added back to itself. In vacuum that is a
+    // pedestal under a field §2.8 requires to reach zero, and it is measurable:
+    // the cosmic frame reached true #000 on 0.9% of pixels and read 65%
+    // achromatic, because a broad grey haze is what an unthresholded bloom of a
+    // multicoloured point field *is*. Above the void tracers (which peak near
+    // 0.05) and below the filament and knot cores, so what glows is structure.
+    // Strength matters as much as the threshold, and for a second reason: a
+    // bloom is a *blur*, and blurring a field whose neighbouring tracers carry
+    // different hues averages them — which is the same hue-destroying mechanism
+    // the compositing does, applied again in screen space. 0.85 was adding
+    // nearly a full second copy of the frame.
+    this.bloomSettings = { strength: 0.5, radius: 0.75, threshold: 0.06 };
   }
 
   // ------------------------------------------------------------ field ----
@@ -942,8 +1196,10 @@ export class CosmicScale {
       uPos: { value: this.sim.posTexture },
       uDen: { value: this.sim.densityTexture },
       uDenPrev: { value: this.sim.densityPrevTexture },
+      uForce: { value: this.sim.forceTexture },
       uThetaK: { value: 0 },
       uThetaNorm: { value: 1 },
+      uTidalNorm: { value: this.sim.tidalScale },
       uSlabHalf: { value: SLAB * BOX * 0.5 },
       uD: { value: COSMO.growth(this.a) },
       uLnD: { value: Math.log(Math.max(COSMO.growth(this.a), 1e-6)) },
@@ -1037,7 +1293,9 @@ export class CosmicScale {
       this.nbUniforms.uAScale.value = this.physicalView ? this.a : 1;
       if (M1) {
         this.nbUniforms.uDenPrev.value = this.sim.densityPrevTexture;
+        this.nbUniforms.uForce.value = this.sim.forceTexture;
         this.nbUniforms.uThetaK.value = this.sim.thetaScale;
+        this.nbUniforms.uTidalNorm.value = this.sim.tidalScale;
         this._setDeepTime(this.nbUniforms);
       }
     } else if (dln > 0) {
@@ -1141,6 +1399,43 @@ export class CosmicScale {
     const q = 8; // quantize → stable galaxy identity for nearby clicks
     const gseed = hash(this.app.seed, Math.round(best.x / q), Math.round(best.y / q), Math.round(best.z / q));
     return { position: best, galaxySeed: gseed };
+  }
+
+  /**
+   * Zoom, owned here rather than by `OrbitControls`, so that the *pinch* works.
+   *
+   * `main.js` synthesises a pinch into `active().onWheel?.({ deltaY })` and
+   * `touch.js` does the same — but `CosmicScale` never implemented `onWheel`,
+   * and `OrbitControls` listens for real DOM wheel events on the canvas, which
+   * a synthesised plain object is not. So two fingers on the glass did nothing
+   * at this scale, on every build, while the mouse wheel worked. Taking the
+   * dolly means one implementation serves both, which is why
+   * `controls.enableZoom` is off above.
+   *
+   * Geometric, because the range is: 6 to BOX·3.4 is a factor of 510, and a
+   * linear dolly cannot cross that without being useless at one end.
+   *
+   * The gain reproduces the tuned `zoomSpeed = 1.7` feel exactly — one 100-unit
+   * notch is 9.25%, so `exp(k·100) = 0.95^-1.7`. A coarse pointer gets 2.9×
+   * that, and the reason is arithmetic rather than taste: `touch.js` scales
+   * finger travel by 3.2, so a full-screen pinch on a 390-point phone arrives
+   * as |deltaY| ≈ 1,600, and at the mouse gain that is a 4× dolly — five
+   * pinches to cross the range. A one-pinch traverse of the *useful* range
+   * (whole web to inside a filament, about 60×) wants |deltaY| ≈ 4,600, and
+   * multiplying here rather than asking `touch.js` for a bigger gain keeps the
+   * change inside one file.
+   */
+  onWheel(e) {
+    const dy = Number(e?.deltaY) || 0;
+    if (!dy) return true;
+    // DOM_DELTA_LINE reports notches, not pixels; one line is about 16 px
+    const k = this._zoomK * (e.deltaMode === 1 ? 16 : 1);
+    const t = this.controls.target;
+    const d = this.camera.position.clone().sub(t);
+    const len = Math.min(Math.max(d.length() * Math.exp(k * dy),
+      this.controls.minDistance), this.controls.maxDistance);
+    this.camera.position.copy(t).addScaledVector(d.normalize(), len);
+    return true;
   }
 
   onKey(code) {
