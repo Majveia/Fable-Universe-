@@ -16,12 +16,116 @@ import { softDotTexture } from './nebula.js';
 import { HOVER, Hover, MOUNT, Mount, handMomentum } from './vehicle.js';
 import { input, jumpHeld } from './input.js';
 import { GAIT, gravityOf } from './avatar.js';
+import { TIER } from './quality.js';
+import {
+  BONE_COUNT, FIGURE_FRAG, FIGURE_PALETTE, FIGURE_VERT,
+  buildFigure, poseFigure, poseFor, restPose,
+} from './figure.js';
 
 const EYE = 1.8;
 
 // §6 M5's half of this file. Default-off (§7.4), and the old path is left
 // intact underneath it — `?m5=0` is the rollback and it is the whole rollback.
 const M5 = new URL(window.location.href).searchParams.get('m5') === '1';
+
+/**
+ * `?figure=1` — `src/figure.js` instead of the five primitives. Default-off
+ * (§7.4), and the two are built side by side so the flag hides one and shows
+ * the other rather than branching the placer.
+ */
+const FIGURE = new URL(window.location.href).searchParams.get('figure') === '1';
+
+/**
+ * Hang the drawn figure inside the avatar group and return the handle that
+ * drives it.
+ *
+ * Two things it needs each frame and cannot compute: the gait clock, which
+ * belongs to `Walker` and must not be duplicated (§6 M4), and the wind, which
+ * belongs to the scale's one field (§6 M3). Both are read here rather than
+ * re-derived, which is the whole reason the coat and the footfalls agree.
+ */
+function makePerson(s, parent) {
+  const built = buildFigure(GAIT.eye / 0.936, TIER, s.pp.seed >>> 0);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(built.position, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(built.normal, 3));
+  g.setAttribute('aBone', new THREE.BufferAttribute(built.bone, 1));
+  g.setAttribute('aMat', new THREE.BufferAttribute(built.mat, 1));
+  g.setAttribute('aFree', new THREE.BufferAttribute(built.free, 1));
+  g.computeBoundingSphere();
+  // the bounding sphere has to cover the *posed* figure, not the bind pose —
+  // limbs authored at their own bone's origin all sit near y = 0 in the buffer
+  g.boundingSphere.center.set(0, built.dims.chestY, 0);
+  g.boundingSphere.radius = built.dims.stature;
+
+  const bones = new Float32Array(16 * BONE_COUNT);
+  const rest = restPose(built.dims);
+  const uniforms = {
+    uBones: { value: bones },
+    uCloth: { value: new THREE.Vector3() },
+    uHem: { value: new THREE.Vector2(0, 0) },
+    uSunDir: s.uSunDir,
+    uCoat: { value: new THREE.Color(FIGURE_PALETTE.coat).convertSRGBToLinear() },
+    uLining: { value: new THREE.Color(FIGURE_PALETTE.lining).convertSRGBToLinear() },
+    uSkin: { value: new THREE.Color(FIGURE_PALETTE.skin).convertSRGBToLinear() },
+    uBoot: { value: new THREE.Color(FIGURE_PALETTE.boot).convertSRGBToLinear() },
+    uStrap: { value: new THREE.Color(FIGURE_PALETTE.strap).convertSRGBToLinear() },
+  };
+  const mat = new THREE.ShaderMaterial({
+    uniforms, vertexShader: FIGURE_VERT, fragmentShader: FIGURE_FRAG,
+    // Both faces. A coat is a surface with no back and the hem lifts far
+    // enough in a gust to show the inside of it, which is what the lining
+    // colour is for — one-sided here is a hole in the silhouette exactly where
+    // the eye is looking.
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(g, mat);
+  mesh.castShadow = true;
+  parent.add(mesh);
+
+  return {
+    mesh, mat, uniforms, dims: built.dims, bones, rest,
+    /** one frame: the pose from the walker's clock, the coat from the field */
+    step(dt, speed, phase, grounded, yaw) {
+      const cad = s.walker?.stepFreq ?? 0;
+      const pose = poseFor(built.dims, {
+        phase, speed, cadence: cad,
+        sat: s.walker?.g?.bobSat ?? 3.6,
+        gravity: s.walker?.gravity ?? 9.81,
+        grounded,
+      });
+      poseFigure(bones, built.dims, pose, rest);
+      mat.uniformsNeedUpdate = true;
+
+      // §6 M3: the coat is cloth and cloth reads the one field. Sampled once
+      // per frame at the body, at chest height — a coat is a metre across and
+      // the smallest gust cell is 260 m, so forty per-vertex lookups would
+      // return forty copies of this number.
+      const w = s.sampleWind
+        ? s.sampleWind(s.body.x, s.body.z, built.dims.chestY)
+        : { x: 0, z: 0 };
+      // in the figure's own frame, because the coat is
+      const cy = Math.cos(-yaw), sy = Math.sin(-yaw);
+      const wx = w.x * cy - w.z * sy, wz = w.x * sy + w.z * cy;
+      // and its own motion, trailing: a coat that does not trail is a cape on
+      // a statue, and it is the difference between walking and gliding
+      const vx = (s.vel?.x ?? 0), vz = (s.vel?.z ?? 0);
+      const tx = -(vx * cy - vz * sy), tz = -(vx * sy + vz * cy);
+      const c = uniforms.uCloth.value;
+      // eased rather than snapped: cloth has mass, and the field is sampled at
+      // frame rate while a gust front crosses in tens of seconds
+      const k = 1 - Math.exp(-4.5 * dt);
+      c.x += ((wx * 0.020 + tx * 0.030) - c.x) * k;
+      c.z += ((wz * 0.020 + tz * 0.030) - c.z) * k;
+      c.y += ((-0.02 - Math.hypot(tx, tz) * 0.004) - c.y) * k;
+      // the hem ripple rides the gait phase, so the coat swings on the
+      // footfall rather than on a clock of its own (§6 M4)
+      uniforms.uHem.value.set(0.018 + Math.min(speed / 9, 1) * 0.030, phase);
+      return pose;
+    },
+    dispose() { parent.remove(mesh); g.dispose(); mat.dispose(); },
+  };
+}
 
 export function addTraveler(s) {
   const r = new RNG(hash(s.pp.seed, 0x77a7e1e5));
@@ -54,6 +158,15 @@ export function addTraveler(s) {
   avatar.add(cloak, head, hat, scarf, lantern);
   avatar.visible = false;
   s.scene.add(avatar);
+
+  // ------------------------------------------------------------ FIGURE ----
+  // `?figure=1` — the same person, drawn. Built alongside the five primitives
+  // rather than in place of them so the flag is a swap of one boolean and the
+  // rollback is the URL (§7.4). Everything downstream — the placer, the
+  // lantern, the skiff, the camera — reads `avatar`, so the figure is hung
+  // inside the same group and the five originals are simply hidden.
+  const person = FIGURE ? makePerson(s, avatar) : null;
+  if (person) for (const o of [cloak, head, hat, scarf]) o.visible = false;
 
   // ------------------------------------------------------------- skiff ----
   const skiff = new THREE.Group();
@@ -374,15 +487,32 @@ export function addTraveler(s) {
         avatar.position.set(s.body.x, s.body.y - EYE, s.body.z);
         const sp = Math.hypot(s.vel.x, s.vel.z);
         if (sp > 0.8) {
-          const want = Math.atan2(-s.vel.x, -s.vel.z);
+          // The cone is symmetric so nothing ever revealed which way it faced;
+          // the drawn figure's front is +z and its coat opens there, so the two
+          // conventions differ by pi and the flag picks between them.
+          const want = person ? Math.atan2(s.vel.x, s.vel.z)
+            : Math.atan2(-s.vel.x, -s.vel.z);
           let dy = want - T._face;
           dy = ((dy + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
           T._face += dy * Math.min(dt * 8, 1);
         }
         avatar.rotation.y = T._face;
-        avatar.position.y += Math.abs(Math.sin(T._t * 7.5)) * Math.min(sp / 16, 1) * 0.09;
-        avatar.rotation.x = Math.min(sp / 60, 0.14);
-        scarf.rotation.x = 0.5 + Math.sin(T._t * 3.2) * 0.15 + Math.min(sp / 40, 0.6);
+        if (person) {
+          // §6 M4's one clock. `Walker.stepPhase` drives the head bob, the
+          // footfall count and the grass the walker parts; the figure standing
+          // in for that walker reads the same number, so it cannot be on a
+          // different beat. What it replaces below is `sin(_t · 7.5)` against a
+          // walker cadence of `0.58 + 0.34·v` — 1.19 Hz against 1.75 at walking
+          // speed, beating against each other every 1.8 seconds, forever.
+          person.step(dt, sp, s.walker?.stepPhase ?? T._t * 0.5,
+            s.walker ? s.walker.grounded : true, T._face);
+          // the lean is the walker's, for the same reason
+          avatar.rotation.x = s.walker?.lean ?? Math.min(sp / 60, 0.14);
+        } else {
+          avatar.position.y += Math.abs(Math.sin(T._t * 7.5)) * Math.min(sp / 16, 1) * 0.09;
+          avatar.rotation.x = Math.min(sp / 60, 0.14);
+          scarf.rotation.x = 0.5 + Math.sin(T._t * 3.2) * 0.15 + Math.min(sp / 40, 0.6);
+        }
         const night = 1 - Math.min(Math.max((s.uSunDir.value.y + 0.12) * 3.5, 0), 1);
         lantern.material.opacity = night * 0.85;
       }

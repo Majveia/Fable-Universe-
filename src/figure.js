@@ -552,6 +552,13 @@ export function twoBone(root, target, l1, l2, pole) {
 // bind pose is generated has nothing to load and no reason to carry the rest
 // of the skinning machinery.
 
+/**
+ * Material ids, carried per vertex in `aMat` and branched on in one fragment
+ * shader — a figure is one draw call, and four `MeshStandardMaterial`s would
+ * be four of them plus four chances for the aerial injection to reach three.
+ */
+export const MAT = { BODY: 0, COAT: 1, SKIN: 2, BOOT: 3, STRAP: 4 };
+
 /** bone ids — the vertex shader indexes `uBones` with these */
 export const BONE = {
   ROOT: 0, PELVIS: 1, SPINE: 2, CHEST: 3, NECK: 4, HEAD: 5,
@@ -570,7 +577,7 @@ export const BONE_COUNT = 21;
  * section rather than a circle — `|x|^n + |z|^n = 1` at n ≈ 2.6, which is what
  * a limb actually is and what stops an arm reading as a pipe.
  */
-function limb(out, bone, len, r0, r1, sides, rings, mat, xf = null, squash = 1) {
+function limb(out, bone, len, r0, r1, sides, rings, mat, xf = null, squash = 1, dir = 1) {
   const N = 2.6;
   const ring = (t) => {
     const pts = [];
@@ -580,7 +587,7 @@ function limb(out, bone, len, r0, r1, sides, rings, mat, xf = null, squash = 1) 
       const ca = Math.cos(a), sa = Math.sin(a);
       // superellipse, unit-normalised
       const k = Math.pow(Math.pow(Math.abs(ca), N) + Math.pow(Math.abs(sa), N), -1 / N);
-      pts.push([ca * k * r * squash, t * len, sa * k * r]);
+      pts.push([ca * k * r * squash, t * len * dir, sa * k * r]);
     }
     return pts;
   };
@@ -595,7 +602,7 @@ function limb(out, bone, len, r0, r1, sides, rings, mat, xf = null, squash = 1) 
   // caps, so the silhouette closes — a limb open at the end reads as a hole
   // exactly where the aerial perspective is brightest
   cap(out, rows[0], [0, 0, 0], bone, mat, xf, true);
-  cap(out, rows[rings], [0, len, 0], bone, mat, xf, false);
+  cap(out, rows[rings], [0, len * dir, 0], bone, mat, xf, false);
 }
 
 function cap(out, ring, centre, bone, mat, xf, flip) {
@@ -651,12 +658,16 @@ function coat(out, s, sides, rings, seed) {
         return [Math.sin(a) * r, y, Math.cos(a) * r * 1.12];
       };
       const A = P(t0, a0), B = P(t0, a1), C = P(t1, a1), D = P(t1, a0);
-      quad(out, A, B, C, D, BONE.COAT, 1.0, null);
+      // A→D→C→B rather than A→B→C→D. The obvious winding puts the outward
+      // normal *inward* here: the ring runs from +z toward +x, so the cross
+      // product of (along the ring) with (down the coat) points into the
+      // garment, and the whole figure renders in its own lining.
+      quad(out, A, D, C, B, BONE.COAT, MAT.COAT, null);
       // The free weight, per vertex, in the order `quad` pushed them — it
-      // emits (A,B,C) then (A,C,D), so the sequence is not simply t0,t0,t1,t1.
+      // emits (A,D,C) then (A,C,B), so the sequence is not simply t0,t1,t1,t0.
       // Squared here rather than in the shader so the quartic falloff costs
       // nothing per frame.
-      for (const w of [t0, t0, t1, t0, t1, t1]) out.free.push(w * w);
+      for (const w of [t0, t1, t1, t0, t1, t0]) out.free.push(w * w);
     }
   }
   // the collar: a short flare the other way, framing the head
@@ -667,8 +678,8 @@ function coat(out, s, sides, rings, seed) {
     if (Math.abs(a0) < open * 0.9 && Math.abs(a1) < open * 0.9) continue;
     const Q = (y, a, r) => [Math.sin(a) * r, y, Math.cos(a) * r * 1.1];
     const rb = s.shoulderW * 0.30, rt = s.shoulderW * 0.42;
-    quad(out, Q(cBot, a0, rb), Q(cBot, a1, rb), Q(cTop, a1, rt), Q(cTop, a0, rt),
-      BONE.CHEST, 1.0, null);
+    quad(out, Q(cBot, a0, rb), Q(cTop, a0, rt), Q(cTop, a1, rt), Q(cBot, a1, rb),
+      BONE.CHEST, MAT.COAT, null);
     for (let k = 0; k < 6; k++) out.free.push(0);
   }
   return seed;
@@ -696,46 +707,53 @@ export function buildFigure(stature = 1.78, tier = 1, seed = 0) {
   const at = (x, y, z) => compose(new Float64Array(16), 0, x, y, z, 0, 0, 0);
 
   // -- torso. Two segments so the twist reads; the chest is wider than deep,
-  //    which is the difference between a person and a barrel.
+  //    which is the difference between a person and a barrel. The torso, the
+  //    neck and the head are authored in *root* space with an absolute
+  //    translation, because their bones sit at the origin; the limbs below are
+  //    authored in their own bone's space, hanging along −y, because that is
+  //    the direction the rest offsets chain them in. Authoring a limb along +y
+  //    puts every arm and leg inside the torso, pointing at the sky, and the
+  //    coat hides it well enough that the first render read as a figure with
+  //    no arms rather than as a figure with its arms on backwards.
   limb(out, BONE.SPINE, s.chestY - s.hipY, s.hipW * 0.52, s.shoulderW * 0.40,
-    SIDES, RINGS, 0.0, at(0, s.hipY, 0), 1.28);
+    SIDES, RINGS, MAT.BODY, at(0, s.hipY, 0), 1.28);
   limb(out, BONE.CHEST, s.shoulderY - s.chestY, s.shoulderW * 0.40, s.shoulderW * 0.36,
-    SIDES, RINGS, 0.0, at(0, s.chestY, 0), 1.30);
-  // -- pelvis
+    SIDES, RINGS, MAT.BODY, at(0, s.chestY, 0), 1.30);
   limb(out, BONE.PELVIS, s.hipY - s.waistY * 0.86, s.hipW * 0.56, s.hipW * 0.52,
-    SIDES, 2, 0.0, at(0, s.waistY * 0.86, 0), 1.16);
+    SIDES, 2, MAT.BODY, at(0, s.waistY * 0.86, 0), 1.16);
 
   // -- head and neck. The head is an ovoid, longer than wide, and it is the
   //    module everything else was counted in — get it wrong and nothing reads.
   limb(out, BONE.NECK, s.chin - s.shoulderY, s.head * 0.30, s.head * 0.27,
-    SIDES, 1, 2.0, at(0, s.shoulderY, 0), 1.0);
+    SIDES, 1, MAT.SKIN, at(0, s.shoulderY, 0), 1.0);
   // ...and the crown lands on `stature` exactly, because the canon is eight
   // heads and a figure 1.5% short of its own stated height is a figure whose
   // eye height, camera distance and scale reference are all 1.5% wrong.
   limb(out, BONE.HEAD, stature - (s.chin - s.head * 0.06), s.head * 0.40, s.head * 0.30,
-    SIDES, RINGS + 1, 2.0, at(0, s.chin - s.head * 0.06, 0), 0.90);
+    SIDES, RINGS + 1, MAT.SKIN, at(0, s.chin - s.head * 0.06, 0), 0.90);
 
-  // -- arms and legs, mirrored. `xf` places each in its bone's local space so
-  //    the shader's matrix is the only thing that moves them.
+  // -- arms and legs, mirrored, each hanging along −y in its own bone's space
+  const DOWN = -1;
   for (const side of [-1, 1]) {
     const L = side < 0;
-    const sx = side * s.shoulderW * 0.5;
     limb(out, L ? BONE.UPPER_L : BONE.UPPER_R, s.upperArm,
-      s.upperArm * 0.30, s.upperArm * 0.24, SIDES, RINGS, 0.0, at(0, 0, 0));
+      s.upperArm * 0.30, s.upperArm * 0.24, SIDES, RINGS, MAT.BODY, null, 1, DOWN);
     limb(out, L ? BONE.FORE_L : BONE.FORE_R, s.forearm,
-      s.forearm * 0.28, s.forearm * 0.20, SIDES, RINGS, 0.0, at(0, 0, 0));
+      s.forearm * 0.28, s.forearm * 0.20, SIDES, RINGS, MAT.BODY, null, 1, DOWN);
     // the hand: short, dark, and no fingers — value, not detail (§2 above)
     limb(out, L ? BONE.HAND_L : BONE.HAND_R, s.head * 0.72,
-      s.head * 0.20, s.head * 0.15, Math.max(SIDES - 4, 5), 1, 3.0, at(0, 0, 0), 0.62);
+      s.head * 0.20, s.head * 0.15, Math.max(SIDES - 4, 5), 1, MAT.BOOT, null, 0.62, DOWN);
     limb(out, L ? BONE.THIGH_L : BONE.THIGH_R, s.thigh,
-      s.hipW * 0.34, s.hipW * 0.26, SIDES, RINGS, 0.0, at(0, 0, 0));
+      s.hipW * 0.34, s.hipW * 0.26, SIDES, RINGS, MAT.BODY, null, 1, DOWN);
     limb(out, L ? BONE.SHANK_L : BONE.SHANK_R, s.shank,
-      s.hipW * 0.27, s.hipW * 0.16, SIDES, RINGS, 0.0, at(0, 0, 0));
-    // the boot: a wedge, longer forward than back, and the same dark value
+      s.hipW * 0.27, s.hipW * 0.16, SIDES, RINGS, MAT.BODY, null, 1, DOWN);
+    // The boot: a wedge lying forward from the ankle. Rotated −90° about x,
+    // which takes the limb's own −y onto +z — so it points where the figure is
+    // facing rather than where its shins are.
     limb(out, L ? BONE.FOOT_L : BONE.FOOT_R, s.foot,
-      s.hipW * 0.22, s.hipW * 0.15, Math.max(SIDES - 4, 5), 1, 3.0,
-      compose(new Float64Array(16), 0, 0, 0, -s.foot * 0.30, Math.PI / 2, 0, 0), 0.74);
-    void sx;
+      s.hipW * 0.26, s.hipW * 0.17, Math.max(SIDES - 4, 5), 1, MAT.BOOT,
+      compose(new Float64Array(16), 0, 0, -s.hipW * 0.10, -s.foot * 0.28, -Math.PI / 2, 0, 0),
+      0.74, DOWN);
   }
 
   // everything so far is rigid, so its free weight is zero
@@ -757,7 +775,7 @@ export function buildFigure(stature = 1.78, tier = 1, seed = 0) {
     const nl = Math.hypot(ax[1], ax[0]) || 1;
     const nrm = [(-ax[1] / nl) * w, (ax[0] / nl) * w, 0];
     const add = (p, q) => [p[0] + q[0], p[1] + q[1], p[2] + q[2]];
-    quad(out, add(A, nrm), sub3(A, nrm), sub3(B, nrm), add(B, nrm), BONE.CHEST, 3.0, null);
+    quad(out, add(A, nrm), sub3(A, nrm), sub3(B, nrm), add(B, nrm), BONE.CHEST, MAT.STRAP, null);
     for (let k = 0; k < 6; k++) out.free.push(0);
   }
 
@@ -807,10 +825,10 @@ export function faceNormals(pos) {
 export function restPose(s) {
   const A = (x, y, z) => [x, y, z];
   const rest = new Array(BONE_COUNT).fill(null).map(() => A(0, 0, 0));
-  rest[BONE.UPPER_L] = A(-s.shoulderW * 0.46, s.shoulderY - s.head * 0.10, 0);
+  rest[BONE.UPPER_L] = A(-s.shoulderW * 0.52, s.shoulderY - s.head * 0.10, 0);
   rest[BONE.FORE_L] = A(0, -s.upperArm, 0);
   rest[BONE.HAND_L] = A(0, -s.forearm, 0);
-  rest[BONE.UPPER_R] = A(s.shoulderW * 0.46, s.shoulderY - s.head * 0.10, 0);
+  rest[BONE.UPPER_R] = A(s.shoulderW * 0.52, s.shoulderY - s.head * 0.10, 0);
   rest[BONE.FORE_R] = A(0, -s.upperArm, 0);
   rest[BONE.HAND_R] = A(0, -s.forearm, 0);
   rest[BONE.THIGH_L] = A(-s.hipW * 0.42, s.hipY, 0);
@@ -947,3 +965,64 @@ export const FIGURE_PALETTE = {
   boot: 0x1E2233,
   strap: 0xB4753E,
 };
+
+/**
+ * The shading, which is deliberately §9.2's shape and not a PBR one.
+ *
+ * A half-Lambert wrap and a three-stop ramp with visibly soft band edges —
+ * §11 names this as the first thing a physically-based instinct will try to
+ * delete and it is the art direction. On a figure it does more work than
+ * anywhere else in the frame: a smoothly-shaded generated body reads as a
+ * mannequin because the gradient has nothing to describe, while banded values
+ * read as *drawn*, and the bands land on the anatomy that put them there.
+ *
+ * The lining shows on backfaces, which is the whole reason the material is
+ * double-sided: a coat that flares should show something when it does, and
+ * warm-inside against cool-outside is the oldest way to make a shape read.
+ */
+export const FIGURE_FRAG = /* glsl */`
+  precision highp float;
+  uniform vec3 uSunDir;
+  uniform vec3 uCoat, uLining, uSkin, uBoot, uStrap;
+  varying float vMat;
+  varying vec3 vN;
+  varying vec3 vW;
+
+  void main() {
+    vec3 N = normalize(vN);
+    vec3 V = normalize(cameraPosition - vW);
+    // Which of the five this triangle is. Ids rather than materials, because
+    // a figure is one draw call.
+    vec3 base = uCoat;
+    if (vMat < 0.5) base = uCoat;              // body: under the coat, same cloth
+    else if (vMat < 1.5) base = uCoat;         // the coat proper
+    else if (vMat < 2.5) base = uSkin;         // head and neck
+    else if (vMat < 3.5) base = uBoot;         // boots and gloves
+    else base = uStrap;
+    // ...and the inside of the coat, which is the whole reason for two faces
+    if (!gl_FrontFacing) {
+      N = -N;
+      if (vMat > 0.5 && vMat < 1.5) base = uLining;
+    }
+
+    // §9.2's wrap. A grazing sun is the only sun this project spawns you under
+    // (§9.7 forces 8-18 degrees), and plain Lambert puts the whole figure in
+    // the shade band at that elevation.
+    float ndl = clamp(dot(N, normalize(uSunDir)) * 0.62 + 0.46, 0.0, 1.0);
+    // and the three-stop ramp, with soft-but-visible edges
+    float lo = smoothstep(0.10, 0.24, ndl);
+    float hi = smoothstep(0.50, 0.66, ndl);
+    vec3 shade = base * 0.62 + vec3(0.036, 0.043, 0.062);   // never toward black
+    vec3 mid = base;
+    vec3 lit = base * 1.22 + vec3(0.030, 0.026, 0.014);
+    vec3 col = mix(shade, mix(mid, lit, hi), lo);
+
+    // the rim, which §9.2 calls the connective tissue of the whole image — and
+    // on a figure standing against a valley it is what separates the two
+    float rim = pow(1.0 - max(dot(N, V), 0.0), 4.2)
+      * smoothstep(0.05, 0.85, dot(V, -normalize(uSunDir)));
+    col += vec3(1.0, 0.86, 0.62) * rim * 0.42;
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
