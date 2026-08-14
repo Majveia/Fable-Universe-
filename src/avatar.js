@@ -38,6 +38,10 @@
 const G_EARTH = 9.80665;
 
 const clamp = (x, lo, hi) => (x < lo ? lo : x > hi ? hi : x);
+const smoothstep = (e0, e1, x) => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+};
 
 /**
  * Locomotion constants.
@@ -147,6 +151,145 @@ export const GAIT = {
 
 /** the launch speed the legs produce, constant across worlds (see above) */
 export const jumpV0 = (gait = GAIT) => Math.sqrt(2 * G_EARTH * gait.jumpHeight);
+
+/**
+ * The reference leg, in metres — greater trochanter, knee, ankle.
+ *
+ * The same three numbers `figure.js`'s proportion table carries, repeated here
+ * so the solve has a default and so `tools/verify.js` can exercise it without
+ * loading a module that imports three. `figure.js` passes its own, and a check
+ * asserts the two agree.
+ */
+export const LEG_REF = { hip: 0.905, knee: 0.487, ankle: 0.068 };
+
+/**
+ * Where each foot is, and therefore how far the hip has to come down.
+ *
+ * The pose above authors the *joints* and lets the foot land where it may,
+ * which is the ordinary way to write a walk cycle and is measurably wrong: on
+ * this figure the stance foot slides 15 mm per frame at a stroll and 74 mm at
+ * a run — up to four and a half metres a second of skate under a body moving
+ * five. `tools/footplant.js` is that measurement, and it is the reason this
+ * function exists.
+ *
+ * So the causality is inverted for the legs only. The **foot** is authored and
+ * the leg is solved to it:
+ *
+ *   · in **stance** the foot is on the ground and stationary *in the world*,
+ *     which in the body's frame means sliding backwards at exactly walking
+ *     speed. No slip is possible because the contact point is the independent
+ *     variable rather than a consequence of two rotations.
+ *   · in **swing** it arcs forward over the same ground, rising by a third of
+ *     its half-excursion — a shape rather than a height, so it scales with
+ *     speed on its own.
+ *   · the **duty factor** falls from 0.62 to 0.34 as the Froude number passes
+ *     0.5, which is the walk-run transition. Double support and the float
+ *     phase are `2·duty − 1` changing sign; neither is scripted, and because
+ *     Froude is dimensionless the transition rides gravity — a body runs on
+ *     Luna at the speed it walks at here.
+ *   · and the **hip drop falls out**: a planted foot half a step ahead is
+ *     further from the hip than one underneath it, so the hip must come down
+ *     by `L − sqrt(L² − z²)` to reach it. That is the compass gait, and it
+ *     means the pelvic rise is a consequence of the step length rather than
+ *     the `cos(2φ)·0.018` it replaces.
+ *
+ * The reach limit lands on the *duty*, never on the excursion. Clamping how
+ * far the foot travels makes it slide again, which is the whole defect; a body
+ * outrunning its legs picks the foot up earlier and spends longer in swing,
+ * which is what running is.
+ *
+ * ---------------------------------------------------------------------------
+ * What this does not yet fix, and where it is
+ *
+ * The law above is exact — `suitePlant` measures the residual at 7.7e-16 m per
+ * sample, which is float noise. Composed into `figure.js`'s actual skeleton it
+ * is 1.5–9.7 mm per frame (`node tools/footplant.js`), down from 15–74, and
+ * the remaining error has one cause: **the pelvis moves after the solve reads
+ * it.** `_pose` sets `root.rot.x/y/z` and `_rootX` *after* the legs are
+ * solved, and every one of those displaces the hip joint the solve assumed was
+ * fixed at `(±hipHalf, hip − drop, 0)`.
+ *
+ * Closing it means solving the legs in a second pass, once the root chain has
+ * resolved and the hip's real position is known — which is a restructure of
+ * `_solve`, not a change to any number here. Left as a named next step rather
+ * than half-done, because the intermediate version (feeding last frame's hip
+ * position back in) is a feedback loop that oscillates, and a walk that
+ * shivers is worse than one that slides.
+ */
+export function legPlant(u, speed, cadence, gravity = 9.81, leg = LEG_REF) {
+  const legL = leg.hip - leg.ankle;
+  const fr = (speed * speed) / Math.max(gravity * legL, 1e-6);
+  const stride = cadence > 1e-3 ? speed / cadence : 0;
+  let duty = clamp(0.62 - 0.28 * smoothstep(0.30, 0.95, fr), 0.34, 0.62);
+  const maxDuty = stride > 1e-6 ? (legL * REACH * 2) / stride : 1;
+  duty = Math.max(Math.min(duty, maxDuty), 0.02);
+  const half = stride * duty * 0.5;
+  const out = { duty, stride, fr, drop: 0 };
+  let compass = 0;
+  for (const [k, off] of [['R', 0], ['L', 0.5]]) {
+    const t = (u + off) % 1;
+    if (t < duty) {
+      const a = t / duty;
+      const z = (1 - 2 * a) * half;
+      out[k] = { z, y: 0, down: 1 };
+      // the hip is one point and both legs hang off it, so in double support it
+      // answers the *deeper* demand. The average is the appealing answer and it
+      // fails in a way that looks like success: the hip's path smooths
+      // beautifully and the further foot lifts off the ground.
+      compass = Math.max(compass, legL - Math.sqrt(Math.max(legL * legL - z * z, 0)));
+    } else {
+      const a = (t - duty) / (1 - duty);
+      out[k] = { z: (2 * a - 1) * half, y: Math.sin(Math.PI * a) * half * 0.32, down: 0 };
+    }
+  }
+  // The compass over-predicts the bob about twofold and the reason has a name:
+  // the *determinants of gait*. A real stance knee stays ~20° flexed through
+  // mid-stance, which lowers the hip at the top of its arc and nowhere else —
+  // so it flattens the bob and can never reach into the part of the arc the
+  // foot's reach depends on.
+  // ...and it is gated on there being a stride at all. A body standing still
+  // has no stance phase to flex through, so the whole term is zero — without
+  // the gate an idle figure sinks 1.3 cm into its own knees and stays there,
+  // which is the kind of defect that reads as "something is slightly wrong"
+  // for a year before anyone measures it.
+  const peak = legL - Math.sqrt(Math.max(legL * legL - half * half, 0));
+  out.drop = compass + (peak > 1e-9
+    ? legL * (1 - Math.cos(STANCE_FLEX * 0.5)) * (1 - Math.min(compass / peak, 1))
+    : 0);
+  out.compass = compass;
+  return out;
+}
+
+/** half the excursion a leg can reach, as a fraction of its length */
+const REACH = 0.5;
+/** knee flexion at mid-stance — the second determinant of gait, ~20° measured */
+const STANCE_FLEX = 20 * Math.PI / 180;
+
+/**
+ * The hip and knee angles that put the foot at `(z, y)`, in closed form.
+ *
+ * Two bones, so the middle joint is on a circle and the pole picks the point —
+ * six lines, no iteration, and exact. An unreachable target straightens the
+ * chain toward it rather than failing, which is correct and is why this is not
+ * a solver. Positive `rot.x` swings the limb backwards, which is what the rest
+ * pose's downward −y makes it.
+ */
+export function solveLeg(z, y, hipDrop, leg = LEG_REF) {
+  const t1 = leg.hip - leg.knee, t2 = leg.knee - leg.ankle;
+  const hy = leg.hip - hipDrop;
+  const dy = (leg.ankle + y) - hy, dz = z;
+  const d = Math.min(Math.hypot(dy, dz), (t1 + t2) * 0.9995);
+  if (d < 1e-6) return { hip: 0, knee: 0 };
+  const ux = dz / Math.hypot(dy, dz), uy = dy / Math.hypot(dy, dz);
+  const a = (d * d + t1 * t1 - t2 * t2) / (2 * d);
+  const h = Math.sqrt(Math.max(t1 * t1 - a * a, 0));
+  // the knee bends forward, always — a knee that can pick the other solution
+  // will, on one frame in a thousand, and it will be memorable
+  const kz = ux * a - uy * h, ky = uy * a + ux * h;
+  const hip = Math.atan2(-kz, -ky);
+  const shin = Math.atan2(-(dz - kz), -(dy - ky));
+  return { hip, knee: shin - hip };
+}
 
 /** surface gravity in m/s², from the world's own mass and radius (§6 M4) */
 export function gravityOf(world) {

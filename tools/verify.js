@@ -38,7 +38,8 @@ import {
   magnetosphere, speciesFor, wavelengthRGB, windPressure,
 } from '../src/magnetosphere.js';
 import {
-  ARM, GAIT, LOOK, Walker, gravityOf, jumpV0, replay, sweepArm,
+  ARM, GAIT, LEG_REF, LOOK, Walker, gravityOf, jumpV0, legPlant, replay,
+  solveLeg, sweepArm,
 } from '../src/avatar.js';
 import { BINDINGS, JUMP_CODE, addLook, input, setAnalog } from '../src/input.js';
 import {
@@ -5551,7 +5552,159 @@ function suiteScore() {
     `chord 137 reproduced without evaluating 0…136`);
 }
 
+// ---------------------------------------------------------------------------
+// the plant (src/figure.js)
+//
+// The half of the figure that does not need a renderer: where each foot is
+// through a stride, and the two angles that reach it. `tools/footplant.js`
+// measures the other half — the composition, once the pelvis has moved — and
+// the split is deliberate. What is checkable here is the *law*; what needs a
+// browser is whether everything downstream honours it.
+//
+// The defect these exist to prevent has a number. Before the solve, the shipped
+// figure's stance foot slid 15 mm per frame at a stroll and 74 mm at a run —
+// four and a half metres a second of skate under a body moving five — and it
+// was invisible to every instrument in this repo, because a slide is not
+// something a still frame can show.
+
+function suitePlant() {
+  console.log('\nplant — the foot is the independent variable (§M4)');
+
+  const CAD = (v) => 0.58 + 0.34 * v;
+
+  {
+    // The claim in one line: a planted foot moves backwards through the body's
+    // frame at exactly the body's speed. Integrated over stance, its excursion
+    // is the stride times the duty — not the stride, which is the mistake that
+    // makes it slide, and not a clamp, which is the mistake that makes it slide
+    // differently.
+    let worst = 0, where = 0;
+    for (const v of [0.6, 1.2, 2.0, 3.2, 5.0, 9.0]) {
+      const cad = CAD(v), N = 4000;
+      let prev = null;
+      for (let i = 0; i <= N; i++) {
+        const u = i / N;
+        const p = legPlant(u, v, cad);
+        if (prev) {
+          const travel = v / cad / N;          // body movement in one sample
+          for (const k of ['L', 'R']) {
+            if (!p[k].down || !prev[k].down) continue;
+            const e = Math.abs((p[k].z - prev[k].z) + travel);
+            if (e > worst) { worst = e; where = v; }
+          }
+        }
+        prev = p;
+      }
+    }
+    ok('§M4 · a planted foot slides by nothing over six speeds',
+      worst < 1e-9,
+      `worst ${worst.toExponential(1)} m per sample (at ${where} m/s) — the`
+      + ' authored-joint cycle it replaces slid 15–74 mm per *frame*');
+  }
+
+  {
+    // Double support and the float phase, against the textbook, and neither is
+    // scripted: both are `2·duty − 1` changing sign at Froude 0.5.
+    const census = (v, g = 9.81) => {
+      let both = 0, none = 0;
+      for (let i = 0; i < 720; i++) {
+        const p = legPlant(i / 720, v, CAD(v), g);
+        const n = p.L.down + p.R.down;
+        if (n === 2) both++;
+        if (n === 0) none++;
+      }
+      return { both: both / 720, none: none / 720 };
+    };
+    const walk = census(1.2), run = census(5.0);
+    ok('§M4 · a walk has double support and no float; a run has the reverse',
+      walk.both > 0.15 && walk.none === 0 && run.none > 0.2 && run.both === 0,
+      `1.2 m/s: ${(walk.both * 100).toFixed(0)}% double support, no float ·`
+      + ` 5.0 m/s: ${(run.none * 100).toFixed(0)}% float, no double support`);
+    ok('...and the transition rides gravity, because it is a Froude number',
+      census(1.5, 1.62).none > 0.15 && census(1.5).none === 0,
+      'at 1.5 m/s a body runs on Luna and walks on Earth — one speed, two'
+      + ' gaits, and no branch anywhere that says so');
+  }
+
+  {
+    // The solve, against the thing it claims. Both bones exact, or the chain
+    // straightens — never a NaN and never a stretched femur.
+    const t1 = LEG_REF.hip - LEG_REF.knee, t2 = LEG_REF.knee - LEG_REF.ankle;
+    let worst = 0, bad = 0;
+    for (let i = 0; i < 600; i++) {
+      const z = Math.sin(i * 0.7) * 0.55, y = (i % 23) * 0.012, drop = (i % 11) * 0.012;
+      const sol = solveLeg(z, y, drop);
+      if (!Number.isFinite(sol.hip) || !Number.isFinite(sol.knee)) { bad++; continue; }
+      // walk the chain forward and see where the foot landed
+      const kz = -Math.sin(sol.hip) * t1, ky = -Math.cos(sol.hip) * t1;
+      const fz = kz - Math.sin(sol.hip + sol.knee) * t2;
+      const fy = ky - Math.cos(sol.hip + sol.knee) * t2;
+      const hy = LEG_REF.hip - drop;
+      const want = [z, LEG_REF.ankle + y - hy];
+      const reach = Math.hypot(want[0], want[1]) <= (t1 + t2) * 0.999;
+      if (reach) worst = Math.max(worst, Math.hypot(fz - want[0], fy - want[1]));
+    }
+    ok('§M4 · the two-bone solve lands the foot on its target, in closed form',
+      bad === 0 && worst < 1e-9,
+      `worst placement error ${worst.toExponential(1)} m over 600 reachable`
+      + ' targets, and no NaN anywhere — an IK that cannot fail to converge'
+      + ' because it does not converge');
+  }
+
+  {
+    // The hip drop is a consequence, not a curve. It has to be zero standing
+    // still and it has to be the compass value under a planted foot.
+    const still = legPlant(0.3, 0, 0.58);
+    let lo = 1e9, hi = -1e9, compassHi = 0;
+    for (let i = 0; i < 720; i++) {
+      const p = legPlant(i / 720, 1.35, CAD(1.35));
+      lo = Math.min(lo, p.drop); hi = Math.max(hi, p.drop);
+      compassHi = Math.max(compassHi, p.compass);
+    }
+    ok('§M4 · the head bob is the step length, not a cosine laid over it',
+      still.drop === 0 && hi - lo > 0.02 && hi - lo < 0.13 && compassHi >= (hi - lo) * 0.9,
+      `exactly 0 standing still · ${((hi - lo) * 100).toFixed(1)} cm at a walk on`
+      + ` a ${(compassHi * 100).toFixed(1)} cm compass arc — the determinants of`
+      + ' gait are the difference');
+  }
+
+  {
+    // The reach limit belongs on the duty. Clamping the excursion instead is
+    // the fix that reintroduces the defect, so assert the shape rather than
+    // trusting the comment.
+    const fast = legPlant(0.2, 14, CAD(14));
+    const legL = LEG_REF.hip - LEG_REF.ankle;
+    ok('a body outrunning its legs shortens its stance rather than sliding',
+      fast.duty < 0.34 && Math.abs(fast.L.z) <= legL * 0.5 + 1e-9,
+      `at 14 m/s the stride wants ${fast.stride.toFixed(2)} m, the leg reaches`
+      + ` ${(legL * 0.5).toFixed(2)} m, and the duty falls to ${fast.duty.toFixed(2)}`
+      + ' — which is what running is');
+  }
+
+  {
+    // §11's NaN sweep, on the two functions the whole leg hangs off.
+    let bad = 0;
+    for (const v of [0, 1e-9, 3.2, 400]) {
+      for (const c of [0, 1e-9, 1.4, 1e3]) {
+        for (const g of [1e-9, 1.62, 9.81, 300]) {
+          const p = legPlant(0.41, v, c, g);
+          for (const n of [p.duty, p.stride, p.drop, p.L.z, p.L.y, p.R.z, p.R.y]) {
+            if (!Number.isFinite(n)) bad++;
+          }
+          const s2 = solveLeg(p.L.z, p.L.y, p.drop);
+          if (!Number.isFinite(s2.hip) || !Number.isFinite(s2.knee)) bad++;
+        }
+      }
+    }
+    ok('§11 · no speed, cadence or gravity puts a NaN in a leg',
+      bad === 0,
+      '64 combinations including zero cadence and zero gravity — a NaN here is'
+      + ' a bone matrix of garbage and a figure stretched across the frame');
+  }
+}
+
 const suites = {
+  plant: suitePlant,
   score: suiteScore,
   night: suiteNight,
   aurora: suiteAurora,

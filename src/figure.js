@@ -98,6 +98,7 @@ import * as THREE from 'three';
 import { RNG, hash } from './rng.js';
 import { PAINT_GLSL } from './paint.js';
 import { TIER } from './quality.js';
+import { legPlant, solveLeg } from './avatar.js';
 
 // ---------------------------------------------------------------------------
 // proportion
@@ -834,6 +835,9 @@ const bump = (u, c, w) => {
 const kneeCurve = (u, run) => bump(u, 0.14, 0.13) * (0.30 + 0.22 * run)
   + bump(u, 0.74, 0.15) * (1.02 + 0.55 * run);
 
+/** the leg, as the three numbers `avatar.js`'s solve needs from `P` */
+const LEG = { hip: P.hip, knee: P.knee, ankle: P.ankle };
+
 export class Figure {
   /**
    * @param seed   the world seed. The kit is fixed; the scarf's trailing length
@@ -1047,20 +1051,31 @@ export class Figure {
     const vy = clamp((st.vel ? st.vel.y : 0) / 6.0, -1.2, 1.2);
     const tuck = smooth(0.6, -0.4, vy);
 
+    // The legs are solved to a planted foot rather than posed — see `legPlant`.
+    // `plant` is computed once for both, because the hip drop is a property of
+    // the pair: whichever foot is reaching furthest owns it.
+    const cadence = w && w.stepFreq > 1e-3 ? w.stepFreq : 0.58 + 0.34 * spd;
+    const plant = legPlant(u, spd, cadence, st.gravity ?? 9.81, LEG);
+
     for (const s of [1, -1]) {
       const hip = bones[s > 0 ? B.hipR : B.hipL];
       const knee = bones[s > 0 ? B.kneeR : B.kneeL];
       const foot = bones[s > 0 ? B.footR : B.footL];
       const uu = s > 0 ? u : (u + 0.5) % 1;
 
-      // the thigh: forward at contact, extended at toe-off. A forward bias
-      // arrives with the run, because a running body's hip is in front of its
-      // foot for most of the cycle and a walking body's is not.
-      const swing = (0.40 + 0.42 * run) * gait;
-      hip.rot.x = Math.cos(uu * Math.PI * 2) * swing + 0.10 * gait * run;
+      // The solve, blended in by `gait` so standing still is untouched: at zero
+      // speed the stride is zero, every target is the rest position, and the
+      // whole thing returns the pose that was already there.
+      const tgt = plant[s > 0 ? 'R' : 'L'];
+      const sol = solveLeg(tgt.z, tgt.y, plant.drop * gait, LEG);
+      hip.rot.x = sol.hip * gait;
       hip.rot.z = s * 0.05 * gait * Math.sin(gp);
-      knee.rot.x = -kneeCurve(uu, run) * gait;
-      foot.rot.x = (bump(uu, 0.52, 0.10) * -0.55 + bump(uu, 0.80, 0.16) * 0.34) * gait;
+      knee.rot.x = sol.knee * gait;
+      // The ankle keeps the sole flat through stance and points it into the
+      // swing — `kneeCurve`'s toe-off bump survives because it is the one part
+      // of the authored cycle the solve says nothing about.
+      foot.rot.x = (-(sol.hip + sol.knee) * 0.55 - 0.06) * gait * tgt.down
+        + (bump(uu, 0.80, 0.16) * 0.34) * gait;
 
       // airborne: the cycle stops and the legs take a jump shape — trailing and
       // tucked on the way up, reaching on the way down
@@ -1092,7 +1107,10 @@ export class Figure {
     root.rot.z = -0.055 * gait * Math.sin(gp) - clamp(this._turn * 0.09, -0.22, 0.22);
     root.rot.x = clamp(spd * 0.021, 0, 0.30) + this._land * 0.40 + air * 0.12
       + (w ? w.lean : 0);
-    this._rootY = (Math.cos(gp * 2) * 0.018 - 0.018) * gait - this._land * 0.13 - air * 0.02;
+    // ...and the rise is the compass drop the solve demanded, not a cosine:
+    // the bob is now a consequence of the step length rather than a curve
+    // tuned to look like one.
+    this._rootY = -plant.drop * gait - this._land * 0.13 - air * 0.02;
     this._rootX = 0.030 * gait * Math.sin(gp);
 
     // spine and chest counter-rotate the pelvis. This is the single cue that
