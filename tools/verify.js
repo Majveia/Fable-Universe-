@@ -75,6 +75,10 @@ import {
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import { walkable, wonderDestination, wonderScore } from '../src/wonder.js';
 import {
+  BAO_AMPLITUDE, HUBBLE_DIST, SOUND_HORIZON, acoustic, growth, scaleAt, shell,
+  windingAt,
+} from '../src/lightcone.js';
+import {
   DRY_FRACTION, MIN_PAYLOAD, PROPELLANT, craftFor, deltaVToOrbit, escapeVelocity,
   massRatio, orbitalVelocity, stagePayload, stagesFor, surfaceGravity,
 } from '../src/craft.js';
@@ -6340,7 +6344,128 @@ function suiteCraft() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the light cone (src/lightcone.js)
+//
+// The brief was a four-line Processing sketch and the request that the web
+// "behave and appear like this". Running it headless rather than looking at it
+// gives three structural ideas — the angle depends on the radius, a wave
+// travels outward in d², and the field is quantised into shells — and all three
+// turn out to be real cosmology the scale was not yet showing. These check that
+// what replaced the sketch's arbitrary constants is the measured thing.
+
+function suiteLightcone() {
+  console.log('\nlightcone — distance is time, and the web has never said so');
+
+  {
+    // The two rulers. Get either wrong and the whole cone is fiction.
+    near('the Hubble distance at H₀ = 67.4', HUBBLE_DIST, 4448, 0.002);
+    near('the sound horizon at the drag epoch', SOUND_HORIZON, 147.1, 1e-9);
+    ok('...and the acoustic feature is a few percent, as surveys measure it',
+      BAO_AMPLITUDE > 0.01 && BAO_AMPLITUDE < 0.08,
+      `${(BAO_AMPLITUDE * 100).toFixed(1)}% — a real BAO is a bump in the`
+      + ' correlation function, not corduroy across the sky, and drawing it'
+      + ' stronger would be a lie about a measurement that took a decade');
+  }
+
+  {
+    // The cone itself: further away is earlier, monotonically, and the numbers
+    // land where a redshift survey lands.
+    const near1 = shell(100), mid = shell(1000), far = shell(3000);
+    ok('§M1 · further out is longer ago, and the shells know their redshift',
+      near1.z < mid.z && mid.z < far.z && near1.z < 0.05 && far.z > 0.7,
+      `100 Mpc → z ${near1.z.toFixed(3)} · 1000 → z ${mid.z.toFixed(2)}`
+      + ` · 3000 → z ${far.z.toFixed(2)}`);
+    ok('...and lookback time is reported in the unit that means something',
+      far.lookbackGyr > mid.lookbackGyr && far.lookbackGyr < 13.8,
+      `the far shell is ${far.lookbackGyr.toFixed(1)} Gyr ago — "distance" on a`
+      + ' cone is a duration, and calling it one is the whole point');
+  }
+
+  {
+    // The winding, which is the sketch's `angle ∝ radius` with the arbitrary
+    // half replaced by the reason it is true.
+    const w = [0, 300, 1200, 3000].map((d) => windingAt(d));
+    ok('§M1 · the field winds because the far shells are less collapsed',
+      w[0] === 0 && w[1] < w[2] && w[2] < w[3],
+      `${w.map((x) => (x / Math.PI).toFixed(2) + 'π').join(' · ')} — a shell at`
+      + ' zero distance is fully evolved and has wound nothing; one near the'
+      + ' horizon is nearly primordial and has wound the most');
+    // and the growth factor it rests on is the standard one
+    near('the growth factor is 1 today, by construction', growth(1), 1, 1e-9);
+    ok('...and smaller in the past, as ΛCDM says',
+      growth(0.5) < 0.7 && growth(0.5) > 0.5 && growth(0.1) < 0.2,
+      `D(a=0.5) = ${growth(0.5).toFixed(3)}, D(a=0.1) = ${growth(0.1).toFixed(3)}`
+      + ' — Carroll, Press & Turner, accurate to well under a percent');
+  }
+
+  {
+    // The ripple: at the sound horizon's wavelength, and damping, because Silk
+    // damping and nonlinear evolution both smear it.
+    let peaks = 0, prev = acoustic(0), rising = false;
+    for (let d = 1; d < 900; d += 1) {
+      const v = acoustic(d);
+      if (v > prev && !rising) rising = true;
+      if (v < prev && rising) { peaks++; rising = false; }
+      prev = v;
+    }
+    ok('§M1 · the ripple is at the sound horizon, not at a convenient number',
+      peaks >= 5 && peaks <= 7,
+      `${peaks} maxima in 900 Mpc, which is 900/147 = 6.1 wavelengths — the`
+      + ' standard ruler, drawn at the size it actually is');
+    // Envelopes, not point samples. Two arbitrary phases of a sine tell you
+    // nothing about whether it is decaying, and the first version of this check
+    // compared exactly that and reported a ripple growing with distance.
+    const envelope = (from, to) => {
+      let m = 0;
+      for (let d = from; d < to; d += 2) m = Math.max(m, Math.abs(acoustic(d) - 1));
+      return m;
+    };
+    const inner = envelope(60, 360), outer = envelope(1800, 2100);
+    ok('...and it damps with distance rather than ringing forever',
+      outer < inner * 0.4,
+      `±${(inner * 100).toFixed(1)}% across the first few sound horizons,`
+      + ` ±${(outer * 100).toFixed(2)}% out at 2 Gpc — Silk damping and`
+      + ' nonlinear evolution both smear it');
+  }
+
+  {
+    // The consequence the whole thing exists for: the far web is smoother,
+    // because it was. Contrast is the growth factor, not a fog.
+    const s = [200, 1500, 3500].map((d) => shell(d));
+    ok('§M1 · the far web is genuinely smoother, not merely dimmer',
+      s[0].contrast > s[1].contrast && s[1].contrast > s[2].contrast,
+      `contrast ${s.map((x) => x.contrast.toFixed(2)).join(' → ')} — this is the`
+      + ' growth factor, so the far field is less clumped rather than faded,'
+      + ' which is a different picture and the true one');
+    // one call, because the three numbers are not independent
+    const one = shell(1200);
+    ok('...and a shell is fetched whole, so light cannot travel at two speeds',
+      Math.abs(one.wind - windingAt(1200)) < 1e-12
+      && Math.abs(one.acoustic - acoustic(1200)) < 1e-12,
+      'wind, growth and ripple all come from one distance in one call');
+  }
+
+  {
+    // §11: distance comes off a camera and a camera can be anywhere.
+    let bad = 0;
+    for (const d of [-1e9, -1, 0, 1e-9, 1e6, NaN, Infinity]) {
+      const v = shell(d);
+      for (const n of [v.a, v.z, v.growth, v.wind, v.acoustic, v.contrast]) {
+        if (!Number.isFinite(n)) bad++;
+      }
+      if (!(v.a > 0 && v.a <= 1 + 1e-12)) bad++;
+    }
+    ok('§11 · no camera position produces a shell with no scale factor',
+      bad === 0,
+      'seven distances including negative, NaN and infinite — every one returns'
+      + ' a scale factor in (0, 1], because a NaN here is a whole shell of'
+      + ' particles at the origin');
+  }
+}
+
 const suites = {
+  lightcone: suiteLightcone,
   craft: suiteCraft,
   wonder: suiteWonder,
   liminal: suiteLiminal,
