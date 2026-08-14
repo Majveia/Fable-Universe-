@@ -11,7 +11,8 @@ import * as THREE from 'three';
 import { Post } from './post.js';
 import { HUD } from './hud.js';
 import { Hyperzoom } from './transition.js';
-import { parseRoomKey, room as buildRoom } from './liminal.js';
+import { parseRoomKey } from './liminal.js';
+import { RoomScale } from './rooms.js';
 import { Ambience } from './audio.js';
 import { Tour } from './tour.js';
 import { CosmicScale, COSMIC_NOTE } from './cosmic.js';
@@ -225,10 +226,12 @@ class App {
       const addr = parseRoomKey(url.searchParams.get('room'));
       if (addr) {
         const g = parseInt(url.searchParams.get('g'));
-        this.pendingRoom = buildRoom(Number.isFinite(g) ? g >>> 0 : this.seed >>> 0, addr, 4096);
-        console.info(`[room] ${this.pendingRoom.key} · ${this.pendingRoom.shape.width.toFixed(1)}`
-          + `×${this.pendingRoom.shape.depth.toFixed(1)}×${this.pendingRoom.shape.ceiling.toFixed(1)} m`
-          + ` · ${this.pendingRoom.doors.length} doors`);
+        const galaxySeed = Number.isFinite(g) ? g >>> 0 : hash(this.seed, 0xbe0) >>> 0;
+        const rs = new RoomScale(this, { galaxySeed, addr });
+        this.stack.push(rs);
+        console.info(`[room] ${rs.deepLink} · ${rs.R.shape.width.toFixed(1)}`
+          + `×${rs.R.shape.depth.toFixed(1)}×${rs.R.shape.ceiling.toFixed(1)} m`
+          + ` · ${rs.R.doors.length} doors · ${rs.tubeCount} tubes`);
       }
     } else if (url.searchParams.get('bh')) {
       const gal = this.active();
@@ -287,6 +290,29 @@ class App {
         this._warping = false;
       });
     }
+  }
+
+  /**
+   * A door in a room opens onto a world that shares its address.
+   *
+   * The world is real and addressable and may be anywhere — that is the entire
+   * claim of `src/liminal.js` §6, and this is the four lines that make it true
+   * rather than asserted. The room is replaced rather than stacked under,
+   * because you did not descend into it and there is nothing to come back up to.
+   */
+  enterWorldFromRoom(galaxySeed, star) {
+    if (this._warping) return;
+    const from = this.active();
+    this.audio?.warp?.('dive');
+    this.hud.warp(() => {
+      while (this.stack.length) { const s = this.stack.pop(); s.exit?.(); s.dispose?.(); }
+      this.stack.push(new GalaxyScale(this, { galaxySeed }));
+      this.stack.push(new SystemScale(this, { starSeed: star.starSeed >>> 0 }));
+      this.active().resume?.();
+      this._syncScale();
+      this._warping = false;
+    });
+    void from;
   }
 
   popTo(depth) {
