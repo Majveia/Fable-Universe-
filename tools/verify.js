@@ -73,6 +73,10 @@ import {
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
+import {
+  CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
+  stepAscent,
+} from '../src/ascent.js';
 import { LFO_RATIOS, MODE_LADDER, chordPlan, deriveScore } from '../src/score.js';
 import {
   DIAGONAL, HOVER, Hover, MOUNT, Mount, STREAM, StreamGovernor, chordAt,
@@ -5703,7 +5707,185 @@ function suitePlant() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the ascent (src/ascent.js)
+//
+// §2.5 forbids cuts and the surface scale has shipped one since it existed: you
+// leave a planet with Escape. These check the law that replaces it — when the
+// ground lets go, and the three ways a bare altitude test gets it wrong.
+//
+// All of it is arithmetic, so all of it is decidable here rather than by
+// flying up and finding out.
+
+function suiteAscent() {
+  console.log('\nascent — the ground lets go, and §2.5 stops being violated');
+
+  {
+    // The number nobody chose. At the release altitude the tile exactly fills
+    // the frame; a metre higher and its edge is visible.
+    const h = releaseAltitude(1400, 52);
+    near('the release altitude of a 1400 m tile through a 52° lens', h, 1435, 0.002);
+    // and it is a *law*: it moves with both inputs, on its own
+    const wide = releaseAltitude(2800, 52), narrow = releaseAltitude(1400, 26);
+    ok('...and it follows the tile and the lens rather than a constant',
+      Math.abs(wide - h * 2) < 1e-6 && narrow > h * 2,
+      `double the tile → ${wide.toFixed(0)} m (exactly 2×) · halve the FOV →`
+      + ` ${narrow.toFixed(0)} m · so a mobile tier on a different lens releases`
+      + ' at its own correct altitude with no second constant to keep in step');
+    // the geometry it claims: at that height the half-extent subtends fov/2
+    const subtend = Math.atan(700 / h) * 180 / Math.PI;
+    near('...and the geometry checks out — the ground subtends exactly the lens',
+      subtend * 2, 52, 1e-9);
+  }
+
+  {
+    // A mountain is not a request to leave. This is the failure a bare
+    // altitude test has, and it is the one a person would hit first.
+    const rel = releaseAltitude(1400, 52);
+    let st = ascentState();
+    for (let i = 0; i < 600; i++) {
+      st = stepAscent(st, { alt: rel + 300, climb: 0, release: rel, dt: 1 / 60, powered: true });
+      if (st.released) break;
+    }
+    ok('§2.5 · standing on a 1700 m mountain does not eject you',
+      !st.released,
+      'ten seconds above the release altitude at zero climb rate and the'
+      + ' ground still has you — the trigger is a climb, not a height');
+  }
+
+  {
+    // A jump is not a departure — and the first version of this got the reason
+    // wrong. The claim was that a ballistic arc cannot sustain a climb because
+    // it decelerates at g. True on Earth; false where it matters. A 400 m leap
+    // on Luna leaves at 36 m/s and takes 22 seconds to fall below walking pace,
+    // so a dwell can never tell the two apart. What separates them is what is
+    // paying for the climb.
+    const rel = releaseAltitude(1400, 52);
+    let fired = null;
+    for (const g of [1.62, 3.7, 9.81]) {
+      let v = Math.sqrt(2 * g * 400), alt = rel, st = ascentState();
+      const dt = 1 / 120;
+      for (let i = 0; i < 8000 && v > -80; i++) {
+        st = stepAscent(st, { alt, climb: v, release: rel, dt, powered: false });
+        if (st.released) { fired = g; break; }
+        alt += v * dt; v -= g * dt;
+      }
+      if (fired) break;
+    }
+    // ...and the same arc, under thrust, does leave — so the clause is doing
+    // work rather than just being restrictive
+    let powered = ascentState(), left = false;
+    for (let i = 0; i < 600; i++) {
+      powered = stepAscent(powered, { alt: rel + i, climb: 36, release: rel, dt: 1 / 120, powered: true });
+      if (powered.released) { left = true; break; }
+    }
+    ok('§M4 · a ballistic jump does not leave the planet, at any gravity',
+      fired === null && left,
+      'a 400 m leap from the release line on Luna, Mars and Earth leaves none'
+      + ' of them — a 22-second arc on Luna sustains a climb better than any'
+      + ' dwell could reject, so the test is thrust, not duration');
+  }
+
+  {
+    // A sustained climb does leave, and it takes the dwell to do it — not
+    // longer, which would feel like the game arguing with you.
+    const rel = releaseAltitude(1400, 52);
+    let st = ascentState(), alt = rel - 50, t = 0;
+    const dt = 1 / 60;
+    for (let i = 0; i < 3600; i++) {
+      st = stepAscent(st, { alt, climb: 40, release: rel, dt });
+      alt += 40 * dt; t += dt;
+      if (st.released) break;
+    }
+    ok('§2.5 · a sustained climb hands the body over, after the dwell and no longer',
+      st.released && t > DWELL && t < DWELL + 1.5,
+      `released ${t.toFixed(2)} s after crossing, on a ${DWELL} s dwell —`
+      + ' the rest is the time it took to reach the line at 40 m/s');
+  }
+
+  {
+    // Hysteresis. Without it, hovering on the line fires once per frame.
+    const rel = releaseAltitude(1400, 52);
+    let st = ascentState(), fires = 0;
+    const dt = 1 / 60;
+    for (let i = 0; i < 1800; i++) {
+      // hovering: crossing the line every few frames, never sustaining a climb
+      const alt = rel + Math.sin(i * 0.4) * 4;
+      const climb = Math.cos(i * 0.4) * 4 * 0.4 * 60;
+      st = stepAscent(st, { alt, climb, release: rel, dt });
+      if (st.released) fires++;
+    }
+    ok('a body hovering on the line does not flicker through the transition',
+      fires === 0,
+      `thirty seconds of oscillation across the release altitude, ${fires}`
+      + ` handovers — the band is ${(HYST * 100).toFixed(0)}% wide, so crossing`
+      + ' it is an event rather than a state');
+    // ...and the disarm actually needs the fall, not just any dip
+    let s2 = stepAscent(ascentState(), { alt: rel + 10, climb: 5, release: rel, dt });
+    s2 = stepAscent(s2, { alt: rel * 0.95, climb: 5, release: rel, dt });
+    ok('...and a dip of a few percent does not disarm it either',
+      s2.armed, `still armed 5% below the line, disarms below`
+      + ` ${((1 - HYST) * 100).toFixed(0)}%`);
+  }
+
+  {
+    // The handoff. §M5's gate: "camera inherits velocity".
+    const up = [0, 1, 0];
+    const h = handoff({ x: 12, y: 40, z: -5 }, up);
+    near('§M5 · the climb comes out along the site\'s own normal', h.climb, 40, 1e-12);
+    ok('...and the lateral drift is what is left, so an ascent leans',
+      Math.abs(h.lateral[1]) < 1e-12 && Math.abs(h.lateral[0] - 12) < 1e-12
+      && Math.abs(h.speed - Math.hypot(12, 40, 5)) < 1e-12,
+      `12 / −5 m/s of lateral survives the split, and the total ${h.speed.toFixed(1)}`
+      + ' m/s is conserved — a hyperzoom starting from rest after a 200 m/s climb'
+      + ' is a cut with a crossfade over it');
+    // a tilted site, which is every site that is not the north pole
+    const t = 1 / Math.sqrt(3);
+    const g = handoff({ x: 10, y: 10, z: 10 }, [t, t, t]);
+    near('...on a landing site anywhere on the sphere', g.climb, 10 * Math.sqrt(3), 1e-9);
+    ok('...and the lateral part is genuinely perpendicular to it there too',
+      Math.abs(g.lateral[0] * t + g.lateral[1] * t + g.lateral[2] * t) < 1e-9,
+      'the residue after removing the radial component has zero dot with the'
+      + ' normal, which is what makes it lateral rather than nearly lateral');
+  }
+
+  {
+    // The HUD fraction: a mountaintop reads low, a climb reads high, and it is
+    // monotone in the thing a person can control.
+    const rel = releaseAltitude(1400, 52);
+    const still = ascentFraction(ascentState(), { alt: rel, climb: 0, release: rel });
+    let st = ascentState();
+    for (let i = 0; i < 40; i++) st = stepAscent(st, { alt: rel + 5, climb: 30, release: rel, dt: 1 / 60 });
+    const going = ascentFraction(st, { alt: rel + 5, climb: 30, release: rel });
+    ok('the readout answers "am I leaving", not "how high am I"',
+      still <= 0.5 + 1e-9 && going > still && going <= 1,
+      `sitting on the line reads ${still.toFixed(2)}, climbing through it reads`
+      + ` ${going.toFixed(2)} — a mountaintop is not most of the way to orbit`);
+  }
+
+  {
+    // §11's NaN sweep, and the disabled path, which has to be inert.
+    let bad = 0, fired = 0;
+    for (const alt of [-100, 0, 1e9, NaN]) {
+      for (const climb of [-1e6, 0, 1e6, NaN]) {
+        for (const release of [0, -5, 1435, Infinity]) {
+          const st = stepAscent(ascentState(), { alt, climb, release, dt: 1 / 60 });
+          if (typeof st.armed !== 'boolean' || !Number.isFinite(st.held)) bad++;
+          const off = stepAscent(ascentState(),
+            { alt: 1e6, climb: 1e3, release: 1435, dt: 10, enabled: false });
+          if (off.released) fired++;
+        }
+      }
+    }
+    ok('§11 · no input reaches a NaN, and disabled means disabled',
+      bad === 0 && fired === 0,
+      '48 combinations including NaN altitude and zero release height — and the'
+      + ' off switch does not fire even handed a 1000 m/s climb and a 10 s frame');
+  }
+}
+
 const suites = {
+  ascent: suiteAscent,
   plant: suitePlant,
   score: suiteScore,
   night: suiteNight,

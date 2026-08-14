@@ -42,6 +42,7 @@ import {
   EXTINCTION as EXTINCTION_V, OCEAN_GLSL, buildWaves, significantHeight, waveUniforms,
 } from './ocean.js';
 import { GAIT, Walker, gravityOf } from './avatar.js';
+import { ascentFraction, ascentState, handoff, releaseAltitude, stepAscent } from './ascent.js';
 import { CameraRig } from './camera.js';
 import { attachKeyboard, input, jumpHeld, keys } from './input.js';
 import { makeGround } from './ground.js';
@@ -161,6 +162,16 @@ const M4 = PARAM('m4') !== '0';
  * the flip is this one.
  */
 const M5 = PARAM('m5') !== '0';
+
+/**
+ * `?climb=1` — fly up and the ground lets go, instead of pressing Escape.
+ *
+ * Default-off (§7.4), and it is the only feature in this repo whose *purpose*
+ * is to remove a §2.5 violation rather than to add something: the surface has
+ * always been the one scale you leave by a menu action. `src/ascent.js` has the
+ * law and the reasoning; this is the twelve lines that call it.
+ */
+const CLIMB = PARAM('climb') === '1';
 
 /** `?shdebug=1` — output the shadow term itself, so it can be looked at */
 const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');
@@ -691,6 +702,9 @@ export class SurfaceScale {
 
     this.yaw = 0; this.pitch = -0.04;
     this.fly = false;
+    /** `?climb=1`'s trigger — see src/ascent.js */
+    this._ascent = ascentState();
+    this._releaseAlt = releaseAltitude(EXT, GAIT.fov);
     this.vel = new THREE.Vector3();
     this.keys = new Set();
 
@@ -2545,6 +2559,7 @@ export class SurfaceScale {
         this.walker.pos.x = this.body.x;
         this.walker.pos.z = this.body.z;
       }
+      this._climbCheck(dt);
       this._doorCheck(dt);
       // The rig places the camera in M4; `traveler.place` still runs so the
       // avatar mesh keeps following, but it is told not to touch the camera.
@@ -2563,6 +2578,46 @@ export class SurfaceScale {
   }
 
   /** cross the threshold: walk into the shrine's door, or back out of it */
+  /**
+   * `?climb=1` — has the ground let go?
+   *
+   * Everything that decides is in `src/ascent.js` and under test; what is here
+   * is the three numbers it needs and the one call it earns. `popTo` is the
+   * *existing* seamless single-level ascend — the one Escape already runs — so
+   * this adds no transition, no second code path and no new kind of location
+   * (§2.4). It changes who asks for it.
+   */
+  _climbCheck(dt) {
+    if (!CLIMB || !this.walker || this.inside || this.traveler?.riding) return;
+    const w = this.walker;
+    const alt = w.pos.y - this.heightAt(w.pos.x, w.pos.z);
+    this._ascent = stepAscent(this._ascent, {
+      alt, climb: w.vel.y, release: this._releaseAlt, dt,
+      // The clause the suite had to teach me: a 400 m leap on Luna sustains a
+      // climb for twenty-two seconds, so duration cannot separate a jump from
+      // a departure. Thrust can, and the controller already knows.
+      powered: this.fly,
+    });
+    this._climbFrac = ascentFraction(this._ascent, { alt, climb: w.vel.y, release: this._releaseAlt });
+    if (!this._ascent.released) return;
+    // §M5's gate: the camera inherits the velocity.
+    //
+    // The `up` here is **local**, not `_landingDir`. That distinction cost a
+    // wrong number and the number is the only reason it was noticed: a purely
+    // vertical 60 m/s climb came out as 6.7 m/s of climb, because the walker's
+    // velocity is in the surface scale's own axes — where +y is up at the
+    // landing site by construction — and `_landingDir` is that site's normal in
+    // *planet* space. Dotting one against the other is a frame error that
+    // returns a plausible number for every world and the right one for none.
+    //
+    // What comes out of this is therefore in the site's local frame. Rotating
+    // it into planet space needs the full basis rather than the normal alone,
+    // and it belongs to whichever scale consumes it — which is why this hands
+    // over a labelled decomposition instead of a bare vector.
+    this.app._ascentHandoff = handoff(w.vel, [0, 1, 0]);
+    this.app.popTo(this.app.stack.length - 2);
+  }
+
   _doorCheck(dt) {
     if (!this.interior) return;
     this._doorCool = Math.max(0, this._doorCool - dt);
