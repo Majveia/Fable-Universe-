@@ -60,8 +60,17 @@
 //
 // The transform, and nothing else: given a comoving distance it returns which
 // cosmic time you are seeing, how far collapse had got by then, and how much
-// the acoustic ripple lifts the density there. `cosmic.js` applies it. Nothing
-// here imports three or reads a clock, so all of it is under test.
+// the acoustic ripple lifts the density there.
+//
+// **Nothing consumes it yet.** This said "`cosmic.js` applies it", which was
+// not true when it was written and is not true now — `cosmic.js` imports
+// `cosmology.js`, `nbody.js` and four others, and none of them is this. The
+// physics below is real and tested; the claim that it is *in* the universe was
+// not, and an unreachable computation is the one failure mode a project whose
+// thesis is "a universe that is computed" cannot absorb. Wiring it is the next
+// commit; the correction is this one.
+//
+// Nothing here imports three or reads a clock, so all of it is under test.
 
 /** ΛCDM, the same row `cosmology.js` uses — Planck 2018 */
 export const OMEGA_M = 0.315;
@@ -90,17 +99,75 @@ export const SOUND_HORIZON = 147.1;
  * which is the same answer arrived at from the useful end. Twenty steps is
  * plenty — the integrand is smooth and the whole thing is monotone.
  */
-export function scaleAt(d, steps = 24) {
+export function scaleAt(d) {
   if (!(d > 0)) return 1;
-  let z = 0, dist = 0;
-  const dz = 0.02;
-  for (let i = 0; i < steps * 40 && dist < d; i++) {
-    const a = 1 / (1 + z);
-    const E = Math.sqrt(OMEGA_M / (a * a * a) + OMEGA_L);
-    dist += (HUBBLE_DIST / E) * dz;
-    z += dz;
+  // Adaptive rather than a fixed `dz = 0.02` march, which had two faults and
+  // both were silent. Near in it quantised redshift to multiples of 0.02, so
+  // 100 Mpc reported z = 0.04 against a true 0.023. Far out it ran out of
+  // iterations at z = 19.2 and returned the same scale factor forever — the
+  // last quarter of the observable volume all mapped to one shell, with no
+  // signal that it had given up. Neither showed in a test that only asked for
+  // monotonicity.
+  //
+  // Stepping in `ln(1+z)` instead puts the samples where the integrand needs
+  // them, and the horizon (D_C(∞) ≈ 14,188 Mpc for these parameters) is now
+  // reached rather than approached and abandoned.
+  const MAX_LNZ = Math.log(1 + 3000);
+  const N = 4096;
+  const h = MAX_LNZ / N;
+  let dist = 0, prevDist = 0, lnz = 0;
+  for (let i = 1; i <= N; i++) {
+    const lnzA = (i - 1) * h, lnzB = i * h;
+    const f = (u) => {
+      const zz = Math.exp(u) - 1;
+      const a = 1 / (1 + zz);
+      return (HUBBLE_DIST / Math.sqrt(OMEGA_M / (a * a * a) + OMEGA_L)) * (1 + zz);
+    };
+    prevDist = dist;
+    dist += (h / 6) * (f(lnzA) + 4 * f((lnzA + lnzB) / 2) + f(lnzB));
+    if (dist >= d) {
+      // linear in the panel, which is plenty at this step size
+      const t = (d - prevDist) / Math.max(dist - prevDist, 1e-12);
+      lnz = lnzA + t * h;
+      return 1 / Math.exp(lnz);
+    }
+    lnz = lnzB;
   }
-  return 1 / (1 + z);
+  return 1 / Math.exp(lnz);
+}
+
+/**
+ * Lookback time to comoving distance `d`, in Gyr.
+ *
+ * `(1 − a) · 13.8` is what this used to be, and it is only the lookback time in
+ * a universe that never decelerated — it ran 13% short at the Hubble distance.
+ * The real thing is `(1/H₀)∫₀^z dz'/((1+z')E(z'))`, which is what this is.
+ *
+ * It mattered because the check above it asked only that lookback be monotone
+ * and under 13.8 Gyr, and a straight line satisfies both. A test strictly
+ * weaker than the prose it guards is a test that will let the prose drift.
+ */
+export function lookbackAt(d) {
+  const a = scaleAt(d);
+  const z = 1 / a - 1;
+  if (!(z > 0)) return 0;
+  // The substitution that makes this well-behaved: with `u = ln(1+z)`,
+  // `dz = (1+z)du`, so `∫ dz/((1+z)E)` collapses to `∫ du/E` exactly. Uniform
+  // panels in `z` under-resolve the small-`z` end where the integrand is
+  // largest — at the horizon that gave **18.4 Gyr in a 13.8 Gyr universe**,
+  // which is the kind of answer that tells you the method is wrong rather than
+  // the number being slightly off.
+  const HUBBLE_TIME = 977.79 / H0;          // 1/H₀ in Gyr
+  const U = Math.log(1 + z);
+  const N = 1024;
+  const h = U / N;
+  const f = (u) => {
+    const aa = Math.exp(-u);
+    return 1 / Math.sqrt(OMEGA_M / (aa * aa * aa) + OMEGA_L);
+  };
+  let sum = f(0) + f(U);
+  for (let i = 1; i < N; i++) sum += f(i * h) * (i % 2 ? 4 : 2);
+  return HUBBLE_TIME * (h / 3) * sum;
 }
 
 /**
@@ -182,8 +249,9 @@ export function shell(d, { turns = 2.4, phase = 0 } = {}) {
     a,
     z: 1 / a - 1,
     growth: D,
-    // lookback, in Gyr — the honest label for what "distance" means here
-    lookbackGyr: (1 - a) * 13.8,
+    // lookback, in Gyr — integrated, not `(1 − a)·13.8`, which is the same
+    // thing only in a universe that never decelerated
+    lookbackGyr: lookbackAt(d),
     wind: (1 - D) * turns * Math.PI * 2,
     acoustic: acoustic(d, phase),
     // structure at a smaller `D` is smoother: contrast scales with growth, so

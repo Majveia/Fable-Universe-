@@ -12,7 +12,7 @@ import { Post } from './post.js';
 import { HUD } from './hud.js';
 import { Hyperzoom } from './transition.js';
 import { parseRoomKey } from './liminal.js';
-import { RoomScale } from './rooms.js';
+import { ROOM_NOTE, RoomScale } from './rooms.js';
 import { Ambience } from './audio.js';
 import { Tour } from './tour.js';
 import { CosmicScale, COSMIC_NOTE } from './cosmic.js';
@@ -34,8 +34,9 @@ import { gravityOf } from './avatar.js';
 // allocating an object per scale change to do it would be silly
 const HSL = { h: 0, s: 0, l: 0 };
 
-const NOTES = { cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE, planet: PLANET_NOTE };
+const NOTES = { room: ROOM_NOTE, cosmic: COSMIC_NOTE, galaxy: GALAXY_NOTE, system: SYSTEM_NOTE, blackhole: BLACKHOLE_NOTE, surface: SURFACE_NOTE, clouds: CLOUDS_NOTE, planet: PLANET_NOTE };
 const HINTS = {
+  room: 'w a s d to walk · the doors lead to worlds that share this address · they may be anywhere',
   cosmic: 'drag to look · scroll to zoom · space plays cosmic time · click a bright node to enter a galaxy · n compares gravity vs linear theory · u rolls a fresh universe',
   galaxy: 'drag to look · scroll to zoom · click a star to visit its system · click the core to meet the nucleus · esc to ascend',
   system: 'click a world · land from its card · j to cruise (steer into a star to travel there) · hold ] to age the star · esc to ascend',
@@ -215,6 +216,12 @@ class App {
         }
       }
     } else if (url.searchParams.get('room')) {
+      // NOTE: this branch sits inside the `?g=` chain, so a bare `?room=` lands
+      // on the cosmic web instead. That is deliberate rather than an oversight
+      // *now*: a room's doors are worlds in a particular galaxy, so a room
+      // without a galaxy is an address with nothing to open onto. `?room=` on
+      // its own is answered by `enterRoom` supplying the current galaxy, and
+      // the URL form always carries `g` — `roomKey` alone is not a location.
       // §2.4 · `?room=a3f0c000.19` — the rooms between, `src/liminal.js`.
       //
       // A room is not a record anywhere: it *is* its address, so this decodes

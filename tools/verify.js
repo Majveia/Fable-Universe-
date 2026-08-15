@@ -75,8 +75,8 @@ import {
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import { walkable, wonderDestination, wonderScore } from '../src/wonder.js';
 import {
-  BAO_AMPLITUDE, HUBBLE_DIST, SOUND_HORIZON, acoustic, growth, scaleAt, shell,
-  windingAt,
+  BAO_AMPLITUDE, HUBBLE_DIST, SOUND_HORIZON, acoustic, growth, lookbackAt, scaleAt,
+  shell, windingAt,
 } from '../src/lightcone.js';
 import {
   DRY_FRACTION, MIN_PAYLOAD, PROPELLANT, craftFor, deltaVToOrbit, escapeVelocity,
@@ -6284,15 +6284,28 @@ function suiteCraft() {
     const venus = craftFor(VENUS);
     const superE = craftFor({ massE: 10, radiusE: 1.8, atmo: 2.5 });
     const twoG = craftFor({ massE: 5, radiusE: 1.6, atmo: 1.4 });
-    ok('§3 · a thick-aired super-earth is one-way, and the arithmetic says why',
-      !venus.feasible && !superE.feasible && twoG.feasible,
-      `Venus needs ${(venus.dv.total / 1000).toFixed(1)} km/s and a 3 g super-earth`
-      + ` ${(superE.dv.total / 1000).toFixed(1)} — no chemical rocket reaches either.`
-      + ` A 2 g world at ${(twoG.dv.total / 1000).toFixed(1)} still goes, in`
-      + ` ${twoG.stages} stages, so the wall is a wall and not a ceiling on ambition`);
-    ok('...and the refusal names the number instead of apologising',
-      /km\/s/.test(venus.why) && /%/.test(venus.why) && venus.height === undefined,
-      `"${venus.why}"`);
+    // Venus used to come back one-way and it was an artefact: linear drag put
+    // 13.8 km/s of its 22.5 into that one term — more than Earth's entire
+    // ascent — and that term was the weakest thing in the model. Under √P it
+    // lands at 10.2, where published surface-ascent studies put it. The
+    // headline survives the correction in better shape: the super-earth is
+    // still one-way, now on its orbital velocity rather than on the term the
+    // author was least sure of. A result resting on your weakest assumption is
+    // not a result.
+    ok('§3 · a 3 g super-earth is one-way — on gravity, not on a drag guess',
+      !superE.feasible && twoG.feasible && venus.feasible,
+      `a 3 g super-earth needs ${(superE.dv.total / 1000).toFixed(1)} km/s, of which`
+      + ` only ${(superE.dv.dragLoss / 1000).toFixed(2)} is drag — no chemical rocket`
+      + ` reaches it. Venus at ${(venus.dv.total / 1000).toFixed(1)} km/s now goes,`
+      + ` and a 2 g world at ${(twoG.dv.total / 1000).toFixed(1)} goes in ${twoG.stages}`
+      + ' stages');
+    ok('...and when it does refuse, it names the number instead of apologising',
+      /km\/s/.test(superE.why) && /%/.test(superE.why) && superE.height === undefined,
+      `"${superE.why}"`);
+    ok('...and Venus lands where the ascent studies put it, not where drag guessed',
+      venus.dv.total > 9500 && venus.dv.total < 12000,
+      `${(venus.dv.total / 1000).toFixed(2)} km/s against a published 10–11.5 —`
+      + ' the linear law had it at 22.5, with 61% of the budget in one term');
   }
 
   {
@@ -6372,14 +6385,35 @@ function suiteLightcone() {
     // The cone itself: further away is earlier, monotonically, and the numbers
     // land where a redshift survey lands.
     const near1 = shell(100), mid = shell(1000), far = shell(3000);
+    // The old fixed-`dz` march quantised z to multiples of 0.02 near in and
+    // silently saturated at z = 19.2 far out, mapping the last quarter of the
+    // observable volume to one shell. Both were invisible to a monotonicity
+    // test. Anchors are an independent inversion of the comoving integral.
+    const Z = [[100, 0.0226], [1000, 0.2387], [4448, 1.4819], [12000, 42.18]];
+    let zErr = 0;
+    for (const [d, want] of Z) zErr = Math.max(zErr, Math.abs((1 / scaleAt(d) - 1) / want - 1));
+    ok('§M1 · the cone does not quantise near in or saturate far out',
+      zErr < 0.02,
+      `worst redshift error ${(zErr * 100).toFixed(2)}% from 100 Mpc to 12 Gpc —`
+      + ' the fixed-step march it replaced reported z = 0.04 at 100 Mpc against a'
+      + ' true 0.023, and returned one scale factor for everything past 10.9 Gpc');
     ok('§M1 · further out is longer ago, and the shells know their redshift',
       near1.z < mid.z && mid.z < far.z && near1.z < 0.05 && far.z > 0.7,
       `100 Mpc → z ${near1.z.toFixed(3)} · 1000 → z ${mid.z.toFixed(2)}`
       + ` · 3000 → z ${far.z.toFixed(2)}`);
-    ok('...and lookback time is reported in the unit that means something',
-      far.lookbackGyr > mid.lookbackGyr && far.lookbackGyr < 13.8,
-      `the far shell is ${far.lookbackGyr.toFixed(1)} Gyr ago — "distance" on a`
-      + ' cone is a duration, and calling it one is the whole point');
+    // This used to ask only that lookback be monotone and under 13.8 Gyr — a
+    // straight line satisfies both, and a straight line is exactly what was
+    // there: `(1 − a)·13.8`, which ran 13% short at the Hubble distance. A test
+    // weaker than the prose it guards is a test that lets the prose drift.
+    // Values are an independent integration of `(1/H₀)∫dz/((1+z)E)`.
+    const LOOK = [[1000, 2.945], [3000, 7.241], [4448, 9.483], [6000, 11.186]];
+    let worst = 0;
+    for (const [d, want] of LOOK) worst = Math.max(worst, Math.abs(lookbackAt(d) / want - 1));
+    ok('...and lookback time is the integral, not a line through two points',
+      worst < 0.01 && lookbackAt(1e9) < 13.9,
+      `worst error ${(worst * 100).toFixed(2)}% against a direct integration at`
+      + ' four distances, and the horizon converges to the age of the universe'
+      + ` (${lookbackAt(1e9).toFixed(2)} Gyr) rather than exceeding it`);
   }
 
   {

@@ -88,10 +88,18 @@
 //
 // The famous sickly yellow-green *is the 546.1 nm line and the 578.2 doublet.*
 //
-// So the lamp is computed the way the aurora is computed — line strengths
-// through the CIE 1931 observer, via the very same `wavelengthRGB()` in
-// `magnetosphere.js`. The corridor overhead and the auroral curtain are lit by
-// one function. Nothing in this file picks a colour.
+// So the lamp is a spectrum integrated against the **CIE 1931 2° observer** —
+// `starlight.js`'s Wyman/Sloan/Shirley colour-matching functions, the same ones
+// that give every star in this universe its hue. Nothing in this file picks a
+// colour.
+//
+// This said "the very same `wavelengthRGB()` in `magnetosphere.js`" and that was
+// wrong: `wavelengthRGB` is Bruton's six-branch piecewise-*linear* ramp, an
+// approximation `magnetosphere.js` is honest about and this file was not. The
+// error was not cosmetic — Bruton puts the 578.2 nm doublet 31° of hue away
+// from where the real observer puts it, and the finished lamp came out with
+// **seven times too much blue** in a light whose entire character is that it is
+// sickly and yellow-green. The repo already contained the right function.
 //
 // The buzz is equally not a choice: a discharge lamp extinguishes and reignites
 // **twice per mains cycle**, so it flickers at `2f`, and at 50 Hz supply that
@@ -119,7 +127,7 @@
 // law; `main.js` and the scene that draws it are the consumers.
 
 import { hash } from './rng.js';
-import { wavelengthRGB } from './magnetosphere.js';
+import { spectrumToXYZ, xyzToLinearSRGB } from './starlight.js';
 
 const clamp = (x, a, b) => Math.min(Math.max(x, a), b);
 
@@ -160,16 +168,23 @@ export const PHOSPHOR_NM = 565;
  */
 export function lampColour(age = 0) {
   const ph = PHOSPHOR * (1 - 0.55 * clamp(age, 0, 1));
-  let r = 0, g = 0, b = 0;
-  for (const l of MERCURY_LINES) {
-    const c = wavelengthRGB(l.nm);
-    const w = l.w * (1 - ph);
-    r += c[0] * w; g += c[1] * w; b += c[2] * w;
-  }
-  const c = wavelengthRGB(PHOSPHOR_NM);
-  r += c[0] * ph; g += c[1] * ph; b += c[2] * ph;
-  const m = Math.max(r, g, b, 1e-6);
-  return [r / m, g / m, b / m];
+  // Narrow Gaussians for the lines and a broad one for the phosphor, integrated
+  // against the CIE 1931 2° observer. The lines are ~5 nm wide as a real
+  // low-pressure discharge is; the phosphor hump is ~60 nm, which is what a
+  // halophosphate coating actually emits.
+  const lamp = (l) => {
+    let v = 0;
+    for (const m of MERCURY_LINES) {
+      const dl = (l - m.nm) / 5;
+      v += m.w * (1 - ph) * Math.exp(-dl * dl);
+    }
+    const dp = (l - PHOSPHOR_NM) / 60;
+    v += ph * Math.exp(-dp * dp);
+    return v;
+  };
+  const rgb = xyzToLinearSRGB(spectrumToXYZ(lamp));
+  const m = Math.max(rgb[0], rgb[1], rgb[2], 1e-6);
+  return [Math.max(rgb[0] / m, 0), Math.max(rgb[1] / m, 0), Math.max(rgb[2] / m, 0)];
 }
 
 /** supply frequency, Hz. A discharge lamp fires twice per cycle. */

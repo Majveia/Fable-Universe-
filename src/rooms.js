@@ -262,6 +262,29 @@ export class RoomScale {
     }
   }
 
+  /**
+   * The HUD asks every scale for this **every frame**, and a scale that does
+   * not answer takes the whole render loop down with it — the app froze at
+   * frame 1 on `?room=`, because a missing method in a hot path is not a
+   * missing feature, it is a crash. The scale contract is duck-typed and
+   * therefore unenforced, which is exactly why a new scale has to be checked
+   * against it by hand: `hudStats`, `update`, `dispose`, `enter`, `exit`,
+   * `resume`, `pick`, `onKey`.
+   *
+   * What it says is what a room can honestly tell you. There is no sun, no
+   * gravity worth quoting and no sky — the only true facts here are the
+   * address, how many ways out there are, and that none of them lead back.
+   */
+  hudStats() {
+    const sh = this.R.shape;
+    return [
+      ['address', this.R.key],
+      ['room', `${sh.width.toFixed(1)} × ${sh.depth.toFixed(1)} × ${sh.ceiling.toFixed(1)} m`],
+      ['doors', `${this.R.doors.length} · each to a world sharing this address`],
+      ['lamp', `mercury · ${this.R.flickerHz} Hz`],
+    ];
+  }
+
   pick() { return null; }
   onKey() { return false; }
   enter() { this.controls.enabled = true; }

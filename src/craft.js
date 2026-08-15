@@ -55,7 +55,11 @@
 // the formula that consumes it can be checked:
 //
 //     Earth v_orbit          7.91 km/s      sqrt(g·R)
-//     Earth Δv to orbit      ~9.4 km/s      flown, many times
+//     Earth Δv to orbit      ~9.4 km/s      flown — note the model returns
+//                                           9.56, because it targets the
+//                                           surface-tangent circular orbit and
+//                                           has neither a 200 km insertion nor
+//                                           the 0.41 km/s of Earth's rotation
 //     gravity losses         ~1.5 km/s      of that 9.4
 //     drag losses            ~0.15 km/s     of that 9.4
 //     LH2/LOX vacuum Isp     450 s          RL10, RS-25
@@ -127,14 +131,25 @@ export const escapeVelocity = (world) => Math.SQRT2 * orbitalVelocity(world);
  * thrust-to-weight has `a ∝ g` — so the `g` cancels and what is left is
  * proportional to `v_orbit`. Earth spends 1.5 of its 7.91, so 19%.
  *
- * **Drag scales with the air.** 0.15 km/s at one atmosphere, and linear in
- * pressure, which understates a truly thick atmosphere and is honest about
- * being an anchor rather than a model.
+ * **Drag goes as the square root of the pressure**, anchored at 0.15 km/s for
+ * one atmosphere. This was linear, and linear was wrong in a way that mattered:
+ * it made Venus cost 13.8 km/s in drag alone — 61% of its budget, more than the
+ * whole of Earth's ascent — and that single term was the sole reason Venus came
+ * back one-way. It was also probably backwards. A vehicle in dense air flies a
+ * lower-dynamic-pressure trajectory *and* grows its ballistic coefficient as
+ * `m^(1/3)`, and both make the loss sublinear in P.
+ *
+ * The square root puts Venus at 10.2 km/s total, which is where published
+ * surface-ascent studies put it. And the headline survives the correction in
+ * better shape than before: a 3 g super-earth is **still** one-way at 22.4 km/s,
+ * but now on the strength of its orbital velocity rather than on the weakest
+ * term in the model. A result that rests on the term you are least sure of is
+ * not a result.
  */
 export function deltaVToOrbit(world) {
   const v = orbitalVelocity(world);
   const gravityLoss = v * 0.19;
-  const dragLoss = 150 * Math.max(num(world?.atmo, 1), 0);
+  const dragLoss = 150 * Math.sqrt(Math.max(num(world?.atmo, 1), 0));
   return { v, gravityLoss, dragLoss, total: v + gravityLoss + dragLoss };
 }
 
@@ -179,10 +194,16 @@ export const MIN_PAYLOAD = 0.005;
  *
  * Staging is chosen to **maximise** what arrives, not to minimise the stage
  * count, and the difference is the whole reason real rockets have three stages.
- * Earth's optimum is 3–4 (9.4% of lift-off mass to orbit) against a single
- * stage's 5.9% — so a hydrolox SSTO from Earth is genuinely possible and simply
- * carries less, which is exactly what the literature says and exactly what
- * nobody wants to fly. The model was not told that. It found it.
+ * Earth's optimum is 3–4 stages against a single stage's, and a hydrolox SSTO
+ * from Earth is genuinely possible and simply carries less — which is what the
+ * literature says and what nobody wants to fly. The model was not told that. It
+ * found it.
+ *
+ * (This used to quote "9.4% against 5.9%". The model has never returned either:
+ * it returns 8.36% at four stages and 5.80% at one. The 9.4 was the Δv in km/s
+ * from two paragraphs earlier, reused as a percentage. The structural claim was
+ * true and the numbers attached to it were not, which is the worse of the two
+ * ways to be wrong in a file whose whole argument is that the numbers are real.)
  *
  * Past five stages nobody has flown one, because each new stage has to lift
  * every stage above it *and* the engines you are about to discard.
