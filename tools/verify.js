@@ -74,6 +74,8 @@ import {
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import { walkable, wonderDestination, wonderScore } from '../src/wonder.js';
+import { ECO_TAU, capacityFor, ecoAt, logisticAt } from '../src/eco.js';
+import { hash } from '../src/rng.js';
 import {
   BAO_AMPLITUDE, HUBBLE_DIST, SOUND_HORIZON, acoustic, growth, lookbackAt, scaleAt,
   shell, windingAt,
@@ -6498,7 +6500,118 @@ function suiteLightcone() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// regional populations (src/eco.js)
+//
+// The herd is a number the HUD prints and `life.js` draws. It used to be made
+// out of `Date.now()` and a `localStorage` database, which meant the same deep
+// link showed a different count on a different machine, or on the same machine
+// a day later. §2.3 does not have an exception for animals.
+
+function suiteEco() {
+  console.log('\neco — a herd is a claim the universe makes about itself');
+
+  {
+    // The property that was broken. Nothing subtle: same address, same answer.
+    let drift = 0;
+    for (let i = 0; i < 512; i++) {
+      const h = hash(i, 0x0ec0);
+      for (const t of [0, 37, 900, 4321]) {
+        const a = ecoAt(h, t), b = ecoAt(h, t);
+        if (a.striders !== b.striders || a.skimmers !== b.skimmers || a.veg !== b.veg) drift++;
+      }
+    }
+    ok('§2.3 · the same region at the same world time is the same herd',
+      drift === 0,
+      '512 regions × 4 times, evaluated twice each — no machine state, no wall'
+      + ' clock, so two people on one URL count the same animals');
+  }
+
+  {
+    // The leak, stated as a check so it cannot be reintroduced by convenience.
+    // Comments stripped first, or the check fails on the paragraph explaining
+    // what was removed — which is a real hazard for a scan like this and worth
+    // one line to get right.
+    const bare = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    const src = bare(readFileSync(new URL('../src/eco.js', import.meta.url), 'utf8'));
+    const call = bare(readFileSync(new URL('../src/planetscale.js', import.meta.url), 'utf8')
+      .match(/_ecoFor\(a\)\s*\{[\s\S]*?\n  \}/)?.[0] ?? '');
+    ok('§2.3 · neither the model nor its caller reads the wall or the disk',
+      /ecoAt/.test(call)
+      && !/Date\.now|localStorage|performance\.now|Math\.random/.test(src)
+      && !/Date\.now|localStorage/.test(call),
+      'eco.js and _ecoFor() together: no Date.now, no localStorage, no'
+      + ' Math.random — the whole state is (hash, t)');
+  }
+
+  {
+    // It still has to *be* a population, or the fix traded a leak for a
+    // constant and nobody would notice for a month.
+    const h = hash(7, 0x0ec0);
+    const t0 = ecoAt(h, 0), t1 = ecoAt(h, ECO_TAU), t2 = ecoAt(h, ECO_TAU * 8);
+    const K = capacityFor(t0.veg);
+    ok('the herd grows on the world clock and stops at carrying capacity',
+      t1.skimmers > t0.skimmers && t2.skimmers >= t1.skimmers
+      && t2.skimmers === K.skimmers && t2.striders === K.striders,
+      `skimmers ${t0.skimmers} → ${t1.skimmers} at τ → ${t2.skimmers} at 8τ,`
+      + ` capacity ${K.skimmers}; the curve is solved, not stepped, which is`
+      + ' what removes the state');
+  }
+
+  {
+    // Monotone and bounded for every t, including the ones a long session or a
+    // scrubbed clock can hand it.
+    let bad = 0, prev = -1;
+    const h = hash(11, 0x0ec0), K = capacityFor(ecoAt(h, 0).veg).skimmers;
+    for (const t of [-1e9, -1, 0, 1, 60, 900, 36000, 1e7, 1e12]) {
+      const n = ecoAt(h, t).skimmers;
+      if (!Number.isFinite(n) || n < 1 || n > K) bad++;
+      if (t >= 0 && n < prev) bad++;
+      if (t >= 0) prev = n;
+    }
+    ok('§11 · no elapsed time overflows the exponential or empties the valley',
+      bad === 0,
+      'nine times from −10⁹ s to 10¹² s — every one lands in [1, K] and never'
+      + ' goes backwards; e^(−t/τ) is clamped at 40 e-folds');
+  }
+
+  {
+    // The closed form is only worth having if it is the *same curve* the
+    // stepped version drew. Integrate dN/dt = N(1 − N/K)/τ with RK4 and check
+    // the algebra against it — the one thing a solved ODE can quietly get
+    // wrong is being the solution to a different ODE.
+    const K = 34, N0 = 34 * 0.35, TAU = ECO_TAU;
+    const h = 0.5;
+    let n = N0, worst = 0;
+    const f = (y) => (y * (1 - y / K)) / TAU;
+    for (let t = 0; t < 4 * TAU; t += h) {
+      const k1 = f(n), k2 = f(n + (h / 2) * k1), k3 = f(n + (h / 2) * k2), k4 = f(n + h * k3);
+      n += (h / 6) * (k1 + 2 * k2 + 2 * k3 + k4);
+      worst = Math.max(worst, Math.abs(n - logisticAt(N0, K, t + h, TAU)) / K);
+    }
+    ok('the closed form solves the logistic equation it names',
+      worst < 1e-9,
+      `RK4 at dt = ${h} s over 4τ agrees to ${(worst * 100).toExponential(1)}%`
+      + ' of carrying capacity — the algebra is the integration, not a curve'
+      + ' that merely looks like it');
+  }
+
+  {
+    // Regions have to differ, or "regional fauna" is a lie of a different kind.
+    const counts = new Set();
+    for (let i = 0; i < 4096; i++) counts.add(ecoAt(hash(i, 0x0ec0), 0).skimmers);
+    const vegs = [];
+    for (let i = 0; i < 4096; i++) vegs.push(ecoAt(hash(i, 0x0ec0), 0).veg);
+    const lo = vegs.filter((v) => v < 0.7).length / vegs.length;
+    ok('richness varies region to region and spans its whole range',
+      counts.size >= 12 && lo > 0.4 && lo < 0.6,
+      `${counts.size} distinct skimmer counts across 4096 regions; ${(lo * 100).toFixed(1)}%`
+      + ' of them below veg 0.7, so the sparse valleys are real');
+  }
+}
+
 const suites = {
+  eco: suiteEco,
   lightcone: suiteLightcone,
   craft: suiteCraft,
   wonder: suiteWonder,
