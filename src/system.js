@@ -1810,12 +1810,10 @@ export class SystemScale {
     // is the fate DEEPTIME_NOTE describes out loud — was swallowing everything
     // inside about 1.6 AU. Earth went, and the note said it would not.
     const rStarAU = st.R * R_SUN_AU;
-    let engulfedAny = false;
     let nearestSurvivorAU = Infinity;
     for (const node of this.planetNodes) {
       const peri = node.pp.a * (1 - node.pp.e);
-      if (rStarAU >= peri) engulfedAny = true;
-      else nearestSurvivorAU = Math.min(nearestSurvivorAU, peri);
+      if (rStarAU < peri) nearestSurvivorAU = Math.min(nearestSurvivorAU, peri);
     }
 
     // The frame then has to agree with that ruling, and it does not get there
