@@ -83,6 +83,9 @@ import {
   massRatio, orbitalVelocity, stagePayload, stagesFor, surfaceGravity,
 } from '../src/craft.js';
 import {
+  CONJURE, CONJURE_TIME, Conjuration, conjureFor, hullOf, partAt,
+} from '../src/conjure.js';
+import {
   FLICKER_HZ, MAINS_HZ, MERCURY_LINES, isThin, lampColour, lampExposure, lampFlicker,
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
   roomShape, sharedBits, starAt, thinDepth, thinPoint,
@@ -6498,7 +6501,151 @@ function suiteLightcone() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the conjuring (src/conjure.js)
+//
+// `craft.js` decides whether a world can be left and how big the vehicle must
+// be. This checks the layer that turns that answer into something with parts —
+// and the reason it is worth checking at all is that the vehicle is emitted as
+// numbers rather than as a mesh, so its proportions are assertions rather than
+// something you notice from one camera angle. Both defects its author found
+// while writing it were of exactly that kind: a stack 4% taller than its own
+// mass budget, and an engine count that came out as six for every world in the
+// universe.
+function suiteConjure() {
+  console.log('\nconjure — the craft, as a mass model (§2.1, §6 M6)');
+
+  const WORLDS = [
+    ['Luna', { massE: 0.0123, radiusE: 0.2727, atmo: 0 }],
+    ['Mars', { massE: 0.107, radiusE: 0.532, atmo: 0.006 }],
+    ['Earth', { massE: 1, radiusE: 1, atmo: 1 }],
+    ['Venus', { massE: 0.815, radiusE: 0.95, atmo: 92 }],
+    ['super-earth', { massE: 5, radiusE: 1.5, atmo: 1.4 }],
+    ['tiny rock', { massE: 0.002, radiusE: 0.15, atmo: 0 }],
+  ];
+  const all = WORLDS.map(([n, w]) => [n, conjureFor(w, 12345)]);
+  const named = (n) => all.find(([k]) => k === n)[1];
+  const flyable = all.filter(([, c]) => c.feasible);
+
+  // --- the stack closes ----------------------------------------------------
+  // The rocket equation says how tall the vehicle is. If the parts do not add
+  // up to that, the drawing and the physics have come apart.
+  ok('§3 · every stack is exactly as tall as the rocket equation asked',
+    flyable.every(([, c]) => {
+      const top = Math.max(...c.hull.filter((p) => p.role !== 'engine')
+        .map((p) => p.y + p.height / 2));
+      return Math.abs(top - c.craft.height) < 0.5;
+    }), `${flyable.length} worlds, all within 0.5 m`);
+
+  // --- engines are counted, not styled -------------------------------------
+  // An engine bell is a fixed physical size class, so a wider rocket carries
+  // more of them rather than bigger ones.
+  const engines = (c) => c.hull.filter((p) => p.role === 'engine').length;
+  ok('engine count rises with base diameter rather than being constant',
+    new Set(flyable.map(([, c]) => engines(c))).size >= 3,
+    flyable.map(([n, c]) => `${n} ${engines(c)}`).join(' · '));
+  ok('and Earth lands on five, which is a Saturn V', engines(named('Earth')) === 5);
+
+  // --- fins are aerodynamic surfaces ---------------------------------------
+  // The clearest case in the file of physics choosing art: a fin in vacuum is
+  // dead weight, and `atmo` is the same number craft.js already spends drag Δv
+  // on, so this costs nothing to be right about.
+  const fins = (c) => c.hull.filter((p) => p.role === 'fin').length;
+  ok('§3 · an airless world conjures no fins, an atmosphere conjures some',
+    fins(named('Luna')) === 0 && fins(named('Earth')) > 0,
+    `Luna ${fins(named('Luna'))} · Earth ${fins(named('Earth'))}`);
+
+  ok('the tank count is the staging craft.js chose — you can see how hard the world was',
+    flyable.every(([, c]) => c.hull.filter((p) => p.role === 'tank').length === c.craft.stages));
+
+  // --- nothing is buried in the pad ----------------------------------------
+  // `surface.js` seats the group at ground level, so a part reaching below zero
+  // is a part inside the hill. The engine bells are the deliberate exception —
+  // they hang under the base, which is where engine bells go.
+  ok('§2.5 · nothing but the bells sits below the pad the group is seated on',
+    flyable.every(([, c]) => c.hull.filter((p) => p.role !== 'engine')
+      .every((p) => p.y - p.height / 2 > -1e-9)));
+
+  // --- a world that cannot be left conjures nothing -------------------------
+  const oneWay = conjureFor({ massE: 8, radiusE: 1.8, atmo: 2 }, 1);
+  ok('§8 · a one-way world conjures no hull at all, and says why in km/s',
+    !oneWay.feasible && oneWay.hull.length === 0 && /km\/s/.test(oneWay.why),
+    oneWay.why);
+
+  // --- determinism (§2.3) ---------------------------------------------------
+  ok('§2.3 · the same world and seed conjure the same craft, exactly',
+    JSON.stringify(conjureFor(WORLDS[2][1], 99))
+    === JSON.stringify(conjureFor(WORLDS[2][1], 99)));
+  ok('and a different seed changes the scatter but never the vehicle',
+    (() => {
+      const a = conjureFor(WORLDS[2][1], 1), b = conjureFor(WORLDS[2][1], 2);
+      return a.craft.height === b.craft.height && a.hull.length === b.hull.length
+        && a.hull[0].from.x !== b.hull[0].from.x;
+    })());
+
+  // --- the materialisation --------------------------------------------------
+  // §2.5 forbids cuts, and a vehicle appearing instantly is the most literal
+  // cut available. What makes it not a cut is that every part arrives with zero
+  // velocity: `1 − (1−u)³` has a zero derivative at the seat.
+  const earth = named('Earth');
+  ok('§2.5 · every part starts away from its seat and ends exactly on it',
+    earth.hull.every((p) => {
+      // `+ p.delay`: parts are staggered bottom-up, so a part seats at its own
+      // delay plus `gather`, not at `gather`.
+      const a = partAt(p, 0), b = partAt(p, (p.delay ?? 0) + CONJURE.gather + 0.01);
+      return Math.hypot(a.dx, a.dy, a.dz) > 1
+        && Math.hypot(b.dx, b.dy, b.dz) < 1e-9;
+    }));
+  ok('and arrives with zero velocity — a part still moving reads as a collision',
+    earth.hull.every((p) => {
+      const t = CONJURE.gather + (p.delay ?? 0);
+      const d = (x) => Math.hypot(partAt(p, x).dx, partAt(p, x).dy, partAt(p, x).dz);
+      return d(t - 0.02) < 0.02;          // already essentially seated
+    }));
+  ok('the conjuring is monotone: nothing ever moves back out',
+    earth.hull.every((p) => {
+      let prev = Infinity;
+      for (let t = 0; t <= CONJURE.gather; t += CONJURE.gather / 64) {
+        const o = partAt(p, t), d = Math.hypot(o.dx, o.dy, o.dz);
+        if (d > prev + 1e-9) return false;
+        prev = d;
+      }
+      return true;
+    }));
+  ok('and it is built bottom-up, as a rocket is',
+    (() => {
+      const low = earth.hull.filter((p) => p.order < 0.1);
+      const high = earth.hull.filter((p) => p.order > 0.9);
+      return low.length && high.length
+        && Math.max(...low.map((p) => p.delay)) <= Math.min(...high.map((p) => p.delay));
+    })());
+
+  // --- the state machine ----------------------------------------------------
+  const c = new Conjuration(WORLDS[2][1], 5);
+  ok('a conjuration starts idle and refuses nothing it can do', c.phase === 'idle' && c.summon());
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) { seen.add(c.update(0.05)); }
+  ok('and passes through every phase to ready, in order',
+    seen.has('gather') && seen.has('assemble') && seen.has('settle') && c.phase === 'ready',
+    [...seen].join(' → '));
+  ok('§3 · a one-way world refuses rather than conjuring a craft that cannot fly',
+    (() => {
+      const r = new Conjuration({ massE: 8, radiusE: 1.8, atmo: 2 }, 1);
+      return r.summon() === false && r.phase === 'refused' && r.poses().length === 0;
+    })());
+  // §3's HUD fade is 4 s and `surface.js` announces the build in the hint that
+  // starts it, so a conjuring that outlasts its own announcement would end with
+  // nothing on screen having said what was happening.
+  ok('the materialisation fits inside the HUD hint that announces it',
+    CONJURE_TIME < 4 && CONJURE_TIME > 1, `${CONJURE_TIME.toFixed(2)} s`);
+
+  // --- hullOf's own contract ------------------------------------------------
+  ok('an infeasible craft yields no parts at all, whatever is asked of it',
+    hullOf({ feasible: false }, {}, 7).length === 0);
+}
+
 const suites = {
+  conjure: suiteConjure,
   lightcone: suiteLightcone,
   craft: suiteCraft,
   wonder: suiteWonder,

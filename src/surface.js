@@ -13,6 +13,7 @@ import { softDotTexture } from './nebula.js';
 import { addLife, isBiosphere } from './life.js';
 import { addCivilization } from './civilization.js';
 import { addTraveler } from './traveler.js';
+import { CONJURE_TIME, Conjuration } from './conjure.js';
 import { addShips } from './ships.js';
 import { addFlare } from './flare.js';
 import { addGrass } from './grass.js';
@@ -758,6 +759,11 @@ export class SurfaceScale {
     // the body walks; the camera is only sometimes in its head
     this.body = this.camera.position.clone();
     this.traveler = addTraveler(this);
+    // The conjured craft. Built on the first summon rather than at spawn: a
+    // world nobody tries to leave should not pay for a rocket, and `craftFor()`
+    // is a rocket-equation solve rather than a lookup.
+    this.conjure = null;
+    this.conjureGrp = null;
     this.grassField = addGrass(this);
     this.ruins = addRuins(this);
     this.wildlife = addWildlife(this);
@@ -2295,7 +2301,128 @@ export class SurfaceScale {
       else this.app.hud.setHint('the skiff waits near the plaza — walk to it and press e');
       return true;
     }
+    // §2.4 · `KeyV` is free: `main.js`'s switch claims H, M, B, U, G, J and N,
+    // and this scale claims Space, F, C and E. Nothing else in the repo binds V.
+    if (code === 'KeyV') { this._summon(); return true; }
     return false;
+  }
+
+  /**
+   * Conjure a craft, or find out that you cannot.
+   *
+   * §2.1 forbids an asset and §4 forbids an inventory, so the craft is not
+   * fetched — it is solved. `craft.js` asks how much velocity this world costs
+   * to leave and what the rocket equation says a vehicle able to buy it must
+   * weigh; `conjure.js` turns that into parts. On a small moon you get a dart.
+   * On an Earth you get 110 m and five engines, because that is a Saturn V and
+   * that is what leaving Earth costs.
+   *
+   * On a heavy world with air the answer is that **no chemical rocket leaves**,
+   * and the conjuring refuses with the number. That is the best thing the
+   * mechanic does and the interface must not soften it (§8 axis 8).
+   */
+  _summon() {
+    if (this.conjure && this.conjure.phase !== 'idle' && this.conjure.phase !== 'refused') {
+      // already standing there, or on its way: dismiss rather than stacking a
+      // second. A summon during `gather` is a mind changed, not a second craft.
+      this.conjure.dismiss();
+      if (this.conjureGrp) this.conjureGrp.visible = false;
+      this.app.hud.setHint('the craft returns to wherever conjured things wait · v calls it back');
+      return;
+    }
+    if (!this.conjure) {
+      this.conjure = new Conjuration({
+        massE: this.pp.massE, radiusE: this.pp.radiusE, atmo: this.atmo,
+      }, this.pp.seed);
+    }
+    if (!this.conjure.summon()) {
+      // the world is one-way, and the reason is arithmetic
+      this.app.hud.setHint(this.conjure.result.why);
+      return;
+    }
+    if (!this.conjureGrp) this.conjureGrp = this._buildCraft(this.conjure);
+    this.conjureGrp.visible = true;
+    // Beside you, not on you. The offset is the craft's own base radius plus a
+    // walk — a 3.9 m dart stands close enough to reach and a 33 m super-earth
+    // stack stands clear of its own fins, which one fixed 18 m cannot do both of.
+    const a = this.yaw + 1.1;
+    const clear = 14 + this.conjure.craft.diameter * 1.4;
+    const x = this.body.x + Math.sin(a) * clear, z = this.body.z + Math.cos(a) * clear;
+    this.conjureGrp.position.set(x, this._padY(x, z), z);
+    this.app.hud.setHint(`${this.conjure.craft.why} · ${CONJURE_TIME.toFixed(1)} s to build · v dismisses`);
+  }
+
+  /**
+   * Where the pad is. Sea level counts as ground for this the same way it does
+   * for the skiff — a rocket conjured over water stands on the water rather
+   * than under it, which is the same lie the hover-skiff already tells and a
+   * much smaller one than a launch from the seabed.
+   */
+  _padY(x, z) {
+    const h = this.heightAt(x, z);
+    return this.seaLevel === null ? h : Math.max(h, this.seaLevel);
+  }
+
+  /**
+   * Build the meshes once, from the descriptors.
+   *
+   * `conjure.js` emits geometry as numbers so it can be checked offline; this
+   * is the only place that turns those numbers into three, and it is
+   * deliberately dumb — a switch on `kind` and a material per `role`. Anything
+   * clever here would be a second opinion about the shape, and the shape has an
+   * owner.
+   */
+  _buildCraft(conj) {
+    const g = new THREE.Group();
+    const mk = (c, rough, metal) => new THREE.MeshStandardMaterial({
+      color: c, roughness: rough, metalness: metal, transparent: true, opacity: 0,
+    });
+    const mats = {
+      tank: mk(0xd8d2c2, 0.45, 0.25),
+      interstage: mk(0x6d6a63, 0.70, 0.30),
+      capsule: mk(0xe8e2d2, 0.35, 0.40),
+      engine: mk(0x4a4640, 0.55, 0.60),
+      fin: mk(0xb9432f, 0.60, 0.20),
+    };
+    mats.fin.side = THREE.DoubleSide;
+    for (const p of conj.parts) {
+      let geo;
+      if (p.kind === 'cylinder') geo = new THREE.CylinderGeometry(p.radius, p.radius, p.height, 18);
+      else if (p.kind === 'cone') geo = new THREE.ConeGeometry(p.radius, p.height, 18);
+      else geo = new THREE.BoxGeometry(p.span, p.height, Math.max(p.span * 0.06, 0.2));
+      const m = new THREE.Mesh(geo, mats[p.role] ?? mats.tank);
+      m.userData.part = p;
+      g.add(m);
+    }
+    // §9.2's shadow is opt-in by layer, and a 110 m tower at a 13° sun is the
+    // longest occluder this scale will ever have. Casting it is most of what
+    // makes the craft belong to the valley rather than sit on top of it.
+    markCaster(g);
+    g.visible = false;
+    this.scene.add(g);
+    return g;
+  }
+
+  /** advance the materialisation; call once per frame from `update()` */
+  _updateConjure(dt) {
+    const c = this.conjure;
+    if (!c || !this.conjureGrp || c.phase === 'idle' || c.phase === 'refused') return;
+    c.update(dt);
+    const poses = c.poses();
+    const kids = this.conjureGrp.children;
+    for (let i = 0; i < kids.length && i < poses.length; i++) {
+      const m = kids[i], p = m.userData.part, o = poses[i];
+      m.position.set(p.x + o.dx, p.y + o.dy, p.z + o.dz);
+      m.rotation.set(
+        (p.flip ? Math.PI : 0) + o.rx,
+        (p.ry ?? 0) + o.ry,
+        o.rz);
+      m.material.opacity = o.opacity;
+      // the seam glows as it closes — the one part of this that is not a
+      // rigid-body motion, and the reason it reads as conjuring rather than as
+      // a crate being assembled
+      m.material.emissive?.setRGB(o.glow * 0.9, o.glow * 0.75, o.glow * 0.45);
+    }
   }
 
   // ------------------------------------------------------------- loop ----
@@ -2505,6 +2632,9 @@ export class SurfaceScale {
       this._grassDraws = drawn;
     }
     if (this.godrays) this.godrays.update(dt);
+    // after whatever moved `this.body`, so a craft conjured this frame is
+    // placed against the position the walker actually ended on
+    if (this.conjure) this._updateConjure(dt);
     if (this.rivers) this.rivers.update(dt);
     if (this.festival) this.festival.update(dt, this.uSunDir.value.y);
     if (this.herds) this.herds.update(dt, this.uSunDir.value.y);
