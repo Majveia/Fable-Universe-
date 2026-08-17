@@ -85,6 +85,7 @@ import {
 import {
   CONJURE, CONJURE_TIME, Conjuration, conjureFor, hullOf, partAt,
 } from '../src/conjure.js';
+import { LAUNCH, flyClimb, launchFor, launchState, speedOf, stepLaunch } from '../src/climb.js';
 import {
   FLICKER_HZ, MAINS_HZ, MERCURY_LINES, isThin, lampColour, lampExposure, lampFlicker,
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
@@ -6644,7 +6645,157 @@ function suiteConjure() {
     hullOf({ feasible: false }, {}, 7).length === 0);
 }
 
+// ---------------------------------------------------------------------------
+// the climb-out (src/climb.js)
+//
+// The conjured craft used to stand on the pad and never move, which is a worse
+// promise than no craft at all. This is the first 1435 m of a launch — the
+// altitude `ascent.js` hands over at — integrated rather than authored, so the
+// whole flight is checkable in Node instead of something you have to fly to
+// find out about.
+function suiteClimb() {
+  console.log('\nclimb — the first kilometre and a half (§2.5, §6 M5)');
+
+  // `releaseAltitude(EXT=1400, fov=52)`: where the ground stops filling the lens
+  const REL = (1400 * 0.5) / Math.tan((52 * 0.5 * Math.PI) / 180);
+  const WORLDS = [
+    ['Luna', { massE: 0.0123, radiusE: 0.2727, atmo: 0 }],
+    ['Mars', { massE: 0.107, radiusE: 0.532, atmo: 0.006 }],
+    ['Earth', { massE: 1, radiusE: 1, atmo: 1 }],
+    ['Venus', { massE: 0.815, radiusE: 0.95, atmo: 92 }],
+    ['super-earth', { massE: 5, radiusE: 1.5, atmo: 1.4 }],
+    ['tiny rock', { massE: 0.002, radiusE: 0.15, atmo: 0 }],
+    ['heavy dry', { massE: 2.4, radiusE: 1.2, atmo: 0.02 }],
+  ];
+  const runs = WORLDS.map(([n, w]) => {
+    const c = craftFor(w);
+    return [n, w, c, c.feasible ? flyClimb(c, w, REL) : null];
+  });
+  const flew = runs.filter(([, , , r]) => r);
+
+  ok('§2.5 · every world a craft can be built for is a world the craft leaves',
+    flew.length === runs.length && flew.every(([, , , r]) => r.reached),
+    flew.map(([n, , , r]) => `${n} ${r.time.toFixed(0)}s`).join(' · '));
+
+  // --- the thing that was wrong, and the reason it was wrong ---------------
+  // A zero-lift gravity turn has `θ' = g·sin θ / v`, which diverges as v → 0.
+  // Pitching over on altitude alone kicked Earth at 26 m/s, ran the turn to
+  // horizontal inside half a minute, put every newton sideways, and left the
+  // stack in the first kilometre. Gating the kick on speed is what makes the
+  // manoeuvre stable on all seven rather than on the ones that happen to
+  // accelerate fast enough — the same reason a real launcher waits for airspeed.
+  ok('the pitch-over never runs away — nothing reaches horizontal',
+    flew.every(([, , , r]) => r.pitchDeg < LAUNCH.pitchMaxDeg + 1e-9),
+    flew.map(([n, , , r]) => `${n} ${r.pitchDeg.toFixed(0)}°`).join(' · '));
+  ok('and nothing leaves the frame still pointing straight up either',
+    flew.every(([, , , r]) => r.pitchDeg > 1),
+    'a launch that never turns is a firework');
+
+  // --- the design rule, stated as the arithmetic it is ----------------------
+  // TWR is a design choice; net acceleration is the number a designer holds.
+  // Fixing 1.7 m/s² and solving for TWR is why every world clears the same
+  // altitude in a comparable time, which is what designing to one acceleration
+  // means. Fixing TWR instead gave a 0.09 g world a 96-second climb.
+  ok('§3 · TWR is solved from the acceleration a stack is designed for',
+    flew.every(([, w, c]) => {
+      const p = launchFor(c, w);
+      const net = (p.twr - 1) * p.g0;
+      return p.twr >= LAUNCH.twrMin - 1e-9 && p.twr <= LAUNCH.twrMax + 1e-9
+        && (net >= LAUNCH.netAccel - 1e-6 || p.twr <= LAUNCH.twrMin + 1e-9
+          || p.twr >= LAUNCH.twrMax - 1e-9);
+    }),
+    WORLDS.map(([n, w]) => `${n} ${launchFor(craftFor(w), w).twr.toFixed(2)}`).join(' · '));
+  ok('so no world takes more than a minute to clear the lens, and none under ten seconds',
+    flew.every(([, , , r]) => r.time > 10 && r.time < 60),
+    `${Math.min(...flew.map(([, , , r]) => r.time)).toFixed(0)}–${Math.max(...flew.map(([, , , r]) => r.time)).toFixed(0)} s`);
+
+  // --- the one case anybody has flown --------------------------------------
+  // Saturn V passed 1.4 km at about T+40 s doing roughly 90 m/s. If the model
+  // gets that wrong there is no reason to trust it on the other 10²⁸.
+  const earth = runs.find(([n]) => n === 'Earth')[3];
+  near('§3 · Earth clears 1435 m at about the time a Saturn V did', earth.time, 37, 8);
+  near('and at about the speed a Saturn V was doing', earth.speed, 90, 25);
+
+  // --- the ballistic coefficient, and why the area cancels -----------------
+  // β = m/(Cd·A), and for a body of roughly uniform density m ∝ A·H, so β ∝ H
+  // alone. A taller stack punches through air better; a wider one does not.
+  ok('drag scales with the vehicle height and not with its width',
+    (() => {
+      const tall = launchFor({ ve: 4400, height: 200 }, { massE: 1, radiusE: 1, atmo: 1 });
+      const short = launchFor({ ve: 4400, height: 50 }, { massE: 1, radiusE: 1, atmo: 1 });
+      return Math.abs(tall.beta / short.beta - 4) < 1e-9;
+    })(), 'β = 860·H — 110 m puts Earth on the Saturn V\'s measured 94,600 kg/m²');
+
+  // --- an atmosphere is felt ------------------------------------------------
+  ok('§8 · a thick atmosphere costs a launch real time, a vacuum costs none',
+    (() => {
+      const w = { massE: 1, radiusE: 1, atmo: 1 };
+      const vac = { massE: 1, radiusE: 1, atmo: 0 };
+      const a = flyClimb(craftFor(w), w, REL), b = flyClimb(craftFor(vac), vac, REL);
+      return a.time > b.time && a.maxQ > 1e3 && b.maxQ < 1e-9;
+    })());
+  ok('and Venus, at 92 bar, is the worst max-Q in the set by an order of magnitude',
+    (() => {
+      const v = runs.find(([n]) => n === 'Venus')[3];
+      const rest = flew.filter(([n]) => n !== 'Venus').map(([, , , r]) => r.maxQ);
+      return v.maxQ > 10 * Math.max(...rest);
+    })(), `${(runs.find(([n]) => n === 'Venus')[3].maxQ / 1000).toFixed(0)} kPa`);
+
+  // --- the integration itself ----------------------------------------------
+  const p = launchFor(craftFor(WORLDS[2][1]), WORLDS[2][1]);
+  ok('§2.5 · the pad pushes back: nothing sinks through the ground before liftoff',
+    (() => {
+      let s = launchState();
+      for (let i = 0; i < 120; i++) { s = stepLaunch(s, p, 1 / 60, REL); if (s.h < 0) return false; }
+      return true;
+    })());
+  ok('the acceleration rises as the vehicle burns itself away',
+    (() => {
+      let s = launchState(), first = 0, last = 0;
+      for (let i = 0; i < 60 * 30; i++) {
+        s = stepLaunch(s, p, 1 / 60, Infinity);
+        if (i === 0) first = s.thrust;
+        last = s.thrust;
+      }
+      return last > first * 1.02;
+    })(), 'constant force over falling mass — most of why a launch reads as a launch');
+  ok('the engine cuts rather than burning the tanks themselves',
+    (() => {
+      let s = launchState();
+      for (let i = 0; i < 60 * 900; i++) s = stepLaunch(s, p, 1 / 60, Infinity);
+      return !s.burning && s.thrust === 0 && s.mass >= LAUNCH.minMass - 1e-12;
+    })());
+  ok('§2.3 · the same craft on the same world flies the same climb, exactly',
+    JSON.stringify(flyClimb(craftFor(WORLDS[2][1]), WORLDS[2][1], REL))
+    === JSON.stringify(flyClimb(craftFor(WORLDS[2][1]), WORLDS[2][1], REL)));
+  ok('release fires exactly once, on the frame the ground lets go',
+    (() => {
+      let s = launchState(), fired = 0;
+      for (let i = 0; i < 60 * 200; i++) { s = stepLaunch(s, p, 1 / 60, REL); if (s.released) fired++; }
+      return fired === 1;
+    })());
+  ok('§11 · no timestep produces a state with a NaN in it',
+    (() => {
+      for (const dt of [0, -1, 1e-9, 0.5, 10, NaN, Infinity]) {
+        let s = launchState();
+        for (let i = 0; i < 200; i++) s = stepLaunch(s, p, dt, REL);
+        for (const n of [s.h, s.vUp, s.vHor, s.theta, s.mass, s.t, s.down]) {
+          if (!Number.isFinite(n)) return false;
+        }
+      }
+      return true;
+    })(), 'seven timesteps including negative, NaN and infinite');
+  ok('and gravity falls off with altitude rather than being a constant',
+    (() => {
+      const moon = launchFor(craftFor(WORLDS[0][1]), WORLDS[0][1]);
+      return moon.R > 1e6 && moon.R < 2e6;   // 1738 km, so 1435 m is 0.08% of it
+    })());
+  near('speedOf is the norm of the two components, not one of them',
+    speedOf({ vUp: 3, vHor: 4 }), 5, 1e-9);
+}
+
 const suites = {
+  climb: suiteClimb,
   conjure: suiteConjure,
   lightcone: suiteLightcone,
   craft: suiteCraft,

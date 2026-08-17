@@ -14,6 +14,7 @@ import { addLife, isBiosphere } from './life.js';
 import { addCivilization } from './civilization.js';
 import { addTraveler } from './traveler.js';
 import { CONJURE_TIME, Conjuration } from './conjure.js';
+import { launchFor, launchState, stepLaunch } from './climb.js';
 import { addShips } from './ships.js';
 import { addFlare } from './flare.js';
 import { addGrass } from './grass.js';
@@ -781,6 +782,8 @@ export class SurfaceScale {
     // is a rocket-equation solve rather than a lookup.
     this.conjure = null;
     this.conjureGrp = null;
+    /** a climb-out in progress, or null — see `src/climb.js` */
+    this.launch = null;
     this.grassField = addGrass(this);
     this.ruins = addRuins(this);
     this.wildlife = addWildlife(this);
@@ -2364,6 +2367,11 @@ export class SurfaceScale {
       return true;
     }
     if (code === 'KeyE') {
+      // One key, one meaning: get into whatever is here. A conjured craft is
+      // asked first only because it is the thing you just called and are
+      // standing next to; when there is none, this is the skiff's key exactly
+      // as it has always been.
+      if (this._board()) return true;
       const res = this.traveler.tryMount();
       if (res === 'mounted') this.app.hud.setHint('the skiff has you · wasd flies it · shift opens it up · e steps off');
       else if (res === 'dismounted') this.app.hud.setHint('on foot · e reboards the skiff · c for first person');
@@ -2470,6 +2478,90 @@ export class SurfaceScale {
     g.visible = false;
     this.scene.add(g);
     return g;
+  }
+
+  /**
+   * Board the craft, if there is one and you are standing at it.
+   *
+   * Returns false when there is nothing to board, so `KeyE` can fall through to
+   * the skiff and one key keeps meaning "get in whatever is here".
+   *
+   * The eye goes to the capsule. That is a decision and it is worth naming: a
+   * launch seen from outside would need the third-person spring to know how wide
+   * a 16 m stack is, and it would put the camera inside the hull on any world
+   * whose answer is a fat rocket. From the capsule there is nothing to collide
+   * with, and what you get instead is the shot the whole scale exists for — the
+   * valley falling away through its own aerial perspective, continuously, with
+   * no cut anywhere between standing in the grass and being in orbit (§2.5).
+   */
+  _board() {
+    const c = this.conjure;
+    if (!c || c.phase !== 'ready' || !this.conjureGrp) return false;
+    const g = this.conjureGrp.position;
+    const reach = 6 + c.craft.diameter;
+    if (Math.hypot(this.body.x - g.x, this.body.z - g.z) > reach) {
+      this.app.hud.setHint(`the craft stands ${Math.round(Math.hypot(this.body.x - g.x, this.body.z - g.z))} m off · walk to it and press e`);
+      return true;
+    }
+    this.launch = {
+      p: launchFor(c.craft, { massE: this.pp.massE, radiusE: this.pp.radiusE, atmo: this.atmo }),
+      s: launchState(),
+      // downrange is whichever way you were facing when you climbed in, so the
+      // pitch-over carries the frame you already composed rather than a constant
+      az: this.yaw,
+      pad: { x: g.x, y: g.y, z: g.z },
+      // the eye sits at the capsule, which `conjure.js` puts at the top of the
+      // stack minus half its own length
+      eye: c.craft.height - 4.5,
+    };
+    this.fly = false;
+    if (this.traveler) { this.traveler.third = false; this.traveler.riding = false; }
+    if (this.rig) this.rig.third = false;
+    this.app.hud.setHint(`ignition · ${c.craft.why} · the ground lets go at ${Math.round(this._releaseAlt)} m`);
+    this.app.audio?.warp?.('ascend');
+    return true;
+  }
+
+  /**
+   * The climb-out. `src/climb.js` owns every number; this owns the scene graph
+   * and the one moment the scale changes.
+   *
+   * The handover is `ascent.js`'s, unchanged and not duplicated: the same
+   * `handoff()` decomposition and the same `popTo` the walker's climb already
+   * uses (§2.4 — this adds no new kind of location). What is different is only
+   * who asked, which is the entire reason `_climbCheck` and this can be separate
+   * without being two code paths.
+   */
+  _updateLaunch(dt) {
+    const L = this.launch;
+    L.s = stepLaunch(L.s, L.p, dt, this._releaseAlt);
+    const s = L.s;
+    const dx = Math.sin(L.az) * s.down, dz = Math.cos(L.az) * s.down;
+    if (this.conjureGrp) {
+      this.conjureGrp.position.set(L.pad.x + dx, L.pad.y + s.h, L.pad.z + dz);
+      // lean into the turn — the stack flies pointed, which is the visible form
+      // of the gravity turn and the only place the pitch angle appears at all
+      this.conjureGrp.rotation.set(Math.cos(L.az) * s.theta, 0, -Math.sin(L.az) * s.theta);
+    }
+    this.body.set(L.pad.x + dx, L.pad.y + s.h + L.eye, L.pad.z + dz);
+    this.vel.set(s.vHor * Math.sin(L.az), s.vUp, s.vHor * Math.cos(L.az));
+    if (this.walker) {
+      // the walker is along for the ride, so a dismount at any point starts
+      // from where the body actually is rather than from the pad
+      this.walker.pos.x = this.body.x;
+      this.walker.pos.z = this.body.z;
+      this.walker.pos.y = L.pad.y + s.h;
+      this.walker.vel.x = this.vel.x; this.walker.vel.y = this.vel.y; this.walker.vel.z = this.vel.z;
+      this.walker.grounded = false;
+    }
+    this._climbFrac = Math.min(s.h / Math.max(this._releaseAlt, 1), 1);
+    if (!s.released) return;
+    // §M5's gate: the camera inherits the velocity. Local frame, as `ascent.js`
+    // requires — the walker's axes have +y up at the landing site by
+    // construction, and `_landingDir` is that site's normal in *planet* space.
+    this.app._ascentHandoff = handoff(this.vel, [0, 1, 0]);
+    this.launch = null;
+    this.app.popTo(this.app.stack.length - 2);
   }
 
   /** advance the materialisation; call once per frame from `update()` */
@@ -2745,7 +2837,9 @@ export class SurfaceScale {
         if (!this.traveler?.third) this.body.copy(this.camera.position);
         if (this.traveler) this.traveler._camSet = false;
       }
-      if (this.traveler?.riding) {
+      if (this.launch) {
+        this._updateLaunch(dt);
+      } else if (this.traveler?.riding) {
         this.traveler.drive(dt);
       } else if (M4) {
         this._stepBody(dt);
@@ -2776,8 +2870,10 @@ export class SurfaceScale {
         }
       }
 
-      // stay inside the tile (the interior keeps its own bounds)
-      if (!this.inside) {
+      // stay inside the tile (the interior keeps its own bounds). A launch is
+      // exempt: the clamp is for a body that would walk off a 1400 m mesh, and
+      // a vehicle that has already left it vertically is the scale above's.
+      if (!this.inside && !this.launch) {
         this.body.x = Math.min(Math.max(this.body.x, -EXT * 0.48), EXT * 0.48);
         this.body.z = Math.min(Math.max(this.body.z, -EXT * 0.48), EXT * 0.48);
         // and the craft owns the clamp too, or the body stops at the edge while
@@ -2788,7 +2884,7 @@ export class SurfaceScale {
           if (hv.pos.z !== this.body.z) { hv.pos.z = this.body.z; hv.vel.z = 0; }
         }
       }
-      if (M4 && !this.traveler?.riding) {
+      if (M4 && !this.traveler?.riding && !this.launch) {
         // the body owns the tile clamp too, so the two cannot disagree
         this.walker.pos.x = this.body.x;
         this.walker.pos.z = this.body.z;
