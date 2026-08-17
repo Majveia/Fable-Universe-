@@ -93,6 +93,7 @@ import {
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
   roomShape, sharedBits, starAt, thinDepth, thinPoint,
 } from '../src/liminal.js';
+import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
@@ -1668,17 +1669,53 @@ const only = process.argv[2];
 // rather than one copy each: the walk suite asserts that a body never
 // penetrates *this* ground, which is only a meaningful claim while both suites
 // are talking about the same terrain.
+// Re-taken once, deliberately, when `?intnoise` flipped to default-on and the
+// gradient table's sign became exact. That is the *only* legitimate reason to
+// move a number in this table, and the shift it produced is recorded so the
+// size of it is auditable: the coastal shelf moved 0.11% and the mountainous
+// world 0.08%, both well inside their own relief. A golden that drifts by
+// accident is the fault this fixture exists to catch; a golden re-taken with
+// the commit that moved it, and the movement measured, is the fixture working.
 const WORLDS = [
-  { label: 'coastal shelf', relief: 24.4, sum: -10717.5872,
+  { label: 'coastal shelf', relief: 24.4, sum: -10729.0949,
     dir: [0.31, 0.62, 0.72],
     pp: { seed: 0x5eed1337, typeId: 1, noiseSeed: 424242, oceanLevel: 0.012, radiusE: 1.04 } },
-  { label: 'mountainous world', relief: 764.6, sum: 189612.3066,
+  { label: 'mountainous world', relief: 764.4, sum: 189458.0566,
     dir: [0.1, 0.9, 0.42],
     pp: { seed: 0x5eed1337, typeId: 0, noiseSeed: 7777, oceanLevel: -1, radiusE: 0.55 } },
 ];
 
 function suiteGround() {
   console.log('\nground — the one definition of the walkable ground (§2.7, §2.3)');
+
+  // --- §2.7's actual mechanism, not a proxy for it -------------------------
+  // The invariant is that the coast you see from orbit is the coast you walk,
+  // and the thing that broke it was one comparison. `1 − |gx| − |gy| ≤ 0` is a
+  // float compare, and at the seven gradient cells where it is exactly zero,
+  // float32 and float64 pick opposite signs — so the GLSL and the CPU port
+  // disagreed on the gradient, and therefore on the height, and therefore on
+  // land versus sea. `14 − |4x−13| − |4y−13| ≤ 0` is the same test between
+  // integers, which do not round, so both sides get one answer by construction.
+  //
+  // This checks the two are genuinely different functions — because if they
+  // were not, the flip would have been free and the fixture above would not
+  // have moved — and that the default is now the exact one.
+  ok('§2.7 · the shipped noise decides the gradient sign in integers',
+    snoise(0.3, -1.7, 2.2) === snoise(0.3, -1.7, 2.2, true),
+    'so the shader and the CPU port cannot land on opposite sides of a zero');
+  ok('and it is a real change, which is why the goldens above moved',
+    (() => {
+      let differ = 0;
+      let s = 12345;
+      const r = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+      for (let i = 0; i < 20000; i++) {
+        const x = (r() - 0.5) * 4000, y = (r() - 0.5) * 4000, z = (r() - 0.5) * 4000;
+        if (Math.abs(snoise(x, y, z, false) - snoise(x, y, z, true)) > 1e-12) differ++;
+      }
+      return differ > 2000 && differ < 6000;
+    })(),
+    'about 16% of samples — the file it replaced claimed zero, and that claim'
+    + ' was about the permutation chain rather than the gradient');
 
   for (const w of WORLDS) {
     const g = makeGround(w.pp, w.dir);
