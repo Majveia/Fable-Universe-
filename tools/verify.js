@@ -6276,11 +6276,18 @@ function suiteCraft() {
       sizes[0] < sizes[1] && sizes[1] < sizes[2],
       `${sizes.map((h) => h.toFixed(0) + ' m').join(' → ')} — the shape *is* the`
       + ' difficulty, so you can read the world off the vehicle');
+    // This check used to disagree with itself, which is why the sign error
+    // survived: the label asked for a fat airless vehicle, the assertion
+    // demanded a 10:1 one, and the sentence underneath argued — correctly —
+    // that drag is what buys slenderness. Two of the three were right about the
+    // physics and the assertion was the odd one out, so it is the assertion
+    // that moved. Drag goes as frontal area: an atmosphere charges for width
+    // and a vacuum does not.
     ok('...and an airless world may be as fat as it likes',
-      craftFor(LUNA).height / craftFor(LUNA).diameter === 10
-      && craftFor(EARTH).height / craftFor(EARTH).diameter < 7,
-      'a vehicle that never meets a headwind is 10:1; one that climbs through'
-      + ' an atmosphere is not, because slenderness is bought from drag');
+      Math.abs(craftFor(EARTH).height / craftFor(EARTH).diameter - 10) < 1e-9
+      && craftFor(LUNA).height / craftFor(LUNA).diameter < 7,
+      'a vehicle that climbs through an atmosphere is 10:1; one that never meets'
+      + ' a headwind need not be, because slenderness is bought from drag');
   }
 
   {
@@ -6546,6 +6553,41 @@ function suiteConjure() {
     new Set(flyable.map(([, c]) => engines(c))).size >= 3,
     flyable.map(([n, c]) => `${n} ${engines(c)}`).join(' · '));
   ok('and Earth lands on five, which is a Saturn V', engines(named('Earth')) === 5);
+
+  // --- slenderness: the sign the comment always wanted ---------------------
+  // Drag goes as frontal area, so a vehicle climbing through atmosphere pays
+  // for width and one that never meets a headwind does not. The arithmetic ran
+  // the other way — 10:1 in vacuum, 6.8:1 in thick air — while the comment
+  // above it argued the reverse. The test of the fix is the one vehicle anybody
+  // has flown: a Saturn V is 10.1 m across.
+  ok('§3 · air makes a stack slender and vacuum lets it be fat',
+    (() => {
+      const air = craftFor({ massE: 1, radiusE: 1, atmo: 1 });
+      const vac = craftFor({ massE: 1, radiusE: 1, atmo: 0 });
+      return air.height / air.diameter > vac.height / vac.diameter;
+    })(),
+    `Earth ${named('Earth').craft.diameter.toFixed(1)} m across, against a Saturn V's 10.1`);
+  near('and Earth is within a metre of the real vehicle',
+    named('Earth').craft.diameter, 10.1, 1.0);
+
+  // --- and the bells fit under the base they hang from ---------------------
+  // The packing table is only worth having if the layout honours it: an engine
+  // whose rim is proud of the base is a bell bolted to the outside of the
+  // rocket, and it is invisible from every angle except directly underneath.
+  ok('no engine bell is proud of the base it hangs from',
+    flyable.every(([, c]) => c.hull.filter((p) => p.role === 'engine')
+      .every((p) => Math.hypot(p.x, p.z) + p.radius <= c.craft.diameter / 2 + 1e-6)));
+  ok('and the bell is the size class, not a bell shrunk to make room',
+    flyable.every(([, c]) => {
+      const e = c.hull.filter((p) => p.role === 'engine');
+      return e.every((p) => Math.abs(p.height - e[0].height) < 1e-9);
+    }), 'one size on every world that can take it — that is what "size class" means');
+  ok('five or more sit as a quincunx: one in the middle, the rest on a ring',
+    (() => {
+      const e = named('Earth').hull.filter((p) => p.role === 'engine');
+      const mid = e.filter((p) => Math.hypot(p.x, p.z) < 1e-9);
+      return e.length === 5 && mid.length === 1;
+    })(), 'which is what a Saturn V looks like from underneath');
 
   // --- fins are aerodynamic surfaces ---------------------------------------
   // The clearest case in the file of physics choosing art: a fin in vacuum is

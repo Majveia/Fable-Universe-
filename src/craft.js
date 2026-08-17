@@ -265,9 +265,20 @@ export function craftFor(world, propellant = 'hydrolox') {
     feasible: true, dv, ratio, ve, propellant,
     stages: st.stages, payload: st.payload, perStage: st.perStage,
     height,
-    // slenderness is set by the air: 10:1 is the classic stack, and a vehicle
-    // that never meets a headwind can afford to be fat
-    diameter: height / (10 - 3.2 * Math.min(Math.max(num(world?.atmo, 1), 0), 1)),
+    // Slenderness is set by the air, and this had the sign backwards against
+    // its own comment. Drag goes as frontal area, so a vehicle that has to
+    // climb through atmosphere pays for every metre of width and a vehicle that
+    // never meets a headwind pays nothing: **air is the slender one.** The
+    // arithmetic said the opposite — 10:1 in vacuum, 6.8:1 in thick air — while
+    // the sentence above it argued the case for the reverse. One of the two was
+    // wrong and it was not the sentence.
+    //
+    // The fix is worth having for a reason beyond tidiness. Earth's stack goes
+    // from 16.2 m across to **11.0**, against a Saturn V's real 10.1 — so the
+    // one vehicle anybody has flown stops being 60% too fat. Nothing physical
+    // moves: `diameter` feeds the hull that `conjure.js` builds and never the
+    // Δv, which is why this could sit inverted without any number going wrong.
+    diameter: height / (6.8 + 3.2 * Math.min(Math.max(num(world?.atmo, 1), 0), 1)),
     dryFraction: DRY_FRACTION,
     why: `${(dv.total / 1000).toFixed(1)} km/s · ${st.stages} stage`
       + `${st.stages > 1 ? 's' : ''} · ${(st.payload * 100).toFixed(1)}% to orbit`,

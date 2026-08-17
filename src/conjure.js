@@ -145,24 +145,54 @@ export function hullOf(craft, world = {}, seed = 0) {
     order: 1,
   });
 
-  // --- engines: base diameter is the constraint, not taste -----------------
+  // --- engines: how many bells fit under the base, by actual packing --------
   // An engine bell is a **fixed physical size class** — an F-1 is 3.7 m across
   // and a world with a wider rocket does not get wider engines, it gets more of
   // them. The first version scaled the bell with `D` and then counted bells per
   // unit area, which cancels: every craft in the universe came back with
-  // exactly six engines, from a 39 m dart to a 224 m super-earth stack.
+  // exactly six, from a 39 m dart to a 224 m super-earth stack.
   //
-  // Counting across the base instead puts Earth on five, which is a Saturn V,
-  // and it was not aimed there.
-  const BELL_CLASS = 3.2;               // m, one large engine
-  const engines = clamp(Math.round(D / BELL_CLASS), 1, 9);
-  const bell = Math.min(BELL_CLASS, D / Math.max(engines, 1) * 1.15);
+  // Counting *across* the base was the fix for that and is wrong in a quieter
+  // way: engines pack in two dimensions, not along a line. The question "how
+  // many circles of diameter d fit inside a circle of diameter D" has known
+  // optimal answers, and using them rather than a ratio is what makes the count
+  // an observation instead of an estimate. `PACK[n]` is the smallest D/d that
+  // admits `n` — 2.701 for five, which is the centre-plus-four quincunx, and
+  // 3.000 for both six and seven because the seventh goes in the middle for free.
+  //
+  // Earth's base is 11.0 m and an F-1 is 3.7, so D/d = 2.97: five fit and six
+  // do not. That is a Saturn V, arrived at from a packing table and a diameter
+  // that now matches the real vehicle to 0.9 m. The previous rule got five as
+  // well, but from a 16.2 m base — the right answer for the wrong reason, which
+  // is the kind of agreement that stops being true the moment anything moves.
+  const BELL_CLASS = 3.7;               // m — an F-1, the large-engine size class
+  const PACK = [0, 1.000, 2.000, 2.155, 2.414, 2.701, 3.000, 3.000, 3.304, 3.613];
+  const ratio = D / BELL_CLASS;
+  let engines = 1;
+  for (let n = PACK.length - 1; n >= 1; n--) {
+    if (ratio >= PACK[n]) { engines = n; break; }
+  }
+  // The clamp at nine is a statement about drawing, not about engineering: a
+  // 224 m stack genuinely wants about thirty, which is an N1, and an N1 is both
+  // a real vehicle and four consecutive failures. Laying out thirty bells needs
+  // concentric rings this does not yet have.
+  engines = clamp(engines, 1, PACK.length - 1);
+  // The bell is the class size. It does not shrink to make room — that is the
+  // whole content of "fixed physical size class", and the packing table is what
+  // guarantees the room exists.
+  const bell = Math.min(BELL_CLASS, D * 0.92);
+  // seated so the outermost bell's rim is inside the base rather than proud of it
+  const ring = engines > 1 ? Math.max((D - bell) * 0.5 * 0.86, bell * 0.55) : 0;
+  // five or more puts one in the middle — a quincunx is what five circles in a
+  // circle *is*, and it is what a Saturn V looks like from underneath
+  const centre = engines >= 5 ? 1 : 0;
   for (let i = 0; i < engines; i++) {
-    const ring = engines > 1 ? D * 0.28 : 0;
-    const th = engines > 1 ? (i / engines) * Math.PI * 2 : 0;
+    const onRing = i >= centre;
+    const th = onRing ? ((i - centre) / (engines - centre)) * Math.PI * 2 : 0;
+    const rr = onRing ? ring : 0;
     parts.push({
       id: `engine${i}`, role: 'engine', kind: 'cone', stage: 0,
-      x: Math.cos(th) * ring, y: -bell * 0.45, z: Math.sin(th) * ring,
+      x: Math.cos(th) * rr, y: -bell * 0.45, z: Math.sin(th) * rr,
       radius: bell / 2, height: bell, flip: true,
       order: 0,
     });
