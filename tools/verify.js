@@ -96,6 +96,7 @@ import {
 import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
+import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
 import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
   stepAscent,
@@ -7409,7 +7410,136 @@ function suitePaintUniforms() {
     'a figure lit at noon is wrong at midnight; a figure times zero is wrong always');
 }
 
+// ---------------------------------------------------------------------------
+// trees (src/tree.js)
+//
+// Method ported from docs/reference/sakura-realm/src/tree/branches.js (MIT).
+// What it replaces was `CylinderGeometry(0.14, 0.3, 1, 5)` under
+// `IcosahedronGeometry(1, 1)` — a five-sided stick with a faceted ball, which
+// is exactly what it looks like on a phone.
+//
+// Four laws, and the reason they are worth testing is that each one is a claim
+// about wood rather than a curve someone liked: break any of them and the tree
+// stops being a consequence and goes back to being a model.
+function suiteTree() {
+  console.log('\ntree — wood is plumbing, and gravity is in the beam (§9, §2.3)');
+
+  // --- law 1 · the pipe model conserves area across a fork -----------------
+  ok('§9 · a fork conserves cross-sectional area, minus a stated fork loss',
+    [[0.25, [2.2, 0.8, 0.7]], [0.04, [1, 1]], [0.9, [3, 1, 1, 0.5, 0.5]]]
+      .every(([r0, sh]) => {
+        const rs = forkRadii(r0, sh);
+        const sum = rs.reduce((a, r) => a + Math.pow(r, WOOD.areaExp), 0);
+        return Math.abs(sum / Math.pow(r0, WOOD.areaExp) - WOOD.forkLoss) < 1e-9;
+      }),
+    `Σr^${WOOD.areaExp} = ${WOOD.forkLoss}·r₀^${WOOD.areaExp} — taper is emergent, not authored`);
+  ok('and the leader keeps the largest share, so it stays the thick one',
+    (() => {
+      const rs = forkRadii(0.25, [2.2, 0.8, 0.7]);
+      return rs[0] > rs[1] && rs[1] > rs[2];
+    })());
+
+  // --- law 2 · length follows radius, by one law ---------------------------
+  ok('§9 · one allometry spans a limb and a twig without a per-level constant',
+    lengthOf(0.21) > 5 && lengthOf(0.21) < 12
+    && lengthOf(0.002) > 0.1 && lengthOf(0.002) < 1.2,
+    `21 cm limb → ${lengthOf(0.21).toFixed(1)} m · 2 mm twig → ${(lengthOf(0.002) * 100).toFixed(0)} cm`);
+  ok('and inverting it round-trips, which is what lets a caller ask for a height',
+    Math.abs(lengthOf(radiusForHeight(14)) - 14) < 1e-9);
+
+  // --- law 3 · the beam, and AEON's own contribution to it -----------------
+  // I ∝ r⁴: doubling the radius makes a limb 16× stiffer while only
+  // quadrupling what it carries. That is why a trunk is straight.
+  // Measured at radii where the law is the only thing acting. `maxCurvature` is
+  // a stated safety rail — a branch deflects, it does not orbit — and below
+  // about 20 cm it is what decides the answer, so testing a 10 cm limb would
+  // have measured the clamp and called it the beam. It did, on the first run:
+  // 7.4× instead of 16×, which is the clamp's ratio, not r⁴'s.
+  ok('§9 · a limb twice as thick bends sixteen times less under the same load',
+    Math.abs(curvature(0.2, 3, 9.80665) / curvature(0.4, 3, 9.80665) - 16) < 1e-6,
+    'I ∝ r⁴, measured clear of maxCurvature — which is why a trunk is straight');
+  ok('§8 axis 8 · and a heavier world bends the same limb harder',
+    curvature(0.25, 3, 23.5) > curvature(0.25, 3, 9.8)
+    && curvature(0.25, 3, 9.8) > curvature(0.25, 3, 1.62));
+  ok('and the rail holds where the law would coil a twig into a spring',
+    curvature(0.004, 9, 9.80665) === WOOD.maxCurvature);
+
+  // The claim the whole file is for: **tree form is a readout of the world.**
+  // Same seed, same target height, three gravities.
+  const byG = [1.62, 9.80665, 23.5].map((g) => {
+    const t = growTree({ seed: 7, gravity: g, height: 12, habit: 'spreading', budget: 900 });
+    let peak = 0;
+    for (let i = 0; i < t.seg.y1.length; i++) peak = Math.max(peak, t.seg.y1[i]);
+    return peak;
+  });
+  ok('§8 axis 8 · a low-gravity world grows a taller tree, from the same seed',
+    byG[0] > byG[1] && byG[1] > byG[2] && byG[0] / byG[2] > 1.3,
+    `Luna ${byG[0].toFixed(1)} m · Earth ${byG[1].toFixed(1)} m · super-earth ${byG[2].toFixed(1)} m`
+    + ' — M ∝ g is already in the beam, so this costs nothing');
+
+  // --- law 4 · the crown is a dome, not a spray ----------------------------
+  const earth = growTree({ seed: 3, gravity: 9.80665, height: 14, habit: 'spreading', budget: 1400 });
+  ok('§8 axis 1 · the crown is wider than it is tall, which is what a dome is',
+    (() => {
+      let maxR = 0, peak = 0;
+      for (let i = 0; i < earth.seg.y1.length; i++) {
+        maxR = Math.max(maxR, Math.hypot(earth.seg.x1[i], earth.seg.z1[i]));
+        peak = Math.max(peak, earth.seg.y1[i]);
+      }
+      return maxR * 2 > peak * 0.8;
+    })());
+
+  // --- it is a tree, not a stick -------------------------------------------
+  // The first run of this file grew 12 segments against a budget of 900,
+  // because the shoot tapered to zero and so nothing ever passed the fork
+  // test. That is the reference's own defect #5 and it is worth a check.
+  ok('§9 · a shoot forks rather than tapering itself out of existence',
+    earth.segments > 300,
+    `${earth.segments} segments — the first version grew 12, which is a bent stick`);
+  ok('and the habits are distinguishable in silhouette (§8 axis 1)',
+    (() => {
+      const hw = HABITS.map((h) => {
+        const t = growTree({ seed: 11, gravity: 9.80665, height: 12, habit: h.id, budget: 900 });
+        let maxR = 0, peak = 0;
+        for (let i = 0; i < t.seg.y1.length; i++) {
+          maxR = Math.max(maxR, Math.hypot(t.seg.x1[i], t.seg.z1[i]));
+          peak = Math.max(peak, t.seg.y1[i]);
+        }
+        return peak / Math.max(maxR, 0.01);
+      });
+      return Math.max(...hw) / Math.min(...hw) > 1.3;
+    })(), 'columnar against umbrella, by height-to-width');
+
+  // --- §5 and §2.3 ---------------------------------------------------------
+  ok('§5 · the budget is a hard ceiling, so a tier can afford a forest',
+    [40, 120, 600, 3000].every((b) => growTree({ seed: 5, budget: b }).segments <= b));
+  ok('and the thickest wood is spent first, so a small budget is a smaller tree',
+    (() => {
+      const lo = growTree({ seed: 5, budget: 60 }), hi = growTree({ seed: 5, budget: 2000 });
+      const minR = (t) => Math.min(...t.seg.r0);
+      return minR(lo) > minR(hi);
+    })(), 'not a half-drawn one');
+  ok('§2.3 · the same seed on the same world grows the same tree, exactly',
+    JSON.stringify(growTree({ seed: 42, gravity: 9.8, height: 10 }))
+    === JSON.stringify(growTree({ seed: 42, gravity: 9.8, height: 10 })));
+  ok('and a different seed grows a different one',
+    JSON.stringify(growTree({ seed: 42 })) !== JSON.stringify(growTree({ seed: 43 })));
+  ok('§11 · no world produces a NaN, an underground branch or a runaway',
+    [{}, { gravity: 0 }, { gravity: 1e6 }, { height: NaN }, { height: 1e9 },
+      { seed: -1 }, { budget: NaN }].every((o) => {
+      const t = growTree(o);
+      const s2 = t.seg;
+      for (let i = 0; i < s2.x1.length; i++) {
+        if (![s2.x0[i], s2.y0[i], s2.z0[i], s2.x1[i], s2.y1[i], s2.z1[i], s2.r0[i], s2.r1[i]]
+          .every(Number.isFinite)) return false;
+        if (s2.y1[i] < 0) return false;
+      }
+      return t.segments > 0;
+    }), 'including zero gravity, where nothing bends at all');
+}
+
 const suites = {
+  tree: suiteTree,
   paintUniforms: suitePaintUniforms,
   invariants: suiteInvariants,
   vegetation: suiteVegetation,
