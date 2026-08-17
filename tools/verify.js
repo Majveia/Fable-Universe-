@@ -7277,7 +7277,73 @@ function suiteVegetation() {
     })(), 'one base colour, so the green you saw from orbit is the green you walk through');
 }
 
+// ---------------------------------------------------------------------------
+// the invariants that are one careless import away (§2.1, §2.2)
+//
+// "Zero runtime assets" and "zero dependencies beyond vendored three" are the
+// two invariants nothing in the repo was checking, and they are the two that a
+// single convenient line can break without anything looking wrong: a font, a
+// CDN script, one `fetch()` for a lookup table. The universe would still run —
+// on the machine that had the network — and `python3 -m http.server 8080` would
+// stop being sufficient forever, which is the thing §2.2 actually promises.
+//
+// Written as a sweep with an allowlist rather than a spot check, for the same
+// reason as the wall-clock and onBeforeRender sweeps: what matters is that a
+// *new* violation has to be argued for.
+function suiteInvariants() {
+  console.log('\ninvariants — zero assets, zero dependencies (§2.1, §2.2)');
+
+  const code = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .split('\n').map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n');
+  const files = readdirSync(new URL('../src/', import.meta.url)).filter((f) => f.endsWith('.js'));
+
+  // --- §2.1 · nothing is fetched at runtime --------------------------------
+  const NET = /\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|navigator\.sendBeacon|import\s*\(/;
+  ok('§2.1 · no module opens a network connection of any kind',
+    (() => {
+      const bad = files.filter((f) => NET.test(code(f)));
+      return bad.length ? bad.join(', ') : true;
+    })() === true,
+    `${files.length} modules · no fetch, no XHR, no WebSocket, no dynamic import`);
+
+  // A URL literal in source is how an asset gets loaded, and it is also how a
+  // comment cites a paper — so this checks code, and it allows the one origin
+  // that is not a fetch: the document's own location, which every scale reads
+  // for its deep link (§2.4).
+  ok('§2.1 · and no module names a remote origin in code',
+    (() => {
+      const bad = files.filter((f) => /["'`]https?:\/\//.test(code(f)));
+      return bad.length ? bad.join(', ') : true;
+    })() === true,
+    'every texture is generated on-device from hash(seed, …)');
+
+  // --- §2.2 · nothing is imported but three and this repo ------------------
+  const bareImports = new Set();
+  for (const f of files) {
+    for (const m of code(f).matchAll(/from\s+['"]([^'"]+)['"]/g)) {
+      const spec = m[1];
+      if (spec.startsWith('.') || spec.startsWith('/')) continue;
+      bareImports.add(spec);
+    }
+  }
+  ok('§2.2 · the only bare specifiers are three and its vendored addons',
+    [...bareImports].every((s) => s === 'three' || s.startsWith('three/addons/')),
+    [...bareImports].sort().join(', ') || 'none');
+
+  // --- and the thing that makes the two invariants true in practice --------
+  ok('§2.2 · there is no package.json to install, so a static server is enough',
+    (() => {
+      try {
+        readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+        return false;
+      } catch { return true; }
+    })(),
+    'python3 -m http.server 8080 must remain sufficient, forever');
+}
+
 const suites = {
+  invariants: suiteInvariants,
   vegetation: suiteVegetation,
   ecology: suiteEcology,
   floraUniforms: suiteFloraUniforms,
