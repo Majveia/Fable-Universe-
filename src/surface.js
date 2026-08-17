@@ -169,6 +169,29 @@ const M4 = PARAM('m4') !== '0';
 const M5 = PARAM('m5') !== '0';
 
 /**
+ * **The worlds are wild.** `?built=1` puts the architecture back.
+ *
+ * §6 M6 built four tiers of settlement — towns, a port city, temples, houses
+ * you can walk into — and it works. It is also the wrong thing to be standing
+ * in. §3 already settled that "minimalism is a property of the chrome,
+ * maximalism is a property of the world", and this is the human reading that
+ * ruling one step further in session: the maximalism that belongs to a world of
+ * this kind is *weather, light, grass and distance*, not masonry. A colonnade
+ * on the horizon turns a place into a set, and a set is something you look at
+ * rather than somewhere you are.
+ *
+ * §4 is the older half of the same argument — "this is a place, not a game
+ * loop" — and a temple with a door is the beginning of a game loop whatever is
+ * behind it.
+ *
+ * Nothing is deleted. `civilization.js`, `city.js`, `settlement.js`,
+ * `ruins.js` and `interior.js` are untouched and every one of them is one URL
+ * parameter away, which is the same bargain §2.4 makes everywhere else: the
+ * default is a decision, not a demolition.
+ */
+const BUILT = PARAM('built') === '1';
+
+/**
  * `?climb=1` — fly up and the ground lets go, instead of pressing Escape.
  *
  * Default-off (§7.4), and it is the only feature in this repo whose *purpose*
@@ -765,7 +788,7 @@ export class SurfaceScale {
     if (pp.inhabited) this._buildCityGlow();
     if (ctx.parentGiant) this._buildParentGiant(ctx.parentGiant);
     this._buildSiblings();
-    this.settlement = addCivilization(this);
+    this.settlement = BUILT ? addCivilization(this) : null;
     this.life = addLife(this);   // after the town, so the woods keep off its doorstep
     this.ships = addShips(this);
     this.flare = addFlare(this);
@@ -784,14 +807,26 @@ export class SurfaceScale {
     this.conjureGrp = null;
     /** a climb-out in progress, or null — see `src/climb.js` */
     this.launch = null;
-    this.grassField = addGrass(this);
-    this.ruins = addRuins(this);
+    // Two grass systems, and only one of them should ever be on screen.
+    //
+    // `grass.js` is the pre-M3 field: a few thousand wide instanced quads on a
+    // wrap-around grid. `flora.js` is §9.5's meadow — one continuous density
+    // law, four tessellation rings, millions of blades. M3 replaced the first
+    // with the second and nothing ever stopped building the first, so both drew
+    // together: proper blades in the middle distance with the old field's big
+    // pale slabs standing through them in the near field. On glass that reads as
+    // "the grass hasn't loaded yet", because half of it is the thing that used
+    // to be there.
+    //
+    // §9.5 is one field, not two. The old one survives only for `?m3=0`.
+    this.grassField = M3 ? null : addGrass(this);
+    this.ruins = BUILT ? addRuins(this) : null;
     this.wildlife = addWildlife(this);
     this.constellations = addConstellations(this);
     this.caravan = addCaravan(this);
     this.megafauna = addMegafauna(this);
     this.rivers = addRivers(this);
-    this.interior = addInterior(this);
+    this.interior = BUILT ? addInterior(this) : null;
     this.inside = false;
     this._doorCool = 0;
     this.godrays = addGodRays(this);
