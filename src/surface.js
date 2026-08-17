@@ -32,7 +32,9 @@ import { findLandingSite } from './terrain.js';
 import { solveLandingSite, SUN_BAND } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
 import { exposureFor, nightFraction, nightLight, skyLux } from './night.js';
-import { AERIAL_GLSL, aerialParams, airFor, applyAerial } from './aerial.js';
+import { AERIAL_GLSL, aerialParams, airFor, applyAerial, visibilityFor } from './aerial.js';
+import { makeSurfaceSky } from './starfield.js';
+import { makeCumulus } from './clouds.js';
 import { addAurora } from './curtain.js';
 import {
   NO_LIMIT, buildHorizon, ridgeAlbedo, saturationRadius, HORIZON_VERT,
@@ -55,7 +57,7 @@ import { GrassRing, WindField } from './flora.js';
 import { PART_RADIUS, RINGS } from './meadow.js';
 import { HOVER } from './vehicle.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
-import { TIER, qArr, qInt } from './quality.js';
+import { Q, TIER, qArr, qInt } from './quality.js';
 
 const PARAM = (k) => {
   try { return new URL(window.location.href).searchParams.get(k); }
@@ -174,6 +176,21 @@ const M5 = PARAM('m5') !== '0';
  * law and the reasoning; this is the twelve lines that call it.
  */
 const CLIMB = PARAM('climb') === '1';
+
+/**
+ * §9.6's painted sky and the cumulus deck that belongs to it. **Default-on**;
+ * `?sky=0` restores the two-stop dome and the two sprite layers exactly (§2.4).
+ *
+ * It lands on rather than off, and that is a decision with a measurement behind
+ * it. `starfield.js:makeSurfaceSky` and `clouds.js:makeCumulus` have been in the
+ * tree, parsed, and reachable by nothing — the same condition `craft.js` was in.
+ * The frame they replace measures 0.267 saturation at the zenith against
+ * §9.1's 0.567, because nine of §9.1's ten sky stops were never read. Shipping
+ * the fix behind a default-off flag would be the third time in this repo that a
+ * finished feature waited for a flip nobody remembered to make, and §7.4's
+ * separate commit for that flip is what this comment is.
+ */
+const SKY = PARAM('sky') !== '0';
 
 /**
  * `?noclip=1` — the rooms between, entered from the ground. Default-off (§7.4).
@@ -932,7 +949,18 @@ export class SurfaceScale {
   _aerialUniforms() {
     if (this._airU) return this._airU;
     const T = this.ctx.system?.temp ?? 5778;
-    const p = aerialParams(this.pp, this.atmo, 1);
+    // §9.3, with the two numbers it was missing. `visibilityFor` makes `fogFar`
+    // a *weather* rather than a constant — 1700 m is WMO "mist" (1–2 km), which
+    // AEON inherited from a reference that was one 2400 m valley wanting its far
+    // wall dissolved, without the composition that justified it. `mistBase`
+    // moves the valley-mist band off the planet datum and onto the valley floor;
+    // measured against the datum, any land below 46 m read as "mist everywhere
+    // past 420 m" — +0.16 fog and a 45% pull toward #D6DDD4, on the near field.
+    const p = aerialParams(this.pp, this.atmo, 1, {
+      visibility: visibilityFor(this.pp, this.atmo),
+      mistBase: this.seaLevel !== null && this.seaLevel !== undefined
+        ? this.seaLevel : (this.body ? this.heightAt(0, 0) : 0),
+    });
     const v = (c) => ({ value: new THREE.Vector3(c[0], c[1], c[2]) });
     const air = airFor(T, 13.5);
     this._air = {
@@ -951,6 +979,7 @@ export class SurfaceScale {
       uAirFar: { value: p.far },
       uAirHazeH: { value: p.hazeH },
       uAirMistAmt: { value: p.mistAmt },
+      uAirMistBase: { value: p.mistBase },
     };
     return this._airU;
   }
@@ -1670,22 +1699,44 @@ export class SurfaceScale {
     // true angular size of this star from this orbit
     const rStarAU = this.sys.radiusSun * 0.00465;
     const angRad = Math.min(Math.atan(rStarAU / this.pp.a) * 3, 0.3); // ×3: cinematic sun
-    this.sky = new THREE.Mesh(
-      new THREE.SphereGeometry(20000, 32, 16),
-      new THREE.ShaderMaterial({
-        uniforms: {
-          uSunDir: this.uSunDir, uSunColor: this.uSunColor,
-          uZenith: { value: this.zenithColor },
-          uHorizon: { value: this.horizonColor },
-          uSunAng: { value: Math.max(angRad, 0.012) },
-          uAtmo: { value: this.atmo },
-          uSeed: { value: this.pp.noiseSeed },
-        },
-        vertexShader: SKY_VERT,
-        fragmentShader: SKY_FRAG,
-        side: THREE.BackSide,
-        depthWrite: false,
-      }));
+    if (SKY) {
+      // §9.6 · the painted four-stop wash, with all ten of §9.1's stops derived
+      // from *this star's* spectrum by the transfer in `starlight.js`.
+      //
+      // What it replaces was two stops — `pp.atmoColor · 0.26` at the zenith and
+      // `· 0.5 + (0.04,0.04,0.05)` at the horizon — and the measurement is the
+      // whole argument for the change: shipped zenith saturation 0.267 against
+      // §9.1's `#4E80B4` at 0.567. **47% of spec.** Nine of the ten stops were
+      // never read, though `starlight.js` has been computing every one of them
+      // from the star's spectrum since M2 act 2. That is most of "the worlds
+      // look washed out", and it was a wiring fault rather than a palette one.
+      this.skyDome = makeSurfaceSky({
+        sunDir: this.uSunDir,
+        T: this.ctx.system?.temp ?? 5778,
+        atmo: this.atmo,
+        sunAng: Math.max(angRad, 0.012),
+        cirrus: Math.min((this.pp.clouds ?? 0.3) * 1.1, 0.9),
+        tier: Q.name,
+      });
+      this.sky = this.skyDome.mesh;
+    } else {
+      this.sky = new THREE.Mesh(
+        new THREE.SphereGeometry(20000, 32, 16),
+        new THREE.ShaderMaterial({
+          uniforms: {
+            uSunDir: this.uSunDir, uSunColor: this.uSunColor,
+            uZenith: { value: this.zenithColor },
+            uHorizon: { value: this.horizonColor },
+            uSunAng: { value: Math.max(angRad, 0.012) },
+            uAtmo: { value: this.atmo },
+            uSeed: { value: this.pp.noiseSeed },
+          },
+          vertexShader: SKY_VERT,
+          fragmentShader: SKY_FRAG,
+          side: THREE.BackSide,
+          depthWrite: false,
+        }));
+    }
     this.sky.frustumCulled = false;
     this.scene.add(this.sky);
     this._buildClouds();
@@ -1697,6 +1748,24 @@ export class SurfaceScale {
     const pp = this.pp;
     if (this.atmo < 0.5 || (pp.clouds ?? 0) < 0.22 || pp.typeId > 2) return;
     const r = new RNG(hash(pp.seed, 0xc1a0d5));
+    if (SKY) {
+      this.cumulus = makeCumulus({
+        sunDir: this.uSunDir,
+        camPos: this._uCamPos || (this._uCamPos = { value: new THREE.Vector3() }),
+        seed: pp.seed, rand: () => r.next(), tier: Q.name,
+        T: this.ctx.system?.temp ?? 5778,
+        // The lifting condensation level. Every cloud in a field shares it —
+        // they condensed out of the same air at the same dew point — which is
+        // why a real cumulus sky looks ruled along its bases, and why two
+        // independently scattered sprite layers never could.
+        base: 620 + 900 * (1 - Math.min(pp.clouds ?? 0.4, 1)),
+        amount: Math.min(Math.max((pp.clouds ?? 0.4) * 1.35, 0.12), 0.95),
+        aerialGLSL: AERIAL ? AERIAL_GLSL : '',
+        aerialUniforms: AERIAL ? this._aerialUniforms() : {},
+      });
+      this.scene.add(this.cumulus.mesh);
+      return;
+    }
     const layers = [
       { size: 520, count: 9, o: 0.5 },
       { size: 300, count: 14, o: 0.38 },
@@ -2491,6 +2560,28 @@ export class SurfaceScale {
     const dusk = Math.max(1 - Math.abs(elev - 0.02) * 5.5, 0) * this.atmo;
     this.horizonColor.copy(this._horizonBase).lerp(this._gold, dusk * 0.75);
     this.zenithColor.copy(this._zenithBase).lerp(this._duskZenith, dusk * 0.55);
+    if (this.skyDome || this.cumulus) {
+      const elevDeg = (Math.asin(Math.min(Math.max(elev, -1), 1)) * 180) / Math.PI;
+      // One wind, one drift, one clock — shared by the deck and the cirrus, so
+      // the two halves of the sky cannot disagree about the weather (§6 M3's
+      // whole point: everything that moves samples the one field). `_cw` is
+      // already computed once a frame for the grass, so the deck's wind costs
+      // nothing extra; `cloudWind()` is the fallback for the pre-M3 path.
+      const cw = this._cw || this.cloudWind();
+      this._cloudDrift = this._cloudDrift || { x: 0, y: 0 };
+      this._cloudDrift.x += cw.x * dt;
+      this._cloudDrift.y += cw.z * dt;
+      if (this.skyDome) {
+        this.skyDome.update(elevDeg, {
+          cirrusDrift: this._cloudDrift,
+          cirrusDir: { x: cw.x, y: cw.z },
+        });
+      }
+      if (this.cumulus) {
+        this.cumulus.update(elevDeg, this._cloudDrift);
+        if (this._uCamPos) this._uCamPos.value.copy(this.camera.position);
+      }
+    }
     if (this.clouds) {
       const day = Math.min(Math.max((elev + 0.15) * 3.2, 0), 1);
       for (let ci = 0; ci < this.clouds.length; ci++) {
