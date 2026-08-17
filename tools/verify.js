@@ -13,7 +13,7 @@
 // quadrature against a lookup table, finite differences against an analytic
 // derivative — and asserts the two agree.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { A_OPEN, A_START, COSMO } from '../src/cosmology.js';
 import {
   FIXTURE, STOPS, airColours, airmass, hexToLinear, linearToHex, planck,
@@ -6943,7 +6943,90 @@ function suiteShadow() {
     })(), 'noon still darkens the ground under you — it just does not point anywhere');
 }
 
+// ---------------------------------------------------------------------------
+// the empty meadow (src/flora.js)
+//
+// Three and a half million blades submitted every frame and a featureless
+// ground. The grass was never the problem: 412 chunk meshes share one material,
+// and a shared material makes `onBeforeRender` the wrong place for anything
+// that varies per mesh. `WebGLRenderer.setProgram` (r170) only calls
+// `WebGLUniforms.upload()` when it believes the material changed —
+//
+//     if ( state.useProgram( program.program ) ) refreshMaterial = true;
+//     if ( material.id !== _currentMaterialId )  refreshMaterial = true;
+//     if ( refreshMaterial || … ) WebGLUniforms.upload( … );
+//
+// — so after the first chunk of a ring, `refreshMaterial` is false forever and
+// `uChunkOrigin` is never sent again. Every chunk rendered at the first chunk's
+// origin: the whole meadow stacked on one footprint, bare ground everywhere
+// else. `instanceCount` in the same callback, four lines away, worked
+// perfectly, because `renderBufferDirect` reads it straight off the geometry
+// and it never goes through `upload()` at all.
+//
+// None of that is testable in Node. What *is* testable is the rule it produced,
+// and the rule is what stops it coming back.
+function suiteFloraUniforms() {
+  console.log('\nflora — a shared material has no per-mesh uniforms (§11)');
+
+  const flora = readFileSync(new URL('../src/flora.js', import.meta.url), 'utf8');
+
+  // --- the specific bug, so it cannot return silently ----------------------
+  // Prose may name the dead uniform — the note explaining the bug has to be
+  // allowed to say what broke. What must not exist is a declaration or an entry
+  // in a uniform block, because those are the two forms that can be written to.
+  ok('§11 · the chunk origin is no longer a uniform, in either form it could take',
+    !/uniform\s+vec2\s+uChunkOrigin/.test(flora)
+    && !/uChunkOrigin\s*:/.test(flora)
+    && !/uniforms\.uChunkOrigin/.test(flora),
+    'a name that cannot be written cannot be dropped on the way to the GPU');
+  ok('and a blade is placed from the model matrix, which three uploads every draw',
+    /modelMatrix\[3\]\.xz\s*\+\s*aRoot/.test(flora),
+    '"same material, different transform" is what a model matrix is for');
+  ok('the shader declares the model matrix it now reads',
+    /uniform\s+mat4\s+modelMatrix\s*;/.test(flora),
+    'a RawShaderMaterial gets none of three’s built-ins for free');
+  ok('and the chunk grid writes that transform once per chunk per frame',
+    /mesh\.position\.set\(gx \* chunk, 0, gz \* chunk\)/.test(flora));
+
+  // --- the general rule ----------------------------------------------------
+  // `instanceCount` is the one thing that legitimately rides in this callback.
+  // Anything else varying per mesh belongs in the transform, in an attribute,
+  // or on a material of its own.
+  const bodies = [...flora.matchAll(/onBeforeRender\s*=\s*(\([^)]*\)|\w+)\s*=>\s*(\{[\s\S]*?\n\s*\};|[^;]*;)/g)]
+    .map((m) => m[2]);
+  ok('flora’s onBeforeRender exists and is the only place instanceCount is set',
+    bodies.length === 1 && /instanceCount/.test(bodies[0]),
+    `${bodies.length} callback(s) found`);
+  ok('§11 · and it writes no material uniform, which is the rule the bug bought',
+    bodies.every((b) => !/uniforms\s*\./.test(b)),
+    bodies[0]?.replace(/\s+/g, ' ').slice(0, 96));
+
+  // --- the repo-wide allowlist ---------------------------------------------
+  // Writing a uniform in `onBeforeRender` is legitimate when the material
+  // belongs to exactly one mesh, because then `material.id` really does change
+  // between draws and three really does re-upload. `nebula.js` mints a material
+  // per mesh inside its factory, so its `uCenter` write is sound. The point of
+  // the allowlist is that a *new* one has to be looked at rather than assumed.
+  const SAFE = new Set(['nebula.js']);
+  const offenders = [];
+  for (const f of readdirSync(new URL('../src/', import.meta.url))) {
+    if (!f.endsWith('.js')) continue;
+    const src = readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8');
+    for (const m of src.matchAll(/onBeforeRender\s*=\s*(?:\([^)]*\)|\w+)\s*=>\s*(\{[\s\S]*?\n\s*\};|[^;]*;)/g)) {
+      if (/uniforms\s*\./.test(m[1]) && !SAFE.has(f)) offenders.push(f);
+    }
+  }
+  ok('§11 · no unreviewed module writes a material uniform from onBeforeRender',
+    offenders.length === 0,
+    offenders.length
+      ? `${[...new Set(offenders)].join(', ')} — if the material is per-mesh this is`
+        + ' sound and belongs in SAFE; if it is shared, the writes are being dropped'
+      : 'nebula.js allowlisted: it mints a material per mesh, so material.id changes'
+        + ' between draws and three re-uploads');
+}
+
 const suites = {
+  floraUniforms: suiteFloraUniforms,
   shadow: suiteShadow,
   climb: suiteClimb,
   conjure: suiteConjure,
