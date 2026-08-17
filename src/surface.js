@@ -2575,13 +2575,25 @@ export class SurfaceScale {
       this.walker.grounded = false;
     }
     this._climbFrac = Math.min(s.h / Math.max(this._releaseAlt, 1), 1);
-    if (!s.released) return;
+    // `gone`, not `released`.
+    //
+    // `released` is a one-frame edge and `popTo` can refuse: it returns early
+    // while another transition is in flight, and it returns early on a stack
+    // too short to pop. Consuming the edge and clearing `this.launch` before
+    // finding out whether the pop was accepted strands the body at 1435 m with
+    // the craft state already destroyed and nothing left to fire again — the
+    // latch that stops the edge firing twice is exactly what makes that
+    // unrecoverable. Reading the latch instead retries every frame until the
+    // app is free, and clearing `launch` on success is what stops it repeating.
+    if (!s.gone) return;
+    const depth = this.app.stack.length - 2;
+    if (this.app._warping || depth < 0) return;
     // §M5's gate: the camera inherits the velocity. Local frame, as `ascent.js`
     // requires — the walker's axes have +y up at the landing site by
     // construction, and `_landingDir` is that site's normal in *planet* space.
     this.app._ascentHandoff = handoff(this.vel, [0, 1, 0]);
     this.launch = null;
-    this.app.popTo(this.app.stack.length - 2);
+    this.app.popTo(depth);
   }
 
   /** advance the materialisation; call once per frame from `update()` */

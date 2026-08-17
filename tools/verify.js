@@ -6851,6 +6851,21 @@ function suiteClimb() {
   ok('§2.3 · the same craft on the same world flies the same climb, exactly',
     JSON.stringify(flyClimb(craftFor(WORLDS[2][1]), WORLDS[2][1], REL))
     === JSON.stringify(flyClimb(craftFor(WORLDS[2][1]), WORLDS[2][1], REL)));
+  // The latch is what the *caller* reads, and it is why the caller can retry.
+  // `released` is a one-frame edge; `gone` stays true. `surface.js` hands over
+  // on `gone` rather than on `released` because `popTo()` can refuse — another
+  // transition in flight, or a stack too short — and a handover that consumed
+  // its own edge before finding out would strand the body at release altitude
+  // with the craft state already cleared.
+  ok('§2.5 · the latch stays set after release, so a refused handover can retry',
+    (() => {
+      let s2 = launchState();
+      for (let i = 0; i < 60 * 200; i++) {
+        s2 = stepLaunch(s2, p, 1 / 60, REL);
+        if (s2.gone && !s2.released) return true;   // a later frame, still latched
+      }
+      return false;
+    })());
   ok('release fires exactly once, on the frame the ground lets go',
     (() => {
       let s = launchState(), fired = 0;
