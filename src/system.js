@@ -24,6 +24,7 @@ import {
   makeSurfaceMaterial, makeCloudMaterial, makeAtmosphereMaterial,
   makeRingMaterial, blackbodyRGB, NOISE_GLSL,
 } from './planet.js';
+import { vegetationHSL } from './meadow.js';
 import { planck, spectrumToXYZ, xyzToLinearSRGB, toGamut } from './starlight.js';
 
 const AU_DRAW = 46;      // display units at 1 AU
@@ -208,7 +209,29 @@ export function systemParams(starSeed) {
       case 'terrestrial':
         colA = new THREE.Color().setHSL(0.09 + hue * 0.05, 0.45, 0.32);   // soil
         colB = new THREE.Color().setHSL(0.07, 0.25, 0.55);                 // peaks
-        colC = new THREE.Color().setHSL(0.32 + hue * 0.1, 0.5, inhabited ? 0.3 : 0.22); // veg/shallows
+        // Vegetation, and it was the wrong colour on every world that has one.
+        //
+        // The range was `0.32 + hue·0.1` — HSL 115° to 151°, so green at the
+        // bottom and spring-green/teal at the top. That alone is only the cool
+        // edge of plausible; what made it turquoise on screen is that it
+        // compounds with `grassPalette()`, which rotates a blade's root 62%
+        // toward a pole with blue at 4.5× because a sward's base is lit by
+        // skylight. From a 151° base that lands the root, the hollow and half
+        // the mosaic past cyan — which is most of the mass of a distant field.
+        // `src/meadow.js` carries the full argument and the arithmetic.
+        //
+        // §3's weirdness budget is enforced here, which is where the
+        // constitution says to enforce it: "in the seed→biome function." The top
+        // 5% of the hue draw is not chlorophyll at all — teal, violet, rust —
+        // and the other 95% is green, because rarity is the mechanism by which
+        // strangeness lands.
+        //
+        // Taken from the *same* draw rather than a new one on purpose: an extra
+        // `pr.next()` here would shift every subsequent draw for the world and
+        // move its ocean level, its clouds and its ice caps along with the
+        // grass. One number, two readings, no perturbation (§2.3).
+        const veg = vegetationHSL(hue, inhabited);
+        colC = new THREE.Color().setHSL(veg.h, veg.s, veg.l);
         atmoColor = new THREE.Color(0.28, 0.5, 1.0);
         oceanLevel = pr.float(-0.05, 0.16); clouds = pr.float(0.45, 0.75); iceCap = pr.float(0.72, 0.92);
         break;

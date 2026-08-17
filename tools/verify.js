@@ -95,6 +95,7 @@ import {
 } from '../src/liminal.js';
 import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
+import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
 import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
   stepAscent,
@@ -7175,7 +7176,109 @@ function suiteEcology() {
     }), 'including a negative day, which a scrubbed clock can produce');
 }
 
+// ---------------------------------------------------------------------------
+// vegetation colour (src/meadow.js)
+//
+// Half of every inhabited world grew turquoise grass, and the reason was one
+// range: HSL 0.32–0.42, which is green at one end and cyan at the other.
+// Chlorophyll does not do that. §3 also says the weirdness budget is to be
+// enforced "in the seed→biome function" — and a rule nothing checks is a
+// preference, which is why this moved somewhere a test can reach it.
+function suiteVegetation() {
+  console.log('\nvegetation — chlorophyll is green, and strangeness is rationed (§3, §9.1)');
+
+  const hsl2rgb = (h, s, l) => {
+    const a = s * Math.min(l, 1 - l);
+    const f = (n) => {
+      const k = (n + h * 12) % 12;
+      return l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
+    };
+    return [f(0), f(8), f(4)];
+  };
+  const hueDeg = (r, g, b) => {
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    if (mx === mn) return 0;
+    let h;
+    if (mx === r) h = ((g - b) / (mx - mn)) % 6;
+    else if (mx === g) h = (b - r) / (mx - mn) + 2;
+    else h = (r - g) / (mx - mn) + 4;
+    return (h * 60 + 360) % 360;
+  };
+
+  const N = 2001;
+  const draws = Array.from({ length: N }, (_, i) => i / (N - 1));
+  const norm = draws.filter((u) => !vegetationHSL(u).weird);
+  const weird = draws.filter((u) => vegetationHSL(u).weird);
+
+  ok('§3 · the weirdness budget is 5% of worlds, not half of them',
+    Math.abs(weird.length / N - 0.05) < 0.006,
+    `${(100 * weird.length / N).toFixed(1)}% exotic · ${(100 * norm.length / N).toFixed(1)}% chlorophyll`);
+
+  // --- the actual defect: cyan grass ---------------------------------------
+  // Vegetation hue in degrees. Chlorophyll lives in 70–150°; 170°+ is teal and
+  // 190°+ is unmistakably cyan. Not one ordinary world may land there.
+  ok('§9.1 · no ordinary world grows cyan grass',
+    norm.every((u) => {
+      const v = vegetationHSL(u, true);
+      const d = hueDeg(...hsl2rgb(v.h, v.s, v.l));
+      return d >= 60 && d <= 155;
+    }),
+    (() => {
+      const ds = norm.map((u) => {
+        const v = vegetationHSL(u, true);
+        return hueDeg(...hsl2rgb(v.h, v.s, v.l));
+      });
+      return `${Math.min(...ds).toFixed(0)}°–${Math.max(...ds).toFixed(0)}°, and the`
+        + ' reference\'s own tip #C6D46B is 74°';
+    })());
+  // The honest form of the claim, after I got the arithmetic wrong once: HSL
+  // 0.42 is 151°, which is spring-green, not cyan. The old range was not
+  // turquoise *by itself* — it became turquoise by compounding with
+  // `grassPalette()`'s 4.5× blue root rotation. What is checkable here is the
+  // part that is purely about the base: the old top sat far enough toward teal
+  // that a further cool rotation had nowhere to go but past cyan.
+  ok('and the old range really did reach the teal edge — this repairs something',
+    (() => {
+      const oldTop = hueDeg(...hsl2rgb(0.32 + 1.0 * 0.1, 0.5, 0.3));
+      const newTop = hueDeg(...hsl2rgb(vegetationHSL(VEG_WEIRD).h, 0.5, 0.3));
+      return oldTop > 148 && oldTop - newTop > 30;
+    })(),
+    `old top ${hueDeg(...hsl2rgb(0.42, 0.5, 0.3)).toFixed(0)}° against a new top of `
+    + `${hueDeg(...hsl2rgb(vegetationHSL(VEG_WEIRD).h, 0.5, 0.3)).toFixed(0)}°, and the`
+    + ' root rotation adds a further cool turn on top of whichever it starts from');
+
+  // --- and the exotic ones are actually exotic -----------------------------
+  ok('§3 · the 5% are not merely a slightly different green',
+    weird.every((u) => {
+      const v = vegetationHSL(u, true);
+      const d = hueDeg(...hsl2rgb(v.h, v.s, v.l));
+      return d > 155;
+    }) && new Set(weird.map((u) => Math.round(vegetationHSL(u).h * 10))).size >= 3,
+    'teal through violet — rarity is the mechanism by which strangeness lands');
+
+  // --- monotone and total --------------------------------------------------
+  ok('the mapping is monotone across the ordinary range, so neighbours resemble neighbours',
+    (() => {
+      let prev = -1;
+      for (const u of norm) { const h = vegetationHSL(u).h; if (h < prev) return false; prev = h; }
+      return true;
+    })());
+  ok('§11 · and it is total: no draw, however malformed, escapes the palette',
+    [NaN, Infinity, -Infinity, -1, 2, undefined, null].every((u) => {
+      const v = vegetationHSL(u);
+      return Number.isFinite(v.h) && v.h >= 0 && v.h <= 1
+        && Number.isFinite(v.s) && Number.isFinite(v.l);
+    }));
+
+  ok('§2.3 · and system.js reads it rather than keeping a second copy',
+    (() => {
+      const src = readFileSync(new URL('../src/system.js', import.meta.url), 'utf8');
+      return /vegetationHSL\(hue, inhabited\)/.test(src) && !/0\.32 \+ hue \* 0\.1/.test(src);
+    })(), 'one base colour, so the green you saw from orbit is the green you walk through');
+}
+
 const suites = {
+  vegetation: suiteVegetation,
   ecology: suiteEcology,
   floraUniforms: suiteFloraUniforms,
   shadow: suiteShadow,
