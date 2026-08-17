@@ -2463,12 +2463,32 @@ export class SurfaceScale {
     };
     mats.fin.side = THREE.DoubleSide;
     for (const p of conj.parts) {
-      let geo;
+      let geo, part = p;
       if (p.kind === 'cylinder') geo = new THREE.CylinderGeometry(p.radius, p.radius, p.height, 18);
       else if (p.kind === 'cone') geo = new THREE.ConeGeometry(p.radius, p.height, 18);
-      else geo = new THREE.BoxGeometry(p.span, p.height, Math.max(p.span * 0.06, 0.2));
+      else {
+        // Fins, and two things the descriptor cannot express on its own.
+        //
+        // **The span grows outward, not through the hull.** A box of width
+        // `span` centred on the tank wall is half inside the tank: Earth's fin
+        // spans 21 m centred at radius 8.1, so it reaches 2.4 m past the far
+        // side of its own rocket. Translating the geometry so its inner edge is
+        // the origin makes `span` mean what the word means.
+        //
+        // **And it must point at the axis.** A rotation of `a` about Y sends
+        // local +x to `(cos a, 0, −sin a)`, while the descriptor places the fin
+        // at `(cos φ·R, y, sin φ·R)` — so the angle that lays the span along the
+        // radius is `−φ`, not `+φ`. With `+φ` the fins splay tangentially and
+        // only the two at φ = 0 and π look right, which is exactly the kind of
+        // thing that reads as correct from one camera angle. Taking φ from the
+        // part's own position rather than from a stored angle means the two can
+        // never disagree.
+        geo = new THREE.BoxGeometry(p.span, p.height, Math.max(p.span * 0.06, 0.2));
+        geo.translate(p.span / 2, 0, 0);
+        part = { ...p, ry: -Math.atan2(p.z, p.x) };
+      }
       const m = new THREE.Mesh(geo, mats[p.role] ?? mats.tank);
-      m.userData.part = p;
+      m.userData.part = part;
       g.add(m);
     }
     // §9.2's shadow is opt-in by layer, and a 110 m tower at a 13° sun is the
