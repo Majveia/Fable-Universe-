@@ -19,6 +19,7 @@ import { makeGalaxySkyFromWithin, makeSkyDome } from './starfield.js';
 import { softDotTexture } from './nebula.js';
 import { RNG, arand, hash } from './rng.js';
 import { snoise } from './terrain.js';
+import { ecologyAt } from './ecology.js';
 import { addLife } from './life.js';
 import { addSettlement } from './settlement.js';
 import { addWonders } from './strange.js';
@@ -1393,33 +1394,24 @@ export class PlanetScale {
   }
 
   /**
-   * Ecology: the sphere is quantized into regions, each with a
-   * deterministic carrying capacity (regional richness) and a persisted
-   * population that grows logistically between your visits. Come back in
-   * an hour and the herd has changed.
+   * Ecology: the sphere is quantised into regions, each with a deterministic
+   * carrying capacity and a population that grows logistically as the world's
+   * days pass. Let the clock run and the herd changes.
+   *
+   * It used to run on `Date.now()` and a `localStorage` population, and that
+   * broke §2.3 twice: the same seed gave a different universe depending on what
+   * time you opened the link, and a returning visitor saw a grown herd where a
+   * first-time visitor saw the base one — from the same URL, on the same day.
+   * §2.4 says every place is a URL, and part of this place was on one person's
+   * disk. `src/ecology.js` carries the argument and the arithmetic.
+   *
+   * What replaces it is strictly more than a repair. `this.days` is the same
+   * counter that seats the seasons and the same one the time lever bends, so
+   * the herd now grows *faster when you speed the clock* — which is the thing
+   * the wall clock could never do, and the thing this feature was always
+   * reaching for.
    */
-  _ecoFor(a) {
-    const q = 28;
-    const key = (hash(Math.round(a.x * q), Math.round(a.y * q), Math.round(a.z * q), this.pp.seed) >>> 0).toString(36);
-    const rng = new RNG(parseInt(key, 36) >>> 0);
-    const veg = 0.4 + 0.6 * rng.next();
-    const K = { s: Math.round(2 + veg * 7), k: Math.round(10 + veg * 30) };
-    let db = {};
-    try { db = JSON.parse(localStorage.getItem('aeon-eco-v1') || '{}'); } catch { /* fresh */ }
-    const now = Date.now();
-    let st = db[key];
-    if (!st) {
-      st = { s: Math.round(K.s * rng.float(0.35, 1)), k: Math.round(K.k * rng.float(0.35, 1)), t: now };
-    } else {
-      // logistic growth over the hours you were away, capped at a month
-      const dtH = Math.min(Math.max((now - st.t) / 3.6e6, 0), 720);
-      const grow = (n, cap) => Math.min(cap, Math.round(n + (n + 0.5) * 0.08 * dtH * (1 - n / cap)));
-      st.s = grow(st.s, K.s); st.k = grow(st.k, K.k); st.t = now;
-    }
-    db[key] = st;
-    try { localStorage.setItem('aeon-eco-v1', JSON.stringify(db)); } catch { /* full */ }
-    return { striders: st.s, skimmers: st.k, veg, key };
-  }
+  _ecoFor(a) { return ecologyAt(a, this.pp.seed, this.days); }
 
   /**
    * A biome anchor: a planet-frame group at the ground point under you,

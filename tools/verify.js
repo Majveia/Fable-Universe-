@@ -93,6 +93,7 @@ import {
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
   roomShape, sharedBits, starAt, thinDepth, thinPoint,
 } from '../src/liminal.js';
+import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
   stepAscent,
@@ -7025,7 +7026,120 @@ function suiteFloraUniforms() {
         + ' between draws and three re-uploads');
 }
 
+// ---------------------------------------------------------------------------
+// ecology (src/ecology.js)
+//
+// The herd used to be computed from `Date.now()` and a `localStorage`
+// population, which broke §2.3 in the way that is hardest to notice: nothing
+// looked wrong, the animals were there, and the number was simply different for
+// every visitor. Growth now runs on the world's own day counter, so the whole
+// thing is a pure function of (seed, region, day) and can be checked here.
+function suiteEcology() {
+  console.log('\necology — a herd is a function of the world, not of the wall (§2.3, §2.4)');
+
+  const dir = (x, y, z) => {
+    const n = Math.hypot(x, y, z) || 1;
+    return { x: x / n, y: y / n, z: z / n };
+  };
+  const HERE = dir(0.31, 0.62, -0.72);
+
+  ok('§2.3 · the same place on the same day holds the same animals, exactly',
+    JSON.stringify(ecologyAt(HERE, 4242, 137.5))
+    === JSON.stringify(ecologyAt(HERE, 4242, 137.5)));
+  // A file that deletes a determinism leak has to be allowed to *say* which
+  // leak it deleted, so the scan is of code rather than of text. Stripping
+  // comments first is the difference between a check on the program and a check
+  // on the prose — and getting that wrong twice in one session is what earned
+  // this helper a name.
+  const codeOf = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .split('\n').map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n');
+
+  ok('§2.4 · and it reads nothing off a clock or a disk — the URL carries it',
+    !/Date\.now|localStorage|performance\.now|Math\.random/.test(codeOf('ecology.js')),
+    'the two leaks this module was written to delete');
+  ok('and planetscale no longer holds either of them in its ecology',
+    !/Date\.now/.test(codeOf('planetscale.js')) && !/aeon-eco-v1/.test(codeOf('planetscale.js')),
+    'the last Date.now() in any generation path in src/');
+  // …and the sweep that makes the previous check mean something a year from now.
+  //
+  // Two files legitimately read the wall, and the allowlist is the point: a
+  // *new* one has to be argued for rather than assumed.
+  //
+  //   · `input.js` falls back to `Date.now()` only where `performance` does not
+  //     exist, and only to age the idle timer that fades the chrome. Nothing it
+  //     produces reaches a generation path.
+  //   · `main.js` stamps a logbook entry with when you were there. §4 permits
+  //     exactly that — "no persistence beyond URL + localStorage logbook" — and
+  //     a record of a visit is not part of the place visited.
+  //
+  // What is banned is what `planetscale.js` was doing: the wall deciding what is
+  // *in* the world when you arrive.
+  ok('§2.3 · no unreviewed module reads the wall clock',
+    (() => {
+      const SAFE = new Set(['clock.js', 'input.js', 'main.js']);
+      const bad = [];
+      for (const f of readdirSync(new URL('../src/', import.meta.url))) {
+        if (!f.endsWith('.js') || SAFE.has(f)) continue;
+        if (/Date\.now/.test(codeOf(f))) bad.push(f);
+      }
+      return bad.length ? bad.join(', ') : true;
+    })() === true,
+    'performance.now() survives where it measures elapsed real time — a frame'
+    + ' budget that ignored the frame would not be a budget — but a Date.now()'
+    + ' outside the three allowlisted files has no such excuse');
+
+  // --- the curve is a curve, not a ramp ------------------------------------
+  ok('a population grows toward its carrying capacity and stops there',
+    (() => {
+      let prev = -1;
+      for (let d = 0; d < 4000; d += 7) {
+        const n = ecologyAt(HERE, 4242, d).skimmers;
+        if (n < prev) return false;
+        prev = n;
+      }
+      const cap = ecologyAt(HERE, 4242, 1e6).skimmers;
+      return prev === cap && cap > 0;
+    })(), 'monotone over 4000 local days, then saturated');
+  ok('§8 axis 8 · and it never exceeds the capacity it was given',
+    (() => {
+      for (const d of [0, 1, 50, 400, 5000, 1e9]) {
+        const e = ecologyAt(HERE, 4242, d);
+        if (e.skimmers > Math.round(10 + e.veg * 30) || e.striders > Math.round(2 + e.veg * 7)) return false;
+      }
+      return true;
+    })());
+  ok('the logistic is the closed form, so it needs no previous state to step from',
+    Math.abs(logistic(1, 100, 0) - 1) < 1e-9
+    && Math.abs(logistic(1, 100, 1e6) - 100) < 1e-9
+    && logistic(1, 100, 40) > 1 && logistic(1, 100, 40) < 100,
+    'which is what deletes the localStorage the old one stepped from');
+
+  // --- regions are regions -------------------------------------------------
+  ok('different regions of one world hold different populations',
+    new Set([dir(1, 0, 0), dir(0, 1, 0), dir(0, 0, 1), dir(-1, 0, 0), dir(0.4, 0.5, 0.7)]
+      .map((d) => ecologyAt(d, 4242, 200).key)).size === 5,
+    'five directions, five keys');
+  ok('and they do not all bloom on the same afternoon',
+    (() => {
+      const at = (d) => ecologyAt(d, 4242, 300).skimmers / Math.max(ecologyAt(d, 4242, 1e6).skimmers, 1);
+      const f = [dir(1, 0, 0), dir(0, 1, 0), dir(0, 0, 1), dir(-1, 0.2, 0.3), dir(0.2, -0.9, 0.1)]
+        .map(at);
+      return Math.max(...f) - Math.min(...f) > 0.02;
+    })(), 'a seeded epoch per region — a continent that fills at once is a switch, not an ecology');
+  ok('§2.3 · and two worlds do not share one ecology',
+    ecologyAt(HERE, 1, 200).key !== ecologyAt(HERE, 2, 200).key);
+
+  ok('§11 · no day count produces a NaN or a negative herd',
+    [0, -1, -1e9, 1e12, NaN, Infinity, -Infinity].every((d) => {
+      const e = ecologyAt(HERE, 4242, d);
+      return Number.isFinite(e.striders) && Number.isFinite(e.skimmers)
+        && e.striders >= 0 && e.skimmers >= 0;
+    }), 'including a negative day, which a scrubbed clock can produce');
+}
+
 const suites = {
+  ecology: suiteEcology,
   floraUniforms: suiteFloraUniforms,
   shadow: suiteShadow,
   climb: suiteClimb,
