@@ -126,7 +126,11 @@ const DitherShader = {
       vec4 c = texture2D(tDiffuse, vUv);
       // §11's second NaN firewall: the bloom pyramid smears one bad texel over
       // a neighbourhood, and the tonemap will happily print the result
+      // NaN *and* Inf — see the note in src/bloom.js. equal() is false only
+      // for NaN, so an Inf that got this far would clamp to white with its
+      // finite neighbours around it, which is the same confetti one stage later.
       vec3 col = mix(vec3(0.0), c.rgb, vec3(equal(c.rgb, c.rgb)));
+      col = min(col, vec3(64.0));
       float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
       float d = fract(dot(gl_FragCoord.xy, vec2(0.7548776662, 0.5698402909))) - 0.5;
       col += (d / 255.0) * smoothstep(0.5 / 255.0, 2.0 / 255.0, luma);

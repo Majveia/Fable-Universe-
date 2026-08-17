@@ -9,6 +9,9 @@
 import * as THREE from 'three';
 import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
+import { growTree, tipsOf } from './tree.js';
+import { gravityOf } from './avatar.js';
+import { qInt } from './quality.js';
 
 function bladeTexture(rng) {
   const cv = document.createElement('canvas');
@@ -97,31 +100,97 @@ export function addLife(s) {
   s.scene.add(tufts);
 
   // ---------------------------------------------------------- trees ----
-  const trunkMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.07, 0.3, 0.22), roughness: 1 });
-  const canopyMat = new THREE.MeshStandardMaterial({ color: canopyColor, roughness: 0.9, flatShading: true });
+  //
+  // This was `CylinderGeometry(0.14, 0.3, 1, 5)` under `IcosahedronGeometry(1, 1)`
+  // — a five-sided stick with a faceted ball — and on a phone it read as
+  // exactly that. `src/tree.js` grows the wood instead, from the pipe model,
+  // one allometry and beam curvature; see its header for the four laws and for
+  // what AEON adds to them.
+  //
+  // One merged geometry per world rather than one mesh per tree. A grown tree
+  // is 300–900 segments and there are up to 130 of them, so instancing the
+  // *tree* is not available — but every segment is the same tapered ring, so
+  // what gets instanced is the segment, once, across every tree on the world.
+  // That is one draw call for the whole wood (§5's 900-call surface budget).
   const nTrees = Math.max(20, Math.round(130 * vegF));
-  const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.14, 0.3, 1, 5), trunkMat, nTrees);
-  const canopies = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), canopyMat, nTrees);
-  let t = 0;
-  for (let i = 0; i < 1400 && t < nTrees; i++) {
+  // §5's lever: the tier decides how much wood a tree may spend, and `tree.js`
+  // spends it thickest-first so a low tier gets a smaller tree rather than a
+  // half-drawn one.
+  const budget = qInt('twig', 'shadowRes') > 1500 ? 520 : 240;
+  const gwork = gravityOf(s.pp);
+  // trunk + branch: one tapered unit ring, instanced per segment
+  const segGeo = new THREE.CylinderGeometry(1, 1, 1, 5, 1, true);
+  segGeo.translate(0, 0.5, 0);            // origin at the base, so a segment is a bone
+  const barkMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color().setHSL(0.07, 0.3, 0.22), roughness: 1, flatShading: true,
+  });
+  const canopyMat = new THREE.MeshStandardMaterial({
+    color: canopyColor, roughness: 0.9, flatShading: true,
+  });
+
+  const sites = [];
+  for (let i = 0; i < 1400 && sites.length < nTrees; i++) {
     const x = r.float(-EXT / 2, EXT / 2), z = r.float(-EXT / 2, EXT / 2);
     const h = dryland(x, z);
     if (h === null) continue;
-    const height = r.float(5, 13);
-    d.position.set(x, h + height / 2, z);
-    d.rotation.set(0, r.float(0, 6.28), r.float(-0.06, 0.06));
-    d.scale.set(1, height, 1);
-    d.updateMatrix();
-    trunks.setMatrixAt(t, d.matrix);
-    d.position.y = h + height * r.float(0.85, 1.05);
-    const cw = r.float(2.2, 4.6);
-    d.scale.set(cw, cw * r.float(0.5, 1.2), cw);
-    d.updateMatrix();
-    canopies.setMatrixAt(t, d.matrix);
-    t++;
+    sites.push({ x, y: h, z, height: r.float(5, 13), yaw: r.float(0, 6.28), seed: r.int(1, 1e9) });
   }
-  trunks.count = t; canopies.count = t;
-  s.scene.add(trunks); s.scene.add(canopies);
+
+  // grow them all first, so the instance count is known before the buffer is
+  const grown = sites.map((p) => growTree({
+    seed: p.seed, gravity: gwork, height: p.height, budget,
+  }));
+  const segTotal = grown.reduce((a, t) => a + t.segments, 0);
+  const wood = new THREE.InstancedMesh(segGeo, barkMat, Math.max(segTotal, 1));
+  const tipsAll = [];
+  const woodUp = new THREE.Vector3(0, 1, 0);
+  const woodDir = new THREE.Vector3();
+  const woodQ = new THREE.Quaternion();
+  let w = 0;
+  for (let ti = 0; ti < grown.length; ti++) {
+    const t = grown[ti], p = sites[ti];
+    const sy = Math.sin(p.yaw), cy = Math.cos(p.yaw);
+    const g2 = t.seg;
+    for (let i = 0; i < t.segments; i++) {
+      // the tree's own frame, rotated into the world by the trunk's yaw
+      const ax = g2.x0[i] * cy - g2.z0[i] * sy, az = g2.x0[i] * sy + g2.z0[i] * cy;
+      const bx = g2.x1[i] * cy - g2.z1[i] * sy, bz = g2.x1[i] * sy + g2.z1[i] * cy;
+      woodDir.set(bx - ax, g2.y1[i] - g2.y0[i], bz - az);
+      const len = woodDir.length() || 1e-4;
+      woodQ.setFromUnitVectors(woodUp, woodDir.divideScalar(len));
+      const rr = (g2.r0[i] + g2.r1[i]) * 0.5;
+      d.position.set(p.x + ax, p.y + g2.y0[i], p.z + az);
+      d.quaternion.copy(woodQ);
+      d.scale.set(rr, len, rr);
+      d.updateMatrix();
+      wood.setMatrixAt(w++, d.matrix);
+    }
+    for (const tip of tipsOf(t, 0.018)) {
+      const tx = tip.x * cy - tip.z * sy, tz = tip.x * sy + tip.z * cy;
+      tipsAll.push(p.x + tx, p.y + tip.y, p.z + tz);
+    }
+  }
+  wood.count = w;
+  wood.instanceMatrix.needsUpdate = true;
+  s.scene.add(wood);
+
+  // Foliage hangs on the tips the wood actually ended at, rather than being a
+  // ball centred above a stick. That is the whole difference between a canopy
+  // and a hat: the outline of the leaves is the outline of the branching.
+  if (tipsAll.length) {
+    const leafGeo = new THREE.IcosahedronGeometry(1, 0);
+    const leaves = new THREE.InstancedMesh(leafGeo, canopyMat, tipsAll.length / 3);
+    for (let i = 0, n = tipsAll.length / 3; i < n; i++) {
+      const cw = r.float(0.55, 1.15);
+      d.position.set(tipsAll[i * 3], tipsAll[i * 3 + 1], tipsAll[i * 3 + 2]);
+      d.rotation.set(r.float(0, 3.1), r.float(0, 6.28), 0);
+      d.scale.set(cw, cw * r.float(0.6, 0.95), cw);
+      d.updateMatrix();
+      leaves.setMatrixAt(i, d.matrix);
+    }
+    leaves.instanceMatrix.needsUpdate = true;
+    s.scene.add(leaves);
+  }
 
   // ---------------------------------------------------------- groves ----
   // the lone trees were scouts; these are the woods they were scouting

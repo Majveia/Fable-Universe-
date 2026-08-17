@@ -24,6 +24,7 @@ import {
   makeSurfaceMaterial, makeCloudMaterial, makeAtmosphereMaterial,
   makeRingMaterial, blackbodyRGB, NOISE_GLSL,
 } from './planet.js';
+import { vegetationHSL } from './meadow.js';
 import { planck, spectrumToXYZ, xyzToLinearSRGB, toGamut } from './starlight.js';
 
 const AU_DRAW = 46;      // display units at 1 AU
@@ -208,7 +209,29 @@ export function systemParams(starSeed) {
       case 'terrestrial':
         colA = new THREE.Color().setHSL(0.09 + hue * 0.05, 0.45, 0.32);   // soil
         colB = new THREE.Color().setHSL(0.07, 0.25, 0.55);                 // peaks
-        colC = new THREE.Color().setHSL(0.32 + hue * 0.1, 0.5, inhabited ? 0.3 : 0.22); // veg/shallows
+        // Vegetation, and it was the wrong colour on every world that has one.
+        //
+        // The range was `0.32 + hue·0.1` — HSL 115° to 151°, so green at the
+        // bottom and spring-green/teal at the top. That alone is only the cool
+        // edge of plausible; what made it turquoise on screen is that it
+        // compounds with `grassPalette()`, which rotates a blade's root 62%
+        // toward a pole with blue at 4.5× because a sward's base is lit by
+        // skylight. From a 151° base that lands the root, the hollow and half
+        // the mosaic past cyan — which is most of the mass of a distant field.
+        // `src/meadow.js` carries the full argument and the arithmetic.
+        //
+        // §3's weirdness budget is enforced here, which is where the
+        // constitution says to enforce it: "in the seed→biome function." The top
+        // 5% of the hue draw is not chlorophyll at all — teal, violet, rust —
+        // and the other 95% is green, because rarity is the mechanism by which
+        // strangeness lands.
+        //
+        // Taken from the *same* draw rather than a new one on purpose: an extra
+        // `pr.next()` here would shift every subsequent draw for the world and
+        // move its ocean level, its clouds and its ice caps along with the
+        // grass. One number, two readings, no perturbation (§2.3).
+        const veg = vegetationHSL(hue, inhabited);
+        colC = new THREE.Color().setHSL(veg.h, veg.s, veg.l);
         atmoColor = new THREE.Color(0.28, 0.5, 1.0);
         oceanLevel = pr.float(-0.05, 0.16); clouds = pr.float(0.45, 0.75); iceCap = pr.float(0.72, 0.92);
         break;
@@ -703,6 +726,8 @@ const DUST_FRAG = /* glsl */`
   uniform float uOuterDraw;
   uniform float uFlatAU;     // the turnover, in *true* AU
   uniform float uBandAU;     // asteroid-belt dust band centre, true AU; 0 = none
+  uniform vec3  uEmber;      // the sublimation ring's own colour, ~1500 K
+  uniform float uEmberGain;
   uniform float uSeed;
   in vec3 vW;
   in float vR;
@@ -721,11 +746,31 @@ const DUST_FRAG = /* glsl */`
     // dust-free zone. One monotone fade from the sublimation radius to where
     // the cloud starts obeying its power law.
     float inner = smoothstep(uSubDraw, uFlatDraw, r);
+
+    // …and the hole that fade leaves is wrong, because the dust-free zone is
+    // not where the dust is dimmest — it is the edge of where the dust is
+    // *hottest*. Grains just outside the sublimation radius sit at the
+    // sublimation temperature itself, around 1500 K, and radiate: this is the
+    // inner F-corona, and it is a real, observed, deep-orange ring.
+    //
+    // The previous commit made the inner fade monotone to stop it reading as
+    // two dark lobes flanking the star. It still read as two dark lobes,
+    // because a monotone fade to nothing is still nothing — the fade was never
+    // the fault. What was missing is the emission that belongs there.
+    //
+    // Thermal, so it does not go through the phase function or the path length:
+    // this is dust glowing, not dust scattering, and it is isotropic. Peaked at
+    // the sublimation radius and falling with an e-folding of 1.8 r_sub, which
+    // is the scale over which T drops from 1500 K to where σT⁴ stops mattering.
+    float ember = exp(-max(r - uSubDraw, 0.0) / max(uSubDraw * 1.8, 1e-4))
+                * smoothstep(uSubDraw * 0.62, uSubDraw, r);
     // A long outer fade, because a short one is a *rim*: at 0.72 the cloud was
     // still bright where it started fading, so the edge of the mesh drew a
     // horizon line across the frame and the plane read as a solid table.
     float outer = 1.0 - smoothstep(uOuterDraw * 0.30, uOuterDraw, r);
-    if (inner * outer < 1e-4) discard;
+    // the ember lives where inner is zero by construction, so the early-out
+    // has to ask about both or it discards the very thing it was added for
+    if ((inner + ember) * outer < 1e-4) discard;
 
     // True AU, not draw units. drawR() compresses orbital radius by au^0.62
     // for the frame; reading that compressed number into a power law silently
@@ -786,7 +831,10 @@ const DUST_FRAG = /* glsl */`
     // the forward lobe brightens the plane instead of clipping it
     float boost = min(path * hg, 9.0);
     float b = col * boost * grain * uGain * inner * outer;
-    vec3 c = tint * b;
+    // scattered starlight plus the ring's own thermal emission. Two different
+    // physical processes, added rather than blended, because that is what they
+    // do — and the grain texture rides both so the ring is not a clean annulus.
+    vec3 c = tint * b + uEmber * (ember * outer * grain * uEmberGain);
     c = mix(vec3(0.0), c, vec3(equal(c, c)));
     fragColor = vec4(clamp(c, 0.0, 4.0), 1.0);
   }
@@ -1244,6 +1292,18 @@ export class SystemScale {
         // and monotone either way. These two are physics, so they are AU.
         uFlatAU: { value: rSub * 6 },
         uBandAU: { value: P.belt ? P.belt.a : 0 },
+        // The sublimation ring, ~1500 K — the temperature at which silicate
+        // grains stop existing, so it is the same number that sets `rSub` and
+        // not a colour anyone picked. It is deliberately *not* the star's
+        // colour: this is the dust's own light, and a blue giant's inner ring
+        // is the same orange as a red dwarf's because both are 1500 K grains.
+        uEmber: { value: (() => {
+          const c = blackbodyRGB(1500);
+          return new THREE.Vector3(c.r, c.g, c.b);
+        })() },
+        // scaled by the same compressed luminosity the scattered term uses, so
+        // a brighter star drives a brighter ring without either one running away
+        uEmberGain: { value: 0.34 * Math.min(Math.max(Math.pow(Math.max(P.lum, 1e-4), 1 / 3), 0.34), 3.4) },
         uSeed: { value: (hash(P.seed, 0xd057) >>> 8) / 65536 },
       },
       vertexShader: DUST_VERT,

@@ -32,6 +32,7 @@ import { input, jumpHeld } from './input.js';
 import { GAIT, gravityOf } from './avatar.js';
 import { Figure } from './figure.js';
 import { contactShadow, lightFor } from './paint.js';
+import { exposureFor, skyLux } from './night.js';
 import { SHADOW_GLSL, markCaster } from './shadow.js';
 
 /**
@@ -564,7 +565,12 @@ export function addTraveler(s) {
       lightT += dt;
       if (lightT > 0.25) {
         lightT = 0;
-        figure.setLight(lightFor(starT, Math.max(sunElev(), 0.5), true));
+        // …and how much of it there is. `exposureFor(skyLux(elev))` is the same
+        // lever the terrain takes, so the figure darkens into dusk with the
+        // ground it is standing on instead of staying at noon or, as it did
+        // until now, at zero.
+        figure.setLight(lightFor(starT, Math.max(sunElev(), 0.5), true),
+          exposureFor(skyLux((Math.asin(Math.min(Math.max(s.uSunDir.value.y, -1), 1)) * 180) / Math.PI)));
       }
 
       // the lantern rides the hand the gait is already swinging

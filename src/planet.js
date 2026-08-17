@@ -40,14 +40,31 @@ import * as THREE from 'three';
 // construction, so flipping it does not move the value. The fragility suite
 // confirms it: a one-ULP input perturbation moves nothing.
 //
-// What this is **not** is a change to the noise. src/terrain.js computes the
-// same chain in float64, which is exact at these magnitudes — checked against
-// the integer form over -5000..5000 with zero disagreements — so the integer
-// path reproduces the CPU port's values rather than diverging from them. The
-// shader is the side that has been wrong.
+// **Now default-on**; `?intnoise=0` restores the float path exactly (§2.4).
+//
+// The paragraph that used to stand here said this was "not a change to the
+// noise" — that `src/terrain.js` computes the same chain in float64 and had
+// been "checked against the integer form over -5000..5000 with zero
+// disagreements", so the shader was the only wrong side. **That is false, and
+// it is why the flip sat unmade for so long.** Measured over 200,000 samples:
+//
+//     snoise, float64 vs integer   33,001 of 200,000 differ · max |Δ| 1.85
+//     planetHeight                 39,973 of  50,000 differ · max |Δ| 0.70
+//
+// The zero-disagreement claim is true of the *permutation* chain, where float64
+// represents those integers exactly. It was never true of the gradient sign,
+// which is what this flag actually controls, and the two got conflated.
+//
+// So the flip does move every world — 5.4–7.3% of a sphere changes which side
+// of sea level it is on. It lands anyway, because §2.7 is an invariant and the
+// alternative is shipping a universe where the coast you see from orbit is not
+// the coast you walk. `14 − |4x−13| − |4y−13| ≤ 0` is exact integer arithmetic
+// and gives one answer on both sides; `1 − |gx| − |gy| ≤ 0` is a float compare
+// that lands differently in float32 and float64 at the seven cells where it is
+// exactly zero. One of those is a decision and the other is a coin.
 const INT_NOISE = (() => {
-  try { return new URL(window.location.href).searchParams.get('intnoise') === '1'; }
-  catch { return false; }
+  try { return new URL(window.location.href).searchParams.get('intnoise') !== '0'; }
+  catch { return true; }
 })();
 
 const PERM_FLOAT = /* glsl */`

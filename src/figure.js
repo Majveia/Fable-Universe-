@@ -882,9 +882,29 @@ export class Figure {
     this.geometry = g;
 
     const v3 = (c) => ({ value: new THREE.Vector3(c[0], c[1], c[2]) });
+    // Four colours and the *fifth* uniform §9.2 needs, which was missing.
+    //
+    // `PAINT_GLSL` ends `return col * uPaintExposure;` — the one lever that says
+    // how much light there is, as opposed to what colour it is. This block
+    // declared the four colours and not the exposure, and an unprovided uniform
+    // is **zero** in WebGL. So `paint()` returned `col * 0` for every fragment
+    // of the figure, and the traveler rendered as a pure black cutout: a
+    // perfect silhouette with no light information on it anywhere, which is a
+    // §M2 gate failure in the words the gate uses.
+    //
+    // It was invisible as a bug because a hooded figure in a long coat is
+    // *supposed* to read dark, and because the one place that does set this
+    // uniform — `surface.js`'s terrain — only runs under `?paint=1`, so
+    // grepping for it found a caller and stopped.
+    //
+    // Defaulted to 1 rather than left for the caller: a figure lit at full
+    // daylight is wrong at midnight, but a figure multiplied by zero is wrong
+    // always, and only one of those two failures is recoverable by a caller
+    // that forgets. `setLight()` takes the real value every quarter second.
     this.lightU = {
       uPaintSun: v3(light.sun), uPaintAmbSky: v3(light.ambSky),
       uPaintAmbGnd: v3(light.ambGnd), uPaintShadowTint: v3(light.shadowTint),
+      uPaintExposure: { value: 1 },
     };
     this.uGlow = { value: 0.4 };
     this.uWet = { value: 0 };
@@ -957,12 +977,16 @@ export class Figure {
     this.material.dispose();
   }
 
-  /** §9.2's four light colours, as the sun moves */
-  setLight(L) {
+  /** §9.2's four light colours and its exposure, as the sun moves */
+  setLight(L, exposure) {
     this.lightU.uPaintSun.value.set(L.sun[0], L.sun[1], L.sun[2]);
     this.lightU.uPaintAmbSky.value.set(L.ambSky[0], L.ambSky[1], L.ambSky[2]);
     this.lightU.uPaintAmbGnd.value.set(L.ambGnd[0], L.ambGnd[1], L.ambGnd[2]);
     this.lightU.uPaintShadowTint.value.set(L.shadowTint[0], L.shadowTint[1], L.shadowTint[2]);
+    // How much light there is, which is a different question from what colour
+    // it is — and the one the figure was answering with zero. Optional so a
+    // caller that only has colours cannot make it worse than it already was.
+    if (Number.isFinite(exposure)) this.lightU.uPaintExposure.value = Math.max(exposure, 0);
   }
 
   /**

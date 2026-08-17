@@ -13,7 +13,7 @@
 // quadrature against a lookup table, finite differences against an analytic
 // derivative — and asserts the two agree.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { A_OPEN, A_START, COSMO } from '../src/cosmology.js';
 import {
   FIXTURE, STOPS, airColours, airmass, hexToLinear, linearToHex, planck,
@@ -93,6 +93,11 @@ import {
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
   roomShape, sharedBits, starAt, thinDepth, thinPoint,
 } from '../src/liminal.js';
+import { snoise } from '../src/terrain.js';
+import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
+import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
+import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
+import { SPECIES, communityOf, densityAt, scatterChunk, tolerance } from '../src/scatter.js';
 import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
   stepAscent,
@@ -1667,17 +1672,53 @@ const only = process.argv[2];
 // rather than one copy each: the walk suite asserts that a body never
 // penetrates *this* ground, which is only a meaningful claim while both suites
 // are talking about the same terrain.
+// Re-taken once, deliberately, when `?intnoise` flipped to default-on and the
+// gradient table's sign became exact. That is the *only* legitimate reason to
+// move a number in this table, and the shift it produced is recorded so the
+// size of it is auditable: the coastal shelf moved 0.11% and the mountainous
+// world 0.08%, both well inside their own relief. A golden that drifts by
+// accident is the fault this fixture exists to catch; a golden re-taken with
+// the commit that moved it, and the movement measured, is the fixture working.
 const WORLDS = [
-  { label: 'coastal shelf', relief: 24.4, sum: -10717.5872,
+  { label: 'coastal shelf', relief: 24.4, sum: -10729.0949,
     dir: [0.31, 0.62, 0.72],
     pp: { seed: 0x5eed1337, typeId: 1, noiseSeed: 424242, oceanLevel: 0.012, radiusE: 1.04 } },
-  { label: 'mountainous world', relief: 764.6, sum: 189612.3066,
+  { label: 'mountainous world', relief: 764.4, sum: 189458.0566,
     dir: [0.1, 0.9, 0.42],
     pp: { seed: 0x5eed1337, typeId: 0, noiseSeed: 7777, oceanLevel: -1, radiusE: 0.55 } },
 ];
 
 function suiteGround() {
   console.log('\nground — the one definition of the walkable ground (§2.7, §2.3)');
+
+  // --- §2.7's actual mechanism, not a proxy for it -------------------------
+  // The invariant is that the coast you see from orbit is the coast you walk,
+  // and the thing that broke it was one comparison. `1 − |gx| − |gy| ≤ 0` is a
+  // float compare, and at the seven gradient cells where it is exactly zero,
+  // float32 and float64 pick opposite signs — so the GLSL and the CPU port
+  // disagreed on the gradient, and therefore on the height, and therefore on
+  // land versus sea. `14 − |4x−13| − |4y−13| ≤ 0` is the same test between
+  // integers, which do not round, so both sides get one answer by construction.
+  //
+  // This checks the two are genuinely different functions — because if they
+  // were not, the flip would have been free and the fixture above would not
+  // have moved — and that the default is now the exact one.
+  ok('§2.7 · the shipped noise decides the gradient sign in integers',
+    snoise(0.3, -1.7, 2.2) === snoise(0.3, -1.7, 2.2, true),
+    'so the shader and the CPU port cannot land on opposite sides of a zero');
+  ok('and it is a real change, which is why the goldens above moved',
+    (() => {
+      let differ = 0;
+      let s = 12345;
+      const r = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+      for (let i = 0; i < 20000; i++) {
+        const x = (r() - 0.5) * 4000, y = (r() - 0.5) * 4000, z = (r() - 0.5) * 4000;
+        if (Math.abs(snoise(x, y, z, false) - snoise(x, y, z, true)) > 1e-12) differ++;
+      }
+      return differ > 2000 && differ < 6000;
+    })(),
+    'about 16% of samples — the file it replaced claimed zero, and that claim'
+    + ' was about the permutation chain rather than the gradient');
 
   for (const w of WORLDS) {
     const g = makeGround(w.pp, w.dir);
@@ -6812,6 +6853,21 @@ function suiteClimb() {
   ok('§2.3 · the same craft on the same world flies the same climb, exactly',
     JSON.stringify(flyClimb(craftFor(WORLDS[2][1]), WORLDS[2][1], REL))
     === JSON.stringify(flyClimb(craftFor(WORLDS[2][1]), WORLDS[2][1], REL)));
+  // The latch is what the *caller* reads, and it is why the caller can retry.
+  // `released` is a one-frame edge; `gone` stays true. `surface.js` hands over
+  // on `gone` rather than on `released` because `popTo()` can refuse — another
+  // transition in flight, or a stack too short — and a handover that consumed
+  // its own edge before finding out would strand the body at release altitude
+  // with the craft state already cleared.
+  ok('§2.5 · the latch stays set after release, so a refused handover can retry',
+    (() => {
+      let s2 = launchState();
+      for (let i = 0; i < 60 * 200; i++) {
+        s2 = stepLaunch(s2, p, 1 / 60, REL);
+        if (s2.gone && !s2.released) return true;   // a later frame, still latched
+      }
+      return false;
+    })());
   ok('release fires exactly once, on the frame the ground lets go',
     (() => {
       let s = launchState(), fired = 0;
@@ -6943,7 +6999,667 @@ function suiteShadow() {
     })(), 'noon still darkens the ground under you — it just does not point anywhere');
 }
 
+// ---------------------------------------------------------------------------
+// the empty meadow (src/flora.js)
+//
+// Three and a half million blades submitted every frame and a featureless
+// ground. The grass was never the problem: 412 chunk meshes share one material,
+// and a shared material makes `onBeforeRender` the wrong place for anything
+// that varies per mesh. `WebGLRenderer.setProgram` (r170) only calls
+// `WebGLUniforms.upload()` when it believes the material changed —
+//
+//     if ( state.useProgram( program.program ) ) refreshMaterial = true;
+//     if ( material.id !== _currentMaterialId )  refreshMaterial = true;
+//     if ( refreshMaterial || … ) WebGLUniforms.upload( … );
+//
+// — so after the first chunk of a ring, `refreshMaterial` is false forever and
+// `uChunkOrigin` is never sent again. Every chunk rendered at the first chunk's
+// origin: the whole meadow stacked on one footprint, bare ground everywhere
+// else. `instanceCount` in the same callback, four lines away, worked
+// perfectly, because `renderBufferDirect` reads it straight off the geometry
+// and it never goes through `upload()` at all.
+//
+// None of that is testable in Node. What *is* testable is the rule it produced,
+// and the rule is what stops it coming back.
+function suiteFloraUniforms() {
+  console.log('\nflora — a shared material has no per-mesh uniforms (§11)');
+
+  const flora = readFileSync(new URL('../src/flora.js', import.meta.url), 'utf8');
+
+  // --- the specific bug, so it cannot return silently ----------------------
+  // Prose may name the dead uniform — the note explaining the bug has to be
+  // allowed to say what broke. What must not exist is a declaration or an entry
+  // in a uniform block, because those are the two forms that can be written to.
+  ok('§11 · the chunk origin is no longer a uniform, in either form it could take',
+    !/uniform\s+vec2\s+uChunkOrigin/.test(flora)
+    && !/uChunkOrigin\s*:/.test(flora)
+    && !/uniforms\.uChunkOrigin/.test(flora),
+    'a name that cannot be written cannot be dropped on the way to the GPU');
+  ok('and a blade is placed from the model matrix, which three uploads every draw',
+    /modelMatrix\[3\]\.xz\s*\+\s*aRoot/.test(flora),
+    '"same material, different transform" is what a model matrix is for');
+  ok('the shader declares the model matrix it now reads',
+    /uniform\s+mat4\s+modelMatrix\s*;/.test(flora),
+    'a RawShaderMaterial gets none of three’s built-ins for free');
+  ok('and the chunk grid writes that transform once per chunk per frame',
+    /mesh\.position\.set\(gx \* chunk, 0, gz \* chunk\)/.test(flora));
+
+  // --- the general rule ----------------------------------------------------
+  // `instanceCount` is the one thing that legitimately rides in this callback.
+  // Anything else varying per mesh belongs in the transform, in an attribute,
+  // or on a material of its own.
+  const bodies = [...flora.matchAll(/onBeforeRender\s*=\s*(\([^)]*\)|\w+)\s*=>\s*(\{[\s\S]*?\n\s*\};|[^;]*;)/g)]
+    .map((m) => m[2]);
+  ok('flora’s onBeforeRender exists and is the only place instanceCount is set',
+    bodies.length === 1 && /instanceCount/.test(bodies[0]),
+    `${bodies.length} callback(s) found`);
+  ok('§11 · and it writes no material uniform, which is the rule the bug bought',
+    bodies.every((b) => !/uniforms\s*\./.test(b)),
+    bodies[0]?.replace(/\s+/g, ' ').slice(0, 96));
+
+  // --- the repo-wide allowlist ---------------------------------------------
+  // Writing a uniform in `onBeforeRender` is legitimate when the material
+  // belongs to exactly one mesh, because then `material.id` really does change
+  // between draws and three really does re-upload. `nebula.js` mints a material
+  // per mesh inside its factory, so its `uCenter` write is sound. The point of
+  // the allowlist is that a *new* one has to be looked at rather than assumed.
+  const SAFE = new Set(['nebula.js']);
+  const offenders = [];
+  for (const f of readdirSync(new URL('../src/', import.meta.url))) {
+    if (!f.endsWith('.js')) continue;
+    const src = readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8');
+    for (const m of src.matchAll(/onBeforeRender\s*=\s*(?:\([^)]*\)|\w+)\s*=>\s*(\{[\s\S]*?\n\s*\};|[^;]*;)/g)) {
+      if (/uniforms\s*\./.test(m[1]) && !SAFE.has(f)) offenders.push(f);
+    }
+  }
+  ok('§11 · no unreviewed module writes a material uniform from onBeforeRender',
+    offenders.length === 0,
+    offenders.length
+      ? `${[...new Set(offenders)].join(', ')} — if the material is per-mesh this is`
+        + ' sound and belongs in SAFE; if it is shared, the writes are being dropped'
+      : 'nebula.js allowlisted: it mints a material per mesh, so material.id changes'
+        + ' between draws and three re-uploads');
+}
+
+// ---------------------------------------------------------------------------
+// ecology (src/ecology.js)
+//
+// The herd used to be computed from `Date.now()` and a `localStorage`
+// population, which broke §2.3 in the way that is hardest to notice: nothing
+// looked wrong, the animals were there, and the number was simply different for
+// every visitor. Growth now runs on the world's own day counter, so the whole
+// thing is a pure function of (seed, region, day) and can be checked here.
+function suiteEcology() {
+  console.log('\necology — a herd is a function of the world, not of the wall (§2.3, §2.4)');
+
+  const dir = (x, y, z) => {
+    const n = Math.hypot(x, y, z) || 1;
+    return { x: x / n, y: y / n, z: z / n };
+  };
+  const HERE = dir(0.31, 0.62, -0.72);
+
+  ok('§2.3 · the same place on the same day holds the same animals, exactly',
+    JSON.stringify(ecologyAt(HERE, 4242, 137.5))
+    === JSON.stringify(ecologyAt(HERE, 4242, 137.5)));
+  // A file that deletes a determinism leak has to be allowed to *say* which
+  // leak it deleted, so the scan is of code rather than of text. Stripping
+  // comments first is the difference between a check on the program and a check
+  // on the prose — and getting that wrong twice in one session is what earned
+  // this helper a name.
+  const codeOf = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .split('\n').map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n');
+
+  ok('§2.4 · and it reads nothing off a clock or a disk — the URL carries it',
+    !/Date\.now|localStorage|performance\.now|Math\.random/.test(codeOf('ecology.js')),
+    'the two leaks this module was written to delete');
+  ok('and planetscale no longer holds either of them in its ecology',
+    !/Date\.now/.test(codeOf('planetscale.js')) && !/aeon-eco-v1/.test(codeOf('planetscale.js')),
+    'the last Date.now() in any generation path in src/');
+  // …and the sweep that makes the previous check mean something a year from now.
+  //
+  // Two files legitimately read the wall, and the allowlist is the point: a
+  // *new* one has to be argued for rather than assumed.
+  //
+  //   · `input.js` falls back to `Date.now()` only where `performance` does not
+  //     exist, and only to age the idle timer that fades the chrome. Nothing it
+  //     produces reaches a generation path.
+  //   · `main.js` stamps a logbook entry with when you were there. §4 permits
+  //     exactly that — "no persistence beyond URL + localStorage logbook" — and
+  //     a record of a visit is not part of the place visited.
+  //
+  // What is banned is what `planetscale.js` was doing: the wall deciding what is
+  // *in* the world when you arrive.
+  ok('§2.3 · no unreviewed module reads the wall clock',
+    (() => {
+      const SAFE = new Set(['clock.js', 'input.js', 'main.js']);
+      const bad = [];
+      for (const f of readdirSync(new URL('../src/', import.meta.url))) {
+        if (!f.endsWith('.js') || SAFE.has(f)) continue;
+        if (/Date\.now/.test(codeOf(f))) bad.push(f);
+      }
+      return bad.length ? bad.join(', ') : true;
+    })() === true,
+    'performance.now() survives where it measures elapsed real time — a frame'
+    + ' budget that ignored the frame would not be a budget — but a Date.now()'
+    + ' outside the three allowlisted files has no such excuse');
+
+  // --- the curve is a curve, not a ramp ------------------------------------
+  ok('a population grows toward its carrying capacity and stops there',
+    (() => {
+      let prev = -1;
+      for (let d = 0; d < 4000; d += 7) {
+        const n = ecologyAt(HERE, 4242, d).skimmers;
+        if (n < prev) return false;
+        prev = n;
+      }
+      const cap = ecologyAt(HERE, 4242, 1e6).skimmers;
+      return prev === cap && cap > 0;
+    })(), 'monotone over 4000 local days, then saturated');
+  ok('§8 axis 8 · and it never exceeds the capacity it was given',
+    (() => {
+      for (const d of [0, 1, 50, 400, 5000, 1e9]) {
+        const e = ecologyAt(HERE, 4242, d);
+        if (e.skimmers > Math.round(10 + e.veg * 30) || e.striders > Math.round(2 + e.veg * 7)) return false;
+      }
+      return true;
+    })());
+  ok('the logistic is the closed form, so it needs no previous state to step from',
+    Math.abs(logistic(1, 100, 0) - 1) < 1e-9
+    && Math.abs(logistic(1, 100, 1e6) - 100) < 1e-9
+    && logistic(1, 100, 40) > 1 && logistic(1, 100, 40) < 100,
+    'which is what deletes the localStorage the old one stepped from');
+
+  // --- regions are regions -------------------------------------------------
+  ok('different regions of one world hold different populations',
+    new Set([dir(1, 0, 0), dir(0, 1, 0), dir(0, 0, 1), dir(-1, 0, 0), dir(0.4, 0.5, 0.7)]
+      .map((d) => ecologyAt(d, 4242, 200).key)).size === 5,
+    'five directions, five keys');
+  ok('and they do not all bloom on the same afternoon',
+    (() => {
+      const at = (d) => ecologyAt(d, 4242, 300).skimmers / Math.max(ecologyAt(d, 4242, 1e6).skimmers, 1);
+      const f = [dir(1, 0, 0), dir(0, 1, 0), dir(0, 0, 1), dir(-1, 0.2, 0.3), dir(0.2, -0.9, 0.1)]
+        .map(at);
+      return Math.max(...f) - Math.min(...f) > 0.02;
+    })(), 'a seeded epoch per region — a continent that fills at once is a switch, not an ecology');
+  ok('§2.3 · and two worlds do not share one ecology',
+    ecologyAt(HERE, 1, 200).key !== ecologyAt(HERE, 2, 200).key);
+
+  ok('§11 · no day count produces a NaN or a negative herd',
+    [0, -1, -1e9, 1e12, NaN, Infinity, -Infinity].every((d) => {
+      const e = ecologyAt(HERE, 4242, d);
+      return Number.isFinite(e.striders) && Number.isFinite(e.skimmers)
+        && e.striders >= 0 && e.skimmers >= 0;
+    }), 'including a negative day, which a scrubbed clock can produce');
+}
+
+// ---------------------------------------------------------------------------
+// vegetation colour (src/meadow.js)
+//
+// Half of every inhabited world grew turquoise grass, and the reason was one
+// range: HSL 0.32–0.42, which is green at one end and cyan at the other.
+// Chlorophyll does not do that. §3 also says the weirdness budget is to be
+// enforced "in the seed→biome function" — and a rule nothing checks is a
+// preference, which is why this moved somewhere a test can reach it.
+function suiteVegetation() {
+  console.log('\nvegetation — chlorophyll is green, and strangeness is rationed (§3, §9.1)');
+
+  const hsl2rgb = (h, s, l) => {
+    const a = s * Math.min(l, 1 - l);
+    const f = (n) => {
+      const k = (n + h * 12) % 12;
+      return l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
+    };
+    return [f(0), f(8), f(4)];
+  };
+  const hueDeg = (r, g, b) => {
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    if (mx === mn) return 0;
+    let h;
+    if (mx === r) h = ((g - b) / (mx - mn)) % 6;
+    else if (mx === g) h = (b - r) / (mx - mn) + 2;
+    else h = (r - g) / (mx - mn) + 4;
+    return (h * 60 + 360) % 360;
+  };
+
+  const N = 2001;
+  const draws = Array.from({ length: N }, (_, i) => i / (N - 1));
+  const norm = draws.filter((u) => !vegetationHSL(u).weird);
+  const weird = draws.filter((u) => vegetationHSL(u).weird);
+
+  ok('§3 · the weirdness budget is 5% of worlds, not half of them',
+    Math.abs(weird.length / N - 0.05) < 0.006,
+    `${(100 * weird.length / N).toFixed(1)}% exotic · ${(100 * norm.length / N).toFixed(1)}% chlorophyll`);
+
+  // --- the actual defect: cyan grass ---------------------------------------
+  // Vegetation hue in degrees. Chlorophyll lives in 70–150°; 170°+ is teal and
+  // 190°+ is unmistakably cyan. Not one ordinary world may land there.
+  ok('§9.1 · no ordinary world grows cyan grass',
+    norm.every((u) => {
+      const v = vegetationHSL(u, true);
+      const d = hueDeg(...hsl2rgb(v.h, v.s, v.l));
+      return d >= 60 && d <= 155;
+    }),
+    (() => {
+      const ds = norm.map((u) => {
+        const v = vegetationHSL(u, true);
+        return hueDeg(...hsl2rgb(v.h, v.s, v.l));
+      });
+      return `${Math.min(...ds).toFixed(0)}°–${Math.max(...ds).toFixed(0)}°, and the`
+        + ' reference\'s own tip #C6D46B is 74°';
+    })());
+  // The honest form of the claim, after I got the arithmetic wrong once: HSL
+  // 0.42 is 151°, which is spring-green, not cyan. The old range was not
+  // turquoise *by itself* — it became turquoise by compounding with
+  // `grassPalette()`'s 4.5× blue root rotation. What is checkable here is the
+  // part that is purely about the base: the old top sat far enough toward teal
+  // that a further cool rotation had nowhere to go but past cyan.
+  ok('and the old range really did reach the teal edge — this repairs something',
+    (() => {
+      const oldTop = hueDeg(...hsl2rgb(0.32 + 1.0 * 0.1, 0.5, 0.3));
+      const newTop = hueDeg(...hsl2rgb(vegetationHSL(VEG_WEIRD).h, 0.5, 0.3));
+      return oldTop > 148 && oldTop - newTop > 30;
+    })(),
+    `old top ${hueDeg(...hsl2rgb(0.42, 0.5, 0.3)).toFixed(0)}° against a new top of `
+    + `${hueDeg(...hsl2rgb(vegetationHSL(VEG_WEIRD).h, 0.5, 0.3)).toFixed(0)}°, and the`
+    + ' root rotation adds a further cool turn on top of whichever it starts from');
+
+  // --- and the exotic ones are actually exotic -----------------------------
+  ok('§3 · the 5% are not merely a slightly different green',
+    weird.every((u) => {
+      const v = vegetationHSL(u, true);
+      const d = hueDeg(...hsl2rgb(v.h, v.s, v.l));
+      return d > 155;
+    }) && new Set(weird.map((u) => Math.round(vegetationHSL(u).h * 10))).size >= 3,
+    'teal through violet — rarity is the mechanism by which strangeness lands');
+
+  // --- monotone and total --------------------------------------------------
+  ok('the mapping is monotone across the ordinary range, so neighbours resemble neighbours',
+    (() => {
+      let prev = -1;
+      for (const u of norm) { const h = vegetationHSL(u).h; if (h < prev) return false; prev = h; }
+      return true;
+    })());
+  ok('§11 · and it is total: no draw, however malformed, escapes the palette',
+    [NaN, Infinity, -Infinity, -1, 2, undefined, null].every((u) => {
+      const v = vegetationHSL(u);
+      return Number.isFinite(v.h) && v.h >= 0 && v.h <= 1
+        && Number.isFinite(v.s) && Number.isFinite(v.l);
+    }));
+
+  ok('§2.3 · and system.js reads it rather than keeping a second copy',
+    (() => {
+      const src = readFileSync(new URL('../src/system.js', import.meta.url), 'utf8');
+      return /vegetationHSL\(hue, inhabited\)/.test(src) && !/0\.32 \+ hue \* 0\.1/.test(src);
+    })(), 'one base colour, so the green you saw from orbit is the green you walk through');
+}
+
+// ---------------------------------------------------------------------------
+// the invariants that are one careless import away (§2.1, §2.2)
+//
+// "Zero runtime assets" and "zero dependencies beyond vendored three" are the
+// two invariants nothing in the repo was checking, and they are the two that a
+// single convenient line can break without anything looking wrong: a font, a
+// CDN script, one `fetch()` for a lookup table. The universe would still run —
+// on the machine that had the network — and `python3 -m http.server 8080` would
+// stop being sufficient forever, which is the thing §2.2 actually promises.
+//
+// Written as a sweep with an allowlist rather than a spot check, for the same
+// reason as the wall-clock and onBeforeRender sweeps: what matters is that a
+// *new* violation has to be argued for.
+function suiteInvariants() {
+  console.log('\ninvariants — zero assets, zero dependencies (§2.1, §2.2)');
+
+  const code = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .split('\n').map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n');
+  const files = readdirSync(new URL('../src/', import.meta.url)).filter((f) => f.endsWith('.js'));
+
+  // --- §2.1 · nothing is fetched at runtime --------------------------------
+  const NET = /\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|navigator\.sendBeacon|import\s*\(/;
+  ok('§2.1 · no module opens a network connection of any kind',
+    (() => {
+      const bad = files.filter((f) => NET.test(code(f)));
+      return bad.length ? bad.join(', ') : true;
+    })() === true,
+    `${files.length} modules · no fetch, no XHR, no WebSocket, no dynamic import`);
+
+  // A URL literal in source is how an asset gets loaded, and it is also how a
+  // comment cites a paper — so this checks code, and it allows the one origin
+  // that is not a fetch: the document's own location, which every scale reads
+  // for its deep link (§2.4).
+  ok('§2.1 · and no module names a remote origin in code',
+    (() => {
+      const bad = files.filter((f) => /["'`]https?:\/\//.test(code(f)));
+      return bad.length ? bad.join(', ') : true;
+    })() === true,
+    'every texture is generated on-device from hash(seed, …)');
+
+  // --- §2.2 · nothing is imported but three and this repo ------------------
+  const bareImports = new Set();
+  for (const f of files) {
+    for (const m of code(f).matchAll(/from\s+['"]([^'"]+)['"]/g)) {
+      const spec = m[1];
+      if (spec.startsWith('.') || spec.startsWith('/')) continue;
+      bareImports.add(spec);
+    }
+  }
+  ok('§2.2 · the only bare specifiers are three and its vendored addons',
+    [...bareImports].every((s) => s === 'three' || s.startsWith('three/addons/')),
+    [...bareImports].sort().join(', ') || 'none');
+
+  // --- and the thing that makes the two invariants true in practice --------
+  ok('§2.2 · there is no package.json to install, so a static server is enough',
+    (() => {
+      try {
+        readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+        return false;
+      } catch { return true; }
+    })(),
+    'python3 -m http.server 8080 must remain sufficient, forever');
+}
+
+// ---------------------------------------------------------------------------
+// every consumer of §9.2 supplies every uniform §9.2 declares
+//
+// `PAINT_GLSL` ends `return col * uPaintExposure;` — the lever that says how
+// much light there is, as distinct from what colour it is. `figure.js` included
+// the chunk, declared the four *colours*, and never provided the exposure. An
+// unprovided uniform is zero in WebGL, so `paint()` returned `col * 0` for
+// every fragment of the traveler and the character rendered as a pure black
+// cutout — no light information anywhere on it, which is a §M2 gate failure in
+// the exact words the gate uses.
+//
+// It hid well: a hooded figure in a long coat is *supposed* to read dark, and
+// grepping `uPaintExposure` found a caller — `surface.js`'s terrain — so it
+// looked wired. This makes the requirement structural instead of remembered.
+function suitePaintUniforms() {
+  console.log('\npaint — a consumer of §9.2 must supply all of §9.2 (§M2)');
+
+  const src = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8');
+  const paintSrc = src('paint.js');
+
+  // Every `uniform` PAINT_GLSL declares, read off the chunk itself rather than
+  // listed here — a list would go stale the moment §9.2 grows a lever.
+  const chunk = paintSrc.slice(paintSrc.indexOf('export const PAINT_GLSL'));
+  const declared = [...chunk.matchAll(/uniform\s+\w+\s+(uPaint\w+)\s*;/g)].map((m) => m[1]);
+  ok('§9.2 · the chunk declares the light model it needs',
+    declared.length >= 5 && declared.includes('uPaintExposure'),
+    declared.join(', '));
+
+  // Anything that includes the chunk has to hand over all of them.
+  const consumers = readdirSync(new URL('../src/', import.meta.url))
+    .filter((f) => f.endsWith('.js') && f !== 'paint.js')
+    .filter((f) => /\$\{PAINT_GLSL\}/.test(src(f)));
+  ok('and something in the tree actually uses it',
+    consumers.length > 0, consumers.join(', '));
+
+  for (const f of consumers) {
+    const body = src(f);
+    const missing = declared.filter((u) => !new RegExp(`${u}\\s*:`).test(body));
+    ok(`§M2 · ${f} supplies every uniform the chunk declares`,
+      missing.length === 0,
+      missing.length
+        ? `missing ${missing.join(', ')} — an unprovided uniform is 0, and`
+          + ' uPaintExposure multiplies the whole result'
+        : `all ${declared.length}`);
+  }
+
+  // The specific regression, named, because it is the one that shipped.
+  ok('§M2 · the traveler is not multiplied by zero',
+    /uPaintExposure:\s*\{\s*value:\s*1\s*\}/.test(src('figure.js')),
+    'a figure lit at noon is wrong at midnight; a figure times zero is wrong always');
+}
+
+// ---------------------------------------------------------------------------
+// trees (src/tree.js)
+//
+// Method ported from docs/reference/sakura-realm/src/tree/branches.js (MIT).
+// What it replaces was `CylinderGeometry(0.14, 0.3, 1, 5)` under
+// `IcosahedronGeometry(1, 1)` — a five-sided stick with a faceted ball, which
+// is exactly what it looks like on a phone.
+//
+// Four laws, and the reason they are worth testing is that each one is a claim
+// about wood rather than a curve someone liked: break any of them and the tree
+// stops being a consequence and goes back to being a model.
+function suiteTree() {
+  console.log('\ntree — wood is plumbing, and gravity is in the beam (§9, §2.3)');
+
+  // --- law 1 · the pipe model conserves area across a fork -----------------
+  ok('§9 · a fork conserves cross-sectional area, minus a stated fork loss',
+    [[0.25, [2.2, 0.8, 0.7]], [0.04, [1, 1]], [0.9, [3, 1, 1, 0.5, 0.5]]]
+      .every(([r0, sh]) => {
+        const rs = forkRadii(r0, sh);
+        const sum = rs.reduce((a, r) => a + Math.pow(r, WOOD.areaExp), 0);
+        return Math.abs(sum / Math.pow(r0, WOOD.areaExp) - WOOD.forkLoss) < 1e-9;
+      }),
+    `Σr^${WOOD.areaExp} = ${WOOD.forkLoss}·r₀^${WOOD.areaExp} — taper is emergent, not authored`);
+  ok('and the leader keeps the largest share, so it stays the thick one',
+    (() => {
+      const rs = forkRadii(0.25, [2.2, 0.8, 0.7]);
+      return rs[0] > rs[1] && rs[1] > rs[2];
+    })());
+
+  // --- law 2 · length follows radius, by one law ---------------------------
+  ok('§9 · one allometry spans a limb and a twig without a per-level constant',
+    lengthOf(0.21) > 5 && lengthOf(0.21) < 12
+    && lengthOf(0.002) > 0.1 && lengthOf(0.002) < 1.2,
+    `21 cm limb → ${lengthOf(0.21).toFixed(1)} m · 2 mm twig → ${(lengthOf(0.002) * 100).toFixed(0)} cm`);
+  ok('and inverting it round-trips, which is what lets a caller ask for a height',
+    Math.abs(lengthOf(radiusForHeight(14)) - 14) < 1e-9);
+
+  // --- law 3 · the beam, and AEON's own contribution to it -----------------
+  // I ∝ r⁴: doubling the radius makes a limb 16× stiffer while only
+  // quadrupling what it carries. That is why a trunk is straight.
+  // Measured at radii where the law is the only thing acting. `maxCurvature` is
+  // a stated safety rail — a branch deflects, it does not orbit — and below
+  // about 20 cm it is what decides the answer, so testing a 10 cm limb would
+  // have measured the clamp and called it the beam. It did, on the first run:
+  // 7.4× instead of 16×, which is the clamp's ratio, not r⁴'s.
+  ok('§9 · a limb twice as thick bends sixteen times less under the same load',
+    Math.abs(curvature(0.2, 3, 9.80665) / curvature(0.4, 3, 9.80665) - 16) < 1e-6,
+    'I ∝ r⁴, measured clear of maxCurvature — which is why a trunk is straight');
+  ok('§8 axis 8 · and a heavier world bends the same limb harder',
+    curvature(0.25, 3, 23.5) > curvature(0.25, 3, 9.8)
+    && curvature(0.25, 3, 9.8) > curvature(0.25, 3, 1.62));
+  ok('and the rail holds where the law would coil a twig into a spring',
+    curvature(0.004, 9, 9.80665) === WOOD.maxCurvature);
+
+  // The claim the whole file is for: **tree form is a readout of the world.**
+  // Same seed, same target height, three gravities.
+  const byG = [1.62, 9.80665, 23.5].map((g) => {
+    const t = growTree({ seed: 7, gravity: g, height: 12, habit: 'spreading', budget: 900 });
+    let peak = 0;
+    for (let i = 0; i < t.seg.y1.length; i++) peak = Math.max(peak, t.seg.y1[i]);
+    return peak;
+  });
+  ok('§8 axis 8 · a low-gravity world grows a taller tree, from the same seed',
+    byG[0] > byG[1] && byG[1] > byG[2] && byG[0] / byG[2] > 1.3,
+    `Luna ${byG[0].toFixed(1)} m · Earth ${byG[1].toFixed(1)} m · super-earth ${byG[2].toFixed(1)} m`
+    + ' — M ∝ g is already in the beam, so this costs nothing');
+
+  // --- law 4 · the crown is a dome, not a spray ----------------------------
+  const earth = growTree({ seed: 3, gravity: 9.80665, height: 14, habit: 'spreading', budget: 1400 });
+  ok('§8 axis 1 · the crown is wider than it is tall, which is what a dome is',
+    (() => {
+      let maxR = 0, peak = 0;
+      for (let i = 0; i < earth.seg.y1.length; i++) {
+        maxR = Math.max(maxR, Math.hypot(earth.seg.x1[i], earth.seg.z1[i]));
+        peak = Math.max(peak, earth.seg.y1[i]);
+      }
+      return maxR * 2 > peak * 0.8;
+    })());
+
+  // --- it is a tree, not a stick -------------------------------------------
+  // The first run of this file grew 12 segments against a budget of 900,
+  // because the shoot tapered to zero and so nothing ever passed the fork
+  // test. That is the reference's own defect #5 and it is worth a check.
+  ok('§9 · a shoot forks rather than tapering itself out of existence',
+    earth.segments > 300,
+    `${earth.segments} segments — the first version grew 12, which is a bent stick`);
+  ok('and the habits are distinguishable in silhouette (§8 axis 1)',
+    (() => {
+      const hw = HABITS.map((h) => {
+        const t = growTree({ seed: 11, gravity: 9.80665, height: 12, habit: h.id, budget: 900 });
+        let maxR = 0, peak = 0;
+        for (let i = 0; i < t.seg.y1.length; i++) {
+          maxR = Math.max(maxR, Math.hypot(t.seg.x1[i], t.seg.z1[i]));
+          peak = Math.max(peak, t.seg.y1[i]);
+        }
+        return peak / Math.max(maxR, 0.01);
+      });
+      return Math.max(...hw) / Math.min(...hw) > 1.3;
+    })(), 'columnar against umbrella, by height-to-width');
+
+  // --- §5 and §2.3 ---------------------------------------------------------
+  ok('§5 · the budget is a hard ceiling, so a tier can afford a forest',
+    [40, 120, 600, 3000].every((b) => growTree({ seed: 5, budget: b }).segments <= b));
+  ok('and the thickest wood is spent first, so a small budget is a smaller tree',
+    (() => {
+      const lo = growTree({ seed: 5, budget: 60 }), hi = growTree({ seed: 5, budget: 2000 });
+      const minR = (t) => Math.min(...t.seg.r0);
+      return minR(lo) > minR(hi);
+    })(), 'not a half-drawn one');
+  ok('§2.3 · the same seed on the same world grows the same tree, exactly',
+    JSON.stringify(growTree({ seed: 42, gravity: 9.8, height: 10 }))
+    === JSON.stringify(growTree({ seed: 42, gravity: 9.8, height: 10 })));
+  ok('and a different seed grows a different one',
+    JSON.stringify(growTree({ seed: 42 })) !== JSON.stringify(growTree({ seed: 43 })));
+  ok('§11 · no world produces a NaN, an underground branch or a runaway',
+    [{}, { gravity: 0 }, { gravity: 1e6 }, { height: NaN }, { height: 1e9 },
+      { seed: -1 }, { budget: NaN }].every((o) => {
+      const t = growTree(o);
+      const s2 = t.seg;
+      for (let i = 0; i < s2.x1.length; i++) {
+        if (![s2.x0[i], s2.y0[i], s2.z0[i], s2.x1[i], s2.y1[i], s2.z1[i], s2.r0[i], s2.r1[i]]
+          .every(Number.isFinite)) return false;
+        if (s2.y1[i] < 0) return false;
+      }
+      return t.segments > 0;
+    }), 'including zero gravity, where nothing bends at all');
+}
+
+// ---------------------------------------------------------------------------
+// ground scatter (src/scatter.js)
+//
+// Method from docs/reference/sakura-realm/src/world/scatter.js (MIT). Its
+// diagnosis is the one worth porting: "a field of a single repeated silhouette
+// is the loudest remaining 'this is procedural' tell in the scene."
+//
+// The load-bearing idea is that every species carries its **own** density field,
+// so what falls out is drifts and stands rather than an even sprinkle. What
+// AEON adds is tolerances, so a biome selects a community instead of a palette.
+function suiteScatter() {
+  console.log('\nscatter — what grows between the blades (§9.5, §2.3)');
+
+  const MEADOW = { wet: 0.55, warm: 0.55, sun: 0.7 };
+  const DESERT = { wet: 0.08, warm: 0.95, sun: 0.98 };
+  const MARSH = { wet: 0.95, warm: 0.18, sun: 0.45 };
+  const MOON = { wet: 0.0, warm: 0.02, sun: 1.0, atmo: 0 };
+
+  // --- a biome selects a community, not a palette --------------------------
+  const chunk = (b, seed = 99, x = 0, z = 0) =>
+    scatterChunk({ x0: x, z0: z, size: 32, seed, biome: b, budget: 260 });
+  const tally = (inst) => {
+    const by = {};
+    for (const i of inst) by[i.id] = (by[i.id] || 0) + 1;
+    return by;
+  };
+
+  ok('§9.5 · different biomes grow different communities',
+    (() => {
+      const a = new Set(Object.keys(tally(chunk(DESERT))));
+      const b = new Set(Object.keys(tally(chunk(MARSH, 99, 320, 320))));
+      return a.size && b.size && [...a].some((k) => !b.has(k));
+    })(),
+    `desert ${JSON.stringify(tally(chunk(DESERT)))} · forest `
+    + `${JSON.stringify(tally(chunk({ wet: 0.7, warm: 0.5, sun: 0.15 })))}`);
+  ok('and a dry sunlit world is stalks rather than reeds, which is the whole point',
+    (() => {
+      const t = tally(chunk(DESERT));
+      return (t.stalk || 0) > (t.reed || 0) && (t.reed || 0) === 0;
+    })());
+  ok('§8 axis 8 · an airless world grows nothing, and that is an answer',
+    chunk(MOON).length === 0 && communityOf(MOON).length === 0,
+    'nothing photosynthesises in a vacuum — a gate, not a tolerance');
+  ok('and air is a gate rather than one term among three',
+    tolerance(SPECIES[0], { wet: 0.55, warm: 0.5, sun: 0.4, atmo: 0.01 }) === 0
+    && tolerance(SPECIES[0], { wet: 0.55, warm: 0.5, sun: 0.4, atmo: 1 }) > 0.5,
+    'a perfect climate with no atmosphere is still bare rock');
+
+  // --- stands, not a sprinkle ----------------------------------------------
+  // The measurement that says the fields are doing their job: a species is
+  // absent from most chunks and abundant in a few. An even sprinkle would put
+  // roughly the same count in every chunk.
+  ok('§9.5 · a species forms stands — absent from most ground, dense in a little',
+    (() => {
+      let withReed = 0, total = 0, chunks = 0;
+      for (let cx = 0; cx < 8; cx++) {
+        for (let cz = 0; cz < 8; cz++) {
+          const n = chunk(MARSH, 99, cx * 32, cz * 32).filter((i) => i.id === 'reed').length;
+          total += n; chunks++; if (n) withReed++;
+        }
+      }
+      return total > 60 && withReed < chunks * 0.5;
+    })(), 'reeds in a marsh: hundreds of plants across a minority of chunks');
+
+  // --- competitive exclusion, claimed only where it is true ----------------
+  //
+  // Measured honestly, because the first version of this claim was wrong. With
+  // tolerance as the only interaction the fields were *exactly* independent —
+  // reed and stalk co-occurred 144 times against 148 expected by chance — so
+  // "the reeds and the clover almost never meet" was not true here at all.
+  //
+  // Competition helps where a strong stand meets a marginal species, and is
+  // lost in the noise where the subordinate is abundant everywhere. That is
+  // both what the arithmetic does and what a meadow does: you cannot exclude
+  // clover, it lives in the gaps. So the check asserts the case that holds.
+  ok('§9.5 · a dominant stand pushes a marginal species below chance',
+    (() => {
+      const B = { wet: 0.6, warm: 0.5, sun: 0.6 };
+      const N = 6400;
+      let both = 0, ra = 0, rb = 0;
+      for (let i = 0; i < N; i++) {
+        const x = (i % 80) * 5, z = ((i / 80) | 0) * 5;
+        const a = densityAt(SPECIES[5], x, z, 99, B) > 0.15;
+        const c = densityAt(SPECIES[4], x, z, 99, B) > 0.15;
+        if (a) ra++; if (c) rb++; if (a && c) both++;
+      }
+      const chance = (ra / N) * (rb / N) * N;
+      return both < chance * 0.85;
+    })(), 'reed over bloom, about 30% below chance — and no claim is made for'
+    + ' reed over cover, where it is not');
+
+  // --- tolerances ----------------------------------------------------------
+  ok('a species is excluded by any one intolerable axis, not by their average',
+    tolerance(SPECIES[5], DESERT) < 0.02 && tolerance(SPECIES[3], MARSH) < 0.02,
+    'reed in a desert, stalk in a marsh — a product, not a sum');
+  ok('and the community a biome can hold is nameable',
+    communityOf(MEADOW).length >= 3 && communityOf(MOON).length === 0,
+    `meadow: ${communityOf(MEADOW).join(', ')}`);
+
+  // --- §5, §2.3, §11 -------------------------------------------------------
+  ok('§5 · the budget is a ceiling and the ecology decides how it is spent',
+    [0, 20, 120, 600].every((b) =>
+      scatterChunk({ seed: 4, biome: MEADOW, budget: b }).length <= b));
+  ok('§2.3 · the same ground furnishes the same way, exactly',
+    JSON.stringify(chunk(MEADOW, 7, 64, 96)) === JSON.stringify(chunk(MEADOW, 7, 64, 96)));
+  ok('and neighbouring chunks do not repeat each other',
+    JSON.stringify(chunk(MEADOW, 7, 0, 0)) !== JSON.stringify(chunk(MEADOW, 7, 32, 0)));
+  ok('§11 · no biome, however malformed, produces a NaN or an infinite plant',
+    [{}, { wet: NaN }, { warm: Infinity }, { sun: -5 }, { wet: 1e9, warm: -1e9 }]
+      .every((b) => scatterChunk({ seed: 3, biome: b, budget: 120 })
+        .every((i) => [i.x, i.y, i.z, i.h, i.w, i.yaw].every(Number.isFinite) && i.h > 0)));
+}
+
 const suites = {
+  scatter: suiteScatter,
+  tree: suiteTree,
+  paintUniforms: suitePaintUniforms,
+  invariants: suiteInvariants,
+  vegetation: suiteVegetation,
+  ecology: suiteEcology,
+  floraUniforms: suiteFloraUniforms,
   shadow: suiteShadow,
   climb: suiteClimb,
   conjure: suiteConjure,
