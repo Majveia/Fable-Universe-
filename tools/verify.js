@@ -7357,7 +7357,60 @@ function suiteInvariants() {
     'python3 -m http.server 8080 must remain sufficient, forever');
 }
 
+// ---------------------------------------------------------------------------
+// every consumer of §9.2 supplies every uniform §9.2 declares
+//
+// `PAINT_GLSL` ends `return col * uPaintExposure;` — the lever that says how
+// much light there is, as distinct from what colour it is. `figure.js` included
+// the chunk, declared the four *colours*, and never provided the exposure. An
+// unprovided uniform is zero in WebGL, so `paint()` returned `col * 0` for
+// every fragment of the traveler and the character rendered as a pure black
+// cutout — no light information anywhere on it, which is a §M2 gate failure in
+// the exact words the gate uses.
+//
+// It hid well: a hooded figure in a long coat is *supposed* to read dark, and
+// grepping `uPaintExposure` found a caller — `surface.js`'s terrain — so it
+// looked wired. This makes the requirement structural instead of remembered.
+function suitePaintUniforms() {
+  console.log('\npaint — a consumer of §9.2 must supply all of §9.2 (§M2)');
+
+  const src = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8');
+  const paintSrc = src('paint.js');
+
+  // Every `uniform` PAINT_GLSL declares, read off the chunk itself rather than
+  // listed here — a list would go stale the moment §9.2 grows a lever.
+  const chunk = paintSrc.slice(paintSrc.indexOf('export const PAINT_GLSL'));
+  const declared = [...chunk.matchAll(/uniform\s+\w+\s+(uPaint\w+)\s*;/g)].map((m) => m[1]);
+  ok('§9.2 · the chunk declares the light model it needs',
+    declared.length >= 5 && declared.includes('uPaintExposure'),
+    declared.join(', '));
+
+  // Anything that includes the chunk has to hand over all of them.
+  const consumers = readdirSync(new URL('../src/', import.meta.url))
+    .filter((f) => f.endsWith('.js') && f !== 'paint.js')
+    .filter((f) => /\$\{PAINT_GLSL\}/.test(src(f)));
+  ok('and something in the tree actually uses it',
+    consumers.length > 0, consumers.join(', '));
+
+  for (const f of consumers) {
+    const body = src(f);
+    const missing = declared.filter((u) => !new RegExp(`${u}\\s*:`).test(body));
+    ok(`§M2 · ${f} supplies every uniform the chunk declares`,
+      missing.length === 0,
+      missing.length
+        ? `missing ${missing.join(', ')} — an unprovided uniform is 0, and`
+          + ' uPaintExposure multiplies the whole result'
+        : `all ${declared.length}`);
+  }
+
+  // The specific regression, named, because it is the one that shipped.
+  ok('§M2 · the traveler is not multiplied by zero',
+    /uPaintExposure:\s*\{\s*value:\s*1\s*\}/.test(src('figure.js')),
+    'a figure lit at noon is wrong at midnight; a figure times zero is wrong always');
+}
+
 const suites = {
+  paintUniforms: suitePaintUniforms,
   invariants: suiteInvariants,
   vegetation: suiteVegetation,
   ecology: suiteEcology,
