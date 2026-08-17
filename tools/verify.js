@@ -23,7 +23,9 @@ import {
   buildModes, deformation, deltaLinear, displacement, eigenvalues, invariants,
   trace, webClass,
 } from '../src/zeldovich.js';
-import { PAINT_GLSL, REFERENCE_LIGHT, lightFor, paint, ramp3 } from '../src/paint.js';
+import {
+  PAINT_GLSL, REFERENCE_LIGHT, contactShadow, lightFor, paint, ramp3,
+} from '../src/paint.js';
 import {
   SUN_BAND, frameAt, macroHeight, scoreComposition, solveLandingSite,
 } from '../src/landing.js';
@@ -6836,7 +6838,113 @@ function suiteClimb() {
     speedOf({ vUp: 3, vHor: 4 }), 5, 1e-9);
 }
 
+// ---------------------------------------------------------------------------
+// the contact shadow (src/paint.js)
+//
+// The figure floated, and `figure.js` says why in its own words: "there is no
+// shadow map in the default build." There is not — `surface.js` builds one only
+// under `?paint=1`, so every occluder in the frame casts nothing. This is the
+// first-order projection instead, and it is worth testing rather than eyeballing
+// because the two things most likely to be wrong are the two a still hides: the
+// direction (a shadow pointing *at* a low sun looks nearly right in one frame)
+// and the behaviour through the horizon, where `tan e` changes sign.
+function suiteShadow() {
+  console.log('\ncontact shadow — the dark shape that puts a body on the ground (§9.2, §8 axis 1)');
+
+  const unit = (x, y, z) => {
+    const n = Math.hypot(x, y, z) || 1;
+    return { x: x / n, y: y / n, z: z / n };
+  };
+  const elevSun = (deg, azDeg = 0) => {
+    const e = (deg * Math.PI) / 180, a = (azDeg * Math.PI) / 180;
+    return unit(Math.cos(e) * Math.sin(a), Math.sin(e), Math.cos(e) * Math.cos(a));
+  };
+
+  // --- the length is the geometry, not a curve ------------------------------
+  // h / tan e, and the check is the arithmetic rather than a remembered value.
+  for (const deg of [8, 13.5, 18, 45, 80]) {
+    const want = Math.min(1.7 / Math.tan((deg * Math.PI) / 180), 16);
+    near(`a 1.7 m body at ${deg}° throws h/tan e of shadow`,
+      contactShadow(elevSun(deg), { height: 1.7 }).length, want, 1e-6);
+  }
+  ok('§9.7 · at the spawn band the shadow is metres long, which is what golden hour is',
+    contactShadow(elevSun(13.5), { height: 1.7 }).length > 6,
+    `${contactShadow(elevSun(13.5), { height: 1.7 }).length.toFixed(1)} m at 13.5°`);
+
+  // --- the direction: away from the star, in every quadrant -----------------
+  // A rotation of `a` about Y sends local +z to (sin a, 0, cos a). The shadow
+  // must therefore point along −(sun.x, sun.z), and getting the sign right in
+  // one quadrant is not evidence of getting it right in four.
+  ok('§8 axis 8 · the shadow points away from the sun at every azimuth',
+    [0, 37, 90, 143, 180, 231, 270, 314].every((az) => {
+      const s = elevSun(14, az);
+      const g = contactShadow(s, { height: 1.7 });
+      const dx = Math.sin(g.angle), dz = Math.cos(g.angle);
+      const h = Math.hypot(s.x, s.z);
+      // dot with the sun's own horizontal direction must be −1
+      return Math.abs((dx * (s.x / h) + dz * (s.z / h)) + 1) < 1e-9;
+    }), 'eight azimuths, all antiparallel to within 1e-9');
+
+  // --- the horizon, which is where a naive tan() betrays you ----------------
+  ok('a sun at or below the horizon casts nothing at all',
+    [0, -0.01, -0.4, -1].every((y) => contactShadow(unit(0.3, y, 0.5)).amount === 0
+      && contactShadow(unit(0.3, y, 0.5)).length === 0),
+    'and it is a guard rather than a clamp — tan e changes *sign* through zero,'
+    + ' so an unguarded length is a shadow drawn toward the star');
+  ok('and the length is capped, so a sun a hair above it does not throw a kilometre',
+    contactShadow(elevSun(0.06), { height: 1.7, maxLength: 16 }).length <= 16);
+
+  // --- monotonic in the two things it should be monotonic in ---------------
+  ok('the shadow lengthens as the sun sets, monotonically',
+    (() => {
+      let prev = -1;
+      for (let d = 89; d >= 4; d -= 1) {
+        const L = contactShadow(elevSun(d), { height: 1.7, maxLength: 1e9 }).length;
+        if (L < prev - 1e-9) return false;
+        prev = L;
+      }
+      return true;
+    })());
+  ok('§2.5 · and it weakens as the body leaves the ground rather than following it up',
+    (() => {
+      let prev = Infinity;
+      for (let air = 0; air <= 30; air += 0.5) {
+        const a = contactShadow(elevSun(30), { feet: air, ground: 0 }).amount;
+        if (a > prev + 1e-12) return false;
+        prev = a;
+      }
+      return prev < 0.01;
+    })(), 'a flying figure dragging a hard ellipse across the valley is the failure');
+
+  // --- §9.2's one non-negotiable about shadows ------------------------------
+  ok('§9.2 · the shadow never reaches full strength, because shadows are not holes',
+    (() => {
+      for (const d of [1, 5, 13.5, 45, 90]) {
+        const a = contactShadow(elevSun(d)).amount;
+        if (!(a >= 0 && a <= 0.63)) return false;
+      }
+      return true;
+    })(), 'the multiplier bottoms out at (0.42, 0.47, 0.62) — never zero, and bluest'
+    + ' in blue, so it lands violet on any ground colour rather than grey');
+
+  ok('§11 · no sun vector produces a NaN, however degenerate',
+    [{}, { x: 0, y: 0, z: 0 }, { x: NaN, y: 0.5, z: 0 }, { y: Infinity },
+      { x: 0, y: 1, z: 0 }, { x: 1e-12, y: 1e-12, z: 1e-12 }]
+      .every((s) => {
+        const g = contactShadow(s, { feet: NaN, ground: 0 });
+        return [g.amount, g.length, g.width, g.angle, g.offset].every(Number.isFinite);
+      }),
+    'including a sun straight overhead, where the horizontal component vanishes');
+
+  ok('a sun straight up throws no length and therefore needs no direction',
+    (() => {
+      const g = contactShadow({ x: 0, y: 1, z: 0 });
+      return g.length === 0 && g.angle === 0 && g.amount > 0;
+    })(), 'noon still darkens the ground under you — it just does not point anywhere');
+}
+
 const suites = {
+  shadow: suiteShadow,
   climb: suiteClimb,
   conjure: suiteConjure,
   lightcone: suiteLightcone,

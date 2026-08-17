@@ -216,3 +216,74 @@ export const PAINT_GLSL = /* glsl */`
     return col * uPaintExposure;
   }
 `;
+
+/**
+ * The shadow a standing body throws on locally flat ground.
+ *
+ * §9.2 gives the shading model and §9.7 puts the spawn sun in an 8–18° band,
+ * but nothing in the default build ever drew a shadow at all: `surface.js`
+ * builds its shadow map only under `?paint=1`, so `markCaster()` has nothing to
+ * render into and every occluder in the frame — the figure, the trees, a 110 m
+ * conjured rocket — sits on the ground without touching it.
+ *
+ * This is the first-order answer, and it is exact rather than approximate for
+ * the case it claims: a body of height `h` under a sun at elevation `e` casts a
+ * shadow of length `h / tan e` directly away from the star. The rest is the
+ * penumbra, which really does widen with distance from the contact point.
+ *
+ * Pure, so the geometry is checkable in Node rather than by eye — and the two
+ * things most likely to be wrong here are exactly the two a picture hides: the
+ * direction (a shadow pointing *at* a low sun looks almost right in a still)
+ * and the behaviour as the sun crosses the horizon, where `tan e` runs away.
+ *
+ * `sun` is the unit vector *toward* the star. Returns metres and radians.
+ */
+export function contactShadow(sun = {}, {
+  height = 1.7, width = 0.75, feet = 0, ground = 0, maxLength = 16,
+} = {}) {
+  const sy = Math.min(Math.max(Number.isFinite(sun.y) ? sun.y : 1, -1), 1);
+  const sx = Number.isFinite(sun.x) ? sun.x : 0;
+  const sz = Number.isFinite(sun.z) ? sun.z : 0;
+  const horiz = Math.hypot(sx, sz);
+
+  // Below the horizon there is no shadow to cast, and the check has to come
+  // first: `tan e` does not merely grow near zero, it changes sign through it,
+  // and a negative length is a shadow drawn toward the sun.
+  if (sy <= 1e-3) return { amount: 0, length: 0, width, angle: 0, offset: 0, lift: 0 };
+
+  // tan e = sy / horiz, so length = h·horiz/sy. Written this way it never
+  // divides by a small horizontal component, only by the elevation the guard
+  // above has already bounded away from zero.
+  const length = Math.min((height * horiz) / sy, maxLength);
+
+  // Away from the star. A rotation of `a` about Y sends local +z to
+  // (sin a, 0, cos a), so aligning +z with −(sx, sz) is atan2(−sx, −sz).
+  const angle = horiz > 1e-6 ? Math.atan2(-sx, -sz) : 0;
+
+  // A body leaving the ground takes its shadow with it: it weakens and stays
+  // put rather than following the feet up. 6 m is a stated softening distance,
+  // not a physical one — a real penumbra would also spread — and it is what
+  // stops a flying figure dragging a hard ellipse across the valley.
+  // `feet` and `ground` come off a controller and a height field, and either can
+  // hand over a NaN on the frame a tile is still streaming. One poisoned sample
+  // must not become a poisoned shadow — §11's rule about the bloom pyramid, one
+  // scale down and much cheaper to obey.
+  const fy = Number.isFinite(feet) ? feet : 0;
+  const gy = Number.isFinite(ground) ? ground : 0;
+  const air = Math.max(fy - gy, 0);
+  // Two fades, and they are different facts. `sy` is the sun going down, and a
+  // grazing sun throws a shadow so long and so soft that it stops reading;
+  // `air` is the body going up.
+  const amount = Math.min(sy * 3.2, 1) * Math.exp(-air / 6) * 0.62;
+
+  return {
+    amount,
+    length,
+    width: width * (1 + 0.18 * Math.min(length / Math.max(height, 1e-3), 4)),
+    angle,
+    // the ellipse is centred half its length downrange, so its near end stays
+    // at the feet rather than the body standing in the middle of its own shadow
+    offset: length * 0.5,
+    lift: 0.05,
+  };
+}
