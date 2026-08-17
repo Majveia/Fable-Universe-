@@ -97,6 +97,7 @@ import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
 import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
+import { SPECIES, communityOf, densityAt, scatterChunk, tolerance } from '../src/scatter.js';
 import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
   stepAscent,
@@ -7538,7 +7539,121 @@ function suiteTree() {
     }), 'including zero gravity, where nothing bends at all');
 }
 
+// ---------------------------------------------------------------------------
+// ground scatter (src/scatter.js)
+//
+// Method from docs/reference/sakura-realm/src/world/scatter.js (MIT). Its
+// diagnosis is the one worth porting: "a field of a single repeated silhouette
+// is the loudest remaining 'this is procedural' tell in the scene."
+//
+// The load-bearing idea is that every species carries its **own** density field,
+// so what falls out is drifts and stands rather than an even sprinkle. What
+// AEON adds is tolerances, so a biome selects a community instead of a palette.
+function suiteScatter() {
+  console.log('\nscatter — what grows between the blades (§9.5, §2.3)');
+
+  const MEADOW = { wet: 0.55, warm: 0.55, sun: 0.7 };
+  const DESERT = { wet: 0.08, warm: 0.95, sun: 0.98 };
+  const MARSH = { wet: 0.95, warm: 0.18, sun: 0.45 };
+  const MOON = { wet: 0.0, warm: 0.02, sun: 1.0, atmo: 0 };
+
+  // --- a biome selects a community, not a palette --------------------------
+  const chunk = (b, seed = 99, x = 0, z = 0) =>
+    scatterChunk({ x0: x, z0: z, size: 32, seed, biome: b, budget: 260 });
+  const tally = (inst) => {
+    const by = {};
+    for (const i of inst) by[i.id] = (by[i.id] || 0) + 1;
+    return by;
+  };
+
+  ok('§9.5 · different biomes grow different communities',
+    (() => {
+      const a = new Set(Object.keys(tally(chunk(DESERT))));
+      const b = new Set(Object.keys(tally(chunk(MARSH, 99, 320, 320))));
+      return a.size && b.size && [...a].some((k) => !b.has(k));
+    })(),
+    `desert ${JSON.stringify(tally(chunk(DESERT)))} · forest `
+    + `${JSON.stringify(tally(chunk({ wet: 0.7, warm: 0.5, sun: 0.15 })))}`);
+  ok('and a dry sunlit world is stalks rather than reeds, which is the whole point',
+    (() => {
+      const t = tally(chunk(DESERT));
+      return (t.stalk || 0) > (t.reed || 0) && (t.reed || 0) === 0;
+    })());
+  ok('§8 axis 8 · an airless world grows nothing, and that is an answer',
+    chunk(MOON).length === 0 && communityOf(MOON).length === 0,
+    'nothing photosynthesises in a vacuum — a gate, not a tolerance');
+  ok('and air is a gate rather than one term among three',
+    tolerance(SPECIES[0], { wet: 0.55, warm: 0.5, sun: 0.4, atmo: 0.01 }) === 0
+    && tolerance(SPECIES[0], { wet: 0.55, warm: 0.5, sun: 0.4, atmo: 1 }) > 0.5,
+    'a perfect climate with no atmosphere is still bare rock');
+
+  // --- stands, not a sprinkle ----------------------------------------------
+  // The measurement that says the fields are doing their job: a species is
+  // absent from most chunks and abundant in a few. An even sprinkle would put
+  // roughly the same count in every chunk.
+  ok('§9.5 · a species forms stands — absent from most ground, dense in a little',
+    (() => {
+      let withReed = 0, total = 0, chunks = 0;
+      for (let cx = 0; cx < 8; cx++) {
+        for (let cz = 0; cz < 8; cz++) {
+          const n = chunk(MARSH, 99, cx * 32, cz * 32).filter((i) => i.id === 'reed').length;
+          total += n; chunks++; if (n) withReed++;
+        }
+      }
+      return total > 60 && withReed < chunks * 0.5;
+    })(), 'reeds in a marsh: hundreds of plants across a minority of chunks');
+
+  // --- competitive exclusion, claimed only where it is true ----------------
+  //
+  // Measured honestly, because the first version of this claim was wrong. With
+  // tolerance as the only interaction the fields were *exactly* independent —
+  // reed and stalk co-occurred 144 times against 148 expected by chance — so
+  // "the reeds and the clover almost never meet" was not true here at all.
+  //
+  // Competition helps where a strong stand meets a marginal species, and is
+  // lost in the noise where the subordinate is abundant everywhere. That is
+  // both what the arithmetic does and what a meadow does: you cannot exclude
+  // clover, it lives in the gaps. So the check asserts the case that holds.
+  ok('§9.5 · a dominant stand pushes a marginal species below chance',
+    (() => {
+      const B = { wet: 0.6, warm: 0.5, sun: 0.6 };
+      const N = 6400;
+      let both = 0, ra = 0, rb = 0;
+      for (let i = 0; i < N; i++) {
+        const x = (i % 80) * 5, z = ((i / 80) | 0) * 5;
+        const a = densityAt(SPECIES[5], x, z, 99, B) > 0.15;
+        const c = densityAt(SPECIES[4], x, z, 99, B) > 0.15;
+        if (a) ra++; if (c) rb++; if (a && c) both++;
+      }
+      const chance = (ra / N) * (rb / N) * N;
+      return both < chance * 0.85;
+    })(), 'reed over bloom, about 30% below chance — and no claim is made for'
+    + ' reed over cover, where it is not');
+
+  // --- tolerances ----------------------------------------------------------
+  ok('a species is excluded by any one intolerable axis, not by their average',
+    tolerance(SPECIES[5], DESERT) < 0.02 && tolerance(SPECIES[3], MARSH) < 0.02,
+    'reed in a desert, stalk in a marsh — a product, not a sum');
+  ok('and the community a biome can hold is nameable',
+    communityOf(MEADOW).length >= 3 && communityOf(MOON).length === 0,
+    `meadow: ${communityOf(MEADOW).join(', ')}`);
+
+  // --- §5, §2.3, §11 -------------------------------------------------------
+  ok('§5 · the budget is a ceiling and the ecology decides how it is spent',
+    [0, 20, 120, 600].every((b) =>
+      scatterChunk({ seed: 4, biome: MEADOW, budget: b }).length <= b));
+  ok('§2.3 · the same ground furnishes the same way, exactly',
+    JSON.stringify(chunk(MEADOW, 7, 64, 96)) === JSON.stringify(chunk(MEADOW, 7, 64, 96)));
+  ok('and neighbouring chunks do not repeat each other',
+    JSON.stringify(chunk(MEADOW, 7, 0, 0)) !== JSON.stringify(chunk(MEADOW, 7, 32, 0)));
+  ok('§11 · no biome, however malformed, produces a NaN or an infinite plant',
+    [{}, { wet: NaN }, { warm: Infinity }, { sun: -5 }, { wet: 1e9, warm: -1e9 }]
+      .every((b) => scatterChunk({ seed: 3, biome: b, budget: 120 })
+        .every((i) => [i.x, i.y, i.z, i.h, i.w, i.yaw].every(Number.isFinite) && i.h > 0)));
+}
+
 const suites = {
+  scatter: suiteScatter,
   tree: suiteTree,
   paintUniforms: suitePaintUniforms,
   invariants: suiteInvariants,
