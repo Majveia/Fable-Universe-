@@ -13,6 +13,8 @@ import { softDotTexture } from './nebula.js';
 import { addLife, isBiosphere } from './life.js';
 import { addCivilization } from './civilization.js';
 import { addTraveler } from './traveler.js';
+import { CONJURE_TIME, Conjuration } from './conjure.js';
+import { launchFor, launchState, stepLaunch } from './climb.js';
 import { addShips } from './ships.js';
 import { addFlare } from './flare.js';
 import { addGrass } from './grass.js';
@@ -31,7 +33,9 @@ import { findLandingSite } from './terrain.js';
 import { solveLandingSite, SUN_BAND } from './landing.js';
 import { PAINT_GLSL, lightFor } from './paint.js';
 import { exposureFor, nightFraction, nightLight, skyLux } from './night.js';
-import { AERIAL_GLSL, aerialParams, airFor, applyAerial } from './aerial.js';
+import { AERIAL_GLSL, aerialParams, airFor, applyAerial, visibilityFor } from './aerial.js';
+import { makeSurfaceSky } from './starfield.js';
+import { makeCumulus } from './clouds.js';
 import { addAurora } from './curtain.js';
 import {
   NO_LIMIT, buildHorizon, ridgeAlbedo, saturationRadius, HORIZON_VERT,
@@ -54,7 +58,7 @@ import { GrassRing, WindField } from './flora.js';
 import { PART_RADIUS, RINGS } from './meadow.js';
 import { HOVER } from './vehicle.js';
 import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
-import { TIER, qArr, qInt } from './quality.js';
+import { Q, TIER, qArr, qInt } from './quality.js';
 
 const PARAM = (k) => {
   try { return new URL(window.location.href).searchParams.get(k); }
@@ -173,6 +177,21 @@ const M5 = PARAM('m5') !== '0';
  * law and the reasoning; this is the twelve lines that call it.
  */
 const CLIMB = PARAM('climb') === '1';
+
+/**
+ * §9.6's painted sky and the cumulus deck that belongs to it. **Default-on**;
+ * `?sky=0` restores the two-stop dome and the two sprite layers exactly (§2.4).
+ *
+ * It lands on rather than off, and that is a decision with a measurement behind
+ * it. `starfield.js:makeSurfaceSky` and `clouds.js:makeCumulus` have been in the
+ * tree, parsed, and reachable by nothing — the same condition `craft.js` was in.
+ * The frame they replace measures 0.267 saturation at the zenith against
+ * §9.1's 0.567, because nine of §9.1's ten sky stops were never read. Shipping
+ * the fix behind a default-off flag would be the third time in this repo that a
+ * finished feature waited for a flip nobody remembered to make, and §7.4's
+ * separate commit for that flip is what this comment is.
+ */
+const SKY = PARAM('sky') !== '0';
 
 /**
  * `?noclip=1` — the rooms between, entered from the ground. Default-off (§7.4).
@@ -758,6 +777,13 @@ export class SurfaceScale {
     // the body walks; the camera is only sometimes in its head
     this.body = this.camera.position.clone();
     this.traveler = addTraveler(this);
+    // The conjured craft. Built on the first summon rather than at spawn: a
+    // world nobody tries to leave should not pay for a rocket, and `craftFor()`
+    // is a rocket-equation solve rather than a lookup.
+    this.conjure = null;
+    this.conjureGrp = null;
+    /** a climb-out in progress, or null — see `src/climb.js` */
+    this.launch = null;
     this.grassField = addGrass(this);
     this.ruins = addRuins(this);
     this.wildlife = addWildlife(this);
@@ -926,7 +952,18 @@ export class SurfaceScale {
   _aerialUniforms() {
     if (this._airU) return this._airU;
     const T = this.ctx.system?.temp ?? 5778;
-    const p = aerialParams(this.pp, this.atmo, 1);
+    // §9.3, with the two numbers it was missing. `visibilityFor` makes `fogFar`
+    // a *weather* rather than a constant — 1700 m is WMO "mist" (1–2 km), which
+    // AEON inherited from a reference that was one 2400 m valley wanting its far
+    // wall dissolved, without the composition that justified it. `mistBase`
+    // moves the valley-mist band off the planet datum and onto the valley floor;
+    // measured against the datum, any land below 46 m read as "mist everywhere
+    // past 420 m" — +0.16 fog and a 45% pull toward #D6DDD4, on the near field.
+    const p = aerialParams(this.pp, this.atmo, 1, {
+      visibility: visibilityFor(this.pp, this.atmo),
+      mistBase: this.seaLevel !== null && this.seaLevel !== undefined
+        ? this.seaLevel : (this.body ? this.heightAt(0, 0) : 0),
+    });
     const v = (c) => ({ value: new THREE.Vector3(c[0], c[1], c[2]) });
     const air = airFor(T, 13.5);
     this._air = {
@@ -945,6 +982,7 @@ export class SurfaceScale {
       uAirFar: { value: p.far },
       uAirHazeH: { value: p.hazeH },
       uAirMistAmt: { value: p.mistAmt },
+      uAirMistBase: { value: p.mistBase },
     };
     return this._airU;
   }
@@ -1664,22 +1702,44 @@ export class SurfaceScale {
     // true angular size of this star from this orbit
     const rStarAU = this.sys.radiusSun * 0.00465;
     const angRad = Math.min(Math.atan(rStarAU / this.pp.a) * 3, 0.3); // ×3: cinematic sun
-    this.sky = new THREE.Mesh(
-      new THREE.SphereGeometry(20000, 32, 16),
-      new THREE.ShaderMaterial({
-        uniforms: {
-          uSunDir: this.uSunDir, uSunColor: this.uSunColor,
-          uZenith: { value: this.zenithColor },
-          uHorizon: { value: this.horizonColor },
-          uSunAng: { value: Math.max(angRad, 0.012) },
-          uAtmo: { value: this.atmo },
-          uSeed: { value: this.pp.noiseSeed },
-        },
-        vertexShader: SKY_VERT,
-        fragmentShader: SKY_FRAG,
-        side: THREE.BackSide,
-        depthWrite: false,
-      }));
+    if (SKY) {
+      // §9.6 · the painted four-stop wash, with all ten of §9.1's stops derived
+      // from *this star's* spectrum by the transfer in `starlight.js`.
+      //
+      // What it replaces was two stops — `pp.atmoColor · 0.26` at the zenith and
+      // `· 0.5 + (0.04,0.04,0.05)` at the horizon — and the measurement is the
+      // whole argument for the change: shipped zenith saturation 0.267 against
+      // §9.1's `#4E80B4` at 0.567. **47% of spec.** Nine of the ten stops were
+      // never read, though `starlight.js` has been computing every one of them
+      // from the star's spectrum since M2 act 2. That is most of "the worlds
+      // look washed out", and it was a wiring fault rather than a palette one.
+      this.skyDome = makeSurfaceSky({
+        sunDir: this.uSunDir,
+        T: this.ctx.system?.temp ?? 5778,
+        atmo: this.atmo,
+        sunAng: Math.max(angRad, 0.012),
+        cirrus: Math.min((this.pp.clouds ?? 0.3) * 1.1, 0.9),
+        tier: Q.name,
+      });
+      this.sky = this.skyDome.mesh;
+    } else {
+      this.sky = new THREE.Mesh(
+        new THREE.SphereGeometry(20000, 32, 16),
+        new THREE.ShaderMaterial({
+          uniforms: {
+            uSunDir: this.uSunDir, uSunColor: this.uSunColor,
+            uZenith: { value: this.zenithColor },
+            uHorizon: { value: this.horizonColor },
+            uSunAng: { value: Math.max(angRad, 0.012) },
+            uAtmo: { value: this.atmo },
+            uSeed: { value: this.pp.noiseSeed },
+          },
+          vertexShader: SKY_VERT,
+          fragmentShader: SKY_FRAG,
+          side: THREE.BackSide,
+          depthWrite: false,
+        }));
+    }
     this.sky.frustumCulled = false;
     this.scene.add(this.sky);
     this._buildClouds();
@@ -1691,6 +1751,24 @@ export class SurfaceScale {
     const pp = this.pp;
     if (this.atmo < 0.5 || (pp.clouds ?? 0) < 0.22 || pp.typeId > 2) return;
     const r = new RNG(hash(pp.seed, 0xc1a0d5));
+    if (SKY) {
+      this.cumulus = makeCumulus({
+        sunDir: this.uSunDir,
+        camPos: this._uCamPos || (this._uCamPos = { value: new THREE.Vector3() }),
+        seed: pp.seed, rand: () => r.next(), tier: Q.name,
+        T: this.ctx.system?.temp ?? 5778,
+        // The lifting condensation level. Every cloud in a field shares it —
+        // they condensed out of the same air at the same dew point — which is
+        // why a real cumulus sky looks ruled along its bases, and why two
+        // independently scattered sprite layers never could.
+        base: 620 + 900 * (1 - Math.min(pp.clouds ?? 0.4, 1)),
+        amount: Math.min(Math.max((pp.clouds ?? 0.4) * 1.35, 0.12), 0.95),
+        aerialGLSL: AERIAL ? AERIAL_GLSL : '',
+        aerialUniforms: AERIAL ? this._aerialUniforms() : {},
+      });
+      this.scene.add(this.cumulus.mesh);
+      return;
+    }
     const layers = [
       { size: 520, count: 9, o: 0.5 },
       { size: 300, count: 14, o: 0.38 },
@@ -2289,13 +2367,243 @@ export class SurfaceScale {
       return true;
     }
     if (code === 'KeyE') {
+      // One key, one meaning: get into whatever is here. A conjured craft is
+      // asked first only because it is the thing you just called and are
+      // standing next to; when there is none, this is the skiff's key exactly
+      // as it has always been.
+      if (this._board()) return true;
       const res = this.traveler.tryMount();
       if (res === 'mounted') this.app.hud.setHint('the skiff has you · wasd flies it · shift opens it up · e steps off');
       else if (res === 'dismounted') this.app.hud.setHint('on foot · e reboards the skiff · c for first person');
       else this.app.hud.setHint('the skiff waits near the plaza — walk to it and press e');
       return true;
     }
+    // §2.4 · `KeyV` is free: `main.js`'s switch claims H, M, B, U, G, J and N,
+    // and this scale claims Space, F, C and E. Nothing else in the repo binds V.
+    if (code === 'KeyV') { this._summon(); return true; }
     return false;
+  }
+
+  /**
+   * Conjure a craft, or find out that you cannot.
+   *
+   * §2.1 forbids an asset and §4 forbids an inventory, so the craft is not
+   * fetched — it is solved. `craft.js` asks how much velocity this world costs
+   * to leave and what the rocket equation says a vehicle able to buy it must
+   * weigh; `conjure.js` turns that into parts. On a small moon you get a dart.
+   * On an Earth you get 110 m and five engines, because that is a Saturn V and
+   * that is what leaving Earth costs.
+   *
+   * On a heavy world with air the answer is that **no chemical rocket leaves**,
+   * and the conjuring refuses with the number. That is the best thing the
+   * mechanic does and the interface must not soften it (§8 axis 8).
+   */
+  _summon() {
+    if (this.conjure && this.conjure.phase !== 'idle' && this.conjure.phase !== 'refused') {
+      // already standing there, or on its way: dismiss rather than stacking a
+      // second. A summon during `gather` is a mind changed, not a second craft.
+      this.conjure.dismiss();
+      if (this.conjureGrp) this.conjureGrp.visible = false;
+      this.app.hud.setHint('the craft returns to wherever conjured things wait · v calls it back');
+      return;
+    }
+    if (!this.conjure) {
+      this.conjure = new Conjuration({
+        massE: this.pp.massE, radiusE: this.pp.radiusE, atmo: this.atmo,
+      }, this.pp.seed);
+    }
+    if (!this.conjure.summon()) {
+      // the world is one-way, and the reason is arithmetic
+      this.app.hud.setHint(this.conjure.result.why);
+      return;
+    }
+    if (!this.conjureGrp) this.conjureGrp = this._buildCraft(this.conjure);
+    this.conjureGrp.visible = true;
+    // Beside you, not on you. The offset is the craft's own base radius plus a
+    // walk — a 3.9 m dart stands close enough to reach and a 33 m super-earth
+    // stack stands clear of its own fins, which one fixed 18 m cannot do both of.
+    const a = this.yaw + 1.1;
+    const clear = 14 + this.conjure.craft.diameter * 1.4;
+    const x = this.body.x + Math.sin(a) * clear, z = this.body.z + Math.cos(a) * clear;
+    this.conjureGrp.position.set(x, this._padY(x, z), z);
+    this.app.hud.setHint(`${this.conjure.craft.why} · ${CONJURE_TIME.toFixed(1)} s to build · v dismisses`);
+  }
+
+  /**
+   * Where the pad is. Sea level counts as ground for this the same way it does
+   * for the skiff — a rocket conjured over water stands on the water rather
+   * than under it, which is the same lie the hover-skiff already tells and a
+   * much smaller one than a launch from the seabed.
+   */
+  _padY(x, z) {
+    const h = this.heightAt(x, z);
+    return this.seaLevel === null ? h : Math.max(h, this.seaLevel);
+  }
+
+  /**
+   * Build the meshes once, from the descriptors.
+   *
+   * `conjure.js` emits geometry as numbers so it can be checked offline; this
+   * is the only place that turns those numbers into three, and it is
+   * deliberately dumb — a switch on `kind` and a material per `role`. Anything
+   * clever here would be a second opinion about the shape, and the shape has an
+   * owner.
+   */
+  _buildCraft(conj) {
+    const g = new THREE.Group();
+    const mk = (c, rough, metal) => new THREE.MeshStandardMaterial({
+      color: c, roughness: rough, metalness: metal, transparent: true, opacity: 0,
+    });
+    const mats = {
+      tank: mk(0xd8d2c2, 0.45, 0.25),
+      interstage: mk(0x6d6a63, 0.70, 0.30),
+      capsule: mk(0xe8e2d2, 0.35, 0.40),
+      engine: mk(0x4a4640, 0.55, 0.60),
+      fin: mk(0xb9432f, 0.60, 0.20),
+    };
+    mats.fin.side = THREE.DoubleSide;
+    for (const p of conj.parts) {
+      let geo, part = p;
+      if (p.kind === 'cylinder') geo = new THREE.CylinderGeometry(p.radius, p.radius, p.height, 18);
+      else if (p.kind === 'cone') geo = new THREE.ConeGeometry(p.radius, p.height, 18);
+      else {
+        // Fins, and two things the descriptor cannot express on its own.
+        //
+        // **The span grows outward, not through the hull.** A box of width
+        // `span` centred on the tank wall is half inside the tank: Earth's fin
+        // spans 21 m centred at radius 8.1, so it reaches 2.4 m past the far
+        // side of its own rocket. Translating the geometry so its inner edge is
+        // the origin makes `span` mean what the word means.
+        //
+        // **And it must point at the axis.** A rotation of `a` about Y sends
+        // local +x to `(cos a, 0, −sin a)`, while the descriptor places the fin
+        // at `(cos φ·R, y, sin φ·R)` — so the angle that lays the span along the
+        // radius is `−φ`, not `+φ`. With `+φ` the fins splay tangentially and
+        // only the two at φ = 0 and π look right, which is exactly the kind of
+        // thing that reads as correct from one camera angle. Taking φ from the
+        // part's own position rather than from a stored angle means the two can
+        // never disagree.
+        geo = new THREE.BoxGeometry(p.span, p.height, Math.max(p.span * 0.06, 0.2));
+        geo.translate(p.span / 2, 0, 0);
+        part = { ...p, ry: -Math.atan2(p.z, p.x) };
+      }
+      const m = new THREE.Mesh(geo, mats[p.role] ?? mats.tank);
+      m.userData.part = part;
+      g.add(m);
+    }
+    // §9.2's shadow is opt-in by layer, and a 110 m tower at a 13° sun is the
+    // longest occluder this scale will ever have. Casting it is most of what
+    // makes the craft belong to the valley rather than sit on top of it.
+    markCaster(g);
+    g.visible = false;
+    this.scene.add(g);
+    return g;
+  }
+
+  /**
+   * Board the craft, if there is one and you are standing at it.
+   *
+   * Returns false when there is nothing to board, so `KeyE` can fall through to
+   * the skiff and one key keeps meaning "get in whatever is here".
+   *
+   * The eye goes to the capsule. That is a decision and it is worth naming: a
+   * launch seen from outside would need the third-person spring to know how wide
+   * a 16 m stack is, and it would put the camera inside the hull on any world
+   * whose answer is a fat rocket. From the capsule there is nothing to collide
+   * with, and what you get instead is the shot the whole scale exists for — the
+   * valley falling away through its own aerial perspective, continuously, with
+   * no cut anywhere between standing in the grass and being in orbit (§2.5).
+   */
+  _board() {
+    const c = this.conjure;
+    if (!c || c.phase !== 'ready' || !this.conjureGrp) return false;
+    const g = this.conjureGrp.position;
+    const reach = 6 + c.craft.diameter;
+    if (Math.hypot(this.body.x - g.x, this.body.z - g.z) > reach) {
+      this.app.hud.setHint(`the craft stands ${Math.round(Math.hypot(this.body.x - g.x, this.body.z - g.z))} m off · walk to it and press e`);
+      return true;
+    }
+    this.launch = {
+      p: launchFor(c.craft, { massE: this.pp.massE, radiusE: this.pp.radiusE, atmo: this.atmo }),
+      s: launchState(),
+      // downrange is whichever way you were facing when you climbed in, so the
+      // pitch-over carries the frame you already composed rather than a constant
+      az: this.yaw,
+      pad: { x: g.x, y: g.y, z: g.z },
+      // the eye sits at the capsule, which `conjure.js` puts at the top of the
+      // stack minus half its own length
+      eye: c.craft.height - 4.5,
+    };
+    this.fly = false;
+    if (this.traveler) { this.traveler.third = false; this.traveler.riding = false; }
+    if (this.rig) this.rig.third = false;
+    this.app.hud.setHint(`ignition · ${c.craft.why} · the ground lets go at ${Math.round(this._releaseAlt)} m`);
+    this.app.audio?.warp?.('ascend');
+    return true;
+  }
+
+  /**
+   * The climb-out. `src/climb.js` owns every number; this owns the scene graph
+   * and the one moment the scale changes.
+   *
+   * The handover is `ascent.js`'s, unchanged and not duplicated: the same
+   * `handoff()` decomposition and the same `popTo` the walker's climb already
+   * uses (§2.4 — this adds no new kind of location). What is different is only
+   * who asked, which is the entire reason `_climbCheck` and this can be separate
+   * without being two code paths.
+   */
+  _updateLaunch(dt) {
+    const L = this.launch;
+    L.s = stepLaunch(L.s, L.p, dt, this._releaseAlt);
+    const s = L.s;
+    const dx = Math.sin(L.az) * s.down, dz = Math.cos(L.az) * s.down;
+    if (this.conjureGrp) {
+      this.conjureGrp.position.set(L.pad.x + dx, L.pad.y + s.h, L.pad.z + dz);
+      // lean into the turn — the stack flies pointed, which is the visible form
+      // of the gravity turn and the only place the pitch angle appears at all
+      this.conjureGrp.rotation.set(Math.cos(L.az) * s.theta, 0, -Math.sin(L.az) * s.theta);
+    }
+    this.body.set(L.pad.x + dx, L.pad.y + s.h + L.eye, L.pad.z + dz);
+    this.vel.set(s.vHor * Math.sin(L.az), s.vUp, s.vHor * Math.cos(L.az));
+    if (this.walker) {
+      // the walker is along for the ride, so a dismount at any point starts
+      // from where the body actually is rather than from the pad
+      this.walker.pos.x = this.body.x;
+      this.walker.pos.z = this.body.z;
+      this.walker.pos.y = L.pad.y + s.h;
+      this.walker.vel.x = this.vel.x; this.walker.vel.y = this.vel.y; this.walker.vel.z = this.vel.z;
+      this.walker.grounded = false;
+    }
+    this._climbFrac = Math.min(s.h / Math.max(this._releaseAlt, 1), 1);
+    if (!s.released) return;
+    // §M5's gate: the camera inherits the velocity. Local frame, as `ascent.js`
+    // requires — the walker's axes have +y up at the landing site by
+    // construction, and `_landingDir` is that site's normal in *planet* space.
+    this.app._ascentHandoff = handoff(this.vel, [0, 1, 0]);
+    this.launch = null;
+    this.app.popTo(this.app.stack.length - 2);
+  }
+
+  /** advance the materialisation; call once per frame from `update()` */
+  _updateConjure(dt) {
+    const c = this.conjure;
+    if (!c || !this.conjureGrp || c.phase === 'idle' || c.phase === 'refused') return;
+    c.update(dt);
+    const poses = c.poses();
+    const kids = this.conjureGrp.children;
+    for (let i = 0; i < kids.length && i < poses.length; i++) {
+      const m = kids[i], p = m.userData.part, o = poses[i];
+      m.position.set(p.x + o.dx, p.y + o.dy, p.z + o.dz);
+      m.rotation.set(
+        (p.flip ? Math.PI : 0) + o.rx,
+        (p.ry ?? 0) + o.ry,
+        o.rz);
+      m.material.opacity = o.opacity;
+      // the seam glows as it closes — the one part of this that is not a
+      // rigid-body motion, and the reason it reads as conjuring rather than as
+      // a crate being assembled
+      m.material.emissive?.setRGB(o.glow * 0.9, o.glow * 0.75, o.glow * 0.45);
+    }
   }
 
   // ------------------------------------------------------------- loop ----
@@ -2364,6 +2672,28 @@ export class SurfaceScale {
     const dusk = Math.max(1 - Math.abs(elev - 0.02) * 5.5, 0) * this.atmo;
     this.horizonColor.copy(this._horizonBase).lerp(this._gold, dusk * 0.75);
     this.zenithColor.copy(this._zenithBase).lerp(this._duskZenith, dusk * 0.55);
+    if (this.skyDome || this.cumulus) {
+      const elevDeg = (Math.asin(Math.min(Math.max(elev, -1), 1)) * 180) / Math.PI;
+      // One wind, one drift, one clock — shared by the deck and the cirrus, so
+      // the two halves of the sky cannot disagree about the weather (§6 M3's
+      // whole point: everything that moves samples the one field). `_cw` is
+      // already computed once a frame for the grass, so the deck's wind costs
+      // nothing extra; `cloudWind()` is the fallback for the pre-M3 path.
+      const cw = this._cw || this.cloudWind();
+      this._cloudDrift = this._cloudDrift || { x: 0, y: 0 };
+      this._cloudDrift.x += cw.x * dt;
+      this._cloudDrift.y += cw.z * dt;
+      if (this.skyDome) {
+        this.skyDome.update(elevDeg, {
+          cirrusDrift: this._cloudDrift,
+          cirrusDir: { x: cw.x, y: cw.z },
+        });
+      }
+      if (this.cumulus) {
+        this.cumulus.update(elevDeg, this._cloudDrift);
+        if (this._uCamPos) this._uCamPos.value.copy(this.camera.position);
+      }
+    }
     if (this.clouds) {
       const day = Math.min(Math.max((elev + 0.15) * 3.2, 0), 1);
       for (let ci = 0; ci < this.clouds.length; ci++) {
@@ -2505,6 +2835,9 @@ export class SurfaceScale {
       this._grassDraws = drawn;
     }
     if (this.godrays) this.godrays.update(dt);
+    // after whatever moved `this.body`, so a craft conjured this frame is
+    // placed against the position the walker actually ended on
+    if (this.conjure) this._updateConjure(dt);
     if (this.rivers) this.rivers.update(dt);
     if (this.festival) this.festival.update(dt, this.uSunDir.value.y);
     if (this.herds) this.herds.update(dt, this.uSunDir.value.y);
@@ -2524,7 +2857,9 @@ export class SurfaceScale {
         if (!this.traveler?.third) this.body.copy(this.camera.position);
         if (this.traveler) this.traveler._camSet = false;
       }
-      if (this.traveler?.riding) {
+      if (this.launch) {
+        this._updateLaunch(dt);
+      } else if (this.traveler?.riding) {
         this.traveler.drive(dt);
       } else if (M4) {
         this._stepBody(dt);
@@ -2555,8 +2890,10 @@ export class SurfaceScale {
         }
       }
 
-      // stay inside the tile (the interior keeps its own bounds)
-      if (!this.inside) {
+      // stay inside the tile (the interior keeps its own bounds). A launch is
+      // exempt: the clamp is for a body that would walk off a 1400 m mesh, and
+      // a vehicle that has already left it vertically is the scale above's.
+      if (!this.inside && !this.launch) {
         this.body.x = Math.min(Math.max(this.body.x, -EXT * 0.48), EXT * 0.48);
         this.body.z = Math.min(Math.max(this.body.z, -EXT * 0.48), EXT * 0.48);
         // and the craft owns the clamp too, or the body stops at the edge while
@@ -2567,7 +2904,7 @@ export class SurfaceScale {
           if (hv.pos.z !== this.body.z) { hv.pos.z = this.body.z; hv.vel.z = 0; }
         }
       }
-      if (M4 && !this.traveler?.riding) {
+      if (M4 && !this.traveler?.riding && !this.launch) {
         // the body owns the tile clamp too, so the two cannot disagree
         this.walker.pos.x = this.body.x;
         this.walker.pos.z = this.body.z;

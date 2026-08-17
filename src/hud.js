@@ -606,6 +606,15 @@ export class HUD {
   setMuted(m) {
     this.muteBtn.textContent = m ? '∅' : '♪';
     this.muteBtn.style.opacity = m ? 0.45 : 1;
+    // The score names itself on the control that silences it. §3 caps the HUD
+    // at three persistent elements and this adds none — only the title the ♪
+    // button already carried. `score.label` is one line: "surface · F♯ dorian ·
+    // 58 bpm · 8 s chords · add11 · triangle · spread 2 · rev 3.0 s", and it is
+    // the same string the offline harness reads, which makes the tooltip a live
+    // assertion that what is playing is what was derived (§8 axis 8, in the one
+    // medium where nothing on screen can contradict anything).
+    const sc = this.app.audio?.score;
+    this.muteBtn.title = sc?.label ? `sound (m) · ${sc.label}` : 'sound (m)';
   }
 
   showCard({ title, kind, rows, flavor, action, actions }) {

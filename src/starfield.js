@@ -581,7 +581,19 @@ export function makeSurfaceSky({
       `,
       fragmentShader: /* glsl */`
         precision highp float;
-        ${skyGLSL(tier, false)}
+        // withSun: true. This read false — the value for a chunk injected into
+        // a host material that already declares uSunDir, which is every *other*
+        // consumer of skyGLSL in the repo. This one is a standalone
+        // ShaderMaterial with no host, so nothing declared it and the fragment
+        // did not compile: six errors from line 118, starting at uSunDir.xz in
+        // the azimuthal-asymmetry term.
+        //
+        // It could not have been caught until now. Nothing called
+        // makeSurfaceSky, and dead GLSL compiles perfectly — §M0's rule is that
+        // a shader must be compile-checked *as assembled*, and a shader that is
+        // never assembled has nothing to check. The first frame that asked for
+        // this sky is the first frame that could have found it.
+        ${skyGLSL(tier, true)}
         varying vec3 vDir;
         void main() {
           float sm;

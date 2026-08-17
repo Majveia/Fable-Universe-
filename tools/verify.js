@@ -23,7 +23,9 @@ import {
   buildModes, deformation, deltaLinear, displacement, eigenvalues, invariants,
   trace, webClass,
 } from '../src/zeldovich.js';
-import { PAINT_GLSL, REFERENCE_LIGHT, lightFor, paint, ramp3 } from '../src/paint.js';
+import {
+  PAINT_GLSL, REFERENCE_LIGHT, contactShadow, lightFor, paint, ramp3,
+} from '../src/paint.js';
 import {
   SUN_BAND, frameAt, macroHeight, scoreComposition, solveLandingSite,
 } from '../src/landing.js';
@@ -82,6 +84,10 @@ import {
   DRY_FRACTION, MIN_PAYLOAD, PROPELLANT, craftFor, deltaVToOrbit, escapeVelocity,
   massRatio, orbitalVelocity, stagePayload, stagesFor, surfaceGravity,
 } from '../src/craft.js';
+import {
+  CONJURE, CONJURE_TIME, Conjuration, conjureFor, hullOf, partAt,
+} from '../src/conjure.js';
+import { LAUNCH, flyClimb, launchFor, launchState, speedOf, stepLaunch } from '../src/climb.js';
 import {
   FLICKER_HZ, MAINS_HZ, MERCURY_LINES, isThin, lampColour, lampExposure, lampFlicker,
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
@@ -6272,11 +6278,18 @@ function suiteCraft() {
       sizes[0] < sizes[1] && sizes[1] < sizes[2],
       `${sizes.map((h) => h.toFixed(0) + ' m').join(' → ')} — the shape *is* the`
       + ' difficulty, so you can read the world off the vehicle');
+    // This check used to disagree with itself, which is why the sign error
+    // survived: the label asked for a fat airless vehicle, the assertion
+    // demanded a 10:1 one, and the sentence underneath argued — correctly —
+    // that drag is what buys slenderness. Two of the three were right about the
+    // physics and the assertion was the odd one out, so it is the assertion
+    // that moved. Drag goes as frontal area: an atmosphere charges for width
+    // and a vacuum does not.
     ok('...and an airless world may be as fat as it likes',
-      craftFor(LUNA).height / craftFor(LUNA).diameter === 10
-      && craftFor(EARTH).height / craftFor(EARTH).diameter < 7,
-      'a vehicle that never meets a headwind is 10:1; one that climbs through'
-      + ' an atmosphere is not, because slenderness is bought from drag');
+      Math.abs(craftFor(EARTH).height / craftFor(EARTH).diameter - 10) < 1e-9
+      && craftFor(LUNA).height / craftFor(LUNA).diameter < 7,
+      'a vehicle that climbs through an atmosphere is 10:1; one that never meets'
+      + ' a headwind need not be, because slenderness is bought from drag');
   }
 
   {
@@ -6498,7 +6511,442 @@ function suiteLightcone() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the conjuring (src/conjure.js)
+//
+// `craft.js` decides whether a world can be left and how big the vehicle must
+// be. This checks the layer that turns that answer into something with parts —
+// and the reason it is worth checking at all is that the vehicle is emitted as
+// numbers rather than as a mesh, so its proportions are assertions rather than
+// something you notice from one camera angle. Both defects its author found
+// while writing it were of exactly that kind: a stack 4% taller than its own
+// mass budget, and an engine count that came out as six for every world in the
+// universe.
+function suiteConjure() {
+  console.log('\nconjure — the craft, as a mass model (§2.1, §6 M6)');
+
+  const WORLDS = [
+    ['Luna', { massE: 0.0123, radiusE: 0.2727, atmo: 0 }],
+    ['Mars', { massE: 0.107, radiusE: 0.532, atmo: 0.006 }],
+    ['Earth', { massE: 1, radiusE: 1, atmo: 1 }],
+    ['Venus', { massE: 0.815, radiusE: 0.95, atmo: 92 }],
+    ['super-earth', { massE: 5, radiusE: 1.5, atmo: 1.4 }],
+    ['tiny rock', { massE: 0.002, radiusE: 0.15, atmo: 0 }],
+  ];
+  const all = WORLDS.map(([n, w]) => [n, conjureFor(w, 12345)]);
+  const named = (n) => all.find(([k]) => k === n)[1];
+  const flyable = all.filter(([, c]) => c.feasible);
+
+  // --- the stack closes ----------------------------------------------------
+  // The rocket equation says how tall the vehicle is. If the parts do not add
+  // up to that, the drawing and the physics have come apart.
+  ok('§3 · every stack is exactly as tall as the rocket equation asked',
+    flyable.every(([, c]) => {
+      const top = Math.max(...c.hull.filter((p) => p.role !== 'engine')
+        .map((p) => p.y + p.height / 2));
+      return Math.abs(top - c.craft.height) < 0.5;
+    }), `${flyable.length} worlds, all within 0.5 m`);
+
+  // --- engines are counted, not styled -------------------------------------
+  // An engine bell is a fixed physical size class, so a wider rocket carries
+  // more of them rather than bigger ones.
+  const engines = (c) => c.hull.filter((p) => p.role === 'engine').length;
+  ok('engine count rises with base diameter rather than being constant',
+    new Set(flyable.map(([, c]) => engines(c))).size >= 3,
+    flyable.map(([n, c]) => `${n} ${engines(c)}`).join(' · '));
+  ok('and Earth lands on five, which is a Saturn V', engines(named('Earth')) === 5);
+
+  // --- slenderness: the sign the comment always wanted ---------------------
+  // Drag goes as frontal area, so a vehicle climbing through atmosphere pays
+  // for width and one that never meets a headwind does not. The arithmetic ran
+  // the other way — 10:1 in vacuum, 6.8:1 in thick air — while the comment
+  // above it argued the reverse. The test of the fix is the one vehicle anybody
+  // has flown: a Saturn V is 10.1 m across.
+  ok('§3 · air makes a stack slender and vacuum lets it be fat',
+    (() => {
+      const air = craftFor({ massE: 1, radiusE: 1, atmo: 1 });
+      const vac = craftFor({ massE: 1, radiusE: 1, atmo: 0 });
+      return air.height / air.diameter > vac.height / vac.diameter;
+    })(),
+    `Earth ${named('Earth').craft.diameter.toFixed(1)} m across, against a Saturn V's 10.1`);
+  near('and Earth is within a metre of the real vehicle',
+    named('Earth').craft.diameter, 10.1, 1.0);
+
+  // --- and the bells fit under the base they hang from ---------------------
+  // The packing table is only worth having if the layout honours it: an engine
+  // whose rim is proud of the base is a bell bolted to the outside of the
+  // rocket, and it is invisible from every angle except directly underneath.
+  ok('no engine bell is proud of the base it hangs from',
+    flyable.every(([, c]) => c.hull.filter((p) => p.role === 'engine')
+      .every((p) => Math.hypot(p.x, p.z) + p.radius <= c.craft.diameter / 2 + 1e-6)));
+  ok('and the bell is the size class, not a bell shrunk to make room',
+    flyable.every(([, c]) => {
+      const e = c.hull.filter((p) => p.role === 'engine');
+      return e.every((p) => Math.abs(p.height - e[0].height) < 1e-9);
+    }), 'one size on every world that can take it — that is what "size class" means');
+  ok('five or more sit as a quincunx: one in the middle, the rest on a ring',
+    (() => {
+      const e = named('Earth').hull.filter((p) => p.role === 'engine');
+      const mid = e.filter((p) => Math.hypot(p.x, p.z) < 1e-9);
+      return e.length === 5 && mid.length === 1;
+    })(), 'which is what a Saturn V looks like from underneath');
+
+  // --- fins are aerodynamic surfaces ---------------------------------------
+  // The clearest case in the file of physics choosing art: a fin in vacuum is
+  // dead weight, and `atmo` is the same number craft.js already spends drag Δv
+  // on, so this costs nothing to be right about.
+  const fins = (c) => c.hull.filter((p) => p.role === 'fin').length;
+  ok('§3 · an airless world conjures no fins, an atmosphere conjures some',
+    fins(named('Luna')) === 0 && fins(named('Earth')) > 0,
+    `Luna ${fins(named('Luna'))} · Earth ${fins(named('Earth'))}`);
+
+  ok('the tank count is the staging craft.js chose — you can see how hard the world was',
+    flyable.every(([, c]) => c.hull.filter((p) => p.role === 'tank').length === c.craft.stages));
+
+  // --- nothing is buried in the pad ----------------------------------------
+  // `surface.js` seats the group at ground level, so a part reaching below zero
+  // is a part inside the hill. The engine bells are the deliberate exception —
+  // they hang under the base, which is where engine bells go.
+  ok('§2.5 · nothing but the bells sits below the pad the group is seated on',
+    flyable.every(([, c]) => c.hull.filter((p) => p.role !== 'engine')
+      .every((p) => p.y - p.height / 2 > -1e-9)));
+
+  // --- a world that cannot be left conjures nothing -------------------------
+  const oneWay = conjureFor({ massE: 8, radiusE: 1.8, atmo: 2 }, 1);
+  ok('§8 · a one-way world conjures no hull at all, and says why in km/s',
+    !oneWay.feasible && oneWay.hull.length === 0 && /km\/s/.test(oneWay.why),
+    oneWay.why);
+
+  // --- determinism (§2.3) ---------------------------------------------------
+  ok('§2.3 · the same world and seed conjure the same craft, exactly',
+    JSON.stringify(conjureFor(WORLDS[2][1], 99))
+    === JSON.stringify(conjureFor(WORLDS[2][1], 99)));
+  ok('and a different seed changes the scatter but never the vehicle',
+    (() => {
+      const a = conjureFor(WORLDS[2][1], 1), b = conjureFor(WORLDS[2][1], 2);
+      return a.craft.height === b.craft.height && a.hull.length === b.hull.length
+        && a.hull[0].from.x !== b.hull[0].from.x;
+    })());
+
+  // --- the materialisation --------------------------------------------------
+  // §2.5 forbids cuts, and a vehicle appearing instantly is the most literal
+  // cut available. What makes it not a cut is that every part arrives with zero
+  // velocity: `1 − (1−u)³` has a zero derivative at the seat.
+  const earth = named('Earth');
+  ok('§2.5 · every part starts away from its seat and ends exactly on it',
+    earth.hull.every((p) => {
+      // `+ p.delay`: parts are staggered bottom-up, so a part seats at its own
+      // delay plus `gather`, not at `gather`.
+      const a = partAt(p, 0), b = partAt(p, (p.delay ?? 0) + CONJURE.gather + 0.01);
+      return Math.hypot(a.dx, a.dy, a.dz) > 1
+        && Math.hypot(b.dx, b.dy, b.dz) < 1e-9;
+    }));
+  ok('and arrives with zero velocity — a part still moving reads as a collision',
+    earth.hull.every((p) => {
+      const t = CONJURE.gather + (p.delay ?? 0);
+      const d = (x) => Math.hypot(partAt(p, x).dx, partAt(p, x).dy, partAt(p, x).dz);
+      return d(t - 0.02) < 0.02;          // already essentially seated
+    }));
+  ok('the conjuring is monotone: nothing ever moves back out',
+    earth.hull.every((p) => {
+      let prev = Infinity;
+      for (let t = 0; t <= CONJURE.gather; t += CONJURE.gather / 64) {
+        const o = partAt(p, t), d = Math.hypot(o.dx, o.dy, o.dz);
+        if (d > prev + 1e-9) return false;
+        prev = d;
+      }
+      return true;
+    }));
+  ok('and it is built bottom-up, as a rocket is',
+    (() => {
+      const low = earth.hull.filter((p) => p.order < 0.1);
+      const high = earth.hull.filter((p) => p.order > 0.9);
+      return low.length && high.length
+        && Math.max(...low.map((p) => p.delay)) <= Math.min(...high.map((p) => p.delay));
+    })());
+
+  // --- the state machine ----------------------------------------------------
+  const c = new Conjuration(WORLDS[2][1], 5);
+  ok('a conjuration starts idle and refuses nothing it can do', c.phase === 'idle' && c.summon());
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) { seen.add(c.update(0.05)); }
+  ok('and passes through every phase to ready, in order',
+    seen.has('gather') && seen.has('assemble') && seen.has('settle') && c.phase === 'ready',
+    [...seen].join(' → '));
+  ok('§3 · a one-way world refuses rather than conjuring a craft that cannot fly',
+    (() => {
+      const r = new Conjuration({ massE: 8, radiusE: 1.8, atmo: 2 }, 1);
+      return r.summon() === false && r.phase === 'refused' && r.poses().length === 0;
+    })());
+  // §3's HUD fade is 4 s and `surface.js` announces the build in the hint that
+  // starts it, so a conjuring that outlasts its own announcement would end with
+  // nothing on screen having said what was happening.
+  ok('the materialisation fits inside the HUD hint that announces it',
+    CONJURE_TIME < 4 && CONJURE_TIME > 1, `${CONJURE_TIME.toFixed(2)} s`);
+
+  // --- hullOf's own contract ------------------------------------------------
+  ok('an infeasible craft yields no parts at all, whatever is asked of it',
+    hullOf({ feasible: false }, {}, 7).length === 0);
+}
+
+// ---------------------------------------------------------------------------
+// the climb-out (src/climb.js)
+//
+// The conjured craft used to stand on the pad and never move, which is a worse
+// promise than no craft at all. This is the first 1435 m of a launch — the
+// altitude `ascent.js` hands over at — integrated rather than authored, so the
+// whole flight is checkable in Node instead of something you have to fly to
+// find out about.
+function suiteClimb() {
+  console.log('\nclimb — the first kilometre and a half (§2.5, §6 M5)');
+
+  // `releaseAltitude(EXT=1400, fov=52)`: where the ground stops filling the lens
+  const REL = (1400 * 0.5) / Math.tan((52 * 0.5 * Math.PI) / 180);
+  const WORLDS = [
+    ['Luna', { massE: 0.0123, radiusE: 0.2727, atmo: 0 }],
+    ['Mars', { massE: 0.107, radiusE: 0.532, atmo: 0.006 }],
+    ['Earth', { massE: 1, radiusE: 1, atmo: 1 }],
+    ['Venus', { massE: 0.815, radiusE: 0.95, atmo: 92 }],
+    ['super-earth', { massE: 5, radiusE: 1.5, atmo: 1.4 }],
+    ['tiny rock', { massE: 0.002, radiusE: 0.15, atmo: 0 }],
+    ['heavy dry', { massE: 2.4, radiusE: 1.2, atmo: 0.02 }],
+  ];
+  const runs = WORLDS.map(([n, w]) => {
+    const c = craftFor(w);
+    return [n, w, c, c.feasible ? flyClimb(c, w, REL) : null];
+  });
+  const flew = runs.filter(([, , , r]) => r);
+
+  ok('§2.5 · every world a craft can be built for is a world the craft leaves',
+    flew.length === runs.length && flew.every(([, , , r]) => r.reached),
+    flew.map(([n, , , r]) => `${n} ${r.time.toFixed(0)}s`).join(' · '));
+
+  // --- the thing that was wrong, and the reason it was wrong ---------------
+  // A zero-lift gravity turn has `θ' = g·sin θ / v`, which diverges as v → 0.
+  // Pitching over on altitude alone kicked Earth at 26 m/s, ran the turn to
+  // horizontal inside half a minute, put every newton sideways, and left the
+  // stack in the first kilometre. Gating the kick on speed is what makes the
+  // manoeuvre stable on all seven rather than on the ones that happen to
+  // accelerate fast enough — the same reason a real launcher waits for airspeed.
+  ok('the pitch-over never runs away — nothing reaches horizontal',
+    flew.every(([, , , r]) => r.pitchDeg < LAUNCH.pitchMaxDeg + 1e-9),
+    flew.map(([n, , , r]) => `${n} ${r.pitchDeg.toFixed(0)}°`).join(' · '));
+  ok('and nothing leaves the frame still pointing straight up either',
+    flew.every(([, , , r]) => r.pitchDeg > 1),
+    'a launch that never turns is a firework');
+
+  // --- the design rule, stated as the arithmetic it is ----------------------
+  // TWR is a design choice; net acceleration is the number a designer holds.
+  // Fixing 1.7 m/s² and solving for TWR is why every world clears the same
+  // altitude in a comparable time, which is what designing to one acceleration
+  // means. Fixing TWR instead gave a 0.09 g world a 96-second climb.
+  ok('§3 · TWR is solved from the acceleration a stack is designed for',
+    flew.every(([, w, c]) => {
+      const p = launchFor(c, w);
+      const net = (p.twr - 1) * p.g0;
+      return p.twr >= LAUNCH.twrMin - 1e-9 && p.twr <= LAUNCH.twrMax + 1e-9
+        && (net >= LAUNCH.netAccel - 1e-6 || p.twr <= LAUNCH.twrMin + 1e-9
+          || p.twr >= LAUNCH.twrMax - 1e-9);
+    }),
+    WORLDS.map(([n, w]) => `${n} ${launchFor(craftFor(w), w).twr.toFixed(2)}`).join(' · '));
+  ok('so no world takes more than a minute to clear the lens, and none under ten seconds',
+    flew.every(([, , , r]) => r.time > 10 && r.time < 60),
+    `${Math.min(...flew.map(([, , , r]) => r.time)).toFixed(0)}–${Math.max(...flew.map(([, , , r]) => r.time)).toFixed(0)} s`);
+
+  // --- the one case anybody has flown --------------------------------------
+  // Saturn V passed 1.4 km at about T+40 s doing roughly 90 m/s. If the model
+  // gets that wrong there is no reason to trust it on the other 10²⁸.
+  const earth = runs.find(([n]) => n === 'Earth')[3];
+  near('§3 · Earth clears 1435 m at about the time a Saturn V did', earth.time, 37, 8);
+  near('and at about the speed a Saturn V was doing', earth.speed, 90, 25);
+
+  // --- the ballistic coefficient, and why the area cancels -----------------
+  // β = m/(Cd·A), and for a body of roughly uniform density m ∝ A·H, so β ∝ H
+  // alone. A taller stack punches through air better; a wider one does not.
+  ok('drag scales with the vehicle height and not with its width',
+    (() => {
+      const tall = launchFor({ ve: 4400, height: 200 }, { massE: 1, radiusE: 1, atmo: 1 });
+      const short = launchFor({ ve: 4400, height: 50 }, { massE: 1, radiusE: 1, atmo: 1 });
+      return Math.abs(tall.beta / short.beta - 4) < 1e-9;
+    })(), 'β = 860·H — 110 m puts Earth on the Saturn V\'s measured 94,600 kg/m²');
+
+  // --- an atmosphere is felt ------------------------------------------------
+  ok('§8 · a thick atmosphere costs a launch real time, a vacuum costs none',
+    (() => {
+      const w = { massE: 1, radiusE: 1, atmo: 1 };
+      const vac = { massE: 1, radiusE: 1, atmo: 0 };
+      const a = flyClimb(craftFor(w), w, REL), b = flyClimb(craftFor(vac), vac, REL);
+      return a.time > b.time && a.maxQ > 1e3 && b.maxQ < 1e-9;
+    })());
+  ok('and Venus, at 92 bar, is the worst max-Q in the set by an order of magnitude',
+    (() => {
+      const v = runs.find(([n]) => n === 'Venus')[3];
+      const rest = flew.filter(([n]) => n !== 'Venus').map(([, , , r]) => r.maxQ);
+      return v.maxQ > 10 * Math.max(...rest);
+    })(), `${(runs.find(([n]) => n === 'Venus')[3].maxQ / 1000).toFixed(0)} kPa`);
+
+  // --- the integration itself ----------------------------------------------
+  const p = launchFor(craftFor(WORLDS[2][1]), WORLDS[2][1]);
+  ok('§2.5 · the pad pushes back: nothing sinks through the ground before liftoff',
+    (() => {
+      let s = launchState();
+      for (let i = 0; i < 120; i++) { s = stepLaunch(s, p, 1 / 60, REL); if (s.h < 0) return false; }
+      return true;
+    })());
+  ok('the acceleration rises as the vehicle burns itself away',
+    (() => {
+      let s = launchState(), first = 0, last = 0;
+      for (let i = 0; i < 60 * 30; i++) {
+        s = stepLaunch(s, p, 1 / 60, Infinity);
+        if (i === 0) first = s.thrust;
+        last = s.thrust;
+      }
+      return last > first * 1.02;
+    })(), 'constant force over falling mass — most of why a launch reads as a launch');
+  ok('the engine cuts rather than burning the tanks themselves',
+    (() => {
+      let s = launchState();
+      for (let i = 0; i < 60 * 900; i++) s = stepLaunch(s, p, 1 / 60, Infinity);
+      return !s.burning && s.thrust === 0 && s.mass >= LAUNCH.minMass - 1e-12;
+    })());
+  ok('§2.3 · the same craft on the same world flies the same climb, exactly',
+    JSON.stringify(flyClimb(craftFor(WORLDS[2][1]), WORLDS[2][1], REL))
+    === JSON.stringify(flyClimb(craftFor(WORLDS[2][1]), WORLDS[2][1], REL)));
+  ok('release fires exactly once, on the frame the ground lets go',
+    (() => {
+      let s = launchState(), fired = 0;
+      for (let i = 0; i < 60 * 200; i++) { s = stepLaunch(s, p, 1 / 60, REL); if (s.released) fired++; }
+      return fired === 1;
+    })());
+  ok('§11 · no timestep produces a state with a NaN in it',
+    (() => {
+      for (const dt of [0, -1, 1e-9, 0.5, 10, NaN, Infinity]) {
+        let s = launchState();
+        for (let i = 0; i < 200; i++) s = stepLaunch(s, p, dt, REL);
+        for (const n of [s.h, s.vUp, s.vHor, s.theta, s.mass, s.t, s.down]) {
+          if (!Number.isFinite(n)) return false;
+        }
+      }
+      return true;
+    })(), 'seven timesteps including negative, NaN and infinite');
+  ok('and gravity falls off with altitude rather than being a constant',
+    (() => {
+      const moon = launchFor(craftFor(WORLDS[0][1]), WORLDS[0][1]);
+      return moon.R > 1e6 && moon.R < 2e6;   // 1738 km, so 1435 m is 0.08% of it
+    })());
+  near('speedOf is the norm of the two components, not one of them',
+    speedOf({ vUp: 3, vHor: 4 }), 5, 1e-9);
+}
+
+// ---------------------------------------------------------------------------
+// the contact shadow (src/paint.js)
+//
+// The figure floated, and `figure.js` says why in its own words: "there is no
+// shadow map in the default build." There is not — `surface.js` builds one only
+// under `?paint=1`, so every occluder in the frame casts nothing. This is the
+// first-order projection instead, and it is worth testing rather than eyeballing
+// because the two things most likely to be wrong are the two a still hides: the
+// direction (a shadow pointing *at* a low sun looks nearly right in one frame)
+// and the behaviour through the horizon, where `tan e` changes sign.
+function suiteShadow() {
+  console.log('\ncontact shadow — the dark shape that puts a body on the ground (§9.2, §8 axis 1)');
+
+  const unit = (x, y, z) => {
+    const n = Math.hypot(x, y, z) || 1;
+    return { x: x / n, y: y / n, z: z / n };
+  };
+  const elevSun = (deg, azDeg = 0) => {
+    const e = (deg * Math.PI) / 180, a = (azDeg * Math.PI) / 180;
+    return unit(Math.cos(e) * Math.sin(a), Math.sin(e), Math.cos(e) * Math.cos(a));
+  };
+
+  // --- the length is the geometry, not a curve ------------------------------
+  // h / tan e, and the check is the arithmetic rather than a remembered value.
+  for (const deg of [8, 13.5, 18, 45, 80]) {
+    const want = Math.min(1.7 / Math.tan((deg * Math.PI) / 180), 16);
+    near(`a 1.7 m body at ${deg}° throws h/tan e of shadow`,
+      contactShadow(elevSun(deg), { height: 1.7 }).length, want, 1e-6);
+  }
+  ok('§9.7 · at the spawn band the shadow is metres long, which is what golden hour is',
+    contactShadow(elevSun(13.5), { height: 1.7 }).length > 6,
+    `${contactShadow(elevSun(13.5), { height: 1.7 }).length.toFixed(1)} m at 13.5°`);
+
+  // --- the direction: away from the star, in every quadrant -----------------
+  // A rotation of `a` about Y sends local +z to (sin a, 0, cos a). The shadow
+  // must therefore point along −(sun.x, sun.z), and getting the sign right in
+  // one quadrant is not evidence of getting it right in four.
+  ok('§8 axis 8 · the shadow points away from the sun at every azimuth',
+    [0, 37, 90, 143, 180, 231, 270, 314].every((az) => {
+      const s = elevSun(14, az);
+      const g = contactShadow(s, { height: 1.7 });
+      const dx = Math.sin(g.angle), dz = Math.cos(g.angle);
+      const h = Math.hypot(s.x, s.z);
+      // dot with the sun's own horizontal direction must be −1
+      return Math.abs((dx * (s.x / h) + dz * (s.z / h)) + 1) < 1e-9;
+    }), 'eight azimuths, all antiparallel to within 1e-9');
+
+  // --- the horizon, which is where a naive tan() betrays you ----------------
+  ok('a sun at or below the horizon casts nothing at all',
+    [0, -0.01, -0.4, -1].every((y) => contactShadow(unit(0.3, y, 0.5)).amount === 0
+      && contactShadow(unit(0.3, y, 0.5)).length === 0),
+    'and it is a guard rather than a clamp — tan e changes *sign* through zero,'
+    + ' so an unguarded length is a shadow drawn toward the star');
+  ok('and the length is capped, so a sun a hair above it does not throw a kilometre',
+    contactShadow(elevSun(0.06), { height: 1.7, maxLength: 16 }).length <= 16);
+
+  // --- monotonic in the two things it should be monotonic in ---------------
+  ok('the shadow lengthens as the sun sets, monotonically',
+    (() => {
+      let prev = -1;
+      for (let d = 89; d >= 4; d -= 1) {
+        const L = contactShadow(elevSun(d), { height: 1.7, maxLength: 1e9 }).length;
+        if (L < prev - 1e-9) return false;
+        prev = L;
+      }
+      return true;
+    })());
+  ok('§2.5 · and it weakens as the body leaves the ground rather than following it up',
+    (() => {
+      let prev = Infinity;
+      for (let air = 0; air <= 30; air += 0.5) {
+        const a = contactShadow(elevSun(30), { feet: air, ground: 0 }).amount;
+        if (a > prev + 1e-12) return false;
+        prev = a;
+      }
+      return prev < 0.01;
+    })(), 'a flying figure dragging a hard ellipse across the valley is the failure');
+
+  // --- §9.2's one non-negotiable about shadows ------------------------------
+  ok('§9.2 · the shadow never reaches full strength, because shadows are not holes',
+    (() => {
+      for (const d of [1, 5, 13.5, 45, 90]) {
+        const a = contactShadow(elevSun(d)).amount;
+        if (!(a >= 0 && a <= 0.63)) return false;
+      }
+      return true;
+    })(), 'the multiplier bottoms out at (0.42, 0.47, 0.62) — never zero, and bluest'
+    + ' in blue, so it lands violet on any ground colour rather than grey');
+
+  ok('§11 · no sun vector produces a NaN, however degenerate',
+    [{}, { x: 0, y: 0, z: 0 }, { x: NaN, y: 0.5, z: 0 }, { y: Infinity },
+      { x: 0, y: 1, z: 0 }, { x: 1e-12, y: 1e-12, z: 1e-12 }]
+      .every((s) => {
+        const g = contactShadow(s, { feet: NaN, ground: 0 });
+        return [g.amount, g.length, g.width, g.angle, g.offset].every(Number.isFinite);
+      }),
+    'including a sun straight overhead, where the horizontal component vanishes');
+
+  ok('a sun straight up throws no length and therefore needs no direction',
+    (() => {
+      const g = contactShadow({ x: 0, y: 1, z: 0 });
+      return g.length === 0 && g.angle === 0 && g.amount > 0;
+    })(), 'noon still darkens the ground under you — it just does not point anywhere');
+}
+
 const suites = {
+  shadow: suiteShadow,
+  climb: suiteClimb,
+  conjure: suiteConjure,
   lightcone: suiteLightcone,
   craft: suiteCraft,
   wonder: suiteWonder,

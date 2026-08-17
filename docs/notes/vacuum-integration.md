@@ -127,3 +127,96 @@ dust and belt, and leaves `blackbodyRGB` to light the planets.
 
 If `starfield.js` ever wants its stars to carry real spectral colour, the
 function to call is `starChroma()`'s recipe, not this one.
+
+---
+
+## 5 · `src/planetscale.js` — a §2.3 determinism leak that the `Math.random` grep cannot see
+
+**Severity: an invariant violation. Two people opening the same link see
+different worlds.**
+
+`_ecoFor()` (around line 1401) reads the wall clock and a `localStorage` blob,
+and both reach *visible fauna counts*:
+
+```js
+const now = Date.now();
+let st = db[key];
+if (!st) { st = { s: …, k: …, t: now }; }
+else {
+  const dtH = Math.min(Math.max((now - st.t) / 3.6e6, 0), 720);
+  const grow = (n, cap) => Math.min(cap, Math.round(n + (n + 0.5) * 0.08 * dtH * (1 - n / cap)));
+  st.s = grow(st.s, K.s); st.k = grow(st.k, K.k); st.t = now;
+}
+```
+
+Those two numbers are not decoration. `life.js:229` uses `eco.skimmers` as the
+instance count `NB` and `life.js:320` uses `eco.striders` as `NS_WANT`, and
+`planetscale.js:1753` prints both to the HUD as *regional fauna*. So the number
+of animals standing in the frame, and the number the HUD claims, are a function
+of what time it is and of what is in this browser's `localStorage`.
+
+§2.3 is unambiguous — *"Same seed + same code = same universe on every machine,
+forever. No `Math.random()`, no `Date.now()`, no un-seeded `performance.now()` in
+any generation path."* §2.4 depends on it: a deep link is only an address if it
+resolves to one place. And §4 caps persistence at *"URL + `localStorage`
+logbook"*; `aeon-eco-v1` is a second store, and it is authoritative rather than
+observational.
+
+### The whole sweep, so this is closed rather than patched
+
+Every wall-clock read in `src/` was checked against "does this reach generated
+state?":
+
+| site | verdict |
+|---|---|
+| `planetscale.js:1409` `_ecoFor` | **leak** — reaches fauna counts and the HUD |
+| `city.js:290` `step(budgetMs)` | clean — the time budget only decides how many generator iterations run per frame; the generator always runs to completion, so the city is identical |
+| `main.js:522`, `input.js:133`, `touch.js:219/252/259` | clean — input and frame timing, no generation |
+| `quadtree.js:93/361`, `surface.js:1256/1388/1464` | clean — telemetry, and `surface.js` already says so in a comment |
+| `main.js:739` | clean — the logbook's own timestamp, display only |
+
+One site. `city.js` is the near-miss worth keeping in mind: a time budget is
+safe exactly as long as it is amortisation and not truncation.
+
+### The change
+
+The visible count has to be a pure function of `(seed, region)`. The growth
+model can stay if it is driven by something the URL carries — the planet's own
+elapsed simulation time is such a quantity; the visitor's wall clock is not.
+
+Minimal fix, deleting the leak and keeping the carrying capacity that was
+already deterministic:
+
+```js
+  _ecoFor(a) {
+    const q = 28;
+    const key = (hash(Math.round(a.x * q), Math.round(a.y * q), Math.round(a.z * q), this.pp.seed) >>> 0).toString(36);
+    const rng = new RNG(parseInt(key, 36) >>> 0);
+    const veg = 0.4 + 0.6 * rng.next();
+    // Carrying capacity is regional and deterministic; standing population is
+    // a fixed fraction of it drawn from the same stream. §2.3: the same seed
+    // has to put the same herd on the same hillside on every machine, forever,
+    // which is what makes §2.4's deep link an address rather than a suggestion.
+    const K = { s: Math.round(2 + veg * 7), k: Math.round(10 + veg * 30) };
+    return {
+      striders: Math.max(1, Math.round(K.s * rng.float(0.45, 1))),
+      skimmers: Math.max(1, Math.round(K.k * rng.float(0.45, 1))),
+      veg, key,
+    };
+  }
+```
+
+and delete the `aeon-eco-v1` read and write with it.
+
+**If the "come back and the herd has changed" idea is worth keeping** — and it
+is a good idea — the honest version drives `dtH` from a simulation clock that
+the URL can carry, so the same link still resolves to the same herd:
+
+```js
+const dtH = this.simHours;   // advanced by the scale's own time, seeded, shareable
+```
+
+That is a design change and a human's call. The leak is not.
+
+**Cost of leaving it:** §2.3 is listed as *"a revert, not a discussion"*, and
+`tools/verify.js` cannot see this one — it hunts `Math.random`, not the clock.
