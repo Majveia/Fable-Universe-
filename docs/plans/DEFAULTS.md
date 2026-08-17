@@ -190,3 +190,54 @@ run:
 
 Neither is a reason to keep nine finished features switched off. Both are
 reasons the next session starts here.
+
+---
+
+## 5 · `?paint=` — the withdrawal, and what it was actually about
+
+Earlier in this session I flipped `?paint=` (§9.2's light model) to default-on,
+measured three frames, concluded it *"still flattens the frame — paler, mottling
+gone"*, and reverted it. That note has been sitting here as the reason the
+constitution's own light model ships switched off.
+
+**It was measured against a broken frame.** Those captures were taken while the
+meadow bug was live, so the terrain was bare in every one of them — and the
+terrain is the only thing `paint()` lights. `flora.js` has its own fragment
+shader; grass never went through §9.2 at all. I was comparing two pictures of
+exposed ground and calling the result an art judgement about the world.
+
+Re-measured at the same station with the meadow rendering:
+
+```
+?paint=1   vs   default        indistinguishable at 512×288
+```
+
+Which is what it should be. At a grass-covered station the terrain is almost
+entirely occluded, so the light model has nearly nothing to light. Neither the
+regression I reported nor the improvement I hoped for is visible, because the
+station cannot show either.
+
+**So the honest state is: the flip is unmeasured, not measured-and-rejected.**
+The question it needs is a world where the ground is *visible* — barren rock,
+lava, ice, a desert — and none of the three captures I took was one. It stays
+default-off because §7.4 forbids flipping a default without evidence, and
+"indistinguishable on the one world that cannot show a difference" is not
+evidence either way.
+
+What is now known and was not before:
+
+- `s.sunShadow` is constructed **only** inside `_paintUniforms()`, so with
+  `?paint=` off there is no shadow map in the build and every `markCaster()`
+  call in the repo renders into nothing. That is why the figure floated, and it
+  is why the conjured craft's caster flag was inert when I added it.
+- The figure's contact shadow (`paint.js:contactShadow`) deliberately does not
+  wait for that map. It is a first-order sun projection and needs no pass.
+- Anything else that wants to cast — the rocket, the trees, the towers — still
+  has nowhere to cast into. That is the strongest remaining argument for the
+  flip, and it is an argument for *separating the shadow map from the grade*
+  rather than for flipping them together.
+
+**Next session, on a machine with a GPU:** capture a barren or lava world at
+`?paint=0` and `?paint=1`, score both blind on §8, and decide. If the grade
+wins, the follow-up is to lift `sunShadow` out of `_paintUniforms()` so the map
+can ship independently of the grade that currently gates it.
