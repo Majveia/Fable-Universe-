@@ -82,6 +82,12 @@ const steps = [
   // thing more slowly: a module that does not parse looks exactly like a page
   // that would not boot
   ['parse', ['tools/parse.js', '--quiet'], 'every module the browser loads, parsed'],
+  // The gap parse and verify both have: a module can be valid JavaScript and
+  // every pure function in it can be green, and it can still throw partway
+  // through construction and leave a black screen. `boot` navigates to each
+  // scale — including a world with a biosphere, in flower, which is the branch
+  // a default seed never reaches — and asserts nothing throws.
+  ['boot', ['tools/boot.js'], 'every scale comes up without throwing'],
   ['verify', ['tools/verify.js'], 'the maths, against independent references (§7.3)'],
   // §7.3 has two halves and this is the second: `verify` proves the CPU
   // reference has the properties §9 asks for, `pixeldiff` proves the shader
@@ -98,6 +104,12 @@ const steps = [
     + ' `?intnoise=1` and measured green there (the step above runs it); flipping'
     + ' the default moves every world once and re-takes the `ground` goldens,'
     + ' which docs/plans/M2.md §28.7 leaves to a human.'],
+  // Two halves of §M0's compile gate, and they cover different shaders.
+  // `glslcheck` compiles what the codebase *exports* — reachable in seconds,
+  // on any machine, whatever season the worlds are in. `shadercheck` compiles
+  // what the renderer *assembles* on a real route, which is the only way to
+  // catch a defect in an interpolated chunk. Neither subsumes the other.
+  ['glsl', ['tools/glslcheck.js'], 'every exported shader pair, in a real driver (§M0)'],
   ['shaders', ['tools/shadercheck.js'], 'every shader as the driver sees it (§M0)'],
   ['capture', ['tools/capture.js', '--milestone', milestone], 'the numbered set + perf JSON (§7.5)'],
   ['repeat', ['tools/repeat.js'], 'the same URL twice, to §7.3\'s tolerance'],

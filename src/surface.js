@@ -20,6 +20,7 @@ import { addFlare } from './flare.js';
 import { addGrass } from './grass.js';
 import { addRuins } from './ruins.js';
 import { addWildlife } from './wildlife.js';
+import { addGroundCover } from './ground-cover.js';
 import { addConstellations } from './constellations.js';
 import { addCaravan } from './caravan.js';
 import { addWeather } from './weather.js';
@@ -821,6 +822,10 @@ export class SurfaceScale {
     // §9.5 is one field, not two. The old one survives only for `?m3=0`.
     this.grassField = M3 ? null : addGrass(this);
     this.ruins = BUILT ? addRuins(this) : null;
+    // Rock, ice and undergrowth — every world, life or not. See
+    // `src/ground-cover.js`: gating the meadow was right and left the worlds it
+    // gated bare, which is the half of that fix that was missing.
+    this.groundCover = addGroundCover(this);
     this.wildlife = addWildlife(this);
     this.constellations = addConstellations(this);
     this.caravan = addCaravan(this);
@@ -1446,7 +1451,27 @@ export class SurfaceScale {
     if (PAINT) markCaster(this.terrain.children[0]);
 
     if (RIDGE) this._buildHorizon(rings);
-    if (M3) this._buildMeadow();
+    // §M3's meadow, and the question nobody was asking it: **can anything grow
+    // here?**
+    //
+    // The only gate on this was the flag. So every world in the universe grew a
+    // three-and-a-half-million-blade sward — ice worlds at 28 K, lava worlds,
+    // barren rock, airless moons. On an ice world it is unmistakable, because
+    // `system.js` gives ice a pale blue-white `colC` and `grassPalette()` runs
+    // that up to 2.55×: metres of washed blue grass standing in frozen sand.
+    //
+    // `grass.js` — the field M3 replaced — imports `isBiosphere` and has always
+    // asked. The meadow never did, and while M3 was behind a default-off flag
+    // nobody found out. Flipping it on is what exposed a check that had been
+    // missing since it was written.
+    //
+    // Same shape as the gate in `scatter.js` and `precip.js`: life needs a
+    // temperate world *and* air, and a world without either grows nothing,
+    // which is an answer rather than a fallback.
+    // an empty meadow rather than an absent one, so nothing downstream has to
+    // know whether this world grows anything
+    this.meadow = [];
+    if (M3 && isBiosphere(this.pp) && this.atmo >= 0.05) this._buildMeadow();
   }
 
   /**
@@ -3119,6 +3144,10 @@ export class SurfaceScale {
         port: ' · port city', monument: ' · old capital', spaceport: ' · spaceport',
       }[this.settlement.archetype] ?? '')]] : []),
       ['biosphere', this.life ? 'flora + fauna' : '—'],
+      // §8 axis 8: if the canopy is in flower the readout must say so, because
+      // the flower is a claim about where this world is in its own orbit
+      ...(this.life?.openness > 0.02 ? [['season', this.life.openness > 0.75
+        ? 'full bloom' : this.life.openness > 0.35 ? 'in flower' : 'first blossom']] : []),
       ...(pp.res?.line ? [['mood', pp.res.line]] : []),
       ['craters', this.impacts.length ? String(this.impacts.length) : '—'],
       ['surface gravity', g.toFixed(2) + ' g'],

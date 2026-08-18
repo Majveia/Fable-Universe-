@@ -38,6 +38,7 @@ on:
       - 'index.html'
       - 'vendor/**'
       - 'tools/shadercheck.js'
+      - 'tools/glslcheck.js'
       - 'tools/lib.js'
       - '.github/workflows/shaders.yml'
   workflow_dispatch:
@@ -67,6 +68,13 @@ jobs:
         run: |
           npm i -g playwright
           npx playwright install --with-deps chromium
+
+      # Ten seconds, and it covers what the station walk cannot: a shader that
+      # only exists when a world is in flower is not built by a route that
+      # happens to land out of season. Run first, because when it fails there
+      # is no reason to spend forty minutes finding out again.
+      - name: compile every exported shader pair
+        run: node tools/glslcheck.js
 
       # One flag set rather than the two run locally. The second local pass
       # exists to check the milestone flags in company; on CI the cost of that

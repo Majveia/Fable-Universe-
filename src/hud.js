@@ -650,13 +650,34 @@ export class HUD {
   }
 
   /** fade to black, do the thing, fade back */
+  /**
+   * Drop the veil, swap the world behind it, lift the veil.
+   *
+   * The `try` is the whole point and it is not defensive programming for its
+   * own sake. This used to be a bare `swap()`, and the veil was lifted on the
+   * line *after* it — so any throw inside the swap left an opaque element over
+   * the entire screen, forever, with `App._warping` still true and every input
+   * dead. The universe was still running underneath, at full frame rate,
+   * behind a black rectangle.
+   *
+   * That is what "the wondrous button shows a black screen" was. Every teleport
+   * goes through here — the atlas, the logbook, a restored link — but only the
+   * wondrous button rolls a *random* destination, so it is the only one that
+   * regularly finds a destination that throws.
+   *
+   * The veil now lifts in a `finally`, and the error is rethrown after the
+   * screen is usable rather than swallowed: a failed teleport should leave you
+   * somewhere you can see, and should still say what went wrong.
+   */
   warp(swap) {
     this.warpEl.classList.add('on');
     setTimeout(() => {
-      swap();
+      let err = null;
+      try { swap(); } catch (e) { err = e; }
       requestAnimationFrame(() => requestAnimationFrame(() => {
         this.warpEl.classList.remove('on');
       }));
+      if (err) { this.app._warping = false; throw err; }
     }, 300);
   }
 

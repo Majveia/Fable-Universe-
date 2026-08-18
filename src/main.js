@@ -243,7 +243,12 @@ class App {
     } else if (url.searchParams.get('bh')) {
       const gal = this.active();
       gal.exit();
-      this.stack.push(new BlackHoleScale(this, { bhMassMsun: gal.params.bhMassMsun }));
+      this.stack.push(new BlackHoleScale(this, { bhMassMsun: gal.params?.bhMassMsun }));
+      // …and enter it, which every other branch in this function does and this
+      // one did not. Without it `controls.enabled` stays false, so the one roll
+      // in sixteen that lands you at a galactic nucleus arrived somewhere you
+      // could not turn to look at.
+      this.active().enter();
     }
   }
 
@@ -780,9 +785,17 @@ class App {
         s.dispose();
       }
       this.stack[0].resume();
-      this._restore(u);
-      this._syncScale();
-      this._warping = false;
+      // `finally`, because a destination that fails to build must still leave
+      // you somewhere. Without it `_warping` stayed true and every later
+      // teleport returned at the guard on the first line — the app was not
+      // merely showing a black screen, it had stopped accepting the input that
+      // could have got you off it.
+      try {
+        this._restore(u);
+      } finally {
+        this._syncScale();
+        this._warping = false;
+      }
     });
   }
 
