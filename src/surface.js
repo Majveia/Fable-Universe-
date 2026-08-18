@@ -1446,7 +1446,27 @@ export class SurfaceScale {
     if (PAINT) markCaster(this.terrain.children[0]);
 
     if (RIDGE) this._buildHorizon(rings);
-    if (M3) this._buildMeadow();
+    // §M3's meadow, and the question nobody was asking it: **can anything grow
+    // here?**
+    //
+    // The only gate on this was the flag. So every world in the universe grew a
+    // three-and-a-half-million-blade sward — ice worlds at 28 K, lava worlds,
+    // barren rock, airless moons. On an ice world it is unmistakable, because
+    // `system.js` gives ice a pale blue-white `colC` and `grassPalette()` runs
+    // that up to 2.55×: metres of washed blue grass standing in frozen sand.
+    //
+    // `grass.js` — the field M3 replaced — imports `isBiosphere` and has always
+    // asked. The meadow never did, and while M3 was behind a default-off flag
+    // nobody found out. Flipping it on is what exposed a check that had been
+    // missing since it was written.
+    //
+    // Same shape as the gate in `scatter.js` and `precip.js`: life needs a
+    // temperate world *and* air, and a world without either grows nothing,
+    // which is an answer rather than a fallback.
+    // an empty meadow rather than an absent one, so nothing downstream has to
+    // know whether this world grows anything
+    this.meadow = [];
+    if (M3 && isBiosphere(this.pp) && this.atmo >= 0.05) this._buildMeadow();
   }
 
   /**
