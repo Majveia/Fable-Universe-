@@ -263,9 +263,20 @@ export function addLife(s) {
     // being aliasing. It is the one dimension in this file that is not honest,
     // and it is the honest one that looks wrong.
     const flGeo = new THREE.CircleGeometry(0.038, 5);
-    // §5: one draw call for every flower on the world, capped by tier. The cap
-    // is shared out per tree rather than spent first-come, so the near trees do
-    // not eat the budget and leave the skyline bare.
+    // §5, as arithmetic rather than a magic number. One draw call for every
+    // flower on the world — they are all one InstancedMesh — so the cost is
+    // triangles, and a pentagon is five: 44 000 × 5 = 220 000, which is **10%
+    // of §5's 2.2 M surface budget**, and 13 000 × 5 = 65 000 on low. That is a
+    // large share for one element and it is meant to be: it exists on roughly a
+    // third of worlds, only in season, and when it exists it is the thing you
+    // are looking at.
+    //
+    // Not yet measured on real silicon — this container is SwiftShader, which
+    // cannot render the frame at all, let alone time it. If the surface budget
+    // goes red on a GPU run, this is the first number to take back.
+    //
+    // The cap is shared out per tree rather than spent first-come, so the near
+    // trees do not eat it and leave the skyline bare.
     const cap = budget > 300 ? 44000 : 13000;
     const per = Math.max(24, Math.floor(cap / grown.length));
     const fx = [], frec = [];
