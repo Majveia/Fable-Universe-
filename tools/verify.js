@@ -98,6 +98,7 @@ import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecol
 import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
 import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
 import { SPECIES, communityOf, densityAt, scatterChunk, tolerance } from '../src/scatter.js';
+import { phaseOf, precipFor, subpixel, terminalVelocity, wrap } from '../src/precip.js';
 import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
   stepAscent,
@@ -7652,7 +7653,106 @@ function suiteScatter() {
         .every((i) => [i.x, i.y, i.z, i.h, i.w, i.yaw].every(Number.isFinite) && i.h > 0)));
 }
 
+// ---------------------------------------------------------------------------
+// precipitation (src/precip.js)
+//
+// Method from docs/reference/sakura-realm/src/weather/precipitation.js (MIT).
+// AEON's `weather.js` is 153 lines and falls at one speed on every world; the
+// reference is 1 929 and its four ideas each fix something that reads as wrong.
+// What AEON adds is that a drop reaches terminal velocity, and it knows every
+// world's gravity and air.
+function suitePrecip() {
+  console.log('\nprecipitation — a drop is a readout of the air it falls through (§9, §2.3)');
+
+  // --- against real measurements ------------------------------------------
+  // Gunn & Kinzer dropped water down a tower in 1949. A constant-Cd sphere
+  // cannot reproduce the saturation of the real curve — a big drop flattens —
+  // so the check is a tolerance that says so rather than a fit that hides it.
+  const gk = [[0.0005, 4.0], [0.00125, 7.2], [0.0025, 9.1]];
+  ok('§3 · a raindrop falls at about the speed a real one does',
+    gk.every(([r, v]) => Math.abs(terminalVelocity(r) - v) / v < 0.20),
+    gk.map(([r, v]) => `${(r * 2000).toFixed(1)}mm ${terminalVelocity(r).toFixed(1)} vs ${v}`).join(' · ')
+    + ' — within 20%, and the residual is all large-drop flattening');
+  ok('and it is the square root of radius, which is the law and not a curve',
+    Math.abs(terminalVelocity(0.004) / terminalVelocity(0.001) - 2) < 1e-9);
+
+  // --- the thing the reference could not do -------------------------------
+  ok('§8 axis 8 · thin air drops it fast, thick air holds it back',
+    (() => {
+      const thin = precipFor({ surfaceK: 250, atmo: 0.02, gravity: 9.8 });
+      const earth = precipFor({ surfaceK: 288, atmo: 1, gravity: 9.8 });
+      const thick = precipFor({ surfaceK: 300, atmo: 40, gravity: 9.8 });
+      return thin.vRain > earth.vRain * 3 && thick.vRain < earth.vRain * 0.5;
+    })(),
+    (() => {
+      const e = precipFor({ surfaceK: 288, atmo: 1, gravity: 9.8 });
+      const v = precipFor({ surfaceK: 737, atmo: 92, gravity: 8.87 });
+      return `Earth ${e.vRain.toFixed(1)} m/s · Venus-like ${v.vRain.toFixed(1)} m/s,`
+        + ' which is nearer falling through water than through sky';
+    })());
+  ok('and a heavier world pulls it down harder, from the same law',
+    precipFor({ atmo: 1, gravity: 23.5 }).vRain > precipFor({ atmo: 1, gravity: 9.8 }).vRain);
+
+  ok('§9 · snow falls far slower than rain, because it is a light plate not a bead',
+    (() => {
+      const p = precipFor({ surfaceK: 270, atmo: 1, gravity: 9.8 });
+      return p.vSnow < p.vRain * 0.35;
+    })(), 'two orders of density and three times the drag coefficient');
+  ok('so a breeze that barely leans rain blows snow sideways',
+    (() => {
+      const p = precipFor({ surfaceK: 275, atmo: 1, gravity: 9.8 });
+      const l = p.leanAt(8);
+      return l.snow > l.rain * 1.4;
+    })(), 'atan(u/v_t) — the velocity triangle, nothing more');
+
+  // --- phase is temperature, not a flag -----------------------------------
+  ok('§9 · what falls is decided by how cold it is',
+    phaseOf(260, 1).kind === 'snow' && phaseOf(290, 1).kind === 'rain'
+    && phaseOf(275, 1).kind === 'sleet',
+    'and the band between them is sleet, which is a real thing at a real temperature');
+  ok('§8 axis 8 · and nothing falls where there is no air to condense in',
+    phaseOf(288, 0).kind === 'none' && phaseOf(200, 0.01).kind === 'none',
+    'the same gate scatter.js uses, for the same reason');
+
+  // --- idea 1: wrap, do not respawn ---------------------------------------
+  ok('§9 · a particle leaving the box re-enters it, so density never waves',
+    (() => {
+      for (let i = 0; i < 400; i++) {
+        const p = -500 + i * 2.5;
+        const w = wrap(p, 100, 40);
+        if (!(w >= 100 - 20 - 1e-9 && w <= 100 + 20 + 1e-9)) return false;
+      }
+      return true;
+    })(), 'always inside the camera box — respawning is what trails a moving camera');
+  ok('and it is a pure function of position, not a state machine',
+    wrap(1234.5, 100, 40) === wrap(1234.5, 100, 40));
+
+  // --- idea 3: energy-conserving anti-aliasing ----------------------------
+  ok('§9 · a sub-pixel drop is widened and dimmed by exactly the same factor',
+    (() => {
+      for (const w of [0.05, 0.4, 0.9, 1.39]) {
+        const s2 = subpixel(w, 1.4);
+        if (Math.abs(s2.width * s2.alpha - 1) > 1e-12) return false;
+        if (Math.abs(s2.width * w - 1.4) > 1e-9) return false;
+      }
+      return true;
+    })(), 'the product is 1 by construction, which is why distant rain does not become fog');
+  ok('and a drop already wider than the floor is left alone',
+    subpixel(3, 1.4).width === 1 && subpixel(3, 1.4).alpha === 1);
+
+  ok('§11 · no world produces a NaN, a negative speed or an infinite fall',
+    [{}, { atmo: 0 }, { atmo: NaN }, { gravity: 0 }, { surfaceK: 0 },
+      { surfaceK: NaN, atmo: Infinity }, { gravity: -5 }]
+      .every((o) => {
+        const p = precipFor(o);
+        const l = p.leanAt(NaN);
+        return [p.vRain, p.vSnow, p.rhoAir, p.snow, p.rain, l.rain, l.snow]
+          .every((v) => Number.isFinite(v) && v >= 0);
+      }));
+}
+
 const suites = {
+  precip: suitePrecip,
   scatter: suiteScatter,
   tree: suiteTree,
   paintUniforms: suitePaintUniforms,
