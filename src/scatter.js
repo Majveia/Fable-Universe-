@@ -219,3 +219,111 @@ export function scatterChunk({
 /** which species can live in this biome at all — for a HUD, and for a test */
 export const communityOf = (biome) =>
   SPECIES.filter((sp) => tolerance(sp, biome) > 0.02).map((sp) => sp.id);
+
+// ---------------------------------------------------------------------------
+// What a world has when it has no life
+//
+// The plant community above is gated on air and warmth, and correctly: nothing
+// photosynthesises in a vacuum. But the first thing that gate did was make a
+// 28 K ice world *emptier* — bare ground to the horizon, which is worse than
+// the wrong grass and is the real content of "it doesn't look complete."
+//
+// A lifeless world is not featureless. It is rock, and rock has a history:
+// frost-shattered scree on a cold one, wind-cut ventifacts and dune ripple on a
+// dry one, a broken crust on a hot one, and boulders everywhere because
+// everything breaks eventually. None of that needs air, water or light, so
+// none of it is gated on them — which is the whole point of keeping it separate
+// from `SPECIES` rather than adding three more tolerances there.
+
+/**
+ * The mineral community. Same machinery as the plants — its own density field
+ * per kind, its own colony scale — and a different question asked of the world.
+ *
+ * `cold`/`hot`/`dry` are preferences in Kelvin and in 0..1 moisture. A kind
+ * with `any: true` is indifferent and turns up everywhere, which is what stops
+ * a world between two regimes coming out bare.
+ */
+export const MINERALS = [
+  // everything breaks eventually, so this is the one that is always there
+  { id: 'boulder', scale: 41, thr: 0.55, any: true, h: 0.9, w: 1.3, n: 0.8 },
+  // frost shattering: water in a crack freezes, expands, and splits the rock.
+  // It is the most effective weathering process in the solar system and it
+  // needs the temperature to *cross* freezing, not merely to sit below it.
+  { id: 'scree', scale: 26, thr: 0.44, cold: 250, band: 90, h: 0.22, w: 0.5, n: 4.0 },
+  // Ice, where it is cold enough for water to be a mineral rather than a fluid.
+  //
+  // `below`, not `cold`, and the difference is the difference between a
+  // *process* and a *material*. Frost shattering above needs the temperature to
+  // cross freezing, so it is a band with a preferred centre. Exposed ice is
+  // stable anywhere below its melting point and only more so as it gets colder,
+  // so a band is exactly wrong: modelled as one centred at 160 K, a 28 K ice
+  // world came out with **no ice on it** — too cold for its own defining
+  // material, which is absurd and was the first thing the measurement said.
+  { id: 'shard', scale: 33, thr: 0.62, below: 235, band: 70, h: 1.4, w: 0.4, n: 1.6 },
+  // wind-sorted grain: needs something to blow it, so this one does want air
+  { id: 'ripple', scale: 58, thr: 0.40, dry: 0.25, air: 0.08, h: 0.06, w: 2.6, n: 3.2 },
+  // a chilled crust over something that was recently liquid
+  { id: 'crust', scale: 30, thr: 0.58, hot: 700, band: 400, h: 0.35, w: 1.1, n: 2.2 },
+];
+
+/** how well a mineral kind suits a world, 0..1 */
+export function mineralFit(m, { surfaceK = 288, wet = 0.5, atmo = 1 } = {}) {
+  const T = num(surfaceK, 288);
+  if (m.air !== undefined && !(num(atmo, 1) >= m.air)) return 0;
+  let fit = 1;
+  // a band: a process that needs a particular temperature to happen at all
+  if (m.cold !== undefined) fit *= 1 - smooth(0, 1, Math.abs(T - m.cold) / m.band);
+  // a ceiling: a material that is stable below a threshold and stays stable all
+  // the way down, which is most minerals and all ices
+  if (m.below !== undefined) fit *= 1 - smooth(m.below - m.band, m.below + m.band, T);
+  if (m.hot !== undefined) fit *= 1 - smooth(0, 1, Math.abs(T - m.hot) / m.band);
+  if (m.dry !== undefined) fit *= 1 - smooth(0, 1, Math.abs(num(wet, 0.5) - m.dry) / 0.55);
+  return clamp(fit, 0, 1);
+}
+
+/**
+ * Furnish a chunk with rock.
+ *
+ * Deliberately the same shape as `scatterChunk` so a call site can place both
+ * from one loop — and deliberately *not* gated on air or warmth, so the worlds
+ * the plant gate empties are the worlds this one fills.
+ */
+export function mineralChunk({
+  x0 = 0, z0 = 0, size = 32, seed = 1, world = {}, budget = 90, groundAt = null,
+} = {}) {
+  const r = new RNG(hash(seed >>> 0, ((x0 | 0) * 40503) ^ ((z0 | 0) * 30011) ^ 0x9e37));
+  const cap = clamp(budget | 0, 0, 20000);
+  const out = [];
+  const want = MINERALS.map((m) => mineralFit(m, world) * m.n);
+  const total = want.reduce((a, b) => a + b, 0);
+  if (total <= 1e-6) return out;
+
+  for (let mi = 0; mi < MINERALS.length; mi++) {
+    const m = MINERALS[mi];
+    const n = Math.round(cap * (want[mi] / total));
+    for (let i = 0; i < n && out.length < cap; i++) {
+      const x = x0 + r.float(0, size), z = z0 + r.float(0, size);
+      const f = field(x, z, hash(seed >>> 0, m.id.charCodeAt(0) * 2246822519), m.scale);
+      if (smooth(m.thr, Math.min(m.thr + 0.24, 1), f) < r.float(0, 1)) continue;
+      const y = groundAt ? groundAt(x, z) : 0;
+      if (y === null) continue;
+      // a boulder is a boulder at any size; the spread is what stops a field of
+      // them reading as a tiling, and it is log-uniform because rock fragments
+      // are (Rosin–Rammler, and any scree slope you have ever looked at)
+      const k = Math.exp(r.float(-0.9, 0.9));
+      out.push({
+        id: m.id, mineral: mi, x, y, z,
+        h: m.h * k, w: m.w * k,
+        yaw: r.float(0, Math.PI * 2),
+        tilt: r.float(-0.22, 0.22),
+        bury: r.float(0.12, 0.42),      // fraction sunk into the ground
+        tint: r.float(0, 1),
+      });
+    }
+  }
+  return out;
+}
+
+/** what this world is furnished with, for a HUD and for a test */
+export const mineralsOf = (world) =>
+  MINERALS.filter((m) => mineralFit(m, world) > 0.02).map((m) => m.id);

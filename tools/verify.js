@@ -97,7 +97,10 @@ import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
 import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
-import { SPECIES, communityOf, densityAt, scatterChunk, tolerance } from '../src/scatter.js';
+import {
+  MINERALS, SPECIES, communityOf, densityAt, mineralChunk, mineralFit, mineralsOf,
+  scatterChunk, tolerance,
+} from '../src/scatter.js';
 import { phaseOf, precipFor, subpixel, terminalVelocity, wrap } from '../src/precip.js';
 import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
@@ -7647,6 +7650,50 @@ function suiteScatter() {
     JSON.stringify(chunk(MEADOW, 7, 64, 96)) === JSON.stringify(chunk(MEADOW, 7, 64, 96)));
   ok('and neighbouring chunks do not repeat each other',
     JSON.stringify(chunk(MEADOW, 7, 0, 0)) !== JSON.stringify(chunk(MEADOW, 7, 32, 0)));
+  // --- and what a world has when it has no life ---------------------------
+  //
+  // Gating the plants on air and warmth made a 28 K ice world *emptier* — bare
+  // ground to the horizon, which is worse than the wrong grass. A lifeless
+  // world is not featureless: it is rock, and rock has a history. None of this
+  // is gated on air, water or light, which is the point of keeping it separate.
+  const ICE = { surfaceK: 28, wet: 0.2, atmo: 0.4 };
+  const MARS = { surfaceK: 210, wet: 0.05, atmo: 0.006 };
+  const LAVA = { surfaceK: 900, wet: 0, atmo: 0.6 };
+  const VACUUM = { surfaceK: 180, wet: 0, atmo: 0 };
+  const mchunk = (w, seed = 5) => mineralChunk({ size: 32, seed, world: w, budget: 90 });
+
+  ok('§8 axis 1 · every world is furnished, including the ones nothing lives on',
+    [ICE, MARS, LAVA, VACUUM].every((w) => mchunk(w).length > 5),
+    [['ice', ICE], ['Mars', MARS], ['lava', LAVA], ['vacuum', VACUUM]]
+      .map(([n, w]) => `${n} ${mchunk(w).length}`).join(' · '));
+  ok('and rock does not need air, unlike everything above it in this file',
+    mchunk(VACUUM).length > 5 && scatterChunk({ seed: 5, biome: VACUUM, budget: 90 }).length === 0,
+    'the worlds the plant gate empties are the worlds this one fills');
+
+  // The measurement that corrected the model: an ice world with no ice on it.
+  ok('§8 axis 8 · a 28 K ice world is made of ice',
+    mchunk(ICE).some((i) => i.id === 'shard'),
+    'modelled as a temperature *band* centred at 160 K it had none — too cold'
+    + ' for its own defining material. Ice is a ceiling, not a band.');
+  ok('but frost-shattered scree is a band, because the process needs a thaw',
+    !mchunk(ICE).some((i) => i.id === 'scree')
+    && mchunk(MARS).some((i) => i.id === 'scree'),
+    'nothing freeze-thaws at 28 K — there is no liquid water to do the splitting');
+  ok('and a lava world has a crust, which nowhere else does',
+    mchunk(LAVA).some((i) => i.id === 'crust')
+    && !mchunk(ICE).some((i) => i.id === 'crust'));
+  ok('§9 · fragment size is log-uniform, as a real scree slope is',
+    (() => {
+      const hs = mchunk(MARS, 11).filter((i) => i.id === 'scree').map((i) => i.h);
+      return hs.length > 3 && Math.max(...hs) / Math.min(...hs) > 2;
+    })(), 'Rosin–Rammler, and any hillside you have looked at');
+  ok('§2.3 · the same ground is furnished the same way',
+    JSON.stringify(mchunk(ICE, 7)) === JSON.stringify(mchunk(ICE, 7)));
+  ok('§11 · and no world produces a NaN boulder',
+    [{}, { surfaceK: NaN }, { surfaceK: 1e9 }, { atmo: -1 }, { wet: Infinity }]
+      .every((w) => mineralChunk({ seed: 2, world: w, budget: 60 })
+        .every((i) => [i.x, i.y, i.z, i.h, i.w, i.yaw, i.bury].every(Number.isFinite) && i.h > 0)));
+
   ok('§11 · no biome, however malformed, produces a NaN or an infinite plant',
     [{}, { wet: NaN }, { warm: Infinity }, { sun: -5 }, { wet: 1e9, warm: -1e9 }]
       .every((b) => scatterChunk({ seed: 3, biome: b, budget: 120 })

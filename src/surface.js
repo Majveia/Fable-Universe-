@@ -20,6 +20,7 @@ import { addFlare } from './flare.js';
 import { addGrass } from './grass.js';
 import { addRuins } from './ruins.js';
 import { addWildlife } from './wildlife.js';
+import { addGroundCover } from './ground-cover.js';
 import { addConstellations } from './constellations.js';
 import { addCaravan } from './caravan.js';
 import { addWeather } from './weather.js';
@@ -821,6 +822,10 @@ export class SurfaceScale {
     // §9.5 is one field, not two. The old one survives only for `?m3=0`.
     this.grassField = M3 ? null : addGrass(this);
     this.ruins = BUILT ? addRuins(this) : null;
+    // Rock, ice and undergrowth — every world, life or not. See
+    // `src/ground-cover.js`: gating the meadow was right and left the worlds it
+    // gated bare, which is the half of that fix that was missing.
+    this.groundCover = addGroundCover(this);
     this.wildlife = addWildlife(this);
     this.constellations = addConstellations(this);
     this.caravan = addCaravan(this);
