@@ -81,5 +81,10 @@ jobs:
           npm i -g playwright
           npx playwright install --with-deps chromium
 
+      # The `core` tier: every scale, the cheap world kinds, and one world with
+      # a biosphere in flower — the branch that has actually broken. The rest of
+      # the world kinds run per pull request in `shaders.yml`, because a
+      # biosphere world costs three minutes to build on a software rasteriser
+      # and twenty of those is not a gate anyone leaves switched on.
       - name: boot — every scale comes up without throwing
-        run: node tools/boot.js --timeout 240
+        run: node tools/boot.js --timeout 300
