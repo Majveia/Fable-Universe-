@@ -209,6 +209,16 @@ class App {
             ...base, planet: w, moonIndex: mIdx, parentGiant: { pp: node.pp },
           }));
           this.active().enter();
+        } else if (node.pp.typeId >= 5) {
+          // §2.4, the half that was missing: a giant has no ground, so `?pl=`
+          // and a bare `?p=` both fell off the end of this chain and left you
+          // on the system view with no explanation — a link that names a place
+          // and silently delivers nowhere. Its cloud deck *is* the place you
+          // can stand on a giant, and it was already built; `?cl=1` above is
+          // now the explicit spelling of a default rather than the only way in.
+          sys.exit();
+          this.stack.push(new CloudsScale(this, { ...base, planet: node.pp }));
+          this.active().enter();
         } else if (node.pp.typeId <= 4) {
           sys.exit();
           this.stack.push(new SurfaceScale(this, { ...base, planet: node.pp }));

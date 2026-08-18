@@ -39,6 +39,7 @@ on:
       - 'vendor/**'
       - 'tools/shadercheck.js'
       - 'tools/glslcheck.js'
+      - 'tools/boot.js'
       - 'tools/lib.js'
       - '.github/workflows/shaders.yml'
   workflow_dispatch:
@@ -75,6 +76,13 @@ jobs:
       # is no reason to spend forty minutes finding out again.
       - name: compile every exported shader pair
         run: node tools/glslcheck.js
+
+      # The `--all` tier: every world kind and the awkward states — night,
+      # storm, a settlement, a moon, both ocean temperatures, a gas giant's
+      # cloud deck. `verify.yml` runs the cheap half on every push; this is the
+      # half that costs minutes, and a pull request can afford it.
+      - name: boot — every world kind, not just the cheap ones
+        run: node tools/boot.js --all --timeout 300
 
       # One flag set rather than the two run locally. The second local pass
       # exists to check the milestone flags in company; on CI the cost of that
