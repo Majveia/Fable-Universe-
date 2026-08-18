@@ -59,8 +59,15 @@ const STATIONS = [
   ['galaxy', 'seed=20250601&g=1', 'GalaxyScale'],
   ['star-system', 'seed=20250601&g=1&s=2309773419', 'SystemScale'],
   ['black-hole', 'seed=20250601&g=1&bh=1', 'BlackHoleScale'],
+  ['planet-orbit', 'seed=20250601&g=1&s=2309773419&pl=2&quad=1&ap=0', 'PlanetScale'],
   ['surface-in-bloom', 'g=1&s=2309773419&p=2&bloom=1&quad=0', 'SurfaceScale'],
 ];
+
+// Two constructors this list does not reach, named rather than left as a
+// silent hole: `CloudsScale` needs a gas giant and Kerune has none — its eight
+// worlds are three terrestrials, two barren and three ice — and `RoomScale`
+// needs a room key, which is generated rather than guessable. `capture.js`'s
+// route covers the cloud deck; nothing covers the rooms yet.
 
 const only = arg('only', null);
 const waitMs = Number(arg('timeout', 120)) * 1000;
