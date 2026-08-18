@@ -9,6 +9,8 @@
 
 import * as THREE from 'three';
 import { RNG, arand, hash } from './rng.js';
+import { precipFor, wrap } from './precip.js';
+import { gravityOf } from './avatar.js';
 import { softDotTexture } from './nebula.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
@@ -19,6 +21,22 @@ export function addWeather(s) {
   if (pp.typeId === 4 || s.atmo < 0.35) return null;
   const r = new RNG(hash(pp.seed, 0x3ea1e5));
   const rainy = pp.type === 'ocean' || (pp.clouds ?? 0) > 0.35 || pp.Teq < 285;
+
+  // What actually falls here, and how fast — `src/precip.js` (§9).
+  //
+  // This used to be `const fall = 55 * dt` on every world in the universe.
+  // 55 m/s is about six times a real raindrop, and being the same number
+  // everywhere meant the one thing weather could have told you about a world —
+  // how thick its air is — it instead concealed.
+  //
+  // Surface temperature is the equilibrium temperature with the atmosphere's
+  // greenhouse folded in the same crude way `aerial.js` does it, because the
+  // phase boundary is at 273 K and Teq alone would put snow on worlds that have
+  // liquid oceans.
+  const surfaceK = (pp.Teq ?? 288) * (1 + 0.28 * Math.min(s.atmo, 3));
+  const PRECIP = precipFor({
+    surfaceK, atmo: s.atmo, gravity: gravityOf(pp),
+  });
 
   // ------------------------------------------------------------- rain ----
   const N = COARSE ? 500 : 1100;
@@ -104,14 +122,32 @@ export function addWeather(s) {
         const w = s.sampleWind
           ? s.sampleWind(s.camera.position.x, s.camera.position.z, 40)
           : { x: s.wind.x * 4, z: s.wind.y * 4 };
-        const fall = 55 * dt, wx = w.x * 2.2 * dt, wz = w.z * 2.2 * dt;
+        // Terminal velocity, not a constant — and snow where it is cold enough,
+        // which on a given world is a fact rather than a setting.
+        const vT = PRECIP.snow > 0.5 ? PRECIP.vSnow : PRECIP.vRain;
+        const fall = vT * dt;
+        // Wind pushes precipitation toward the air's own speed, and how far it
+        // gets is the velocity triangle: slow snow is carried almost fully,
+        // fast rain barely leans. One number instead of a 2.2 nobody could name.
+        const drag = Math.min(1 / Math.max(vT, 0.5), 1.6);
+        const wx = w.x * drag * dt, wz = w.z * drag * dt;
+        // Camera-*relative*, because line 110 already translates the group to
+        // the camera each frame — which is the reference's own arrangement and
+        // is what keeps float precision high this far from the origin. So the
+        // box is centred on zero, not on the camera's world position; wrapping
+        // around the latter would be wrong by exactly the camera's position,
+        // which is a bug that only shows up once you have walked somewhere.
         for (let i = 0; i < N; i++) {
           P[i * 3] += wx; P[i * 3 + 1] -= fall; P[i * 3 + 2] += wz;
-          if (P[i * 3 + 1] < 0) {
-            P[i * 3] = (arand() - 0.5) * span;
-            P[i * 3 + 1] = top;
-            P[i * 3 + 2] = (arand() - 0.5) * span;
-          }
+          // Wrap, do not respawn (§9, idea 1). A drop leaving the bottom
+          // re-enters at the top with its horizontal phase intact, and one
+          // leaving the side re-enters opposite — so density is exactly
+          // constant and nothing trails the camera. Respawning three
+          // coordinates at once is what put a visible wave behind a walking
+          // player, and it is the loudest tell a rain system has.
+          if (P[i * 3 + 1] < 0) P[i * 3 + 1] += top;
+          P[i * 3] = wrap(P[i * 3], 0, span);
+          P[i * 3 + 2] = wrap(P[i * 3 + 2], 0, span);
         }
         geo.attributes.position.needsUpdate = true;
       }
