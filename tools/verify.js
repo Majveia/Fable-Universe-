@@ -103,6 +103,10 @@ import {
 } from '../src/scatter.js';
 import { phaseOf, precipFor, subpixel, terminalVelocity, wrap } from '../src/precip.js';
 import {
+  EXTINCTION as BLOSSOM_L, PETAL, blossomsFor, floweringAt, opticalDepth,
+  petalFall, petalHue, seasonOpenness, seasonPhaseOf,
+} from '../src/blossom.js';
+import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
   stepAscent,
 } from '../src/ascent.js';
@@ -7798,7 +7802,197 @@ function suitePrecip() {
       }));
 }
 
+
+function suiteBlossom() {
+  console.log('\nblossom — a canopy in flower is a cloud, not a shell (§9.2, §2.3)');
+
+  const crownOf = (h, habit) => growTree({ seed: 7, gravity: 9.80665, height: h, habit, budget: 900 });
+  const shrub = crownOf(6), tree = crownOf(14), giant = crownOf(30);
+  // sample along the crown's widest band, from the axis out to the rim
+  const profile = (t, fs = [0, 0.25, 0.5, 0.7, 0.85, 1]) =>
+    fs.map((f) => floweringAt({ x: t.crown.r * f, y: t.crown.y, z: 0 }, t.crown));
+
+  // --- law 1 · Beer's law, and the cloud it makes ---------------------------
+  // The mistake this file exists to avoid is a *smoothstep window* in
+  // normalised crown radius, which is a shell of zero thickness. An exponential
+  // in metres of canopy crossed is a cloud with a real thickness, and the
+  // thickness is set by the leaf, not by the tree.
+  ok('§9.2 · flowering falls off exponentially inward, monotonically',
+    [shrub, tree, giant].every((t) => {
+      const p = profile(t);
+      return p.every((v, i) => i === 0 || v >= p[i - 1] - 1e-12);
+    }),
+    'no interior brighter than the rim outside it — no hollow bubble');
+
+  // The half-depth is a length in metres, so it must not move with the tree.
+  //
+  // Measured straight **down the axis from the crown's apex**, which is the one
+  // direction where the path length to the sky is the distance travelled and
+  // nothing else. Probing inward from the rim instead — the obvious thing, and
+  // what I did first — measures the ellipsoid, not the leaf: at the widest band
+  // the vertical ray exits immediately, so the sky path opens as `√δ` and the
+  // half-depth reads 0.19 / 0.08 / 0.04 m. That is real geometry and it is on
+  // screen, but it is not what `EXTINCTION` sets, and a test that conflates the
+  // two would have failed the moment either changed.
+  const halfDepth = (t) => {
+    for (let d = 0; d <= 12; d += 0.005) {
+      if (floweringAt({ x: 0, y: t.crown.y + t.crown.up - d, z: 0 }, t.crown) <= 0.5) return d;
+    }
+    return 12;
+  };
+  const hd = [shrub, tree, giant].map(halfDepth);
+  ok('§9.2 · and the cloud is the same few metres thick on every tree',
+    Math.max(...hd) - Math.min(...hd) < 0.6 && hd.every((d) => d > 1 && d < 3),
+    `half-depth ${hd.map((d) => d.toFixed(2)).join(' / ')} m down the axis, across a 5× size range`);
+
+  // …which is precisely why what changes with size is the *fraction* flowering
+  const axis = [shrub, tree, giant].map((t) => profile(t, [0])[0]);
+  ok('§8 axis 5 · so a shrub flowers through and a giant flowers on its skin',
+    axis[0] > 0.25 && axis[1] > 0.03 && axis[1] < 0.12 && axis[2] < 0.01
+    && axis[0] > axis[1] && axis[1] > axis[2],
+    `axis ${axis.map((v) => v.toFixed(3)).join(' / ')} — 6 m / 14 m / 30 m`);
+
+  // --- law 2 · two paths, because one is a different answer ----------------
+  // The reference measured this exact defect: with the flank path alone the
+  // skirt of a crown scores as fully lit, because it is a metre from the
+  // outside — and 54% of the canopy piled into two narrow bands.
+  const skirt = { x: tree.crown.r * 0.5, y: tree.crown.y - tree.crown.up * 0.8, z: 0 };
+  const dSk = opticalDepth(skirt, tree.crown);
+  const outOnly = Math.exp(-dSk.out / BLOSSOM_L);
+  ok('§9.2 · the sky path is not optional — without it the skirt reads fully lit',
+    outOnly > 0.85 && floweringAt(skirt, tree.crown) < 0.25,
+    `flank alone ${outOnly.toFixed(2)} · both paths ${floweringAt(skirt, tree.crown).toFixed(2)}`);
+  ok('and a point on the crown surface sees zero canopy on both paths',
+    (() => {
+      const at = { x: tree.crown.r, y: tree.crown.y, z: 0 };
+      const d = opticalDepth(at, tree.crown);
+      return d.up < 1e-9 && d.out < 1e-9 && floweringAt(at, tree.crown) === 1;
+    })());
+  ok('§11 · and the depths are never negative, however far outside the point is',
+    [[99, 0], [0, 99], [-40, -40], [0.001, 1e6]].every(([rad, y]) => {
+      const d = opticalDepth({ x: rad, y: tree.crown.y + y, z: 0 }, tree.crown);
+      return d.up >= 0 && d.out >= 0 && Number.isFinite(d.up) && Number.isFinite(d.out);
+    }));
+
+  // --- law 3 · the year --------------------------------------------------
+  // The reference's tree is in bloom because it was built in bloom. This one
+  // flowers in its spring, and its spring is a place in a real orbit.
+  const N = 4000;
+  let openFrac = 0, peak = 0;
+  for (let i = 0; i < N; i++) {
+    const v = seasonOpenness(i / N, 5);
+    if (v > 0) openFrac++;
+    if (v > peak) peak = v;
+  }
+  ok('§2.3 · bloom is a window in the orbit, not a flag — and it closes',
+    Math.abs(openFrac / N - 0.32) < 0.01 && peak > 0.999,
+    `${((openFrac / N) * 100).toFixed(0)}% of the year has any flower, peaking at 1.00`);
+  ok('and the window wraps the new year rather than clipping at it',
+    (() => {
+      // a seed whose centre is near 0 must still open on both sides of it
+      for (let sd = 0; sd < 400; sd++) {
+        const a = seasonOpenness(0.999, sd), b = seasonOpenness(0.001, sd);
+        if (a > 0.2 && b > 0.2 && Math.abs(a - b) < 0.25) return true;
+      }
+      return false;
+    })(),
+    'shortest distance around the circle, so a bloom may straddle midnight');
+  ok('§2.4 · no `?season=` means the world keeps its own orbital phase',
+    Math.abs(seasonPhaseOf(Math.PI, null) - 0.5) < 1e-12
+    && Math.abs(seasonPhaseOf(Math.PI, '') - 0.5) < 1e-12
+    && Math.abs(seasonPhaseOf(Math.PI, undefined) - 0.5) < 1e-12
+    && seasonPhaseOf(-Math.PI, null) === 0.5
+    && seasonPhaseOf(2, '0.25') === 0.25,
+    'Number(null) is 0 — the obvious isFinite() check flowers every world at once');
+  ok('§2.3 · and two worlds of one star do not flower together',
+    new Set([...Array(60)].map((_, i) => Math.round(seasonOpenness(0.5, i) * 50))).size > 6,
+    'the centre is seeded, so a system has a staggered spring');
+
+  // --- law 4 · a tree in bloom carries thousands of flowers ---------------
+  const full = blossomsFor(tree, { seed: 3, openness: 1, budget: 40000 });
+  const half = blossomsFor(tree, { seed: 3, openness: 0.5, budget: 40000 });
+  const bare = blossomsFor(tree, { seed: 3, openness: 0, budget: 40000 });
+  ok('§8 axis 1 · full bloom is a mass, not a scatter of a hundred cards',
+    full.length > tree.segments && full.length > 400,
+    `${full.length} flowers on ${tree.segments} segments — a twig carries a cluster`);
+  ok('and the season thins it continuously, to nothing',
+    half.length > 0 && half.length < full.length * 0.75 && bare.length === 0,
+    `open 1.0 → ${full.length} · 0.5 → ${half.length} · 0.0 → ${bare.length}`);
+  ok('§5 · the budget is a hard cap, so a giant cannot outspend its tier',
+    blossomsFor(giant, { seed: 3, openness: 1, budget: 300 }).length === 300
+    && blossomsFor(giant, { seed: 3, openness: 1, budget: 0 }).length === 0);
+  ok('§9.2 · every flower carries the light that opened it, for the shader',
+    full.every((f) => f.lit > 0 && f.lit <= 1
+      && Number.isFinite(f.x + f.y + f.z + f.size + f.yaw + f.tilt + f.tint)));
+  ok('and no flower is in mid-air — each stands off a twig it inherits',
+    (() => {
+      const s2 = tree.seg;
+      return full.slice(0, 200).every((f) => {
+        for (let i = 0; i < s2.r1.length; i++) {
+          if (s2.r1[i] > 0.02) continue;
+          const d = Math.hypot(f.x - s2.x1[i], f.y - s2.y1[i], f.z - s2.z1[i]);
+          if (d <= s2.r1[i] + 0.1301) return true;
+        }
+        return false;
+      });
+    })(),
+    'walks the tree’s own tips, so wind can never separate flower from wood');
+  ok('§2.3 · and the same seed grows the same blossom, twice',
+    (() => {
+      const a = blossomsFor(tree, { seed: 91, openness: 0.7 });
+      const b = blossomsFor(tree, { seed: 91, openness: 0.7 });
+      return a.length === b.length && a.every((f, i) => f.x === b[i].x && f.tint === b[i].tint);
+    })());
+
+  // --- law 5 · a petal is a snowflake -------------------------------------
+  // Not a second falling-things model: `precip.js` already knows how a light
+  // plate falls, so petals and snow cannot disagree about the same air.
+  const earth = petalFall({ gravity: 9.80665, rhoAir: 1.225 });
+  ok('§2.3 · a petal falls through precip.js, not through a second model',
+    Math.abs(earth.speed - terminalVelocity(PETAL.radius, 9.80665, 1.225,
+      { rhoBody: PETAL.rhoBody, cd: PETAL.cd })) < 1e-12,
+    `${earth.speed.toFixed(1)} m/s — one drag law for snow, rain and blossom`);
+  ok('and it drifts down slower than the rain falling beside it',
+    earth.speed < precipFor({ surfaceK: 288, atmo: 1 }).vRain * 1.02
+    && earth.speed > 2 && earth.speed < 9,
+    `petal ${earth.speed.toFixed(1)} · drop ${precipFor({ surfaceK: 288, atmo: 1 }).vRain.toFixed(1)} m/s`);
+  const thin = petalFall({ gravity: 9.80665, rhoAir: 0.15 });
+  const thick = petalFall({ gravity: 9.80665, rhoAir: 6 });
+  ok('§8 axis 8 · thin air drops it fast and straight, thick air makes it hang',
+    thin.speed > earth.speed * 2 && thick.speed < earth.speed * 0.6
+    && thin.flutter < earth.flutter * 0.3 && thick.flutter > earth.flutter,
+    `${thin.speed.toFixed(1)} / ${earth.speed.toFixed(1)} / ${thick.speed.toFixed(1)} m/s at 0.15 / 1.2 / 6 kg/m³`);
+  ok('§2.3 · lower gravity hangs it too, by the same law that made its tree tall',
+    petalFall({ gravity: 1.62, rhoAir: 1.225 }).speed < earth.speed * 0.5
+    && petalFall({ gravity: 1.62, rhoAir: 1.225 }).period > earth.period * 2,
+    'and the swing lengthens with it — T = 2π√(A/g), the pendulum it is');
+
+  // --- law 6 · the flower is an advertisement -----------------------------
+  ok('§9.1 · a petal sits across the wheel from the leaf it is shown against',
+    [...Array(200)].every((_, i) => {
+      const vh = (i / 200);
+      const { h, s: sat, l } = petalHue(vh, i);
+      let d = Math.abs(h - vh); if (d > 0.5) d = 1 - d;
+      return d > 0.38 && sat >= 0.3 && sat <= 0.62 && l >= 0.72 && l <= 0.88;
+    }),
+    'derived from the foliage, so a rust-leaved world flowers blue');
+
+  // --- §11 · nothing poisons the frame ------------------------------------
+  ok('§11 · NaN in, finite out — a bad crown must not smear a canopy',
+    [floweringAt({ x: NaN, y: 0, z: 0 }, tree.crown),
+      floweringAt({ x: 0, y: 0, z: 0 }, { y: NaN, r: NaN, up: NaN }),
+      seasonOpenness(NaN, 3), seasonOpenness(Infinity, 3),
+      petalFall({ gravity: NaN, rhoAir: NaN }).speed,
+      petalFall({ gravity: 0, rhoAir: 0 }).speed,
+      petalFall({ gravity: NaN, rhoAir: NaN }).period]
+      .every((v) => Number.isFinite(v)));
+  ok('and a malformed tree yields no flowers rather than an exception',
+    blossomsFor(null).length === 0 && blossomsFor({}).length === 0
+    && blossomsFor({ seg: { r1: [] } }).length === 0);
+}
+
 const suites = {
+  blossom: suiteBlossom,
   precip: suitePrecip,
   scatter: suiteScatter,
   tree: suiteTree,

@@ -98,6 +98,12 @@ const steps = [
     + ' `?intnoise=1` and measured green there (the step above runs it); flipping'
     + ' the default moves every world once and re-takes the `ground` goldens,'
     + ' which docs/plans/M2.md §28.7 leaves to a human.'],
+  // Two halves of §M0's compile gate, and they cover different shaders.
+  // `glslcheck` compiles what the codebase *exports* — reachable in seconds,
+  // on any machine, whatever season the worlds are in. `shadercheck` compiles
+  // what the renderer *assembles* on a real route, which is the only way to
+  // catch a defect in an interpolated chunk. Neither subsumes the other.
+  ['glsl', ['tools/glslcheck.js'], 'every exported shader pair, in a real driver (§M0)'],
   ['shaders', ['tools/shadercheck.js'], 'every shader as the driver sees it (§M0)'],
   ['capture', ['tools/capture.js', '--milestone', milestone], 'the numbered set + perf JSON (§7.5)'],
   ['repeat', ['tools/repeat.js'], 'the same URL twice, to §7.3\'s tolerance'],

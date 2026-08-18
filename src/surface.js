@@ -3144,6 +3144,10 @@ export class SurfaceScale {
         port: ' · port city', monument: ' · old capital', spaceport: ' · spaceport',
       }[this.settlement.archetype] ?? '')]] : []),
       ['biosphere', this.life ? 'flora + fauna' : '—'],
+      // §8 axis 8: if the canopy is in flower the readout must say so, because
+      // the flower is a claim about where this world is in its own orbit
+      ...(this.life?.openness > 0.02 ? [['season', this.life.openness > 0.75
+        ? 'full bloom' : this.life.openness > 0.35 ? 'in flower' : 'first blossom']] : []),
       ...(pp.res?.line ? [['mood', pp.res.line]] : []),
       ['craters', this.impacts.length ? String(this.impacts.length) : '—'],
       ['surface gravity', g.toFixed(2) + ' g'],

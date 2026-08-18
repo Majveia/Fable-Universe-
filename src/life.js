@@ -10,6 +10,10 @@ import * as THREE from 'three';
 import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
 import { growTree, tipsOf } from './tree.js';
+import {
+  PETAL_GLSL, blossomsFor, petalFall, petalHue, seasonOpenness, seasonPhaseOf,
+} from './blossom.js';
+import { airDensity } from './precip.js';
 import { gravityOf } from './avatar.js';
 import { qInt } from './quality.js';
 
@@ -36,6 +40,19 @@ export function isBiosphere(pp) {
   return (pp.type === 'terrestrial' || pp.type === 'ocean') && pp.Teq >= 235 && pp.Teq <= 330;
 }
 
+const PARAM = (k) => {
+  try { return new URL(window.location.href).searchParams.get(k); }
+  catch { return null; }
+};
+
+/**
+ * Where this world is in its year — `blossom.js`'s law, with the URL attached.
+ *
+ * `?season=` overrides it, in the same spirit as `?sun=` and `?storm=`: a
+ * visitor who wants the bloom should not have to hunt 10²⁸ worlds for it.
+ */
+export const seasonPhase = (pp) => seasonPhaseOf(pp?.M0, PARAM('season'));
+
 export function addLife(s) {
   const pp = s.pp;
   if (!isBiosphere(pp)) return null;
@@ -47,7 +64,8 @@ export function addLife(s) {
   // downtown the wild things keep to the parks; overgrown moods run riot
   const vegF = (eco?.veg ?? 1) * (s.urban ? 0.2 : 1) * (pp.res?.vegX ?? 1);
 
-  const vegColor = new THREE.Color().setHSL(r.float(0.06, 0.62), r.float(0.4, 0.65), r.float(0.22, 0.34));
+  const vegH = r.float(0.06, 0.62);
+  const vegColor = new THREE.Color().setHSL(vegH, r.float(0.4, 0.65), r.float(0.22, 0.34));
   const canopyColor = vegColor.clone().offsetHSL(r.float(-0.05, 0.05), 0, r.float(-0.04, 0.08));
 
   const dryland = (x, z) => {
@@ -128,9 +146,26 @@ export function addLife(s) {
     color: canopyColor, roughness: 0.9, flatShading: true,
   });
 
+  // Where the wood stands, and why it is not uniform.
+  //
+  // 130 trees spread evenly over 1.96 km² is one tree per 15 000 m², which
+  // means you can walk for a minute without passing one and the whole system —
+  // the pipe model, the blossom, all of it — is something you see at a
+  // kilometre as specks. §9.7 asks for a hero landmark in the *opening
+  // frustum*, and a stand of trees is exactly that.
+  //
+  // So over half of them cluster on the landing site with a 130 m spread and
+  // the rest scatter across the world. You step out into a wood; the horizon
+  // still has trees on it.
   const sites = [];
-  for (let i = 0; i < 1400 && sites.length < nTrees; i++) {
-    const x = r.float(-EXT / 2, EXT / 2), z = r.float(-EXT / 2, EXT / 2);
+  const sp = s.spawn ?? { x: 0, z: 0 };
+  for (let i = 0; i < 3000 && sites.length < nTrees; i++) {
+    const near = i % 100 < 58;
+    const x = near ? sp.x + r.gauss() * 130 : r.float(-EXT / 2, EXT / 2);
+    const z = near ? sp.z + r.gauss() * 130 : r.float(-EXT / 2, EXT / 2);
+    // …but not standing in the doorway. §9.7 wants the landmark in the frustum,
+    // not through it, and a trunk 3 m from the eye is a wall.
+    if (Math.hypot(x - sp.x, z - sp.z) < 14) continue;
     const h = dryland(x, z);
     if (h === null) continue;
     sites.push({ x, y: h, z, height: r.float(5, 13), yaw: r.float(0, 6.28), seed: r.int(1, 1e9) });
@@ -190,6 +225,146 @@ export function addLife(s) {
     }
     leaves.instanceMatrix.needsUpdate = true;
     s.scene.add(leaves);
+  }
+
+  // -------------------------------------------------------- blossom ----
+  //
+  // `src/blossom.js` decides *where* on a tree flowers open — Beer's law over
+  // two light paths, which is what makes a canopy in bloom a cloud several
+  // metres thick instead of a shell on a bubble — and *whether* this world is
+  // in flower at all, from its own place in its own orbit. This is only the
+  // drawing of it.
+  //
+  // Most worlds are not in bloom when you arrive, and that is the point: a
+  // season you can miss is the only kind worth catching. `?season=0.5` puts any
+  // world at the centre of its own, for anyone who does not want to wait for a
+  // planet whose year is four of ours.
+  const openness = seasonOpenness(seasonPhase(pp), pp.seed >>> 0);
+  let petalDrift = null;
+  if (openness > 0.02 && grown.length) {
+    const ph = petalHue(vegH, pp.seed >>> 0);
+    const petalCol = new THREE.Color().setHSL(ph.h, ph.s, ph.l);
+    // A five-petal flower is a pentagon in silhouette, and silhouette is all a
+    // blossom is ever worth: at 20 m one is three pixels across. Five triangles
+    // buys the whole shape; a modelled corolla would buy sub-pixel noise.
+    //
+    // 7.6 cm across at unit scale, against a real cherry blossom's 3. Painted
+    // oversize on the same warrant §9.6 gives the sun disc, and for the same
+    // reason: below about two pixels the shape stops being a shape and starts
+    // being aliasing. It is the one dimension in this file that is not honest,
+    // and it is the honest one that looks wrong.
+    const flGeo = new THREE.CircleGeometry(0.038, 5);
+    // §5: one draw call for every flower on the world, capped by tier. The cap
+    // is shared out per tree rather than spent first-come, so the near trees do
+    // not eat the budget and leave the skyline bare.
+    const cap = budget > 300 ? 44000 : 13000;
+    const per = Math.max(24, Math.floor(cap / grown.length));
+    const fx = [], frec = [];
+    for (let ti = 0; ti < grown.length && fx.length / 3 < cap; ti++) {
+      const t = grown[ti], p = sites[ti];
+      const sy = Math.sin(p.yaw), cy = Math.cos(p.yaw);
+      for (const f of blossomsFor(t, { seed: p.seed, openness, budget: per })) {
+        fx.push(p.x + f.x * cy - f.z * sy, p.y + f.y, p.z + f.x * sy + f.z * cy);
+        f.crown = t.crown;
+        f.worldYaw = p.yaw;
+        frec.push(f);
+      }
+    }
+    if (frec.length) {
+      const flMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff, roughness: 0.86, side: THREE.DoubleSide,
+        // §9.2's subsurface term, as a material property rather than a shader:
+        // a petal is one cell thick and light comes *through* it, so the ones
+        // facing away from the sun are not black — they are lit from behind.
+        emissive: petalCol.clone().multiplyScalar(0.16),
+      });
+      const blossom = new THREE.InstancedMesh(flGeo, flMat, frec.length);
+      const tintCol = new THREE.Color();
+      // A flower faces the way the light came in, and `floweringAt` has already
+      // said which way that is: outward along the crown envelope's own normal,
+      // which is straight up at the apex and straight out at the flank. Facing
+      // them all one way — the first version — makes a canopy of stickers.
+      const FACE = new THREE.Vector3(0, 0, 1), UPV = new THREE.Vector3(0, 1, 0);
+      const nrm = new THREE.Vector3();
+      for (let i = 0; i < frec.length; i++) {
+        const f = frec[i], t = f.crown;
+        nrm.set(f.x / (t.r * t.r), (f.y - t.y) / (t.up * t.up), f.z / (t.r * t.r));
+        if (nrm.lengthSq() < 1e-12) nrm.set(0, 1, 0);
+        // −yaw: the wood loop rotates by (x·c − z·s, x·s + z·c), which is
+        // `applyAxisAngle(+Y, −θ)`. Matching the sign is not a detail — the
+        // flowers would have faced the mirror image of where they grew.
+        nrm.normalize().applyAxisAngle(UPV, -f.worldYaw);
+        d.position.set(fx[i * 3], fx[i * 3 + 1], fx[i * 3 + 2]);
+        d.quaternion.setFromUnitVectors(FACE, nrm);
+        d.rotateZ(f.yaw);                       // spin in its own plane
+        d.rotateX(f.tilt * 0.55);               // and never quite square on
+        d.scale.setScalar(f.size);
+        d.updateMatrix();
+        blossom.setMatrixAt(i, d.matrix);
+        // no two flowers the same colour, and the deeper ones stay duskier —
+        // `lit` is the light that opened them, so it is already the right lever
+        tintCol.copy(petalCol).offsetHSL((f.tint - 0.5) * 0.05, 0,
+          -0.06 + 0.10 * f.lit + (f.tint - 0.5) * 0.07);
+        blossom.setColorAt(i, tintCol);
+      }
+      blossom.instanceMatrix.needsUpdate = true;
+      if (blossom.instanceColor) blossom.instanceColor.needsUpdate = true;
+      s.scene.add(blossom);
+    }
+
+    // ------------------------------------------------------- petal fall ---
+    //
+    // The signature of the whole thing, and it costs one draw call and no CPU.
+    // `blossom.js` asks `precip.js` how a petal falls, so this is the same drag
+    // law the snow uses and petals cannot disagree with snow about the same
+    // air: thin air drops them fast and straight, thick air makes them hang.
+    //
+    // Position is `f(seed, t)` in the vertex shader — `precip.js` idea 2 — and
+    // the box is *wrapped* around the camera rather than respawned, idea 1, so
+    // the density is exactly constant while you walk through it and nothing
+    // trails behind you.
+    if (openness > 0.22) {
+      const nP = budget > 300 ? 1500 : 520;
+      const BOX = 44, BOXY = 26;
+      const base = new Float32Array(nP * 3), phs = new Float32Array(nP * 2);
+      for (let i = 0; i < nP; i++) {
+        base[i * 3] = r.float(-BOX / 2, BOX / 2);
+        base[i * 3 + 1] = r.float(-BOXY / 2, BOXY / 2);
+        base[i * 3 + 2] = r.float(-BOX / 2, BOX / 2);
+        phs[i * 2] = r.float(0, 6.28318);
+        phs[i * 2 + 1] = r.float(0, 6.28318);
+      }
+      const fg = new THREE.BufferGeometry();
+      fg.setAttribute('position', new THREE.BufferAttribute(base, 3));
+      fg.setAttribute('aPh', new THREE.BufferAttribute(phs, 2));
+      // the same air `precip.js` drops rain and snow through
+      const pf = petalFall({ gravity: gwork, rhoAir: airDensity(s.atmo ?? 1, pp.Teq) });
+      const fallMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 }, uCam: { value: new THREE.Vector3() },
+          uBox: { value: BOX }, uBoxY: { value: BOXY },
+          uSpeed: { value: pf.speed }, uFlutter: { value: pf.flutter },
+          uPeriod: { value: pf.period },
+          uColor: { value: petalCol.clone() }, uDay: { value: 1 },
+          uOpen: { value: openness },
+          // A petal is 6 cm across; the shader recovers the scene's scale from
+          // the model-view matrix, so this stays a world radius (see PETAL_GLSL).
+          uR: { value: 0.03 },
+          uH: { value: Math.max((typeof window !== 'undefined'
+            ? window.innerHeight * Math.min(window.devicePixelRatio || 1, 2) : 900), 200) },
+          // §6 M3: one wind owns this world, and the petals are in it. This
+          // carries the *integral* of the gusty field rather than a mean, so a
+          // front crossing the meadow shoves the blossom across with it.
+          uDrift: { value: new THREE.Vector2() },
+        },
+        vertexShader: PETAL_GLSL.vert,
+        fragmentShader: PETAL_GLSL.frag,
+        transparent: true, depthWrite: false,
+      });
+      petalDrift = new THREE.Points(fg, fallMat);
+      petalDrift.frustumCulled = false;      // the shader moves it out of its box
+      s.scene.add(petalDrift);
+    }
   }
 
   // ---------------------------------------------------------- groves ----
@@ -453,13 +628,28 @@ export function addLife(s) {
 
   const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
   const acc = new THREE.Vector3(), diff = new THREE.Vector3();
+  const drift = new THREE.Vector2();
   let time = 0;
 
   return {
+    openness,
     update(dt, sunY) {
       time += dt;
       const day = Math.min(Math.max((sunY + 0.1) * 3, 0), 1);
       tuftMat.color.copy(vegColor).multiplyScalar(0.15 + 0.85 * day);
+      if (petalDrift) {
+        const u = petalDrift.material.uniforms;
+        u.uTime.value = time;
+        u.uDay.value = 0.25 + 0.75 * day;
+        const c = s.camLocal?.();
+        if (c) u.uCam.value.set(c.x, c.y, c.z);
+        const w = s.sampleWind?.(c ? c.x : 0, c ? c.z : 0, 6);
+        if (w) {
+          drift.x += w.x * dt;
+          drift.y += w.z * dt;
+          u.uDrift.value.copy(drift);
+        }
+      }
 
       // the wild reacts to you: your position in local metres, if the host
       // knows it, plus a fright flag (meteor strikes scatter everything)
