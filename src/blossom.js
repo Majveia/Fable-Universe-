@@ -120,11 +120,27 @@ export const PETAL = { radius: 0.011, rhoBody: 240, cd: 1.5 };
  * 10²⁸ worlds flower in unison is worth a test.
  */
 export function seasonPhaseOf(M0 = 0, override = null) {
-  const bad = override === null || override === undefined || override === '';
-  const forced = bad ? NaN : Number(override);
+  const forced = paramNumber(override);
   if (Number.isFinite(forced)) return forced;
   const p = (num(M0, 0) / TAU) % 1;
   return p < 0 ? p + 1 : p;
+}
+
+/**
+ * A URL parameter as a number, or NaN when it was not given.
+ *
+ * The whole content of this function is the trap it exists to avoid, and it is
+ * worth a name because two callers here need it and both would have got it
+ * wrong the same way: **`Number(null)` is 0, not NaN**, and `Number('')` is 0
+ * too. `Number.isFinite(Number(param))` therefore reads "no override given" as
+ * "the value zero", which for `?season=` pinned every world in the universe to
+ * the same day of its year and for `?bloom=` would have stripped the flowers
+ * off all of them.
+ */
+export function paramNumber(raw) {
+  if (raw === null || raw === undefined || raw === '') return NaN;
+  const v = Number(raw);
+  return Number.isFinite(v) ? v : NaN;
 }
 
 /**

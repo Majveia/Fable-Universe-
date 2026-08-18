@@ -104,7 +104,7 @@ import {
 import { phaseOf, precipFor, subpixel, terminalVelocity, wrap } from '../src/precip.js';
 import {
   EXTINCTION as BLOSSOM_L, PETAL, blossomsFor, floweringAt, opticalDepth,
-  petalFall, petalHue, seasonOpenness, seasonPhaseOf,
+  paramNumber, petalFall, petalHue, seasonOpenness, seasonPhaseOf,
 } from '../src/blossom.js';
 import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
@@ -7904,6 +7904,10 @@ function suiteBlossom() {
     && seasonPhaseOf(-Math.PI, null) === 0.5
     && seasonPhaseOf(2, '0.25') === 0.25,
     'Number(null) is 0 — the obvious isFinite() check flowers every world at once');
+  ok('§2.4 · and an absent URL parameter is absent, not zero',
+    [null, undefined, '', 'nonsense', NaN].every((v) => Number.isNaN(paramNumber(v)))
+    && paramNumber('0') === 0 && paramNumber('0.75') === 0.75 && paramNumber(0) === 0,
+    '`?bloom=0` must strip a world of flowers and no `?bloom=` must not');
   ok('§2.3 · and two worlds of one star do not flower together',
     new Set([...Array(60)].map((_, i) => Math.round(seasonOpenness(0.5, i) * 50))).size > 6,
     'the centre is seeded, so a system has a staggered spring');

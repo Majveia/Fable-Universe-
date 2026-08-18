@@ -45,7 +45,7 @@ jobs:
   offline:
     name: offline suites (§7.3)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -66,3 +66,20 @@ jobs:
       # interesting property it has.
       - name: verify — every CPU-decidable claim (§7.3)
         run: node tools/verify.js
+
+      # The gap the two steps above share, and the reason this one is worth a
+      # browser on every push: a module can be valid JavaScript, and every pure
+      # function in it can be green, and it can still throw partway through
+      # building a scene. That is a black screen, and it has shipped from this
+      # repo with CI green — `life.js` referenced a local that had been renamed
+      # two hundred lines earlier, which took out every world with a biosphere.
+      #
+      # No pixel is inspected here. It navigates to each scale and asserts that
+      # nothing throws, which is minutes rather than the capture set's hour.
+      - name: playwright + chromium
+        run: |
+          npm i -g playwright
+          npx playwright install --with-deps chromium
+
+      - name: boot — every scale comes up without throwing
+        run: node tools/boot.js --timeout 240

@@ -11,7 +11,8 @@ import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
 import { growTree, tipsOf } from './tree.js';
 import {
-  PETAL_GLSL, blossomsFor, petalFall, petalHue, seasonOpenness, seasonPhaseOf,
+  PETAL_GLSL, blossomsFor, paramNumber, petalFall, petalHue, seasonOpenness,
+  seasonPhaseOf,
 } from './blossom.js';
 import { airDensity } from './precip.js';
 import { gravityOf } from './avatar.js';
@@ -48,8 +49,8 @@ const PARAM = (k) => {
 /**
  * Where this world is in its year — `blossom.js`'s law, with the URL attached.
  *
- * `?season=` overrides it, in the same spirit as `?sun=` and `?storm=`: a
- * visitor who wants the bloom should not have to hunt 10²⁸ worlds for it.
+ * `?season=` moves it along the orbit, in the same spirit as `?sun=` and
+ * `?storm=`. It is not the same as asking for flowers; see `?bloom=` below.
  */
 export const seasonPhase = (pp) => seasonPhaseOf(pp?.M0, PARAM('season'));
 
@@ -236,10 +237,18 @@ export function addLife(s) {
   // drawing of it.
   //
   // Most worlds are not in bloom when you arrive, and that is the point: a
-  // season you can miss is the only kind worth catching. `?season=0.5` puts any
-  // world at the centre of its own, for anyone who does not want to wait for a
-  // planet whose year is four of ours.
-  const openness = seasonOpenness(seasonPhase(pp), pp.seed >>> 0);
+  // season you can miss is the only kind worth catching.
+  //
+  // Two overrides, because they are two different questions and one knob
+  // cannot answer both. `?season=` moves the world along its own orbit — the
+  // honest one, the same number `M0` carries — but *where* a world's spring
+  // sits in its year is seeded per world, so setting the phase is not the same
+  // as asking for flowers and a visitor who wanted blossom would get a 32%
+  // chance of it. `?bloom=` says how open, and skips the year entirely.
+  const forcedBloom = paramNumber(PARAM('bloom'));
+  const openness = Number.isFinite(forcedBloom)
+    ? Math.min(Math.max(forcedBloom, 0), 1)
+    : seasonOpenness(seasonPhase(pp), pp.seed >>> 0);
   let petalDrift = null;
   if (openness > 0.02 && grown.length) {
     const ph = petalHue(vegH, pp.seed >>> 0);
@@ -394,7 +403,7 @@ export function addLife(s) {
   const nGrove = Math.round((COARSE ? 260 : 520) * vegF);
   if (nGrove > 24) {
     const gTrunks = new THREE.InstancedMesh(
-      new THREE.CylinderGeometry(0.12, 0.26, 1, 5), trunkMat, nGrove);
+      new THREE.CylinderGeometry(0.12, 0.26, 1, 5), barkMat, nGrove);
     const crownGeo = conifer ? new THREE.ConeGeometry(1, 2.6, 7) : new THREE.IcosahedronGeometry(1, 1);
     const gCrowns = new THREE.InstancedMesh(crownGeo, canopyMat, nGrove * (conifer ? 1 : 3));
     let gt = 0, gc = 0;

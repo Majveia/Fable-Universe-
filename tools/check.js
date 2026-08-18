@@ -82,6 +82,12 @@ const steps = [
   // thing more slowly: a module that does not parse looks exactly like a page
   // that would not boot
   ['parse', ['tools/parse.js', '--quiet'], 'every module the browser loads, parsed'],
+  // The gap parse and verify both have: a module can be valid JavaScript and
+  // every pure function in it can be green, and it can still throw partway
+  // through construction and leave a black screen. `boot` navigates to each
+  // scale — including a world with a biosphere, in flower, which is the branch
+  // a default seed never reaches — and asserts nothing throws.
+  ['boot', ['tools/boot.js'], 'every scale comes up without throwing'],
   ['verify', ['tools/verify.js'], 'the maths, against independent references (§7.3)'],
   // §7.3 has two halves and this is the second: `verify` proves the CPU
   // reference has the properties §9 asks for, `pixeldiff` proves the shader
