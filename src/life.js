@@ -360,9 +360,27 @@ export function addLife(s) {
         vertexShader: PETAL_GLSL.vert,
         fragmentShader: PETAL_GLSL.frag,
         transparent: true, depthWrite: false,
+        // §9.3's alpha is the *clarity* channel, not a second opacity, and
+        // `clouds.js` already worked out what a soft-edged transparent thing
+        // owes it: over-composite on colour, plain coverage on alpha, so a
+        // petal covering 10% of a pixel moves that pixel's clarity 10% toward
+        // near and leaves the other 90% reading the hillside's distance.
+        // Three's NormalBlending would use SrcAlpha on the alpha channel too,
+        // squaring it — which reads as "very distant" and makes the print
+        // smear a soft halo around every falling petal.
+        blending: THREE.CustomBlending,
+        blendSrc: THREE.SrcAlphaFactor,
+        blendDst: THREE.OneMinusSrcAlphaFactor,
+        blendSrcAlpha: THREE.OneFactor,
+        blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
       });
       petalDrift = new THREE.Points(fg, fallMat);
+      // No `aerial()` in the shader, deliberately: the wrap box is 44 m across
+      // and centred on the eye, so no petal is ever further off than 22 m —
+      // inside §9.3's 70 m `fogNear`, where the air contributes nothing. A fog
+      // term here would be arithmetic that always evaluates to zero.
       petalDrift.frustumCulled = false;      // the shader moves it out of its box
+      petalDrift.renderOrder = 3;            // after the cloud deck, before HUD
       s.scene.add(petalDrift);
     }
   }
