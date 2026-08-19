@@ -1301,9 +1301,23 @@ export class SystemScale {
           const c = blackbodyRGB(1500);
           return new THREE.Vector3(c.r, c.g, c.b);
         })() },
-        // scaled by the same compressed luminosity the scattered term uses, so
-        // a brighter star drives a brighter ring without either one running away
-        uEmberGain: { value: 0.34 * Math.min(Math.max(Math.pow(Math.max(P.lum, 1e-4), 1 / 3), 0.34), 3.4) },
+        // Scaled by the same compressed luminosity the scattered term uses, so
+        // a brighter star drives a brighter ring without either one running away.
+        //
+        // 0.34 was two hundred times the scattered term's 0.0016, and the frame
+        // said so: a 1500 K blackbody at that gain floods two thirds of the
+        // system view with deep orange, which is a lifted vacuum black and
+        // §2.8 does not allow one. Compare docs/screenshots/4-system.png, shot
+        // before this term existed — the same system reads as a white star on
+        // true black with a violet nebula lane behind it.
+        //
+        // The physics is not what was wrong. Grains just outside the
+        // sublimation radius really do sit at 1500 K and really do radiate, and
+        // the inner F-corona really is a deep-orange ring. A *ring* is the
+        // point: this is the brightest few tenths of an AU of the cloud, not a
+        // floor under the whole disc, and at 0.34 the ring's own falloff was
+        // still leaving enough light at 30 AU to paint the frame.
+        uEmberGain: { value: 0.018 * Math.min(Math.max(Math.pow(Math.max(P.lum, 1e-4), 1 / 3), 0.34), 3.4) },
         uSeed: { value: (hash(P.seed, 0xd057) >>> 8) / 65536 },
       },
       vertexShader: DUST_VERT,
