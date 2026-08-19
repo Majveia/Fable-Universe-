@@ -45,7 +45,10 @@ jobs:
   offline:
     name: offline suites (§7.3)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 was not enough once the browser install grew a retry loop: three
+    # capped attempts is fifteen minutes of worst case before the suites even
+    # start. A job timeout should bound a hang, not a slow-but-working run.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -79,7 +82,24 @@ jobs:
       - name: playwright + chromium
         run: |
           npm i -g playwright
-          npx playwright install --with-deps chromium
+          # `--with-deps` puts `apt-get update` on the critical path of every
+          # run, and an Ubuntu mirror that stops answering takes the whole job
+          # with it: measured once, a PR run sat inside this step for 28 minutes
+          # and died on the job's own 30-minute timeout, while the identical
+          # commit passed on its push run in seven. That reads as a red check on
+          # a green commit, which is the worst kind of gate.
+          #
+          # Three attempts, each capped, so a stalled mirror costs five minutes
+          # and a retry rather than the whole job.
+          ok=0
+          for attempt in 1 2 3; do
+            if timeout 300 npx playwright install --with-deps chromium; then ok=1; break; fi
+            echo "playwright install attempt $attempt failed or stalled; retrying"
+            sleep 10
+          done
+          # a loop that exhausts its attempts must fail the job, not fall through
+          # into a browser-less run that reports something else as the defect
+          [ "$ok" = 1 ] || { echo "playwright install failed after 3 attempts"; exit 1; }
 
       # The `core` tier: every scale, the cheap world kinds, and one world with
       # a biosphere in flower — the branch that has actually broken. The rest of

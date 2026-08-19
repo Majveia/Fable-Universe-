@@ -68,7 +68,24 @@ jobs:
       - name: playwright + chromium
         run: |
           npm i -g playwright
-          npx playwright install --with-deps chromium
+          # `--with-deps` puts `apt-get update` on the critical path of every
+          # run, and an Ubuntu mirror that stops answering takes the whole job
+          # with it: measured once, a PR run sat inside this step for 28 minutes
+          # and died on the job's own 30-minute timeout, while the identical
+          # commit passed on its push run in seven. That reads as a red check on
+          # a green commit, which is the worst kind of gate.
+          #
+          # Three attempts, each capped, so a stalled mirror costs five minutes
+          # and a retry rather than the whole job.
+          ok=0
+          for attempt in 1 2 3; do
+            if timeout 300 npx playwright install --with-deps chromium; then ok=1; break; fi
+            echo "playwright install attempt $attempt failed or stalled; retrying"
+            sleep 10
+          done
+          # a loop that exhausts its attempts must fail the job, not fall through
+          # into a browser-less run that reports something else as the defect
+          [ "$ok" = 1 ] || { echo "playwright install failed after 3 attempts"; exit 1; }
 
       # Ten seconds, and it covers what the station walk cannot: a shader that
       # only exists when a world is in flower is not built by a route that
