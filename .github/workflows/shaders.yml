@@ -68,7 +68,42 @@ jobs:
       - name: playwright + chromium
         run: |
           npm i -g playwright
-          npx playwright install --with-deps chromium
+          # No `--with-deps`, and that is the whole fix.
+          #
+          # It put `apt-get` on the critical path of every run, and a slow
+          # Ubuntu mirror then took the job with it -- one PR run sat here 28
+          # minutes and died on the job timeout while the identical commit
+          # passed on its push run in seven.
+          #
+          # Capping the attempt made it strictly worse, which is worth
+          # recording: `timeout` killed the npx process but not the `apt-get`
+          # it had spawned as root, so the orphan kept the dpkg frontend lock
+          # and both retries died instantly against a lock the timeout itself
+          # had created. A slow-but-succeeding install became a guaranteed
+          # failure. Never wrap apt in a timeout you intend to retry around.
+          #
+          # And it was never needed here. The runner log is explicit: every
+          # library Chromium wants -- libnss3, libatk, libgbm, libxkbcommon,
+          # the rest -- reports "is already the newest version" on
+          # ubuntu-24.04. The only NEW packages `--with-deps` fetched were nine
+          # *font* packages, for CJK and Cyrillic text this project never
+          # renders: the gates it feeds compile shaders and build scenes
+          # offscreen.
+          #
+          # So: browser only, from Playwright's CDN, which has served 184 MB in
+          # about two seconds on every run so far. No apt, no lock, no mirror.
+          # If a future runner image does drop a library, Chromium fails to
+          # launch and `boot.js` says so in seconds -- a far better failure than
+          # a silent half-hour.
+          ok=0
+          for attempt in 1 2 3; do
+            if timeout 600 npx playwright install chromium; then ok=1; break; fi
+            echo "playwright install attempt $attempt failed or stalled; retrying"
+            sleep 10
+          done
+          # a loop that exhausts its attempts must fail the job, not fall through
+          # into a browser-less run that reports something else as the defect
+          [ "$ok" = 1 ] || { echo "playwright install failed after 3 attempts"; exit 1; }
 
       # Ten seconds, and it covers what the station walk cannot: a shader that
       # only exists when a world is in flower is not built by a route that

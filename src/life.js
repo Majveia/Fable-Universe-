@@ -165,6 +165,58 @@ export function addLife(s) {
   // still has trees on it.
   const sites = [];
   const sp = s.spawn ?? { x: 0, z: 0 };
+
+  // ------------------------------------------------------ the grove split ---
+  //
+  // A world had two tree systems on it and you could tell. 130 trees grown
+  // from the pipe model — real branching, beam curvature, blossom — and 520
+  // *groves* that were a five-sided cylinder with three icosahedron blobs on
+  // top. Four out of five trees on a world were the sticks, and they were not
+  // hiding: grove centres scatter over the whole tile, so a stand of them can
+  // sit a hundred metres from the landing site next to a grown one.
+  //
+  // The fix is the same LOD argument a third time. A trunk-and-blob is a
+  // perfectly good tree at 400 m, where its silhouette is a dozen pixels and
+  // branching is invisible. It is a bad one at 120 m. So the near stands are
+  // promoted into the grown pipeline — appended to `sites`, which means they
+  // get the wood, the leaves, the foliage LOD *and* the blossom for free —
+  // and the far ones keep the cheap form they were always adequate for.
+  //
+  // They grow on a smaller budget than the hero trees. A stand is read as a
+  // mass and a mass does not need every twig, so 96 segments against 240 (or
+  // 150 against 520) is what keeps this affordable. Measured on Kerune III in
+  // full bloom, promoting one stand of 58:
+  //
+  //     low       1 293 605 -> 1 346 830 triangles   (59% -> 61% of §5)
+  //     desktop   1 675 282 -> 1 755 572             (76% -> 80%)
+  //
+  // 260 m is where the threshold sits, and it is a pixel argument rather than
+  // a budget one: a 10 m tree subtends about 40 px at that range on a 1440p
+  // desktop, which is enough to read a trunk and two or three limbs and notice
+  // that there are none. By 400 m it is 26 px and a blob is honest.
+  //
+  // The headcount does not change — `nFar` takes the far centres' share and
+  // `grovePer` takes the near ones' — so a world has exactly as many trees as
+  // before, and the ones close enough to look at are made of wood.
+  const conifer = pp.Teq < 268;
+  const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
+  const nGrove = Math.round((COARSE ? 260 : 520) * vegF);
+  const GROVE_NEAR = 260;
+  const GROVE_BUDGET = budget > 300 ? 150 : 96;
+  const centers = [];
+  if (nGrove > 24) {
+    for (let i = 0; i < 90 && centers.length < 9; i++) {
+      const x = r.float(-EXT / 2, EXT / 2), z = r.float(-EXT / 2, EXT / 2);
+      if (dryland(x, z) === null) continue;
+      // groves keep off the town's doorstep
+      if (s.settlement && Math.hypot(x - s.settlement.site.x, z - s.settlement.site.z) < 160) continue;
+      centers.push({
+        x, z, spread: r.float(55, 120), hue: r.float(-0.045, 0.045),
+        near: Math.hypot(x - sp.x, z - sp.z) < GROVE_NEAR,
+      });
+    }
+  }
+
   for (let i = 0; i < 3000 && sites.length < nTrees; i++) {
     const near = i % 100 < 58;
     const x = near ? sp.x + r.gauss() * 130 : r.float(-EXT / 2, EXT / 2);
@@ -177,9 +229,29 @@ export function addLife(s) {
     sites.push({ x, y: h, z, height: r.float(5, 13), yaw: r.float(0, 6.28), seed: r.int(1, 1e9) });
   }
 
+  // the near stands, as real wood. `grovePer` shares the grove headcount out
+  // over its centres so promoting one does not change how many trees a world
+  // has, only which of them are made of sticks.
+  const nearCenters = centers.filter((c) => c.near);
+  const grovePer = centers.length ? Math.round(nGrove / centers.length) : 0;
+  for (const c of nearCenters) {
+    for (let k = 0, tries = 0; k < grovePer && tries < grovePer * 4; tries++) {
+      const x = c.x + r.gauss() * c.spread, z = c.z + r.gauss() * c.spread;
+      if (Math.hypot(x - sp.x, z - sp.z) < 14) continue;
+      const h = dryland(x, z);
+      if (h === null) continue;
+      sites.push({
+        x, y: h, z, seed: r.int(1, 1e9), yaw: r.float(0, 6.28),
+        height: conifer ? r.float(8, 16) : r.float(6, 12),
+        budget: GROVE_BUDGET,
+      });
+      k++;
+    }
+  }
+
   // grow them all first, so the instance count is known before the buffer is
   const grown = sites.map((p) => growTree({
-    seed: p.seed, gravity: gwork, height: p.height, budget,
+    seed: p.seed, gravity: gwork, height: p.height, budget: p.budget ?? budget,
   }));
   const segTotal = grown.reduce((a, t) => a + t.segments, 0);
   const wood = new THREE.InstancedMesh(segGeo, barkMat, Math.max(segTotal, 1));
@@ -446,25 +518,18 @@ export function addLife(s) {
   // the lone trees were scouts; these are the woods they were scouting
   // for. clustered stands with real crowns — puffy triple-canopy
   // broadleaves in the warm bands, spired conifers where the year is cold
-  const conifer = pp.Teq < 268;
-  const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
-  const nGrove = Math.round((COARSE ? 260 : 520) * vegF);
-  if (nGrove > 24) {
+  // The far stands only — the near ones were promoted into the grown pipeline
+  // above and are already standing there with real branches on them.
+  const farCenters = centers.filter((c) => !c.near);
+  const nFar = farCenters.length ? Math.round(nGrove * (farCenters.length / centers.length)) : 0;
+  if (nFar > 24) {
     const gTrunks = new THREE.InstancedMesh(
-      new THREE.CylinderGeometry(0.12, 0.26, 1, 5), barkMat, nGrove);
+      new THREE.CylinderGeometry(0.12, 0.26, 1, 5), barkMat, nFar);
     const crownGeo = conifer ? new THREE.ConeGeometry(1, 2.6, 7) : new THREE.IcosahedronGeometry(1, 1);
-    const gCrowns = new THREE.InstancedMesh(crownGeo, canopyMat, nGrove * (conifer ? 1 : 3));
+    const gCrowns = new THREE.InstancedMesh(crownGeo, canopyMat, nFar * (conifer ? 1 : 3));
     let gt = 0, gc = 0;
-    const centers = [];
-    for (let i = 0; i < 90 && centers.length < 9; i++) {
-      const x = r.float(-EXT / 2, EXT / 2), z = r.float(-EXT / 2, EXT / 2);
-      if (dryland(x, z) === null) continue;
-      // groves keep off the town's doorstep
-      if (s.settlement && Math.hypot(x - s.settlement.site.x, z - s.settlement.site.z) < 160) continue;
-      centers.push({ x, z, spread: r.float(55, 120), hue: r.float(-0.045, 0.045) });
-    }
-    for (let i = 0; i < nGrove * 3 && gt < nGrove; i++) {
-      const c = centers[i % Math.max(centers.length, 1)];
+    for (let i = 0; i < nFar * 3 && gt < nFar; i++) {
+      const c = farCenters[i % Math.max(farCenters.length, 1)];
       if (!c) break;
       const x = c.x + r.gauss() * c.spread, z = c.z + r.gauss() * c.spread;
       const h = dryland(x, z);
