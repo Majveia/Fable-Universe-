@@ -15,6 +15,7 @@ import {
   seasonPhaseOf,
 } from './blossom.js';
 import { airDensity } from './precip.js';
+import { coverDensity } from './scatter.js';
 import { gravityOf } from './avatar.js';
 import { qInt } from './quality.js';
 
@@ -136,6 +137,10 @@ export function addLife(s) {
   // spends it thickest-first so a low tier gets a smaller tree rather than a
   // half-drawn one.
   const budget = qInt('twig', 'shadowRes') > 1500 ? 520 : 240;
+  // Where a crown stops being worth its clumps. 90 m rather than the ground
+  // cover's 38 because a 14 m tree is still a readable shape at a hundred
+  // metres where a 40 cm rock is not — the law is shared, the scale is not.
+  const LEAF_NEAR = 90;
   const gwork = gravityOf(s.pp);
   // trunk + branch: one tapered unit ring, instanced per segment
   const segGeo = new THREE.CylinderGeometry(1, 1, 1, 5, 1, true);
@@ -201,9 +206,40 @@ export function addLife(s) {
       d.updateMatrix();
       wood.setMatrixAt(w++, d.matrix);
     }
-    for (const tip of tipsOf(t, 0.018)) {
+    // Foliage LOD — §9.5's law again, one object class over.
+    //
+    // Every tree carried its full crown whatever its distance: a tree at 700 m
+    // is a few pixels wide and was still spending 256 leaf clumps on them, all
+    // of them sub-pixel. That is exactly the defect the ground cover had, and
+    // it is the larger half of the frame — 666 840 triangles on desktop, more
+    // than the wood it hangs on.
+    //
+    // Two halves, and the second is what stops this being a downgrade:
+    //
+    //   · **thin** by the same `coverDensity` the furniture uses, so the two
+    //     cannot disagree about how a world falls away with distance;
+    //   · **grow** what is left by `1/√keep`, because a canopy is a silhouette
+    //     and a silhouette is projected *area*. Thinning alone turns a distant
+    //     tree into scaffolding — visible branch structure where there should
+    //     be a mass — which is a worse error than the cost it saves.
+    const tips = tipsOf(t, 0.018);
+    // Fisher–Yates on the tree's own stream, because §9.5's thinning is only
+    // valid on a pre-shuffled buffer: tips come out in growth order, so a raw
+    // prefix would keep the trunk's first branches and drop the outer crown —
+    // a sample of when a branch grew rather than of the tree.
+    const rt = new RNG(hash(p.seed >>> 0, 0x1eaf));
+    for (let i = tips.length - 1; i > 0; i--) {
+      const j = rt.int(0, i);
+      const tmp = tips[i]; tips[i] = tips[j]; tips[j] = tmp;
+    }
+    const keep = coverDensity(Math.hypot(p.x - sp.x, p.z - sp.z), LEAF_NEAR);
+    // never below three clumps: two is a pair of balls, not a crown
+    const nKeep = Math.min(tips.length, Math.max(3, Math.ceil(tips.length * keep)));
+    const grow = Math.sqrt(tips.length / Math.max(nKeep, 1));
+    for (let k = 0; k < nKeep; k++) {
+      const tip = tips[k];
       const tx = tip.x * cy - tip.z * sy, tz = tip.x * sy + tip.z * cy;
-      tipsAll.push(p.x + tx, p.y + tip.y, p.z + tz);
+      tipsAll.push(p.x + tx, p.y + tip.y, p.z + tz, grow);
     }
   }
   wood.count = w;
@@ -215,10 +251,11 @@ export function addLife(s) {
   // and a hat: the outline of the leaves is the outline of the branching.
   if (tipsAll.length) {
     const leafGeo = new THREE.IcosahedronGeometry(1, 0);
-    const leaves = new THREE.InstancedMesh(leafGeo, canopyMat, tipsAll.length / 3);
-    for (let i = 0, n = tipsAll.length / 3; i < n; i++) {
-      const cw = r.float(0.55, 1.15);
-      d.position.set(tipsAll[i * 3], tipsAll[i * 3 + 1], tipsAll[i * 3 + 2]);
+    const leaves = new THREE.InstancedMesh(leafGeo, canopyMat, tipsAll.length / 4);
+    for (let i = 0, n = tipsAll.length / 4; i < n; i++) {
+      const grow = tipsAll[i * 4 + 3];
+      const cw = r.float(0.55, 1.15) * grow;
+      d.position.set(tipsAll[i * 4], tipsAll[i * 4 + 1], tipsAll[i * 4 + 2]);
       d.rotation.set(r.float(0, 3.1), r.float(0, 6.28), 0);
       d.scale.set(cw, cw * r.float(0.6, 0.95), cw);
       d.updateMatrix();
