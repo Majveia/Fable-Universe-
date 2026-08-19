@@ -455,10 +455,31 @@ const M1_PALETTE = /* glsl */`
     // chromaticity the populations actually have, each at least 42° from its
     // neighbours in hue so that additive overlap between two families still
     // resolves as two families rather than as their mean.
-    vec3 col = vec3(0.53, 0.63, 1.00);                                    // void: blue cloud, O/B light
-    col = mix(col, vec3(0.18, 0.86, 0.92), smoothstep(0.45, 0.55, nClass)); // sheet
-    col = mix(col, vec3(1.00, 0.80, 0.20), smoothstep(1.45, 1.55, nClass)); // filament: green valley
-    col = mix(col, vec3(1.00, 0.30, 0.32), smoothstep(2.45, 2.55, nClass)); // knot: red sequence
+    // -------------------------------------------------------------------
+    // …and then the human asked for the original key back, so here it is.
+    //
+    // Everything above is the argument for stellar-population colour, and it
+    // is a good argument: the sky really is blue in the voids and red in the
+    // clusters, and daa0cbb moved the palette there deliberately. It is not
+    // being called wrong. It is being overruled, which §3 explicitly allows —
+    // *"the numbers are never negotiable; the palette always is"* — and the
+    // palette is the one thing in this file that was never physics.
+    //
+    // These four stops are AEON's first ones, restored: a false-colour key
+    // that reads the web as a *classification* rather than a photograph.
+    // Orange void, green sheet, blue filament, violet knot — 90° or more
+    // between neighbours, which is why it separates so hard at a glance.
+    //
+    // The band edges stay narrow (0.45/0.55 rather than the original
+    // 0.40/0.62). That was a separate, measured change: the class count sits
+    // within 0.15 of an integer for 85% of Lagrangian space, so a wide ramp
+    // spends its width where almost nothing lives. Keeping it makes these
+    // hues *more* distinct than they originally were, not less, which is the
+    // direction the original was reaching for.
+    vec3 col = vec3(1.00, 0.56, 0.14);                                    // void
+    col = mix(col, vec3(0.20, 0.90, 0.62), smoothstep(0.45, 0.55, nClass)); // sheet
+    col = mix(col, vec3(0.16, 0.40, 1.00), smoothstep(1.45, 1.55, nClass)); // filament
+    col = mix(col, vec3(0.74, 0.22, 0.98), smoothstep(2.45, 2.55, nClass)); // knot
 
     // Divergence still speaks inside the family — but it may not spend chroma
     // to do it. The previous version pulled up to 22% toward grey, which is
