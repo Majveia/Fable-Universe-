@@ -16,7 +16,6 @@
 
 import * as THREE from 'three';
 import { RNG, hash } from './rng.js';
-import { qInt } from './quality.js';
 import {
   COVER_NEAR, MINERALS, SPECIES, coverDensity, mineralChunk, scatterChunk,
 } from './scatter.js';
@@ -35,59 +34,39 @@ const CHUNK = 32;
  * drift has to be the field's shape and not the budget's.
  *
  * ---------------------------------------------------------------------------
- * Why the *better* tier gets the smaller number
+ * What the number is, and what decided it
  *
- * It looks backwards and it is not. §5's ceiling is 2.2 M triangles per frame
- * and it is not qualified by tier — the tiers differ in the frame rate they
- * must hit, not in how many triangles a frame may contain. So the budget is a
- * total, and what is left for furniture is whatever the hero content did not
- * take. Measured on Kerune III in full bloom, scene triangles:
+ * §5's ceiling is 2.2 M triangles per frame and it is not qualified by tier —
+ * the tiers differ in the frame rate they must hit, not in how many triangles
+ * a frame may contain. So the budget is a total, and backdrop furniture gets
+ * a stated share of it rather than whatever looked right: **at most 15%**,
+ * which is 330 000 triangles.
+ *
+ * That was not affordable when this was written. Desktop trees carried their
+ * full crown at every distance — 33 342 leaf clumps, 666 840 triangles — and
+ * furniture had to take what was left, which briefly made the *better* tier
+ * get the smaller number. `life.js` now thins distant crowns by the same law
+ * this file uses, which refunded 372 120 triangles on desktop, and the 15%
+ * share fits on both tiers. One number, no tier branch, which is what it
+ * should have been.
+ *
+ * Measured on Kerune III in full bloom, scene triangles:
  *
  *                        low        desktop
- *     tree foliage     386 360      666 840
+ *     tree foliage     167 640      294 720
  *     tree wood        283 700      423 940
  *     blossom           64 130      177 860
- *     ground cover     401 364      401 364      ← this file, untiered
- *     everything else  451 779      452 406
+ *     ground cover     331 236      331 236      ← this file
+ *     everything else  446 899      447 526
  *     ─────────────────────────────────────
- *     total          1 587 333    2 122 410      (96.5% of 2.2 M)
+ *     total          1 293 605    1 675 282      (59% and 76% of 2.2 M)
  *
- * Three and a half percent of headroom is not headroom; a settlement or a
- * denser stand of trees eats it. The tree budget already doubles across the
- * tier boundary (`life.js` spends 520 segments a tree against 240), so on
- * desktop the wood and its leaves take half the frame on their own, and the
- * backdrop is what has to give.
- *
- * Note these are scene triangles, which for this file *are* frame triangles:
- * one instanced mesh per kind spans the whole 840 m disc, so the frustum never
- * culls it — it is either drawn entirely or not at all.
- *
- * The tree cost is the number worth attacking next, and it needs a GPU run to
- * attack honestly: 33 342 leaf icosahedra at 20 triangles each is a great deal
- * of geometry for foliage that reads as a mass at any distance.
- *
- * ---------------------------------------------------------------------------
- * The rule these two numbers come from
- *
- * Not taste, and not tuning until it looked right: **backdrop furniture takes
- * at most 15% of §5's frame** (330 000 triangles), and on any tier where the
- * hero content leaves less than that, it takes what is left with 300 000 spare.
- * Desktop is the binding case — trees and blossom alone are 1.27 M there — so
- * it lands at 180 000 rather than the cap.
- *
- * Measured after, on the same world:
- *
- *     low       1 512 325 triangles   (69% of budget) · cover 331 236, 22%
- *     desktop   1 885 254 triangles   (86% of budget) · cover 179 568, 10%
- *
- * A tier row would express this better than two ternaries, and §5 says the
- * four-row table lands with the renderer rework. Until then this is the same
- * `qInt` proxy `life.js` already uses for the tree budget, so both knobs read
- * one tier and cannot disagree about which machine they are on.
+ * These are scene triangles, which for this file *are* frame triangles: one
+ * instanced mesh per kind spans the whole 840 m disc, so the frustum never
+ * culls it — it is drawn entirely or not at all.
  */
-const COVER_HI = qInt('cover', 'shadowRes') > 1500;
-const BASE_ROCK = COVER_HI ? 400 : 740;
-const BASE_PLANT = COVER_HI ? 660 : 1230;
+const BASE_ROCK = 740;
+const BASE_PLANT = 1230;
 
 /**
  * Both communities, placed.
