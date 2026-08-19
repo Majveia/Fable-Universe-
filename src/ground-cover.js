@@ -53,13 +53,16 @@ const CHUNK = 32;
  * Measured on Kerune III in full bloom, scene triangles:
  *
  *                        low        desktop
- *     tree foliage     167 640      294 720
- *     tree wood        283 700      423 940
- *     blossom           64 130      177 860
+ *     tree wood        338 400      490 140
  *     ground cover     331 236      331 236      ← this file
- *     everything else  446 899      447 526
+ *     tree foliage     188 820      324 080
+ *     blossom           56 255      177 670
+ *     everything else  432 119      432 446
  *     ─────────────────────────────────────
- *     total          1 293 605    1 675 282      (59% and 76% of 2.2 M)
+ *     total          1 346 830    1 755 572      (61% and 80% of 2.2 M)
+ *
+ * A snapshot, not a contract: those rows move whenever anything above them
+ * does. What this file owes is its own row and the rule that sets it.
  *
  * These are scene triangles, which for this file *are* frame triangles: one
  * instanced mesh per kind spans the whole 840 m disc, so the frustum never
