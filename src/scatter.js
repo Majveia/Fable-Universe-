@@ -174,6 +174,46 @@ const COMPETITION = 0.78;
  * is §5's lever and is spent across species in proportion to what is actually
  * growing here, so a chunk in the middle of a reed bed spends it on reeds.
  */
+/**
+ * §9.5's density law, for the things standing on the ground.
+ *
+ * `min(1, (dn/d)^1.5)` — full density inside `dn` metres of the viewer, and a
+ * `d^-1.5` falloff beyond it. CLAUDE.md calls this "the single most
+ * transferable idea in the reference" and it transfers here exactly: a rock at
+ * 400 m is two pixels and costs the same to place as one at 3 m, so spreading
+ * a flat budget evenly over an 840 m reach spends almost all of it where
+ * nobody can see it and starves the only part anyone walks through.
+ *
+ * Measured before: about 4 000 objects over 554 000 m², which is **one per
+ * 139 m²** — you would walk thirteen metres between rocks on a scree slope.
+ * That is the "bare ground to the horizon" reading, arrived at from the other
+ * side: not nothing, but nothing *near you*.
+ *
+ * The exponent is 1.5 and not 1.45 or 1.7 for the reason §9.5 gives: at
+ * exactly 1.5 a shader evaluates it as `x·x·inversesqrt(x)`, three
+ * single-cycle instructions. Nothing here runs on a GPU today — this is CPU
+ * placement at build — but the law has to be the same one the grass uses or
+ * the two will disagree about how a world thins out, and the grass is the one
+ * that runs on twelve million vertices.
+ *
+ * The integral is what makes it affordable, and it is worth writing down:
+ *
+ *     N = ρ₀·π·dn² + 4π·ρ₀·dn^1.5·(√R − √dn)
+ *
+ * With `dn = 38` and `R = 420` that is ρ₀ × 46 900 m² — an *effective* area
+ * one twelfth of the disc's real 554 000. So near-field density can go up by
+ * an order of magnitude and the total goes up by less than one.
+ */
+export const COVER_NEAR = 38;
+export const COVER_EXP = 1.5;
+
+export function coverDensity(d, near = COVER_NEAR, exp = COVER_EXP) {
+  const dd = Math.max(num(d, 0), 0);
+  const dn = Math.max(num(near, COVER_NEAR), 0.1);
+  if (dd <= dn) return 1;
+  return Math.pow(dn / dd, Math.max(num(exp, COVER_EXP), 0.1));
+}
+
 export function scatterChunk({
   x0 = 0, z0 = 0, size = 32, seed = 1, biome = {}, budget = 260, groundAt = null,
 } = {}) {

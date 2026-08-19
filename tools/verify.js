@@ -98,8 +98,8 @@ import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecol
 import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
 import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
 import {
-  MINERALS, SPECIES, communityOf, densityAt, mineralChunk, mineralFit, mineralsOf,
-  scatterChunk, tolerance,
+  COVER_EXP, COVER_NEAR, MINERALS, SPECIES, communityOf, coverDensity, densityAt,
+  mineralChunk, mineralFit, mineralsOf, scatterChunk, tolerance,
 } from '../src/scatter.js';
 import { phaseOf, precipFor, subpixel, terminalVelocity, wrap } from '../src/precip.js';
 import {
@@ -7557,6 +7557,54 @@ function suiteTree() {
 // The load-bearing idea is that every species carries its **own** density field,
 // so what falls out is drifts and stands rather than an even sprinkle. What
 // AEON adds is tolerances, so a biome selects a community instead of a palette.
+function suiteCover() {
+  console.log('\nground cover — one density law, and the near field is where you are (§9.5)');
+
+  // --- the law itself ------------------------------------------------------
+  ok('§9.5 · full density inside the near distance, then a d^-1.5 falloff',
+    coverDensity(0) === 1 && coverDensity(COVER_NEAR) === 1
+    && Math.abs(coverDensity(2 * COVER_NEAR) - Math.pow(0.5, 1.5)) < 1e-12
+    && Math.abs(coverDensity(4 * COVER_NEAR) - Math.pow(0.25, 1.5)) < 1e-12,
+    `dn = ${COVER_NEAR} m, exponent ${COVER_EXP} — the same law the grass uses`);
+  ok('and it is continuous at the near distance, so there is no step to see',
+    Math.abs(coverDensity(COVER_NEAR - 1e-9) - coverDensity(COVER_NEAR + 1e-9)) < 1e-8,
+    '§9.5: rings switch tessellation, never density');
+  ok('and monotonically decreasing, so nothing far is denser than something near',
+    (() => {
+      let prev = Infinity;
+      for (let d = 0; d <= 900; d += 0.5) {
+        const v = coverDensity(d);
+        if (v > prev + 1e-12) return false;
+        prev = v;
+      }
+      return true;
+    })());
+
+  // --- what the law buys ---------------------------------------------------
+  // The whole reason for it: a flat budget over an 840 m reach spends almost
+  // everything where nobody can see it. The integral says how much.
+  const REACH = 420;
+  let effective = 0;
+  for (let d = 0.25; d < REACH; d += 0.25) effective += coverDensity(d) * 2 * Math.PI * d * 0.25;
+  const disc = Math.PI * REACH * REACH;
+  ok('§5 · so the near field can be an order of magnitude denser for a tenth of the cost',
+    effective < disc * 0.1 && effective > disc * 0.06,
+    `effective area ${Math.round(effective).toLocaleString()} m² against the disc's `
+    + `${Math.round(disc).toLocaleString()} — ${(disc / effective).toFixed(1)}× leverage`);
+  // …and the analytic form agrees with the numeric sum, which is the check that
+  // the exponent is doing what the comment in scatter.js claims it does
+  const dn = COVER_NEAR;
+  const analytic = Math.PI * dn * dn + 4 * Math.PI * Math.pow(dn, 1.5) * (Math.sqrt(REACH) - Math.sqrt(dn));
+  ok('and the closed form matches the sum, so the integral in the header is real',
+    Math.abs(analytic - effective) / effective < 0.01,
+    `closed form ${Math.round(analytic).toLocaleString()} m² vs summed ${Math.round(effective).toLocaleString()}`);
+
+  // --- §11 -----------------------------------------------------------------
+  ok('§11 · NaN or a negative distance must not poison a chunk budget',
+    [coverDensity(NaN), coverDensity(-5), coverDensity(Infinity), coverDensity(0, NaN, NaN)]
+      .every((v) => Number.isFinite(v) && v >= 0 && v <= 1));
+}
+
 function suiteScatter() {
   console.log('\nscatter — what grows between the blades (§9.5, §2.3)');
 
@@ -7997,6 +8045,7 @@ function suiteBlossom() {
 
 const suites = {
   blossom: suiteBlossom,
+  cover: suiteCover,
   precip: suitePrecip,
   scatter: suiteScatter,
   tree: suiteTree,

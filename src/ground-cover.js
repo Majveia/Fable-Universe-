@@ -16,11 +16,78 @@
 
 import * as THREE from 'three';
 import { RNG, hash } from './rng.js';
-import { MINERALS, SPECIES, mineralChunk, scatterChunk } from './scatter.js';
+import { qInt } from './quality.js';
+import {
+  COVER_NEAR, MINERALS, SPECIES, coverDensity, mineralChunk, scatterChunk,
+} from './scatter.js';
 
 /** how far out we furnish, and how big a chunk is, in metres */
 const REACH = 420;
 const CHUNK = 32;
+
+/**
+ * What a chunk may spend at full density — §9.5's `B`, before the distance law.
+ *
+ * These are budgets for the *rejection sampler*, not object counts: both chunk
+ * functions throw candidates at their own noise field and keep the ones that
+ * land, and the acceptance rate runs around one in seven. So the number that
+ * reaches the ground is roughly a seventh of this, which is the point — the
+ * drift has to be the field's shape and not the budget's.
+ *
+ * ---------------------------------------------------------------------------
+ * Why the *better* tier gets the smaller number
+ *
+ * It looks backwards and it is not. §5's ceiling is 2.2 M triangles per frame
+ * and it is not qualified by tier — the tiers differ in the frame rate they
+ * must hit, not in how many triangles a frame may contain. So the budget is a
+ * total, and what is left for furniture is whatever the hero content did not
+ * take. Measured on Kerune III in full bloom, scene triangles:
+ *
+ *                        low        desktop
+ *     tree foliage     386 360      666 840
+ *     tree wood        283 700      423 940
+ *     blossom           64 130      177 860
+ *     ground cover     401 364      401 364      ← this file, untiered
+ *     everything else  451 779      452 406
+ *     ─────────────────────────────────────
+ *     total          1 587 333    2 122 410      (96.5% of 2.2 M)
+ *
+ * Three and a half percent of headroom is not headroom; a settlement or a
+ * denser stand of trees eats it. The tree budget already doubles across the
+ * tier boundary (`life.js` spends 520 segments a tree against 240), so on
+ * desktop the wood and its leaves take half the frame on their own, and the
+ * backdrop is what has to give.
+ *
+ * Note these are scene triangles, which for this file *are* frame triangles:
+ * one instanced mesh per kind spans the whole 840 m disc, so the frustum never
+ * culls it — it is either drawn entirely or not at all.
+ *
+ * The tree cost is the number worth attacking next, and it needs a GPU run to
+ * attack honestly: 33 342 leaf icosahedra at 20 triangles each is a great deal
+ * of geometry for foliage that reads as a mass at any distance.
+ *
+ * ---------------------------------------------------------------------------
+ * The rule these two numbers come from
+ *
+ * Not taste, and not tuning until it looked right: **backdrop furniture takes
+ * at most 15% of §5's frame** (330 000 triangles), and on any tier where the
+ * hero content leaves less than that, it takes what is left with 300 000 spare.
+ * Desktop is the binding case — trees and blossom alone are 1.27 M there — so
+ * it lands at 180 000 rather than the cap.
+ *
+ * Measured after, on the same world:
+ *
+ *     low       1 512 325 triangles   (69% of budget) · cover 331 236, 22%
+ *     desktop   1 885 254 triangles   (86% of budget) · cover 179 568, 10%
+ *
+ * A tier row would express this better than two ternaries, and §5 says the
+ * four-row table lands with the renderer rework. Until then this is the same
+ * `qInt` proxy `life.js` already uses for the tree budget, so both knobs read
+ * one tier and cannot disagree about which machine they are on.
+ */
+const COVER_HI = qInt('cover', 'shadowRes') > 1500;
+const BASE_ROCK = COVER_HI ? 400 : 740;
+const BASE_PLANT = COVER_HI ? 660 : 1230;
 
 /**
  * Both communities, placed.
@@ -60,14 +127,40 @@ export function addGroundCover(s) {
   };
   const cx = Math.round((s.spawn?.x ?? 0) / CHUNK) * CHUNK;
   const cz = Math.round((s.spawn?.z ?? 0) / CHUNK) * CHUNK;
+
+  /**
+   * A chunk's distance from the viewer, measured to its **nearest** point.
+   *
+   * Its centre would be wrong in the one place it matters: the chunk you are
+   * standing at the edge of is 22 m away by its centre and 0 m away by the
+   * ground under your boots, and thinning it as if it were 22 m puts a visible
+   * hole exactly where the eye is. §9.5 makes the same call for the grass and
+   * for the same reason — over-draw from the nearest corner, never the centre.
+   */
+  const nearestDist = (x, z) => {
+    const dx = Math.max(x - cx, cx - (x + CHUNK), 0);
+    const dz = Math.max(z - cz, cz - (z + CHUNK), 0);
+    return Math.hypot(dx, dz);
+  };
+
   for (let x = cx - REACH; x <= cx + REACH; x += CHUNK) {
     for (let z = cz - REACH; z <= cz + REACH; z += CHUNK) {
-      for (const m of mineralChunk({
-        x0: x, z0: z, size: CHUNK, seed, world, budget: 14, groundAt: ground,
-      })) push(m.id, m);
-      for (const p of scatterChunk({
-        x0: x, z0: z, size: CHUNK, seed, biome, budget: 26, groundAt: ground,
-      })) push(p.id, p);
+      // one law, evaluated once per chunk. Rings would be cheaper to reason
+      // about and would put a density step at every ring boundary, which §9.5
+      // is explicit about: rings exist to switch tessellation, never density.
+      const f = coverDensity(nearestDist(x, z));
+      const rock = Math.round(BASE_ROCK * f);
+      const plant = Math.round(BASE_PLANT * f);
+      if (rock >= 1) {
+        for (const m of mineralChunk({
+          x0: x, z0: z, size: CHUNK, seed, world, budget: rock, groundAt: ground,
+        })) push(m.id, m);
+      }
+      if (plant >= 1) {
+        for (const p of scatterChunk({
+          x0: x, z0: z, size: CHUNK, seed, biome, budget: plant, groundAt: ground,
+        })) push(p.id, p);
+      }
     }
   }
   if (!byKind.size) return null;
