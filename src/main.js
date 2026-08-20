@@ -236,6 +236,11 @@ class App {
         const galaxySeed = Number.isFinite(g) ? g >>> 0 : hash(this.seed, 0xbe0) >>> 0;
         const rs = new RoomScale(this, { galaxySeed, addr });
         this.stack.push(rs);
+        // Every other branch in this chain enters the scale it pushed and this
+        // one did not, so a shared `?room=` URL arrived with the controls off:
+        // you stood in the room and could not walk, which is the one thing
+        // there is to do in it.
+        this.active().enter();
         console.info(`[room] ${rs.deepLink} · ${rs.R.shape.width.toFixed(1)}`
           + `×${rs.R.shape.depth.toFixed(1)}×${rs.R.shape.ceiling.toFixed(1)} m`
           + ` · ${rs.R.doors.length} doors · ${rs.tubeCount} tubes`);

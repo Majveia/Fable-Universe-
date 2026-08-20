@@ -201,6 +201,58 @@ export function toGamut(rgb) {
   return c.map((v) => Math.min(Math.max(v / hi, 0), 1));
 }
 
+/**
+ * Chromatic adaptation, Bradford — a colour seen under one illuminant, moved to
+ * how it would look to an eye adapted to D65.
+ *
+ * The eye does not measure light, it measures *contrast against whatever is
+ * lit*. A room lit by one 4230 K fluorescent tube does not look orange to
+ * anyone standing in it; the visual system takes the tube as white and reports
+ * the residue. Rendering the raw XYZ skips that step and paints the whole room
+ * the colour of its own illuminant, which is a false statement about the
+ * experience and, in the Backrooms' case, throws away the exact tint the place
+ * is known for.
+ *
+ * What survives adaptation is the part of the spectrum that is *not* a colour
+ * temperature — for a discharge lamp, the green spike its line structure puts
+ * above the Planckian locus. That residue is the fluorescent look, and it is
+ * the thing worth drawing.
+ *
+ * `refWhite` is the illuminant the observer is adapted to, as XYZ. Its
+ * *scale* is discarded — an adaptation is a statement about chromaticity, and
+ * `planck()` returns absolute radiance in the 10¹³ range, so a version that
+ * respected the scale would divide the whole colour into nothing and return
+ * black. It did, once, for exactly that reason.
+ */
+export function adaptToD65(xyz, refWhite) {
+  const D65 = [0.95047, 1, 1.08883];
+  const src = mul3(BRADFORD, unitLuma(refWhite));
+  const dst = mul3(BRADFORD, D65);
+  const c = mul3(BRADFORD, xyz);
+  return mul3(BRADFORD_INV, [0, 1, 2].map((i) =>
+    (c[i] * dst[i]) / (Math.abs(src[i]) < 1e-12 ? 1e-12 : src[i])));
+}
+
+/**
+ * McCamy's cubic — correlated colour temperature from chromaticity.
+ *
+ * Good to about 2 K over 2856–6500 K, which is the whole range any lamp or
+ * ordinary star in this project occupies, and it is one line rather than a
+ * search along the Planckian locus.
+ */
+export function cctFrom(xyz) {
+  const s = xyz[0] + xyz[1] + xyz[2];
+  if (!(s > 0)) return 6500;
+  const x = xyz[0] / s, y = xyz[1] / s;
+  const n = (x - 0.332) / (0.1858 - y || 1e-12);
+  return Math.min(Math.max(437 * n * n * n + 3601 * n * n + 6861 * n + 5517, 1000), 25000);
+}
+
+/** the XYZ of an ideal blackbody at `T` — the white the eye would adapt to */
+export function planckianWhite(T) {
+  return spectrumToXYZ((l) => planck(l, T));
+}
+
 /** normalise to unit luminance — the model has no absolute scale, only hue */
 function unitLuma(xyz) {
   const Y = Math.max(xyz[1], 1e-30);

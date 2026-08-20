@@ -16,8 +16,8 @@
 import { readFileSync } from 'node:fs';
 import { A_OPEN, A_START, COSMO } from '../src/cosmology.js';
 import {
-  FIXTURE, STOPS, airColours, airmass, hexToLinear, linearToHex, planck,
-  spectrumToXYZ, toGamut, xyzToLinearSRGB,
+  FIXTURE, STOPS, adaptToD65, airColours, airmass, cctFrom, hexToLinear,
+  linearToHex, planck, planckianWhite, spectrumToXYZ, toGamut, xyzToLinearSRGB,
 } from '../src/starlight.js';
 import {
   buildModes, deformation, deltaLinear, displacement, eigenvalues, invariants,
@@ -75,6 +75,9 @@ import {
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import { walkable, wonderDestination, wonderScore } from '../src/wonder.js';
 import { ECO_TAU, capacityFor, ecoAt, logisticAt } from '../src/eco.js';
+import {
+  RHO, TROFFER_GLSL, bounceGain, cavityBounce, ceilingQuad, polygonIrradiance,
+} from '../src/troffer.js';
 import { hash } from '../src/rng.js';
 import {
   BAO_AMPLITUDE, HUBBLE_DIST, SOUND_HORIZON, acoustic, growth, lookbackAt, scaleAt,
@@ -82,10 +85,11 @@ import {
 } from '../src/lightcone.js';
 import {
   DRY_FRACTION, MIN_PAYLOAD, PROPELLANT, craftFor, deltaVToOrbit, escapeVelocity,
-  massRatio, orbitalVelocity, stagePayload, stagesFor, surfaceGravity,
+  massRatio, orbitalVelocity, stagePayload, stagesFor, surfaceGravity, surfacePressure,
 } from '../src/craft.js';
 import {
-  FLICKER_HZ, MAINS_HZ, MERCURY_LINES, isThin, lampColour, lampExposure, lampFlicker,
+  F2, FLICKER_HZ, MAINS_HZ, MERCURY_LINES, PHOSPHOR, PHOSPHOR_BANDS,
+  isThin, lampColour, lampExposure, lampFlicker,
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
   roomShape, sharedBits, starAt, thinDepth, thinPoint,
 } from '../src/liminal.js';
@@ -6037,21 +6041,94 @@ function suiteLiminal() {
   }
 
   {
-    // The light. Mercury, through the same CIE observer the aurora uses — and
-    // the check that matters is that it lands where a fluorescent tube lands
-    // rather than wherever the arithmetic happened to go.
+    // The light. Mercury plus halophosphate, through the same CIE observer the
+    // aurora uses.
+    //
+    // What used to be here asserted the lamp was "green-dominant and
+    // blue-starved" and checked `fresh[2] < fresh[1] && fresh[2] < fresh[0]` —
+    // which passed with **blue at exactly zero**, because that is what the
+    // single-hump phosphor plus a per-channel clamp produced. The corridors
+    // were lit by a sodium lamp and the suite called it correct. §11's warning
+    // about a test weaker than the prose it guards, in one block.
+    //
+    // The replacement is an anchor rather than an adjective: CIE standard
+    // illuminant F2 is the published chromaticity of a cool-white halophosphate
+    // tube, which is exactly the lamp being modelled.
+    const spd = (age) => {
+      const a = Math.min(Math.max(age, 0), 1);
+      const ph = PHOSPHOR * (1 - 0.55 * a);
+      const mnFade = 1 - 0.45 * a;
+      const bandW = PHOSPHOR_BANDS[0].w + PHOSPHOR_BANDS[1].w * mnFade;
+      return (l) => {
+        let v = 0;
+        for (const m of MERCURY_LINES) { const d = (l - m.nm) / 5; v += m.w * (1 - ph) * Math.exp(-d * d); }
+        for (let i = 0; i < PHOSPHOR_BANDS.length; i++) {
+          const b = PHOSPHOR_BANDS[i], d = (l - b.nm) / b.width;
+          v += ph * ((b.w * (i === 1 ? mnFade : 1)) / bandW) * Math.exp(-d * d);
+        }
+        return v;
+      };
+    };
+    const chroma = (age) => {
+      const [X, Y, Z] = spectrumToXYZ(spd(age)); const t = X + Y + Z;
+      return [X / t, Y / t];
+    };
+    const [fx, fy] = chroma(0);
+    near('§9.1 · a fresh tube lands on CIE illuminant F2 · x', fx, F2.x, 0.004);
+    near('...and on its y', fy, F2.y, 0.004);
+    near('...so its CCT is the published 4230 K', cctFrom(spectrumToXYZ(spd(0))), F2.cct, 60);
+
+    // And the bands that produce it are the chemistry, not a fit that happened
+    // to work: antimony and manganese in halophosphate emit where they emit.
+    const [sb, mn] = PHOSPHOR_BANDS;
+    const fwhm = (b) => 2 * b.width * Math.sqrt(Math.LN2);
+    ok('...and the two bands it was fitted from are Sb³⁺ and Mn²⁺, where they live',
+      sb.nm >= 465 && sb.nm <= 490 && fwhm(sb) > 85 && fwhm(sb) < 120
+      && mn.nm >= 575 && mn.nm <= 605 && fwhm(mn) > 80 && fwhm(mn) < 110
+      && mn.w > sb.w,
+      `antimony ${sb.nm} nm / ${fwhm(sb).toFixed(0)} nm FWHM · manganese`
+      + ` ${mn.nm} nm / ${fwhm(mn).toFixed(0)} nm — inside the published range`
+      + ' for halophosphate, and manganese-rich because cool white is');
+
     const fresh = lampColour(0), old = lampColour(1);
-    const hue = (c) => (c[1] > c[0] && c[1] >= c[2] ? 'green' : c[0] > c[1] ? 'warm' : 'cold');
-    ok('§9.1 · the lamp is a mercury spectrum, not a swatch',
-      hue(fresh) === 'green' && fresh[2] < fresh[1] && fresh[2] < fresh[0],
-      `fresh tube ${fresh.map((v) => v.toFixed(2)).join(', ')} — green-dominant and`
-      + ' blue-starved, which is what 546.1 nm plus a 578.2 doublet is');
+    ok('the rendered lamp is a white with a green cast, not a yellow emitter',
+      fresh[2] > 0.85 && fresh[1] >= fresh[0] && fresh[1] >= fresh[2]
+      && Math.min(...fresh) > 0.9,
+      `fresh tube ${fresh.map((v) => v.toFixed(3)).join(', ')} — adapted to its`
+      + ' own 4230 K white, so what is left is the green a line spectrum puts'
+      + ' above the Planckian locus. Unadapted it renders (1.00, 0.70, 0.42),'
+      + ' which is true of the emitter and false of the room');
     ok('...and an old tube drifts toward the raw discharge, on one parameter',
-      old[1] / Math.max(old[0], 1e-6) > fresh[1] / Math.max(fresh[0], 1e-6),
-      'losing phosphor faster than lines makes it greener and harsher — the'
-      + ' worst corridor in any building is the one nobody re-lamped');
+      old[1] / Math.max(old[0], 1e-6) > fresh[1] / Math.max(fresh[0], 1e-6)
+      && old[1] / Math.max(old[2], 1e-6) > fresh[1] / Math.max(fresh[2], 1e-6),
+      `green/red ${(fresh[1] / fresh[0]).toFixed(3)} → ${(old[1] / old[0]).toFixed(3)}:`
+      + ' manganese fades faster than antimony under UV and the phosphor faster'
+      + ' than the lines, which is two halves of one ageing and one parameter');
     const total = MERCURY_LINES.reduce((a, l) => a + l.w, 0);
     near('...and the line weights are a normalised spectrum', total, 1.0, 0.01);
+
+    // The clamp that caused it, as a standing check.
+    //
+    // The distinction is *not* "blue stays above zero" — at the gamut boundary
+    // blue is exactly zero and that is correct. It is that desaturating moves
+    // the colour along the line through neutral, so the hue survives, while a
+    // per-channel clamp moves it sideways. `(G−B)/(R−B)` is invariant under the
+    // first and not the second, which makes it the thing to measure.
+    const wild = [1.2, 0.4, -0.6];
+    const hue = (c) => (c[1] - c[2]) / (c[0] - c[2]);
+    const fitted = toGamut(wild);
+    const clamped = wild.map((v) => Math.max(v, 0));
+    const cm = Math.max(...clamped);
+    const clampedN = clamped.map((v) => v / cm);
+    ok('§11 · an out-of-gamut colour desaturates rather than losing its hue',
+      Math.abs(hue(fitted) - hue(wild)) < 1e-9
+      && Math.abs(hue(clampedN) - hue(wild)) > 0.02
+      && fitted.every((v) => v >= 0 && v <= 1),
+      `(1.2, 0.4, −0.6) fits to ${fitted.map((v) => v.toFixed(2)).join(', ')} with`
+      + ` hue ratio ${hue(wild).toFixed(4)} held exactly; a per-channel clamp`
+      + ` gives ${clampedN.map((v) => v.toFixed(2)).join(', ')} and`
+      + ` ${hue(clampedN).toFixed(4)} — a different colour, which is how the`
+      + ' lamp became a sodium lamp');
   }
 
   {
@@ -6357,6 +6434,72 @@ function suiteCraft() {
       + ' every one returns a decision and a sentence, because the craft is'
       + ' conjured from whatever the generator handed over');
   }
+
+  {
+    // The bug the wiring exposed: **nothing this project generates has an
+    // `atmo` field.** So every world took the `1` fallback and the HUD would
+    // have asserted 150 m/s of drag loss on an airless moon. A constant
+    // standing in for a physical quantity is §8 axis 8 exactly.
+    const P = (w) => surfacePressure(w);
+    near('Earth is the anchor, by construction', P({ massE: 1, radiusE: 1, Teq: 255 }), 1, 0.001);
+    ok('the retention ladder puts each solar-system class in the right bucket',
+      P({ massE: 0.0123, radiusE: 0.2725, Teq: 270 }) < 0.01
+      && P({ massE: 0.055, radiusE: 0.383, Teq: 440 }) < 0.02
+      && P({ massE: 0.107, radiusE: 0.532, Teq: 210 }) < 0.15
+      && P({ massE: 0.815, radiusE: 0.949, Teq: 232 }) > 0.5
+      && P({ massE: 5, radiusE: 1.5, Teq: 255 }) > 3,
+      `Luna ${P({ massE: 0.0123, radiusE: 0.2725, Teq: 270 }).toFixed(4)} ·`
+      + ` Mercury ${P({ massE: 0.055, radiusE: 0.383, Teq: 440 }).toFixed(4)} ·`
+      + ` Mars ${P({ massE: 0.107, radiusE: 0.532, Teq: 210 }).toFixed(3)} ·`
+      + ` Venus ${P({ massE: 0.815, radiusE: 0.949, Teq: 232 }).toFixed(2)} ·`
+      + ` 5 M⊕ ${P({ massE: 5, radiusE: 1.5, Teq: 255 }).toFixed(1)} bar`);
+
+    // Hot worlds lose their air, and that is the term doing the work rather
+    // than a mass cut-off dressed up as physics.
+    const cold = P({ massE: 0.3, radiusE: 0.7, Teq: 120 });
+    const hot = P({ massE: 0.3, radiusE: 0.7, Teq: 900 });
+    ok('at fixed mass and radius, temperature alone strips the atmosphere',
+      cold > hot * 8 && hot >= 0,
+      `${cold.toFixed(3)} bar at 120 K against ${hot.toFixed(4)} at 900 K —`
+      + ' the Jeans parameter is exponential in escape speed over thermal'
+      + ' speed, so the transition is a cliff, not a slope');
+
+    // A stated pressure still wins, which is what keeps Venus's measured
+    // 92 bar and the published 10.2 km/s reachable.
+    ok('a generator that states `atmo` overrides the model',
+      deltaVToOrbit(VENUS).total > deltaVToOrbit({ ...VENUS, atmo: undefined }).total + 1200,
+      `92 bar stated gives ${(deltaVToOrbit(VENUS).total / 1000).toFixed(1)} km/s;`
+      + ` the model's ${(surfacePressure(VENUS)).toFixed(2)} bar gives`
+      + ` ${(deltaVToOrbit({ ...VENUS, atmo: undefined }).total / 1000).toFixed(1)} —`
+      + ' the 92 is a runaway greenhouse and no function of mass and radius'
+      + ' can know about it');
+
+    let bad2 = 0;
+    for (const w of [null, {}, { massE: 0, radiusE: 0 }, { massE: NaN, Teq: NaN },
+      { massE: 1e9, radiusE: 1e-9, Teq: 1 }, { massE: -3, radiusE: -3, Teq: -300 }]) {
+      const p = surfacePressure(w);
+      if (!Number.isFinite(p) || p < 0) bad2++;
+    }
+    ok('§11 · no world record produces a NaN atmosphere',
+      bad2 === 0,
+      'six degenerate worlds including negative mass and a 10⁹ M⊕ point —'
+      + ' every one returns a finite non-negative pressure, capped at 120 bar');
+  }
+
+  {
+    // The finding this commit closes: the file computed all of the above and
+    // nothing called it. An unreachable computation is the one failure mode a
+    // project whose thesis is "a universe that is computed" cannot absorb.
+    const surf = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+    const plan = readFileSync(new URL('../src/planetscale.js', import.meta.url), 'utf8');
+    ok('§8.8 · both surface scales read the craft and print it',
+      /from '\.\/craft\.js'/.test(surf) && /from '\.\/craft\.js'/.test(plan)
+      && /\['to orbit', this\._craft\.why\]/.test(surf)
+      && /\['to orbit', this\._craft\.why\]/.test(plan),
+      'surface.js and planetscale.js both import craftFor, cache it at'
+      + ' construction and carry a "to orbit" row — the arithmetic is on screen'
+      + ' rather than in a file nobody reaches');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -6610,7 +6753,171 @@ function suiteEco() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the luminous ceiling (src/troffer.js)
+//
+// The critic measured the Backrooms wall falling off **5% over eleven metres**
+// — a `HemisphereLight` is a constant and a constant says nothing about where
+// anything is. What replaced it is Lambert's formula for the irradiance from a
+// uniform polygon, which is exact, so the check is against a numerical
+// integration of the same quantity rather than against an adjective.
+
+function suiteTroffer() {
+  console.log('\ntroffer — the ceiling is the light, and it has an exact answer');
+
+  const W = 12, D = 16, H = 2.8;
+  const Q = ceilingQuad(W / 2, H, D / 2);
+
+  {
+    // §7.3: new shader maths gets a CPU reference before it enters the render
+    // loop. Here the *analytic* form is the new thing, so the reference is the
+    // brute-force integral — 400×400 patches of the ceiling, each contributing
+    // `cosθ_s·cosθ_r·dA/πr²`, which is the definition the closed form solves.
+    const brute = (p, n) => {
+      const N = 400;
+      const dA = (W / N) * (D / N);
+      let E = 0;
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+          const sx = -W / 2 + (i + 0.5) * (W / N);
+          const sz = -D / 2 + (j + 0.5) * (D / N);
+          const dx = sx - p[0], dy = H - p[1], dz = sz - p[2];
+          const r2 = dx * dx + dy * dy + dz * dz;
+          const r = Math.sqrt(r2);
+          const cosR = (dx * n[0] + dy * n[1] + dz * n[2]) / r;
+          // the ceiling's normal is (0,−1,0) and the direction from source to
+          // receiver is −d/r, so this is `dy/r`. Written `−dy/r` it rejected
+          // every up-facing probe and the reference silently returned zero.
+          const cosS = dy / r;
+          if (cosR <= 0 || cosS <= 0) continue;
+          E += (cosR * cosS * dA) / (Math.PI * r2);
+        }
+      }
+      return E;
+    };
+    let worst = 0, worstAt = '';
+    const probes = [
+      [[0, 0, 0], [0, 1, 0], 'floor, mid-room'],
+      [[4.5, 0, 6], [0, 1, 0], 'floor, three-quarters out'],
+      [[W / 2 - 0.01, 1.4, 0], [-1, 0, 0], 'wall at eye height'],
+      [[W / 2 - 0.01, 0.2, D / 2 - 0.01], [-1, 0, 0], 'wall, corner, at the skirting'],
+      [[0, 1.68, D / 2 - 0.01], [0, 0, -1], 'far wall, eye height'],
+      [[2, 2.4, -3], [0, 1, 0], 'a shelf near the ceiling'],
+    ];
+    for (const [p, n, name] of probes) {
+      const a = polygonIrradiance(p, n, Q), b = brute(p, n);
+      const err = Math.abs(a - b);
+      if (err > worst) { worst = err; worstAt = name; }
+    }
+    ok('§7.3 · the closed form is the integral, to six probe points',
+      worst < 2e-3,
+      `max error ${worst.toExponential(1)} at "${worstAt}" against a 160,000-patch`
+      + ' numerical integration — Lambert\'s formula is exact and the residual'
+      + ' is the reference\'s own quadrature');
+  }
+
+  {
+    // The failure the fix exists to remove, stated as a number.
+    const g = cavityBounce(W, H, D);
+    const P = (p, n) => polygonIrradiance(p, n, Q) + g;
+    const centre = P([0, 0, 0], [0, 1, 0]);
+    const corner = P([W / 2 * 0.95, 0, D / 2 * 0.95], [0, 1, 0]);
+    const wallTop = P([W / 2 - 0.01, H - 0.2, 0], [-1, 0, 0]);
+    const wallFoot = P([W / 2 - 0.01, 0.2, 0], [-1, 0, 0]);
+    const cornerFoot = P([W / 2 - 0.01, 0.2, D / 2 - 0.01], [-1, 0, 0]);
+    ok('§8.3 · the room has a light gradient rather than a light level',
+      centre / corner > 1.6 && wallTop / wallFoot > 1.1 && wallTop / cornerFoot > 1.35,
+      `floor ${centre.toFixed(2)} at the centre against ${corner.toFixed(2)} in a`
+      + ` corner (${(centre / corner).toFixed(1)}×); wall ${wallTop.toFixed(2)} at`
+      + ` the top against ${wallFoot.toFixed(2)} at the skirting and`
+      + ` ${cornerFoot.toFixed(2)} in a corner. The hemisphere light it replaced`
+      + ' varied 5% across eleven metres — 1.05×, against these');
+    ok('...and the floor is brighter than the walls, because it sees more ceiling',
+      centre > wallTop * 1.3 && centre > cornerFoot * 2,
+      `floor ${centre.toFixed(2)} against wall ${wallTop.toFixed(2)}: a wall sees`
+      + ' half a sky and the floor sees all of it. The raw direct ratio is 2:1'
+      + ' and the bounce closes it to 1.4, which is exactly what interflection'
+      + ' does to contrast and is why a lit room is not a lighting diagram');
+  }
+
+  {
+    // The thing a distance falloff would have got wrong, and the reason the
+    // old code looked defensible: a large ceiling really is nearly flat.
+    const big = ceilingQuad(200, H, 200);
+    const near = polygonIrradiance([0, 0, 0], [0, 1, 0], big);
+    const far = polygonIrradiance([60, 0, 60], [0, 1, 0], big);
+    ok('§11 · under a large enough ceiling the light genuinely is flat',
+      near > 0.99 && Math.abs(near - far) < 0.02,
+      `${near.toFixed(3)} at the centre and ${far.toFixed(3)} eighty-five metres`
+      + ' out — inverse square and growing solid angle cancel exactly, which is'
+      + ' why a corridor is flat and why "add a falloff" was the wrong fix');
+  }
+
+  {
+    // Winding is the sign, and getting it backwards returns a black room.
+    const flipped = [...Q].reverse();
+    ok('§11 · a backwards-wound emitter is refused rather than negated',
+      polygonIrradiance([0, 0, 0], [0, 1, 0], flipped) === 0
+      && polygonIrradiance([0, 0, 0], [0, -1, 0], Q) === 0,
+      'the formula is signed, so a reversed quad and a surface facing away both'
+      + ' come out negative; clamping is what keeps light off the outside of'
+      + ' the room, and it is why the first run rendered nothing at all');
+  }
+
+  {
+    // The second bug the render found, and it was in the *distribution* rather
+    // than the total: bounce was a multiplier, so the ceiling — coplanar with
+    // the emitter and facing the same way, therefore zero direct by
+    // construction — came out at zero times something and rendered black.
+    const b = cavityBounce(W, H, D);
+    const ceil = polygonIrradiance([0, H - 0.03, 0], [0, -1, 0], Q) + b;
+    const floorMid = polygonIrradiance([0, 0, 0], [0, 1, 0], Q) + b;
+    ok('§8.2 · no surface in the room receives no light at all',
+      polygonIrradiance([0, H - 0.03, 0], [0, -1, 0], Q) < 1e-6 && ceil > 0.2
+      && ceil < floorMid * 0.6,
+      `the ceiling takes exactly ${polygonIrradiance([0, H - 0.03, 0], [0, -1, 0], Q).toFixed(6)}`
+      + ` direct and reads at ${ceil.toFixed(3)} against the floor's`
+      + ` ${floorMid.toFixed(3)} — all of it bounce, which is what a ceiling`
+      + ' around a troffer actually is. Multiplied instead of added it was 0');
+    ok('...and the wash scales with the room, because a bigger cavity bounces more',
+      cavityBounce(30, 3.2, 30) > cavityBounce(12, 2.8, 16)
+      && cavityBounce(12, 2.8, 16) > cavityBounce(4.8, 3, 14.4),
+      `${cavityBounce(4.8, 3, 14.4).toFixed(3)} in a corridor ·`
+      + ` ${cavityBounce(12, 2.8, 16).toFixed(3)} in a room ·`
+      + ` ${cavityBounce(30, 3.2, 30).toFixed(3)} in a hall — the mean direct`
+      + ' irradiance rises toward the infinite-ceiling limit and the bounce'
+      + ' follows it');
+  }
+
+  {
+    // Interflection is a measured lighting-engineering quantity, not a fudge
+    // factor, so it has to behave like the geometric series it is.
+    near('a beige box returns ρ/(1−ρ) of its direct light', bounceGain(0.55), 1.2222, 1e-3);
+    ok('...and the series stays finite for a perfect mirror of a room',
+      Number.isFinite(bounceGain(1)) && bounceGain(1) > bounceGain(0.9)
+      && bounceGain(0) === 0 && RHO > 0.4 && RHO < 0.7,
+      `ρ = 0 gives no bounce, ρ = ${RHO} gives ${bounceGain().toFixed(2)}×, and`
+      + ' ρ = 1 is clamped rather than dividing by zero — a room cannot return'
+      + ' more light than fell into it');
+  }
+
+  {
+    // §M0: the shader is assembled by template interpolation, so what matters
+    // is the string as `gl.shaderSource` receives it.
+    const code = TROFFER_GLSL.replace(/\/\/[^\n]*/g, '');
+    const opens = (code.match(/\{/g) ?? []).length, closes = (code.match(/\}/g) ?? []).length;
+    ok('§M0 · the injected GLSL is balanced and declares what it uses',
+      opens === closes && /uniform vec3 uCeil;/.test(code)
+      && /uniform float uBounce;/.test(code)
+      && /float troffer\(/.test(code) && /troffer\(p, n\) \+ uBounce/.test(code)
+      && !/\bpow\s*\(/.test(code),
+      `${opens} braces balanced, both uniforms declared in the block that uses`
+      + ' them, and no pow() on a path that runs per pixel');
+  }
+}
+
 const suites = {
+  troffer: suiteTroffer,
   eco: suiteEco,
   lightcone: suiteLightcone,
   craft: suiteCraft,

@@ -20,6 +20,7 @@ import { softDotTexture } from './nebula.js';
 import { RNG, arand, hash } from './rng.js';
 import { snoise } from './terrain.js';
 import { ecoAt } from './eco.js';
+import { PROP, craftFor } from './craft.js';
 import { now as worldNow } from './clock.js';
 import { addLife } from './life.js';
 import { addSettlement } from './settlement.js';
@@ -560,6 +561,8 @@ export class PlanetScale {
     this.pitch = -1.02;
 
     this.uSunDir = { value: new THREE.Vector3().fromArray(ctx.sunDir || [1, 0.2, 0]).normalize() };
+    /** what it would take to leave — src/craft.js, once, for the HUD */
+    this._craft = craftFor(pp, PROP);
     this.uTime = { value: 0 };
     this.uHazeK = { value: 0 };
     this.uWet = { value: 0 };
@@ -1721,6 +1724,10 @@ export class PlanetScale {
       ['world', this.pp.name],
       ['class', this.pp.type + (this.pp.inhabited ? ' · inhabited' : '')],
       ['radius', Math.round(this.pp.radiusE * 6371).toLocaleString() + ' km'],
+      // From orbit this is the whole question — src/craft.js. Cached at
+      // construction; it is a pure function of mass, radius and air, and none
+      // of those move while you fly.
+      ['to orbit', this._craft.why],
       ['mode', this.inside ? 'aboard · ring deck'
         : this.ride ? 'shuttle · corridor'
         : this.asc ? 'autopilot · ascent'

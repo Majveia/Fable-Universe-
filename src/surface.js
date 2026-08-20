@@ -43,6 +43,7 @@ import {
 } from './ocean.js';
 import { GAIT, Walker, gravityOf } from './avatar.js';
 import { ascentFraction, ascentState, handoff, releaseAltitude, stepAscent } from './ascent.js';
+import { PROP, craftFor } from './craft.js';
 import { isThin, roomAddress, thinPoint } from './liminal.js';
 import { CameraRig } from './camera.js';
 import { attachKeyboard, input, jumpHeld, keys } from './input.js';
@@ -714,6 +715,15 @@ export class SurfaceScale {
     this.fly = false;
     /** `?climb=1`'s trigger — see src/ascent.js */
     this._ascent = ascentState();
+    /**
+     * What it costs to leave, by rocket — src/craft.js.
+     *
+     * Computed once here rather than per frame: it is a pure function of three
+     * numbers on `pp` and none of them move. The HUD reads it, and `_climbCheck`
+     * reads it at the moment you leave, which is the only moment the sentence
+     * means anything.
+     */
+    this._craft = craftFor(pp, PROP);
     /** `?noclip=1` — where this world gives way, or null if it does not */
     this._fold = null;
     this._releaseAlt = releaseAltitude(EXT, GAIT.fov);
@@ -2681,6 +2691,16 @@ export class SurfaceScale {
     // and it belongs to whichever scale consumes it — which is why this hands
     // over a labelled decomposition instead of a bare vector.
     this.app._ascentHandoff = handoff(w.vel, [0, 1, 0]);
+    // What you just did, priced. `?climb=1` lets you fly off any world at all,
+    // and on a world `craft.js` calls infeasible that is a thing no vehicle in
+    // this universe could have done — so it is said out loud rather than left
+    // as a silent contradiction of the physics the HUD asserts (§8 axis 8).
+    const c = this._craft;
+    this.app.hud.setHint(c.feasible
+      ? `left ${this.pp.name} · ${(c.dv.total / 1000).toFixed(1)} km/s to orbit`
+        + ` · ${c.stages} stage${c.stages > 1 ? 's' : ''} of ${PROP}`
+      : `left ${this.pp.name} · ${(c.dv.total / 1000).toFixed(1)} km/s to orbit`
+        + ' · no chemical rocket does this');
     this.app.popTo(this.app.stack.length - 2);
   }
 
@@ -2738,6 +2758,10 @@ export class SurfaceScale {
       ...(pp.res?.line ? [['mood', pp.res.line]] : []),
       ['craters', this.impacts.length ? String(this.impacts.length) : '—'],
       ['surface gravity', g.toFixed(2) + ' g'],
+      // §8 axis 8: the HUD already asserts the gravity, and this is what that
+      // gravity *means* to anything trying to leave. On most worlds it reads
+      // like a spec line; on a 3 g super-earth it reads like a sentence.
+      ['to orbit', this._craft.why],
       ['equilibrium temp', pp.Teq + ' K'],
       ['mode', this.traveler?.riding ? 'hover-skiff (e steps off)'
         : this.fly ? 'flight (f to walk)' : 'on foot (f to fly)'],

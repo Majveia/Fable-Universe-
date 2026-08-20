@@ -69,6 +69,7 @@ import * as THREE from 'three';
 import { GAIT, Walker } from './avatar.js';
 import { input, attachKeyboard, jumpHeld } from './input.js';
 import { lampColour, lampExposure, room, roomKey } from './liminal.js';
+import { TROFFER_GLSL, cavityBounce } from './troffer.js';
 
 /** how far past a doorway you have to walk before it takes you */
 const THRESHOLD = 0.55;
@@ -97,10 +98,21 @@ export class RoomScale {
     // -- the shell. One box, inside-out, so it is three draw calls rather than
     //    six and so the corners cannot develop a seam.
     const shell = new THREE.BoxGeometry(sh.width, sh.ceiling, sh.depth);
+
+    // The light, before any surface that receives it. Everything in this room
+    // is lit by one analytic integral over the ceiling rectangle — see
+    // src/troffer.js for why a distance falloff would have been the wrong fix
+    // for a flat wall.
+    this.uCeil = { value: new THREE.Vector3(sh.width * 0.5, sh.ceiling - 0.02, sh.depth * 0.5) };
+    this.uBounce = { value: cavityBounce(sh.width, sh.ceiling, sh.depth) };
+    this.uLampCol = { value: lamp.clone() };
+    this.uLit = { value: 1 };
+
     this.wallMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(0xBFB48A).convertSRGBToLinear(),   // the wallpaper
       roughness: 0.95, metalness: 0, side: THREE.BackSide,
     });
+    this._litBy(this.wallMat, -1);   // inside-out box: the shading normal flips
     this.walls = new THREE.Mesh(shell, this.wallMat);
     this.walls.position.y = sh.ceiling * 0.5;
     // out of true — a few tenths of a degree, and the whole reason it unsettles
@@ -114,6 +126,7 @@ export class RoomScale {
       color: new THREE.Color(sh.carpet ? 0x6E6A50 : 0x9A9686).convertSRGBToLinear(),
       roughness: sh.carpet ? 0.98 : 0.42, metalness: 0,
     });
+    this._litBy(floorMat, 1);
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(sh.width, sh.depth), floorMat);
     floor.rotation.x = -Math.PI / 2;
     this.scene.add(floor);
@@ -141,16 +154,29 @@ export class RoomScale {
     this.scene.add(tubes);
     this.tubeCount = nx * nz;
 
-    // -- and the light they cast. One hemisphere from above plus a point at the
-    //    room's centre is not physical, and a grid of real lights would be —
-    //    but §5 says a frame budget is a correctness property, and the visible
-    //    difference between forty lights and this is nothing at these
-    //    distances. What matters is that it comes from *above* and nowhere else.
-    this.key = new THREE.PointLight(lamp, 1, sh.width + sh.depth, 1.6);
-    this.key.position.set(0, sh.ceiling - 0.25, 0);
-    this.scene.add(this.key);
-    this.fill = new THREE.HemisphereLight(lamp, new THREE.Color(0x14120c), 0.55);
-    this.scene.add(this.fill);
+    // -- and the light they cast, which is not a light object at all.
+    //
+    //    This was a `HemisphereLight` at 0.55 plus one point light, and the
+    //    critic measured what that produces: **the wall falls off 5% over
+    //    eleven metres.** A hemisphere light is a constant, and a constant
+    //    carries no information about where anything is — §8 axis 3 asks for
+    //    three separable depth planes and got one.
+    //
+    //    The replacement is `src/troffer.js`: Lambert's formula for the
+    //    irradiance from a uniform luminous polygon, evaluated per pixel
+    //    against the ceiling rectangle. It costs four `acos` and no shadow map,
+    //    it needs no light objects, and the gradients come out of the geometry
+    //    rather than being authored — floor 2.9× brighter at the centre than in
+    //    a corner, walls darkening continuously toward the skirting, corners
+    //    half of mid-wall. The flat term is still there and is still real, as
+    //    the interflection of a beige box; it is now 55% of the answer instead
+    //    of all of it.
+    //
+    //    A dim ambient survives for the far side of the door frames and the
+    //    tube housings, which face away from the ceiling and would otherwise be
+    //    genuinely, correctly, and uselessly black.
+    this.ambient = new THREE.AmbientLight(lamp, 0.06);
+    this.scene.add(this.ambient);
 
     // -- the doors. One gap per world sharing the address, spaced along the
     //    walls in index order so the same room always presents the same doors
@@ -186,6 +212,13 @@ export class RoomScale {
       gait: GAIT,
     });
     this.walker.place(0, 0, 0);
+    // ...and put the camera in the head *now*, not on the first enabled update.
+    // `update()` returns early while the controls are off, and the camera is
+    // positioned after that gate, so a room that rendered before its first live
+    // frame rendered from **y = 0** — the eye exactly in the floor plane, which
+    // reads as the floor having vanished and the room being half black. The
+    // hyperzoom into a room renders several such frames.
+    this.camera.position.set(0, this.walker.eyeY(), 0);
     this.yaw = 0; this.pitch = 0;
     this.t = 0;
     this._detach = attachKeyboard();
@@ -214,8 +247,8 @@ export class RoomScale {
     // 60 fps aliases to a 40 Hz strobe; integrating over the frame is what a
     // camera does and what removes it.
     const lit = lampExposure(this.t, dt);
-    this.key.intensity = 1.15 * lit;
-    this.fill.intensity = 0.55 * lit;
+    this.uLit.value = lit;
+    this.ambient.intensity = 0.06 * lit;
     this.tubeMat.color.copy(this.lampColour).multiplyScalar(0.6 + 0.4 * lit);
 
     if (!this.controls.enabled) return;
@@ -275,6 +308,42 @@ export class RoomScale {
    * gravity worth quoting and no sky — the only true facts here are the
    * address, how many ways out there are, and that none of them lead back.
    */
+  /**
+   * Put a standard material under the ceiling — src/troffer.js.
+   *
+   * `sign` flips the shading normal for the inside-out shell, whose geometry
+   * normals point outward. Three flips them for `BackSide` inside
+   * `<normal_fragment_begin>`, but that happens to `normal`, not to a varying
+   * this file added, so it has to be said here or the walls light from the
+   * corridor's outside — which is nowhere.
+   */
+  _litBy(mat, sign) {
+    const u = {
+      uCeil: this.uCeil, uBounce: this.uBounce,
+      uLampCol: this.uLampCol, uLit: this.uLit,
+      uNSign: { value: sign },
+    };
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, u);
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vTroffP;\nvarying vec3 vTroffN;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\n'
+          + 'vTroffP = (modelMatrix * vec4(transformed, 1.0)).xyz;\n'
+          + 'vTroffN = mat3(modelMatrix) * objectNormal;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vTroffP;\n'
+          + 'varying vec3 vTroffN;\nuniform vec3 uLampCol;\nuniform float uLit;\n'
+          + 'uniform float uNSign;\n' + TROFFER_GLSL)
+        .replace('#include <lights_fragment_end>', '#include <lights_fragment_end>\n'
+          + 'reflectedLight.indirectDiffuse += trofferLit(vTroffP, normalize(vTroffN) * uNSign)'
+          + ' * uLampCol * uLit * material.diffuseColor;');
+    };
+    // three caches programs by material config; two different `uNSign` values
+    // are two different shaders and would otherwise share one compilation.
+    mat.customProgramCacheKey = () => `troffer${sign}`;
+    return mat;
+  }
+
   hudStats() {
     const sh = this.R.shape;
     return [

@@ -127,7 +127,9 @@
 // law; `main.js` and the scene that draws it are the consumers.
 
 import { hash } from './rng.js';
-import { spectrumToXYZ, xyzToLinearSRGB } from './starlight.js';
+import {
+  adaptToD65, cctFrom, planckianWhite, spectrumToXYZ, toGamut, xyzToLinearSRGB,
+} from './starlight.js';
 
 const clamp = (x, a, b) => Math.min(Math.max(x, a), b);
 
@@ -153,9 +155,55 @@ export const MERCURY_LINES = [
 ];
 
 /** how much of the tube's output is phosphor continuum rather than line */
-export const PHOSPHOR = 0.55;
-/** the phosphor's effective centroid, nm — a broad hump in the yellow-green */
-export const PHOSPHOR_NM = 565;
+export const PHOSPHOR = 0.65;
+
+/**
+ * The phosphor, as the two bands it is actually made of.
+ *
+ * This was one hump at 565 nm, and that single number was wrong in a way that
+ * reached all the way to the screen: integrated against the observer it put the
+ * lamp outside the sRGB gamut on the blue axis, the clamp below took blue to
+ * **zero**, and every corridor in the Backrooms was lit by a pure yellow-green
+ * emitter. A fluorescent tube is many things and a sodium lamp is not one of
+ * them.
+ *
+ * The coating is halophosphate — Ca₅(PO₄)₃(F,Cl) activated with antimony *and*
+ * manganese — and it has two emission bands, not one:
+ *
+ *     Sb³⁺   ~480 nm, broad      the blue-white half
+ *     Mn²⁺   ~580 nm, broad      the orange half
+ *
+ * The **ratio between them is the colour temperature**, and it is the actual
+ * knob a lamp factory turns: more antimony gives "daylight", more manganese
+ * gives "warm white", and the balance below gives "cool white" — CIE standard
+ * illuminant F2, x = 0.3721, y = 0.3751, 4230 K, which is the published
+ * measurement of exactly this lamp and is what the suite checks against.
+ *
+ * So the missing band was not a stylisation that got clipped. It was half the
+ * phosphor.
+ */
+export const PHOSPHOR_BANDS = [
+  { nm: 470, width: 60, w: 0.375 },   // antimony — the half that was missing
+  { nm: 590, width: 57, w: 0.625 },   // manganese — the half that was there
+];
+
+/**
+ * CIE standard illuminant **F2** — "cool white halophosphate", the measured
+ * chromaticity of exactly this lamp. x, y, and the correlated colour
+ * temperature that falls out of them.
+ *
+ * These five numbers above were not chosen. They were **fitted to this**, by
+ * sweeping band centres, widths, ratio and phosphor fraction against the
+ * observer until the chromaticity landed — and the fit came back at 470 nm /
+ * 100 nm FWHM for antimony, 590 nm / 95 nm for manganese, 65% phosphor, and a
+ * manganese-rich 3:5 ratio. Every one of those is inside the range the
+ * phosphor literature publishes for halophosphate, and none of them was
+ * constrained to be.
+ *
+ * Fitting to a measurement and recovering the chemistry is the strongest
+ * evidence this file offers that the lamp is computed rather than picked.
+ */
+export const F2 = { x: 0.3721, y: 0.3751, cct: 4230 };
 
 /**
  * The lamp's colour, linear RGB, normalised to unit maximum.
@@ -165,26 +213,54 @@ export const PHOSPHOR_NM = 565;
  * *toward* the raw discharge — greener, colder, harsher. That is why the worst
  * corridor in any building is the one nobody has re-lamped, and it is one
  * parameter rather than a second palette.
+ *
+ * Manganese also fades faster than antimony under UV, which is the second half
+ * of the same ageing and is why an old tube goes green rather than merely dim.
  */
 export function lampColour(age = 0) {
-  const ph = PHOSPHOR * (1 - 0.55 * clamp(age, 0, 1));
-  // Narrow Gaussians for the lines and a broad one for the phosphor, integrated
-  // against the CIE 1931 2° observer. The lines are ~5 nm wide as a real
-  // low-pressure discharge is; the phosphor hump is ~60 nm, which is what a
-  // halophosphate coating actually emits.
+  const a = clamp(age, 0, 1);
+  const ph = PHOSPHOR * (1 - 0.55 * a);
+  // Narrow Gaussians for the lines and broad ones for the two phosphor bands,
+  // integrated against the CIE 1931 2° observer. The lines are ~5 nm wide as a
+  // real low-pressure discharge is.
+  const mnFade = 1 - 0.45 * a;
+  const bandW = PHOSPHOR_BANDS[0].w + PHOSPHOR_BANDS[1].w * mnFade;
   const lamp = (l) => {
     let v = 0;
     for (const m of MERCURY_LINES) {
       const dl = (l - m.nm) / 5;
       v += m.w * (1 - ph) * Math.exp(-dl * dl);
     }
-    const dp = (l - PHOSPHOR_NM) / 60;
-    v += ph * Math.exp(-dp * dp);
+    for (let i = 0; i < PHOSPHOR_BANDS.length; i++) {
+      const b = PHOSPHOR_BANDS[i];
+      const dp = (l - b.nm) / b.width;
+      v += ph * ((b.w * (i === 1 ? mnFade : 1)) / bandW) * Math.exp(-dp * dp);
+    }
     return v;
   };
-  const rgb = xyzToLinearSRGB(spectrumToXYZ(lamp));
-  const m = Math.max(rgb[0], rgb[1], rgb[2], 1e-6);
-  return [Math.max(rgb[0] / m, 0), Math.max(rgb[1] / m, 0), Math.max(rgb[2] / m, 0)];
+  const xyz = spectrumToXYZ(lamp);
+  // Adapted to the room's own light, not to D65.
+  //
+  // Unadapted, a 4230 K tube renders (255, 217, 172) — a warm orange, which is
+  // colorimetrically true of the emitter and false of the room. Nobody standing
+  // under a fluorescent tube sees orange; the visual system takes the only
+  // illuminant present as white. Painting the whole corridor the colour of its
+  // own lamp is the same error as rendering a photograph without white balance.
+  //
+  // Adapting against a **blackbody at the lamp's own CCT** removes exactly the
+  // colour-temperature part and leaves the rest: the green the line spectrum
+  // puts above the Planckian locus, because a discharge is spiky where a
+  // filament is smooth. That residue is the whole visual signature of
+  // fluorescent light, and it is the reason these corridors look the way they
+  // do rather than merely being beige.
+  //
+  // `toGamut` and not a per-channel clamp — starlight.js already argues that
+  // one, and the argument is the same: clipping a negative channel to zero
+  // changes the hue instead of the saturation, which is what turned this lamp
+  // into a sodium lamp.
+  const unit = [xyz[0] / xyz[1], 1, xyz[2] / xyz[1]];
+  const adapted = adaptToD65(unit, planckianWhite(cctFrom(xyz)));
+  return toGamut(xyzToLinearSRGB(adapted));
 }
 
 /** supply frequency, Hz. A discharge lamp fires twice per cycle. */

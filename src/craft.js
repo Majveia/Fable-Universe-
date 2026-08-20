@@ -84,6 +84,24 @@ const R_EARTH = 6.371e6;          // m
 const M_EARTH = 5.972e24;         // kg
 const G0 = 9.80665;               // m/s², the Isp conversion constant
 
+/**
+ * `?prop=kerolox` — which chemistry the readout assumes. Default hydrolox.
+ *
+ * Not a feature flag under §7.4 and not a location under §2.4: it selects
+ * between two numbers that are both true. It lives in the URL because the
+ * answer changes with it, and a screenshot reading "22.4 km/s · no chemical
+ * rocket leaves this world" has to be reproducible by whoever you sent it to.
+ *
+ * The `try` is what lets this file stay importable under node, where there is
+ * no `window` and the whole of `tools/verify.js` runs.
+ */
+export const PROP = (() => {
+  try {
+    return new URL(window.location.href).searchParams.get('prop') === 'kerolox'
+      ? 'kerolox' : 'hydrolox';
+  } catch { return 'hydrolox'; }
+})();
+
 /** the two propellants worth having, as exhaust velocity in m/s */
 export const PROPELLANT = {
   // Isp × g₀. Hydrogen is the best chemistry there is and the reason is its
@@ -139,18 +157,71 @@ export const escapeVelocity = (world) => Math.SQRT2 * orbitalVelocity(world);
  * lower-dynamic-pressure trajectory *and* grows its ballistic coefficient as
  * `m^(1/3)`, and both make the loss sublinear in P.
  *
- * The square root puts Venus at 10.2 km/s total, which is where published
- * surface-ascent studies put it. And the headline survives the correction in
- * better shape than before: a 3 g super-earth is **still** one-way at 22.4 km/s,
- * but now on the strength of its orbital velocity rather than on the weakest
- * term in the model. A result that rests on the term you are least sure of is
- * not a result.
+ * The square root puts Venus at 10.2 km/s total *when Venus's measured 92 bar
+ * is what you hand it* — which is where published surface-ascent studies put
+ * it, and is still what happens if a caller states `world.atmo`. This
+ * project's generator does not, so Venus-class worlds come through
+ * `surfacePressure()` below at around a bar and 8.9 km/s; the difference is 92
+ * bar of runaway greenhouse that no formula over mass and radius can know
+ * about, and it is documented there rather than hidden here.
+ *
+ * The headline survives either way: a 3 g super-earth is **still** one-way at
+ * 22.4 km/s, and now on the strength of its orbital velocity rather than on the
+ * weakest term in the model. A result that rests on the term you are least sure
+ * of is not a result.
  */
 export function deltaVToOrbit(world) {
   const v = orbitalVelocity(world);
   const gravityLoss = v * 0.19;
-  const dragLoss = 150 * Math.sqrt(Math.max(num(world?.atmo, 1), 0));
+  const dragLoss = 150 * Math.sqrt(Math.max(num(world?.atmo, surfacePressure(world)), 0));
   return { v, gravityLoss, dragLoss, total: v + gravityLoss + dragLoss };
+}
+
+/** N₂, in kg — the gas that sets whether a rocky world has air worth naming */
+const M_N2 = 28 * 1.66053907e-27;
+const BOLTZMANN = 1.380649e-23;
+
+/**
+ * Surface pressure in bar, when the generator has not stated one.
+ *
+ * `world.atmo` did not exist on any planet this project generates, so every
+ * world was silently taking the `1` fallback and the HUD asserted 150 m/s of
+ * drag loss on airless moons. A constant standing in for a physical quantity is
+ * the §8-axis-8 failure exactly: the number was not wrong by a little, it was
+ * not a measurement of anything.
+ *
+ * Two terms, both from things the generator already decided:
+ *
+ * **Retention.** A world keeps a gas if its escape velocity beats the thermal
+ * speed by enough. The Jeans parameter `λ = v_esc²/2v_th²` is that comparison —
+ * Earth sits at 414 for N₂, Mars at 102, Luna at 8 — and the transition is
+ * sharp because escape is exponential in it. A logistic through λ ≈ 120 puts
+ * Earth and Venus at essentially 1, Mars at a third, and every moon at zero.
+ *
+ * **Supply.** Volatiles come out of the interior, so the inventory scales with
+ * mass and spreads over the area: a column of `M/R²`, which is surface gravity,
+ * and pressure is that column times `g` again. Normalised so Earth returns 1.
+ *
+ * What it will not do — and this is the honest part, not a caveat bolted on —
+ * is predict Venus's 92 bar or Titan's 1.45. Both are *histories*: a runaway
+ * greenhouse that boiled an ocean into the sky, and a cold body sitting on a
+ * volatile reservoir it never had to hold against heat. No function of mass,
+ * radius and temperature can reach either, and one that claimed to would be
+ * fitting noise. This gets the ladder right — airless, thin, thick — and the
+ * ladder is what the drag term is asking about.
+ */
+export function surfacePressure(world) {
+  const massE = Math.max(num(world?.massE, 1), 1e-6);
+  const radiusE = Math.max(num(world?.radiusE, 1), 1e-6);
+  const Teq = Math.min(Math.max(num(world?.Teq, 255), 3), 4000);
+  const vEsc = escapeVelocity({ massE, radiusE });
+  // most-probable thermal speed, sqrt(2kT/m)
+  const vTh = Math.sqrt((2 * BOLTZMANN * Teq) / M_N2);
+  const lambda = (vEsc * vEsc) / (2 * vTh * vTh);
+  const retain = 1 / (1 + Math.exp(-(lambda - 120) / 25));
+  const g = massE / (radiusE * radiusE);
+  // Earth: λ = 414 → retain ≈ 1, g = 1 → 1 bar, which is the anchor
+  return Math.min(g * g * retain, 120);
 }
 
 /** Tsiolkovsky, in the direction you actually want it: Δv in, mass ratio out */
