@@ -15,3 +15,17 @@ docs/captures/**/*.png
 node_modules/
 package.json
 package-lock.json
+
+# Throwaway probes at the repo root. A probe that reads the app's own modules
+# has to sit where node will resolve `./src/...` from — the repo root — so it
+# cannot live in a scratch directory the way the rest of the working files do.
+# That is a real constraint rather than laziness: the point of a probe is to
+# measure the shipped module, not a copy of it, and an import map only resolves
+# against the served tree.
+#
+# So they land here, and they are never a deliverable. Anything a probe proves
+# belongs in `tools/verify.js` as a check with the argument written out; a probe
+# that turned out to be worth keeping gets a name and a home under `tools/`.
+_*.mjs
+critic_*.mjs
+perfprobe*.mjs
