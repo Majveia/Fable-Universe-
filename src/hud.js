@@ -606,6 +606,15 @@ export class HUD {
   setMuted(m) {
     this.muteBtn.textContent = m ? '∅' : '♪';
     this.muteBtn.style.opacity = m ? 0.45 : 1;
+    // The score names itself on the control that silences it. §3 caps the HUD
+    // at three persistent elements and this adds none — only the title the ♪
+    // button already carried. `score.label` is one line: "surface · F♯ dorian ·
+    // 58 bpm · 8 s chords · add11 · triangle · spread 2 · rev 3.0 s", and it is
+    // the same string the offline harness reads, which makes the tooltip a live
+    // assertion that what is playing is what was derived (§8 axis 8, in the one
+    // medium where nothing on screen can contradict anything).
+    const sc = this.app.audio?.score;
+    this.muteBtn.title = sc?.label ? `sound (m) · ${sc.label}` : 'sound (m)';
   }
 
   showCard({ title, kind, rows, flavor, action, actions }) {
@@ -641,13 +650,34 @@ export class HUD {
   }
 
   /** fade to black, do the thing, fade back */
+  /**
+   * Drop the veil, swap the world behind it, lift the veil.
+   *
+   * The `try` is the whole point and it is not defensive programming for its
+   * own sake. This used to be a bare `swap()`, and the veil was lifted on the
+   * line *after* it — so any throw inside the swap left an opaque element over
+   * the entire screen, forever, with `App._warping` still true and every input
+   * dead. The universe was still running underneath, at full frame rate,
+   * behind a black rectangle.
+   *
+   * That is what "the wondrous button shows a black screen" was. Every teleport
+   * goes through here — the atlas, the logbook, a restored link — but only the
+   * wondrous button rolls a *random* destination, so it is the only one that
+   * regularly finds a destination that throws.
+   *
+   * The veil now lifts in a `finally`, and the error is rethrown after the
+   * screen is usable rather than swallowed: a failed teleport should leave you
+   * somewhere you can see, and should still say what went wrong.
+   */
   warp(swap) {
     this.warpEl.classList.add('on');
     setTimeout(() => {
-      swap();
+      let err = null;
+      try { swap(); } catch (e) { err = e; }
       requestAnimationFrame(() => requestAnimationFrame(() => {
         this.warpEl.classList.remove('on');
       }));
+      if (err) { this.app._warping = false; throw err; }
     }, 300);
   }
 

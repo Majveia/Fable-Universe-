@@ -476,3 +476,44 @@ export const MEADOW_GLSL = /* glsl */`
     return max(wpx * d / max(pxPerRadian, 1.0), 0.004);
   }
 `;
+
+/**
+ * A world's vegetation colour, as HSL — §9.1's "one base colour", decided in
+ * one place so the grass you walk through and the green you saw from orbit are
+ * the same green.
+ *
+ * It lives here rather than in `system.js` because it is a palette rule and
+ * because `system.js` imports THREE, which would put it out of reach of
+ * `tools/verify.js`. §3's weirdness budget is a *rule*, and a rule nothing
+ * checks is a preference.
+ *
+ * The range this replaces was HSL 0.32–0.42 — 115° to 151°, so green at one end
+ * and **spring-green/teal** at the other. On its own that is merely the cool
+ * edge of plausible. What made it turquoise on screen is that it compounds:
+ * `grassPalette()` rotates the root 62% toward a pole with the blue channel at
+ * 4.5×, because the base of a sward is lit almost entirely by skylight. Applied
+ * to a base that is already at 151°, that rotation lands the root, the hollow
+ * and two of the four mosaic patches past cyan — and those are most of the mass
+ * you see across a field. The teal belongs at the root; starting the base there
+ * too is the same rotation applied twice.
+ *
+ * Real foliage runs 0.20 (sunlit yellow-green, 72°) through 0.30 (deep shade,
+ * 108°), which is where the reference's own ramp sits — its tip `#C6D46B` is
+ * 74°. The new range is 72°–117°.
+ *
+ * `hue` is one uniform draw in [0,1). The weirdness budget reads the **same**
+ * draw rather than taking a new one, which matters for §2.3: an extra
+ * `pr.next()` in the palette block would shift every subsequent draw for that
+ * world and move its ocean level, its clouds and its ice caps along with its
+ * grass.
+ */
+export const VEG_WEIRD = 0.95;        // top 5% of the draw — §3's budget
+
+export function vegetationHSL(hue, inhabited = false) {
+  const u = Math.min(Math.max(Number.isFinite(hue) ? hue : 0, 0), 1);
+  if (u > VEG_WEIRD) {
+    // teal, violet, rust — the 5% that make the other 95% mean something
+    return { h: 0.45 + (u - VEG_WEIRD) * 8.4, s: 0.55, l: inhabited ? 0.32 : 0.24, weird: true };
+  }
+  return { h: 0.20 + u * 0.126, s: 0.5, l: inhabited ? 0.3 : 0.22, weird: false };
+}

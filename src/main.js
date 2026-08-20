@@ -209,6 +209,16 @@ class App {
             ...base, planet: w, moonIndex: mIdx, parentGiant: { pp: node.pp },
           }));
           this.active().enter();
+        } else if (node.pp.typeId >= 5) {
+          // §2.4, the half that was missing: a giant has no ground, so `?pl=`
+          // and a bare `?p=` both fell off the end of this chain and left you
+          // on the system view with no explanation — a link that names a place
+          // and silently delivers nowhere. Its cloud deck *is* the place you
+          // can stand on a giant, and it was already built; `?cl=1` above is
+          // now the explicit spelling of a default rather than the only way in.
+          sys.exit();
+          this.stack.push(new CloudsScale(this, { ...base, planet: node.pp }));
+          this.active().enter();
         } else if (node.pp.typeId <= 4) {
           sys.exit();
           this.stack.push(new SurfaceScale(this, { ...base, planet: node.pp }));
@@ -248,7 +258,12 @@ class App {
     } else if (url.searchParams.get('bh')) {
       const gal = this.active();
       gal.exit();
-      this.stack.push(new BlackHoleScale(this, { bhMassMsun: gal.params.bhMassMsun }));
+      this.stack.push(new BlackHoleScale(this, { bhMassMsun: gal.params?.bhMassMsun }));
+      // …and enter it, which every other branch in this function does and this
+      // one did not. Without it `controls.enabled` stays false, so the one roll
+      // in sixteen that lands you at a galactic nucleus arrived somewhere you
+      // could not turn to look at.
+      this.active().enter();
     }
   }
 
@@ -785,9 +800,17 @@ class App {
         s.dispose();
       }
       this.stack[0].resume();
-      this._restore(u);
-      this._syncScale();
-      this._warping = false;
+      // `finally`, because a destination that fails to build must still leave
+      // you somewhere. Without it `_warping` stayed true and every later
+      // teleport returned at the guard on the first line — the app was not
+      // merely showing a black screen, it had stopped accepting the input that
+      // could have got you off it.
+      try {
+        this._restore(u);
+      } finally {
+        this._syncScale();
+        this._warping = false;
+      }
     });
   }
 

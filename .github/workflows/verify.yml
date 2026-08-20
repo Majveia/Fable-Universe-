@@ -45,7 +45,10 @@ jobs:
   offline:
     name: offline suites (§7.3)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 30 was not enough once the browser install grew a retry loop: three
+    # capped attempts is fifteen minutes of worst case before the suites even
+    # start. A job timeout should bound a hang, not a slow-but-working run.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -66,3 +69,60 @@ jobs:
       # interesting property it has.
       - name: verify — every CPU-decidable claim (§7.3)
         run: node tools/verify.js
+
+      # The gap the two steps above share, and the reason this one is worth a
+      # browser on every push: a module can be valid JavaScript, and every pure
+      # function in it can be green, and it can still throw partway through
+      # building a scene. That is a black screen, and it has shipped from this
+      # repo with CI green — `life.js` referenced a local that had been renamed
+      # two hundred lines earlier, which took out every world with a biosphere.
+      #
+      # No pixel is inspected here. It navigates to each scale and asserts that
+      # nothing throws, which is minutes rather than the capture set's hour.
+      - name: playwright + chromium
+        run: |
+          npm i -g playwright
+          # No `--with-deps`, and that is the whole fix.
+          #
+          # It put `apt-get` on the critical path of every run, and a slow
+          # Ubuntu mirror then took the job with it -- one PR run sat here 28
+          # minutes and died on the job timeout while the identical commit
+          # passed on its push run in seven.
+          #
+          # Capping the attempt made it strictly worse, which is worth
+          # recording: `timeout` killed the npx process but not the `apt-get`
+          # it had spawned as root, so the orphan kept the dpkg frontend lock
+          # and both retries died instantly against a lock the timeout itself
+          # had created. A slow-but-succeeding install became a guaranteed
+          # failure. Never wrap apt in a timeout you intend to retry around.
+          #
+          # And it was never needed here. The runner log is explicit: every
+          # library Chromium wants -- libnss3, libatk, libgbm, libxkbcommon,
+          # the rest -- reports "is already the newest version" on
+          # ubuntu-24.04. The only NEW packages `--with-deps` fetched were nine
+          # *font* packages, for CJK and Cyrillic text this project never
+          # renders: the gates it feeds compile shaders and build scenes
+          # offscreen.
+          #
+          # So: browser only, from Playwright's CDN, which has served 184 MB in
+          # about two seconds on every run so far. No apt, no lock, no mirror.
+          # If a future runner image does drop a library, Chromium fails to
+          # launch and `boot.js` says so in seconds -- a far better failure than
+          # a silent half-hour.
+          ok=0
+          for attempt in 1 2 3; do
+            if timeout 600 npx playwright install chromium; then ok=1; break; fi
+            echo "playwright install attempt $attempt failed or stalled; retrying"
+            sleep 10
+          done
+          # a loop that exhausts its attempts must fail the job, not fall through
+          # into a browser-less run that reports something else as the defect
+          [ "$ok" = 1 ] || { echo "playwright install failed after 3 attempts"; exit 1; }
+
+      # The `core` tier: every scale, the cheap world kinds, and one world with
+      # a biosphere in flower — the branch that has actually broken. The rest of
+      # the world kinds run per pull request in `shaders.yml`, because a
+      # biosphere world costs three minutes to build on a software rasteriser
+      # and twenty of those is not a gate anyone leaves switched on.
+      - name: boot — every scale comes up without throwing
+        run: node tools/boot.js --timeout 300

@@ -69,8 +69,23 @@ const BRIGHT = /* glsl */`
   varying vec2 vUv;
   void main() {
     vec3 c = texture2D(tDiffuse, vUv).rgb;
+    // §11's firewall, and the half of it that was missing.
+    //
+    // equal(c, c) is false only for NaN. **Infinity passes it**, because
+    // Inf == Inf. One Inf channel then survives into the blur chain, where the
+    // downsample smears it across a neighbourhood and the upsample computes
+    // Inf - Inf = NaN in some texels and Inf in others. The print clamps the
+    // Inf ones to 1 and the second firewall zeroes the NaN ones, and what
+    // reaches the frame is saturated per-pixel RGB speckle — a rainbow of
+    // primaries over whatever was brightest, which on a backlit tree canopy or
+    // a sunlit planet reads as confetti.
+    //
+    // min() is the whole fix: min(Inf, x) is x, and it costs one instruction.
+    // The ceiling is far above anything a physical scale emits — system.js
+    // clamps its own output at 6 — so this can only ever catch a value that was
+    // already broken.
     c = mix(vec3(0.0), c, vec3(equal(c, c)));
-    c = max(c, vec3(0.0));
+    c = clamp(c, vec3(0.0), vec3(64.0));
     // Karis' soft knee: a hard threshold makes the bloom pop on and off as a
     // tracer crosses it, which reads as flicker rather than as light.
     //

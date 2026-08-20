@@ -19,9 +19,8 @@ import { makeGalaxySkyFromWithin, makeSkyDome } from './starfield.js';
 import { softDotTexture } from './nebula.js';
 import { RNG, arand, hash } from './rng.js';
 import { snoise } from './terrain.js';
-import { ecoAt } from './eco.js';
+import { ecologyAt } from './ecology.js';
 import { PROP, craftFor } from './craft.js';
-import { now as worldNow } from './clock.js';
 import { addLife } from './life.js';
 import { addSettlement } from './settlement.js';
 import { addWonders } from './strange.js';
@@ -1399,19 +1398,23 @@ export class PlanetScale {
 
   /**
    * Ecology: the sphere is quantised into regions, each with a deterministic
-   * carrying capacity and a population growing logistically on the world clock.
+   * carrying capacity and a population that grows logistically as the world's
+   * days pass. Let the clock run and the herd changes.
    *
-   * This used to persist to `localStorage` and grow against `Date.now()`, so
-   * the herd depended on which machine you were on and what day it was —
-   * §2.3's "same seed + same code = same universe" broken by a number printed
-   * straight into the HUD. `eco.js` carries the replacement and the argument;
-   * all that is left here is the address of the region.
+   * It used to run on `Date.now()` and a `localStorage` population, and that
+   * broke §2.3 twice: the same seed gave a different universe depending on what
+   * time you opened the link, and a returning visitor saw a grown herd where a
+   * first-time visitor saw the base one — from the same URL, on the same day.
+   * §2.4 says every place is a URL, and part of this place was on one person's
+   * disk. `src/ecology.js` carries the argument and the arithmetic.
+   *
+   * What replaces it is strictly more than a repair. `this.days` is the same
+   * counter that seats the seasons and the same one the time lever bends, so
+   * the herd now grows *faster when you speed the clock* — which is the thing
+   * the wall clock could never do, and the thing this feature was always
+   * reaching for.
    */
-  _ecoFor(a) {
-    const q = 28;
-    const h = hash(Math.round(a.x * q), Math.round(a.y * q), Math.round(a.z * q), this.pp.seed);
-    return ecoAt(h, worldNow());
-  }
+  _ecoFor(a) { return ecologyAt(a, this.pp.seed, this.days); }
 
   /**
    * A biome anchor: a planet-frame group at the ground point under you,

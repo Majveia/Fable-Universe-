@@ -287,7 +287,13 @@ const BLADE_VERT = /* glsl */`
 
   uniform mat4 projectionMatrix;
   uniform mat4 viewMatrix;
-  uniform vec2 uChunkOrigin;
+  // The chunk's world origin, carried in the model matrix rather than in a
+  // uniform of its own. That is not a style choice — see GrassRing's note on
+  // refreshMaterial. three uploads modelMatrix on every draw, outside the
+  // guard that decides whether a material's own uniforms are worth re-sending,
+  // and it is the only per-object channel that works when four hundred meshes
+  // share one material.
+  uniform mat4 modelMatrix;
   uniform vec3 uCam;
   uniform float uHeightScale;
   uniform float uDbg;        // bladedbg level 1 — see the note in main()
@@ -315,7 +321,7 @@ const BLADE_VERT = /* glsl */`
   ${MEADOW_PART_GLSL}
 
   void main() {
-    vec2 world = uChunkOrigin + aRoot;
+    vec2 world = modelMatrix[3].xz + aRoot;
     float ground = wTerrainH(world);
     // bladedbg=1 -- seat every blade on a flat plane at the camera's own
     // ground height instead of on the sampled field, and skip the thinning.
@@ -633,7 +639,6 @@ export class GrassRing {
       glslVersion: THREE.GLSL3,
       uniforms: {
         ...this.wf.sampleUniforms(),
-        uChunkOrigin: { value: new THREE.Vector2(0, 0) },
         uCam: { value: new THREE.Vector3() },
         uHeightScale: { value: 1 },
         uDbg: { value: BLADE_DBG >= 1 ? 1 : 0 },
@@ -645,7 +650,6 @@ export class GrassRing {
         uPartR: { value: PART_RADIUS },
         uForce: { value: this.wf.wind.force },
         uRingDn: { value: this.spec.dn },
-        uChunkNear: { value: this.spec.dn },
         uDensityMul: { value: density },
         uHeightTex: this.wf.uniforms.uHeightTex,
         uHeightOrigin: this.wf.uniforms.uHeightOrigin,
@@ -674,9 +678,45 @@ export class GrassRing {
     // the same flags without ?m3=1 complete all six scales.
     //
     // three calls `onBeforeRender` immediately before `renderBufferDirect`
-    // reads `instanceCount`, so the count can ride there with the two uniforms
-    // that were already riding there. Four geometries, four materials, 412
-    // draws — which is what it always should have been.
+    // reads `instanceCount`, so the count rides there. Four geometries, four
+    // materials, 412 draws — which is what it always should have been.
+    //
+    // -----------------------------------------------------------------------
+    // …and the two uniforms that used to ride there with it did not work.
+    //
+    // This is the empty meadow, and it was never in the grass at all. Sharing
+    // one material across 412 meshes is right, but it makes `onBeforeRender`
+    // the wrong place to put anything that varies per mesh, because three only
+    // uploads a material's uniforms when it thinks the material changed
+    // (`WebGLRenderer.setProgram`, r170):
+    //
+    //     if ( state.useProgram( program.program ) ) refreshMaterial = true;
+    //     if ( material.id !== _currentMaterialId )  refreshMaterial = true;
+    //     …
+    //     if ( refreshMaterial || … ) WebGLUniforms.upload( … );
+    //
+    // Same program, same material, same camera on every chunk after the first,
+    // so `refreshMaterial` is false and `upload()` is never called again.
+    // `onBeforeRender` faithfully wrote the new `uChunkOrigin` into the JS
+    // uniform object 411 times a frame and three declined to send any of them:
+    // **every chunk in a ring rendered at the first chunk's origin.**
+    //
+    // That is the whole symptom. Three and a half million blades submitted,
+    // stacked on one chunk's footprint, and bare ground everywhere else. The
+    // counts were always right, which is why the instrumentation kept saying
+    // the grass was there — `instanceCount` is read straight off the geometry
+    // at draw time and never goes through `upload()` at all. One number
+    // travelled and the other did not, from the same callback, four lines apart.
+    //
+    // The fix is the channel three provides for exactly this: `modelMatrix` is
+    // set on **every** draw, outside that guard, because "same material,
+    // different transform" is what a model matrix is for. The chunk origin is
+    // now `mesh.position`, and the shader reads `modelMatrix[3].xz`.
+    //
+    // The general rule, which `tools/verify.js` now enforces on this file:
+    // **an `onBeforeRender` may not write a material uniform.** If it varies
+    // per mesh it belongs in the transform, in an attribute, or on a material
+    // of its own.
     const geo = new THREE.InstancedBufferGeometry();
     geo.setAttribute('position', shared.position);
     geo.setAttribute('aSide', shared.side);
@@ -690,14 +730,13 @@ export class GrassRing {
     for (let cx = -this.grid; cx <= this.grid; cx++) {
       for (let cz = -this.grid; cz <= this.grid; cz++) {
         const mesh = new THREE.Mesh(geo, mat);
-        mesh.userData.origin = new THREE.Vector2(0, 0);
         mesh.userData.near = this.spec.dn;
         mesh.userData.count = 0;
-        mesh.onBeforeRender = () => {
-          mat.uniforms.uChunkOrigin.value.copy(mesh.userData.origin);
-          mat.uniforms.uChunkNear.value = mesh.userData.near;
-          geo.instanceCount = mesh.userData.count;
-        };
+        // `instanceCount` only — see the note above. It is read straight off
+        // the geometry by `renderBufferDirect` and never goes through
+        // `WebGLUniforms.upload()`, which is precisely why it worked when the
+        // uniforms beside it did not.
+        mesh.onBeforeRender = () => { geo.instanceCount = mesh.userData.count; };
         // Distance and frustum answer *different* questions — how far, and
         // whether it is behind you — and act 3 dismissed the second on the
         // grounds that it was the first asked twice. That was wrong.
@@ -748,8 +787,11 @@ export class GrassRing {
       c.mesh.visible = count > 0;
       if (c.mesh.visible) drawn++;
       c.mesh.userData.count = count;
-      // per chunk, read back by its own onBeforeRender at draw time
-      c.mesh.userData.origin.set(gx * chunk, gz * chunk);
+      // The chunk's world origin goes in the transform, because that is the one
+      // per-object channel three uploads on every draw when four hundred meshes
+      // share a material. It was a uniform, and 411 of every 412 writes were
+      // silently dropped — see the note in the constructor.
+      c.mesh.position.set(gx * chunk, 0, gz * chunk);
       c.mesh.userData.near = dNear;
       live += count;
     }

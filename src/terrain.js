@@ -28,13 +28,23 @@
  * that right; the integer test does, on every machine, because there is nothing
  * left to round.
  *
- * Default-off (§7.4): turning it on moves every world, so flipping it is its own
- * commit with the shift measured. `planetHeight` and `snoise` take it as an
- * argument so `tools/` can measure both without a browser.
+ * **Now default-on**; `?intnoise=0` restores the float path exactly (§2.4).
+ *
+ * §7.4 asked for its own commit with the shift measured, and this is it:
+ * 5.4–7.3% of a sphere changes which side of sea level it is on, mean |Δh|
+ * about 0.025 in planet-radius units. That is a real move and it is worth it,
+ * because the thing it buys is §2.7 — the seven gradient cells where
+ * `1 − |gx| − |gy|` is exactly zero are cells where float32 and float64 pick
+ * opposite signs, and the whole invariant is that the coast you see from orbit
+ * is the coast you walk. The integer form has no such cell: it is a comparison
+ * between integers, and integers do not round.
+ *
+ * `planetHeight` and `snoise` still take it as an argument so `tools/` can
+ * measure both without a browser.
  */
 const INT_NOISE = (() => {
-  try { return new URL(window.location.href).searchParams.get('intnoise') === '1'; }
-  catch { return false; }
+  try { return new URL(window.location.href).searchParams.get('intnoise') !== '0'; }
+  catch { return true; }
 })();
 
 const F3 = 1 / 3, G3 = 1 / 6;

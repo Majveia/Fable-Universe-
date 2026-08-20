@@ -31,7 +31,8 @@ import { HOVER, Hover, MOUNT, Mount, handMomentum } from './vehicle.js';
 import { input, jumpHeld } from './input.js';
 import { GAIT, gravityOf } from './avatar.js';
 import { Figure } from './figure.js';
-import { lightFor } from './paint.js';
+import { contactShadow, lightFor } from './paint.js';
+import { exposureFor, skyLux } from './night.js';
 import { SHADOW_GLSL, markCaster } from './shadow.js';
 
 /**
@@ -101,6 +102,73 @@ export function addTraveler(s) {
 
   const handPos = new THREE.Vector3();
   let lightT = 1e9;      // seconds since the light table was last re-derived
+
+  // ------------------------------------------------------- contact shadow ----
+  //
+  // The figure floated, and `figure.js:163` says why in its own words: "there is
+  // no shadow map in the default build." There is not — `surface.js` builds
+  // `sunShadow` only inside `_paintUniforms()`, which runs only under `?paint=1`,
+  // so `markCaster()` has nothing to render into and every occluder in the frame
+  // casts nothing. §8 axis 1 asks for a readable subject at three distances and
+  // the cheapest thing that separates a body from the ground it is standing on
+  // is the dark shape at its feet.
+  //
+  // This is not the shadow map, and it is not waiting for one. It is the
+  // first-order projection of a body onto locally flat ground, which at a
+  // golden-hour sun is an ellipse of length `h / tan(elev)` pointing directly
+  // away from the star — 7.4 m at §9.7's 13°, from a 1.7 m body. Every term is
+  // the real geometry, so it cannot contradict the light (§8 axis 8): it
+  // lengthens as the sun sets, swings as the sun moves, and detaches when you
+  // leave the ground.
+  //
+  // Multiply blending rather than a dark quad, because §9.2 is explicit that
+  // shadows change hue and do not go black. The multiplier bottoms out at
+  // (0.42, 0.47, 0.62) — never zero, and bluest in blue, so a shadow lands
+  // violet on any ground colour instead of grey.
+  const SHADOW_TINT = new THREE.Vector3(0.42, 0.47, 0.62);
+  const shadowGeo = new THREE.PlaneGeometry(1, 1, 1, 1);
+  shadowGeo.rotateX(-Math.PI / 2);      // lie in the ground plane, long axis +z
+  const contact = new THREE.Mesh(shadowGeo, new THREE.ShaderMaterial({
+    uniforms: {
+      uTint: { value: SHADOW_TINT },
+      uAmt: { value: 0 },
+    },
+    vertexShader: /* glsl */`
+      varying vec2 vUvC;
+      void main() {
+        vUvC = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */`
+      precision mediump float;
+      uniform vec3 uTint;
+      uniform float uAmt;
+      varying vec2 vUvC;
+      void main() {
+        vec2 p = vUvC * 2.0 - 1.0;
+        // The penumbra widens with distance from the contact point: the near end
+        // is where the body touches the ground and is nearly hard, the far end is
+        // the tip of a long shadow and is nearly gone. One term, and it is most
+        // of what stops this reading as a decal.
+        float along = clamp(p.y * 0.5 + 0.5, 0.0, 1.0);
+        float soft = mix(0.34, 0.92, along);
+        float r = length(vec2(p.x, p.y * 0.92));
+        float a = (1.0 - smoothstep(1.0 - soft, 1.0, r)) * uAmt;
+        if (a < 0.004) discard;
+        gl_FragColor = vec4(mix(vec3(1.0), uTint, a), 1.0);
+      }
+    `,
+    blending: THREE.MultiplyBlending,
+    transparent: true,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+  }));
+  contact.frustumCulled = false;
+  contact.renderOrder = 1;
+  contact.visible = false;
+  s.scene.add(contact);
 
   // ------------------------------------------------------------- skiff ----
   const skiff = new THREE.Group();
@@ -456,6 +524,25 @@ export function addTraveler(s) {
       }
       avatar.position.set(fx, fy, fz);
 
+      // …and the shadow it throws. `paint.js` owns the geometry so it can be
+      // checked in Node; what is left here is putting a quad where it says.
+      const gy = ground(fx, fz);
+      const sh = contactShadow(s.uSunDir.value, {
+        height: riding ? 1.1 : 1.7,      // seated is a shorter occluder
+        width: riding ? 2.4 : 0.75,      // …and a wider one, because the skiff is
+        feet: fy, ground: gy,
+      });
+      contact.visible = sh.amount > 0.004;
+      if (contact.visible) {
+        contact.material.uniforms.uAmt.value = sh.amount;
+        contact.position.set(
+          fx + Math.sin(sh.angle) * sh.offset,
+          gy + sh.lift,
+          fz + Math.cos(sh.angle) * sh.offset);
+        contact.rotation.y = sh.angle;
+        contact.scale.set(sh.width, 1, Math.max(sh.length, 0.4));
+      }
+
       // the boundary layer, in two samples (see above)
       const wind = s.sampleWind ? s.sampleWind(fx, fz, 0.45) : { x: 0, z: 0 };
       const windUp = s.sampleWind ? s.sampleWind(fx, fz, 1.45) : wind;
@@ -478,7 +565,12 @@ export function addTraveler(s) {
       lightT += dt;
       if (lightT > 0.25) {
         lightT = 0;
-        figure.setLight(lightFor(starT, Math.max(sunElev(), 0.5), true));
+        // …and how much of it there is. `exposureFor(skyLux(elev))` is the same
+        // lever the terrain takes, so the figure darkens into dusk with the
+        // ground it is standing on instead of staying at noon or, as it did
+        // until now, at zero.
+        figure.setLight(lightFor(starT, Math.max(sunElev(), 0.5), true),
+          exposureFor(skyLux((Math.asin(Math.min(Math.max(s.uSunDir.value.y, -1), 1)) * 180) / Math.PI)));
       }
 
       // the lantern rides the hand the gait is already swinging
@@ -497,6 +589,9 @@ export function addTraveler(s) {
       T._t += dt;
       if (!T.third) {
         avatar.visible = false;
+        // no body in frame, no shadow for it — and leaving it on would put a
+        // dark ellipse in front of a first-person camera with nothing above it
+        contact.visible = false;
         if (camera) {
           camera.position.copy(s.body);
           camera.quaternion.setFromEuler(new THREE.Euler(s.pitch, s.yaw, 0, 'YXZ'));

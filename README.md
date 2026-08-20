@@ -828,6 +828,8 @@ src/bench.js        the ?bench=1 harness: a measured 600-frame flight
 tools/check.js      the whole instrument, in one command
 tools/capture.js    headless capture: numbered PNGs + perf JSON per tier
 tools/shadercheck.js  compiles every shader as the driver actually sees it
+tools/glslcheck.js  compiles every exported shader pair in ten seconds —
+                    the half of §M0 that does not need a whole world
 tools/parse.js      every module parsed, plus the lint for backticks inside
                     GLSL templates — five real catches so far
 tools/verify.js     the maths, against independent references
@@ -846,6 +848,7 @@ step: `npm i -g playwright && npx playwright install chromium`. See
 node tools/check.js                       # everything, one verdict
 node tools/capture.js --milestone M0      # the numbered set + the numbers
 node tools/shadercheck.js                 # every shader, post-assembly
+node tools/glslcheck.js                   # every exported shader pair, fast
 node tools/pixeldiff.js                   # every shader chunk vs its CPU twin
 ```
 

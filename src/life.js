@@ -9,6 +9,15 @@
 import * as THREE from 'three';
 import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
+import { growTree, tipsOf } from './tree.js';
+import {
+  PETAL_GLSL, blossomsFor, paramNumber, petalFall, petalHue, seasonOpenness,
+  seasonPhaseOf,
+} from './blossom.js';
+import { airDensity } from './precip.js';
+import { coverDensity } from './scatter.js';
+import { gravityOf } from './avatar.js';
+import { qInt } from './quality.js';
 
 function bladeTexture(rng) {
   const cv = document.createElement('canvas');
@@ -33,6 +42,19 @@ export function isBiosphere(pp) {
   return (pp.type === 'terrestrial' || pp.type === 'ocean') && pp.Teq >= 235 && pp.Teq <= 330;
 }
 
+const PARAM = (k) => {
+  try { return new URL(window.location.href).searchParams.get(k); }
+  catch { return null; }
+};
+
+/**
+ * Where this world is in its year — `blossom.js`'s law, with the URL attached.
+ *
+ * `?season=` moves it along the orbit, in the same spirit as `?sun=` and
+ * `?storm=`. It is not the same as asking for flowers; see `?bloom=` below.
+ */
+export const seasonPhase = (pp) => seasonPhaseOf(pp?.M0, PARAM('season'));
+
 export function addLife(s) {
   const pp = s.pp;
   if (!isBiosphere(pp)) return null;
@@ -44,7 +66,8 @@ export function addLife(s) {
   // downtown the wild things keep to the parks; overgrown moods run riot
   const vegF = (eco?.veg ?? 1) * (s.urban ? 0.2 : 1) * (pp.res?.vegX ?? 1);
 
-  const vegColor = new THREE.Color().setHSL(r.float(0.06, 0.62), r.float(0.4, 0.65), r.float(0.22, 0.34));
+  const vegH = r.float(0.06, 0.62);
+  const vegColor = new THREE.Color().setHSL(vegH, r.float(0.4, 0.65), r.float(0.22, 0.34));
   const canopyColor = vegColor.clone().offsetHSL(r.float(-0.05, 0.05), 0, r.float(-0.04, 0.08));
 
   const dryland = (x, z) => {
@@ -97,55 +120,416 @@ export function addLife(s) {
   s.scene.add(tufts);
 
   // ---------------------------------------------------------- trees ----
-  const trunkMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.07, 0.3, 0.22), roughness: 1 });
-  const canopyMat = new THREE.MeshStandardMaterial({ color: canopyColor, roughness: 0.9, flatShading: true });
+  //
+  // This was `CylinderGeometry(0.14, 0.3, 1, 5)` under `IcosahedronGeometry(1, 1)`
+  // — a five-sided stick with a faceted ball — and on a phone it read as
+  // exactly that. `src/tree.js` grows the wood instead, from the pipe model,
+  // one allometry and beam curvature; see its header for the four laws and for
+  // what AEON adds to them.
+  //
+  // One merged geometry per world rather than one mesh per tree. A grown tree
+  // is 300–900 segments and there are up to 130 of them, so instancing the
+  // *tree* is not available — but every segment is the same tapered ring, so
+  // what gets instanced is the segment, once, across every tree on the world.
+  // That is one draw call for the whole wood (§5's 900-call surface budget).
   const nTrees = Math.max(20, Math.round(130 * vegF));
-  const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.14, 0.3, 1, 5), trunkMat, nTrees);
-  const canopies = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), canopyMat, nTrees);
-  let t = 0;
-  for (let i = 0; i < 1400 && t < nTrees; i++) {
-    const x = r.float(-EXT / 2, EXT / 2), z = r.float(-EXT / 2, EXT / 2);
-    const h = dryland(x, z);
-    if (h === null) continue;
-    const height = r.float(5, 13);
-    d.position.set(x, h + height / 2, z);
-    d.rotation.set(0, r.float(0, 6.28), r.float(-0.06, 0.06));
-    d.scale.set(1, height, 1);
-    d.updateMatrix();
-    trunks.setMatrixAt(t, d.matrix);
-    d.position.y = h + height * r.float(0.85, 1.05);
-    const cw = r.float(2.2, 4.6);
-    d.scale.set(cw, cw * r.float(0.5, 1.2), cw);
-    d.updateMatrix();
-    canopies.setMatrixAt(t, d.matrix);
-    t++;
-  }
-  trunks.count = t; canopies.count = t;
-  s.scene.add(trunks); s.scene.add(canopies);
+  // §5's lever: the tier decides how much wood a tree may spend, and `tree.js`
+  // spends it thickest-first so a low tier gets a smaller tree rather than a
+  // half-drawn one.
+  const budget = qInt('twig', 'shadowRes') > 1500 ? 520 : 240;
+  // Where a crown stops being worth its clumps. 90 m rather than the ground
+  // cover's 38 because a 14 m tree is still a readable shape at a hundred
+  // metres where a 40 cm rock is not — the law is shared, the scale is not.
+  const LEAF_NEAR = 90;
+  const gwork = gravityOf(s.pp);
+  // trunk + branch: one tapered unit ring, instanced per segment
+  const segGeo = new THREE.CylinderGeometry(1, 1, 1, 5, 1, true);
+  segGeo.translate(0, 0.5, 0);            // origin at the base, so a segment is a bone
+  const barkMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color().setHSL(0.07, 0.3, 0.22), roughness: 1, flatShading: true,
+  });
+  const canopyMat = new THREE.MeshStandardMaterial({
+    color: canopyColor, roughness: 0.9, flatShading: true,
+  });
 
-  // ---------------------------------------------------------- groves ----
-  // the lone trees were scouts; these are the woods they were scouting
-  // for. clustered stands with real crowns — puffy triple-canopy
-  // broadleaves in the warm bands, spired conifers where the year is cold
+  // Where the wood stands, and why it is not uniform.
+  //
+  // 130 trees spread evenly over 1.96 km² is one tree per 15 000 m², which
+  // means you can walk for a minute without passing one and the whole system —
+  // the pipe model, the blossom, all of it — is something you see at a
+  // kilometre as specks. §9.7 asks for a hero landmark in the *opening
+  // frustum*, and a stand of trees is exactly that.
+  //
+  // So over half of them cluster on the landing site with a 130 m spread and
+  // the rest scatter across the world. You step out into a wood; the horizon
+  // still has trees on it.
+  const sites = [];
+  const sp = s.spawn ?? { x: 0, z: 0 };
+
+  // ------------------------------------------------------ the grove split ---
+  //
+  // A world had two tree systems on it and you could tell. 130 trees grown
+  // from the pipe model — real branching, beam curvature, blossom — and 520
+  // *groves* that were a five-sided cylinder with three icosahedron blobs on
+  // top. Four out of five trees on a world were the sticks, and they were not
+  // hiding: grove centres scatter over the whole tile, so a stand of them can
+  // sit a hundred metres from the landing site next to a grown one.
+  //
+  // The fix is the same LOD argument a third time. A trunk-and-blob is a
+  // perfectly good tree at 400 m, where its silhouette is a dozen pixels and
+  // branching is invisible. It is a bad one at 120 m. So the near stands are
+  // promoted into the grown pipeline — appended to `sites`, which means they
+  // get the wood, the leaves, the foliage LOD *and* the blossom for free —
+  // and the far ones keep the cheap form they were always adequate for.
+  //
+  // They grow on a smaller budget than the hero trees. A stand is read as a
+  // mass and a mass does not need every twig, so 96 segments against 240 (or
+  // 150 against 520) is what keeps this affordable. Measured on Kerune III in
+  // full bloom, promoting one stand of 58:
+  //
+  //     low       1 293 605 -> 1 346 830 triangles   (59% -> 61% of §5)
+  //     desktop   1 675 282 -> 1 755 572             (76% -> 80%)
+  //
+  // 260 m is where the threshold sits, and it is a pixel argument rather than
+  // a budget one: a 10 m tree subtends about 40 px at that range on a 1440p
+  // desktop, which is enough to read a trunk and two or three limbs and notice
+  // that there are none. By 400 m it is 26 px and a blob is honest.
+  //
+  // The headcount does not change — `nFar` takes the far centres' share and
+  // `grovePer` takes the near ones' — so a world has exactly as many trees as
+  // before, and the ones close enough to look at are made of wood.
   const conifer = pp.Teq < 268;
   const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
   const nGrove = Math.round((COARSE ? 260 : 520) * vegF);
+  const GROVE_NEAR = 260;
+  const GROVE_BUDGET = budget > 300 ? 150 : 96;
+  const centers = [];
   if (nGrove > 24) {
-    const gTrunks = new THREE.InstancedMesh(
-      new THREE.CylinderGeometry(0.12, 0.26, 1, 5), trunkMat, nGrove);
-    const crownGeo = conifer ? new THREE.ConeGeometry(1, 2.6, 7) : new THREE.IcosahedronGeometry(1, 1);
-    const gCrowns = new THREE.InstancedMesh(crownGeo, canopyMat, nGrove * (conifer ? 1 : 3));
-    let gt = 0, gc = 0;
-    const centers = [];
     for (let i = 0; i < 90 && centers.length < 9; i++) {
       const x = r.float(-EXT / 2, EXT / 2), z = r.float(-EXT / 2, EXT / 2);
       if (dryland(x, z) === null) continue;
       // groves keep off the town's doorstep
       if (s.settlement && Math.hypot(x - s.settlement.site.x, z - s.settlement.site.z) < 160) continue;
-      centers.push({ x, z, spread: r.float(55, 120), hue: r.float(-0.045, 0.045) });
+      centers.push({
+        x, z, spread: r.float(55, 120), hue: r.float(-0.045, 0.045),
+        near: Math.hypot(x - sp.x, z - sp.z) < GROVE_NEAR,
+      });
     }
-    for (let i = 0; i < nGrove * 3 && gt < nGrove; i++) {
-      const c = centers[i % Math.max(centers.length, 1)];
+  }
+
+  for (let i = 0; i < 3000 && sites.length < nTrees; i++) {
+    const near = i % 100 < 58;
+    const x = near ? sp.x + r.gauss() * 130 : r.float(-EXT / 2, EXT / 2);
+    const z = near ? sp.z + r.gauss() * 130 : r.float(-EXT / 2, EXT / 2);
+    // …but not standing in the doorway. §9.7 wants the landmark in the frustum,
+    // not through it, and a trunk 3 m from the eye is a wall.
+    if (Math.hypot(x - sp.x, z - sp.z) < 14) continue;
+    const h = dryland(x, z);
+    if (h === null) continue;
+    sites.push({ x, y: h, z, height: r.float(5, 13), yaw: r.float(0, 6.28), seed: r.int(1, 1e9) });
+  }
+
+  // the near stands, as real wood. `grovePer` shares the grove headcount out
+  // over its centres so promoting one does not change how many trees a world
+  // has, only which of them are made of sticks.
+  const nearCenters = centers.filter((c) => c.near);
+  const grovePer = centers.length ? Math.round(nGrove / centers.length) : 0;
+  for (const c of nearCenters) {
+    for (let k = 0, tries = 0; k < grovePer && tries < grovePer * 4; tries++) {
+      const x = c.x + r.gauss() * c.spread, z = c.z + r.gauss() * c.spread;
+      if (Math.hypot(x - sp.x, z - sp.z) < 14) continue;
+      const h = dryland(x, z);
+      if (h === null) continue;
+      sites.push({
+        x, y: h, z, seed: r.int(1, 1e9), yaw: r.float(0, 6.28),
+        height: conifer ? r.float(8, 16) : r.float(6, 12),
+        budget: GROVE_BUDGET,
+      });
+      k++;
+    }
+  }
+
+  // grow them all first, so the instance count is known before the buffer is
+  const grown = sites.map((p) => growTree({
+    seed: p.seed, gravity: gwork, height: p.height, budget: p.budget ?? budget,
+  }));
+  const segTotal = grown.reduce((a, t) => a + t.segments, 0);
+  const wood = new THREE.InstancedMesh(segGeo, barkMat, Math.max(segTotal, 1));
+  const tipsAll = [];
+  const woodUp = new THREE.Vector3(0, 1, 0);
+  const woodDir = new THREE.Vector3();
+  const woodQ = new THREE.Quaternion();
+  let w = 0;
+  for (let ti = 0; ti < grown.length; ti++) {
+    const t = grown[ti], p = sites[ti];
+    const sy = Math.sin(p.yaw), cy = Math.cos(p.yaw);
+    const g2 = t.seg;
+    for (let i = 0; i < t.segments; i++) {
+      // the tree's own frame, rotated into the world by the trunk's yaw
+      const ax = g2.x0[i] * cy - g2.z0[i] * sy, az = g2.x0[i] * sy + g2.z0[i] * cy;
+      const bx = g2.x1[i] * cy - g2.z1[i] * sy, bz = g2.x1[i] * sy + g2.z1[i] * cy;
+      woodDir.set(bx - ax, g2.y1[i] - g2.y0[i], bz - az);
+      const len = woodDir.length() || 1e-4;
+      woodQ.setFromUnitVectors(woodUp, woodDir.divideScalar(len));
+      const rr = (g2.r0[i] + g2.r1[i]) * 0.5;
+      d.position.set(p.x + ax, p.y + g2.y0[i], p.z + az);
+      d.quaternion.copy(woodQ);
+      d.scale.set(rr, len, rr);
+      d.updateMatrix();
+      wood.setMatrixAt(w++, d.matrix);
+    }
+    // Foliage LOD — §9.5's law again, one object class over.
+    //
+    // Every tree carried its full crown whatever its distance: a tree at 700 m
+    // is a few pixels wide and was still spending 256 leaf clumps on them, all
+    // of them sub-pixel. That is exactly the defect the ground cover had, and
+    // it is the larger half of the frame — 666 840 triangles on desktop, more
+    // than the wood it hangs on.
+    //
+    // Two halves, and the second is what stops this being a downgrade:
+    //
+    //   · **thin** by the same `coverDensity` the furniture uses, so the two
+    //     cannot disagree about how a world falls away with distance;
+    //   · **grow** what is left by `1/√keep`, because a canopy is a silhouette
+    //     and a silhouette is projected *area*. Thinning alone turns a distant
+    //     tree into scaffolding — visible branch structure where there should
+    //     be a mass — which is a worse error than the cost it saves.
+    const tips = tipsOf(t, 0.018);
+    // Fisher–Yates on the tree's own stream, because §9.5's thinning is only
+    // valid on a pre-shuffled buffer: tips come out in growth order, so a raw
+    // prefix would keep the trunk's first branches and drop the outer crown —
+    // a sample of when a branch grew rather than of the tree.
+    const rt = new RNG(hash(p.seed >>> 0, 0x1eaf));
+    for (let i = tips.length - 1; i > 0; i--) {
+      const j = rt.int(0, i);
+      const tmp = tips[i]; tips[i] = tips[j]; tips[j] = tmp;
+    }
+    const keep = coverDensity(Math.hypot(p.x - sp.x, p.z - sp.z), LEAF_NEAR);
+    // never below three clumps: two is a pair of balls, not a crown
+    const nKeep = Math.min(tips.length, Math.max(3, Math.ceil(tips.length * keep)));
+    const grow = Math.sqrt(tips.length / Math.max(nKeep, 1));
+    for (let k = 0; k < nKeep; k++) {
+      const tip = tips[k];
+      const tx = tip.x * cy - tip.z * sy, tz = tip.x * sy + tip.z * cy;
+      tipsAll.push(p.x + tx, p.y + tip.y, p.z + tz, grow);
+    }
+  }
+  wood.count = w;
+  wood.instanceMatrix.needsUpdate = true;
+  s.scene.add(wood);
+
+  // Foliage hangs on the tips the wood actually ended at, rather than being a
+  // ball centred above a stick. That is the whole difference between a canopy
+  // and a hat: the outline of the leaves is the outline of the branching.
+  if (tipsAll.length) {
+    const leafGeo = new THREE.IcosahedronGeometry(1, 0);
+    const leaves = new THREE.InstancedMesh(leafGeo, canopyMat, tipsAll.length / 4);
+    for (let i = 0, n = tipsAll.length / 4; i < n; i++) {
+      const grow = tipsAll[i * 4 + 3];
+      const cw = r.float(0.55, 1.15) * grow;
+      d.position.set(tipsAll[i * 4], tipsAll[i * 4 + 1], tipsAll[i * 4 + 2]);
+      d.rotation.set(r.float(0, 3.1), r.float(0, 6.28), 0);
+      d.scale.set(cw, cw * r.float(0.6, 0.95), cw);
+      d.updateMatrix();
+      leaves.setMatrixAt(i, d.matrix);
+    }
+    leaves.instanceMatrix.needsUpdate = true;
+    s.scene.add(leaves);
+  }
+
+  // -------------------------------------------------------- blossom ----
+  //
+  // `src/blossom.js` decides *where* on a tree flowers open — Beer's law over
+  // two light paths, which is what makes a canopy in bloom a cloud several
+  // metres thick instead of a shell on a bubble — and *whether* this world is
+  // in flower at all, from its own place in its own orbit. This is only the
+  // drawing of it.
+  //
+  // Most worlds are not in bloom when you arrive, and that is the point: a
+  // season you can miss is the only kind worth catching.
+  //
+  // Two overrides, because they are two different questions and one knob
+  // cannot answer both. `?season=` moves the world along its own orbit — the
+  // honest one, the same number `M0` carries — but *where* a world's spring
+  // sits in its year is seeded per world, so setting the phase is not the same
+  // as asking for flowers and a visitor who wanted blossom would get a 32%
+  // chance of it. `?bloom=` says how open, and skips the year entirely.
+  const forcedBloom = paramNumber(PARAM('bloom'));
+  const openness = Number.isFinite(forcedBloom)
+    ? Math.min(Math.max(forcedBloom, 0), 1)
+    : seasonOpenness(seasonPhase(pp), pp.seed >>> 0);
+  let petalDrift = null;
+  if (openness > 0.02 && grown.length) {
+    const ph = petalHue(vegH, pp.seed >>> 0);
+    const petalCol = new THREE.Color().setHSL(ph.h, ph.s, ph.l);
+    // A five-petal flower is a pentagon in silhouette, and silhouette is all a
+    // blossom is ever worth: at 20 m one is three pixels across. Five triangles
+    // buys the whole shape; a modelled corolla would buy sub-pixel noise.
+    //
+    // 7.6 cm across at unit scale, against a real cherry blossom's 3. Painted
+    // oversize on the same warrant §9.6 gives the sun disc, and for the same
+    // reason: below about two pixels the shape stops being a shape and starts
+    // being aliasing. It is the one dimension in this file that is not honest,
+    // and it is the honest one that looks wrong.
+    const flGeo = new THREE.CircleGeometry(0.038, 5);
+    // §5, as arithmetic rather than a magic number. One draw call for every
+    // flower on the world — they are all one InstancedMesh — so the cost is
+    // triangles, and a pentagon is five: 44 000 × 5 = 220 000, which is **10%
+    // of §5's 2.2 M surface budget**, and 13 000 × 5 = 65 000 on low. That is a
+    // large share for one element and it is meant to be: it exists on roughly a
+    // third of worlds, only in season, and when it exists it is the thing you
+    // are looking at.
+    //
+    // Not yet measured on real silicon — this container is SwiftShader, which
+    // cannot render the frame at all, let alone time it. If the surface budget
+    // goes red on a GPU run, this is the first number to take back.
+    //
+    // The cap is shared out per tree rather than spent first-come, so the near
+    // trees do not eat it and leave the skyline bare.
+    const cap = budget > 300 ? 44000 : 13000;
+    const per = Math.max(24, Math.floor(cap / grown.length));
+    const fx = [], frec = [];
+    for (let ti = 0; ti < grown.length && fx.length / 3 < cap; ti++) {
+      const t = grown[ti], p = sites[ti];
+      const sy = Math.sin(p.yaw), cy = Math.cos(p.yaw);
+      for (const f of blossomsFor(t, { seed: p.seed, openness, budget: per })) {
+        fx.push(p.x + f.x * cy - f.z * sy, p.y + f.y, p.z + f.x * sy + f.z * cy);
+        f.crown = t.crown;
+        f.worldYaw = p.yaw;
+        frec.push(f);
+      }
+    }
+    if (frec.length) {
+      const flMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff, roughness: 0.86, side: THREE.DoubleSide,
+        // §9.2's subsurface term, as a material property rather than a shader:
+        // a petal is one cell thick and light comes *through* it, so the ones
+        // facing away from the sun are not black — they are lit from behind.
+        emissive: petalCol.clone().multiplyScalar(0.16),
+      });
+      const blossom = new THREE.InstancedMesh(flGeo, flMat, frec.length);
+      const tintCol = new THREE.Color();
+      // A flower faces the way the light came in, and `floweringAt` has already
+      // said which way that is: outward along the crown envelope's own normal,
+      // which is straight up at the apex and straight out at the flank. Facing
+      // them all one way — the first version — makes a canopy of stickers.
+      const FACE = new THREE.Vector3(0, 0, 1), UPV = new THREE.Vector3(0, 1, 0);
+      const nrm = new THREE.Vector3();
+      for (let i = 0; i < frec.length; i++) {
+        const f = frec[i], t = f.crown;
+        nrm.set(f.x / (t.r * t.r), (f.y - t.y) / (t.up * t.up), f.z / (t.r * t.r));
+        if (nrm.lengthSq() < 1e-12) nrm.set(0, 1, 0);
+        // −yaw: the wood loop rotates by (x·c − z·s, x·s + z·c), which is
+        // `applyAxisAngle(+Y, −θ)`. Matching the sign is not a detail — the
+        // flowers would have faced the mirror image of where they grew.
+        nrm.normalize().applyAxisAngle(UPV, -f.worldYaw);
+        d.position.set(fx[i * 3], fx[i * 3 + 1], fx[i * 3 + 2]);
+        d.quaternion.setFromUnitVectors(FACE, nrm);
+        d.rotateZ(f.yaw);                       // spin in its own plane
+        d.rotateX(f.tilt * 0.55);               // and never quite square on
+        d.scale.setScalar(f.size);
+        d.updateMatrix();
+        blossom.setMatrixAt(i, d.matrix);
+        // no two flowers the same colour, and the deeper ones stay duskier —
+        // `lit` is the light that opened them, so it is already the right lever
+        tintCol.copy(petalCol).offsetHSL((f.tint - 0.5) * 0.05, 0,
+          -0.06 + 0.10 * f.lit + (f.tint - 0.5) * 0.07);
+        blossom.setColorAt(i, tintCol);
+      }
+      blossom.instanceMatrix.needsUpdate = true;
+      if (blossom.instanceColor) blossom.instanceColor.needsUpdate = true;
+      s.scene.add(blossom);
+    }
+
+    // ------------------------------------------------------- petal fall ---
+    //
+    // The signature of the whole thing, and it costs one draw call and no CPU.
+    // `blossom.js` asks `precip.js` how a petal falls, so this is the same drag
+    // law the snow uses and petals cannot disagree with snow about the same
+    // air: thin air drops them fast and straight, thick air makes them hang.
+    //
+    // Position is `f(seed, t)` in the vertex shader — `precip.js` idea 2 — and
+    // the box is *wrapped* around the camera rather than respawned, idea 1, so
+    // the density is exactly constant while you walk through it and nothing
+    // trails behind you.
+    if (openness > 0.22) {
+      const nP = budget > 300 ? 1500 : 520;
+      const BOX = 44, BOXY = 26;
+      const base = new Float32Array(nP * 3), phs = new Float32Array(nP * 2);
+      for (let i = 0; i < nP; i++) {
+        base[i * 3] = r.float(-BOX / 2, BOX / 2);
+        base[i * 3 + 1] = r.float(-BOXY / 2, BOXY / 2);
+        base[i * 3 + 2] = r.float(-BOX / 2, BOX / 2);
+        phs[i * 2] = r.float(0, 6.28318);
+        phs[i * 2 + 1] = r.float(0, 6.28318);
+      }
+      const fg = new THREE.BufferGeometry();
+      fg.setAttribute('position', new THREE.BufferAttribute(base, 3));
+      fg.setAttribute('aPh', new THREE.BufferAttribute(phs, 2));
+      // the same air `precip.js` drops rain and snow through
+      const pf = petalFall({ gravity: gwork, rhoAir: airDensity(s.atmo ?? 1, pp.Teq) });
+      const fallMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 }, uCam: { value: new THREE.Vector3() },
+          uBox: { value: BOX }, uBoxY: { value: BOXY },
+          uSpeed: { value: pf.speed }, uFlutter: { value: pf.flutter },
+          uPeriod: { value: pf.period },
+          uColor: { value: petalCol.clone() }, uDay: { value: 1 },
+          uOpen: { value: openness },
+          // A petal is 6 cm across; the shader recovers the scene's scale from
+          // the model-view matrix, so this stays a world radius (see PETAL_GLSL).
+          uR: { value: 0.03 },
+          uH: { value: Math.max((typeof window !== 'undefined'
+            ? window.innerHeight * Math.min(window.devicePixelRatio || 1, 2) : 900), 200) },
+          // §6 M3: one wind owns this world, and the petals are in it. This
+          // carries the *integral* of the gusty field rather than a mean, so a
+          // front crossing the meadow shoves the blossom across with it.
+          uDrift: { value: new THREE.Vector2() },
+        },
+        vertexShader: PETAL_GLSL.vert,
+        fragmentShader: PETAL_GLSL.frag,
+        transparent: true, depthWrite: false,
+        // §9.3's alpha is the *clarity* channel, not a second opacity, and
+        // `clouds.js` already worked out what a soft-edged transparent thing
+        // owes it: over-composite on colour, plain coverage on alpha, so a
+        // petal covering 10% of a pixel moves that pixel's clarity 10% toward
+        // near and leaves the other 90% reading the hillside's distance.
+        // Three's NormalBlending would use SrcAlpha on the alpha channel too,
+        // squaring it — which reads as "very distant" and makes the print
+        // smear a soft halo around every falling petal.
+        blending: THREE.CustomBlending,
+        blendSrc: THREE.SrcAlphaFactor,
+        blendDst: THREE.OneMinusSrcAlphaFactor,
+        blendSrcAlpha: THREE.OneFactor,
+        blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+      });
+      petalDrift = new THREE.Points(fg, fallMat);
+      // No `aerial()` in the shader, deliberately: the wrap box is 44 m across
+      // and centred on the eye, so no petal is ever further off than 22 m —
+      // inside §9.3's 70 m `fogNear`, where the air contributes nothing. A fog
+      // term here would be arithmetic that always evaluates to zero.
+      petalDrift.frustumCulled = false;      // the shader moves it out of its box
+      petalDrift.renderOrder = 3;            // after the cloud deck, before HUD
+      s.scene.add(petalDrift);
+    }
+  }
+
+  // ---------------------------------------------------------- groves ----
+  // the lone trees were scouts; these are the woods they were scouting
+  // for. clustered stands with real crowns — puffy triple-canopy
+  // broadleaves in the warm bands, spired conifers where the year is cold
+  // The far stands only — the near ones were promoted into the grown pipeline
+  // above and are already standing there with real branches on them.
+  const farCenters = centers.filter((c) => !c.near);
+  const nFar = farCenters.length ? Math.round(nGrove * (farCenters.length / centers.length)) : 0;
+  if (nFar > 24) {
+    const gTrunks = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.12, 0.26, 1, 5), barkMat, nFar);
+    const crownGeo = conifer ? new THREE.ConeGeometry(1, 2.6, 7) : new THREE.IcosahedronGeometry(1, 1);
+    const gCrowns = new THREE.InstancedMesh(crownGeo, canopyMat, nFar * (conifer ? 1 : 3));
+    let gt = 0, gc = 0;
+    for (let i = 0; i < nFar * 3 && gt < nFar; i++) {
+      const c = farCenters[i % Math.max(farCenters.length, 1)];
       if (!c) break;
       const x = c.x + r.gauss() * c.spread, z = c.z + r.gauss() * c.spread;
       const h = dryland(x, z);
@@ -384,13 +768,28 @@ export function addLife(s) {
 
   const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
   const acc = new THREE.Vector3(), diff = new THREE.Vector3();
+  const drift = new THREE.Vector2();
   let time = 0;
 
   return {
+    openness,
     update(dt, sunY) {
       time += dt;
       const day = Math.min(Math.max((sunY + 0.1) * 3, 0), 1);
       tuftMat.color.copy(vegColor).multiplyScalar(0.15 + 0.85 * day);
+      if (petalDrift) {
+        const u = petalDrift.material.uniforms;
+        u.uTime.value = time;
+        u.uDay.value = 0.25 + 0.75 * day;
+        const c = s.camLocal?.();
+        if (c) u.uCam.value.set(c.x, c.y, c.z);
+        const w = s.sampleWind?.(c ? c.x : 0, c ? c.z : 0, 6);
+        if (w) {
+          drift.x += w.x * dt;
+          drift.y += w.z * dt;
+          u.uDrift.value.copy(drift);
+        }
+      }
 
       // the wild reacts to you: your position in local metres, if the host
       // knows it, plus a fright flag (meteor strikes scatter everything)

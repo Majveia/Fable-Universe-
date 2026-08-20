@@ -24,6 +24,7 @@ import {
   makeSurfaceMaterial, makeCloudMaterial, makeAtmosphereMaterial,
   makeRingMaterial, blackbodyRGB, NOISE_GLSL,
 } from './planet.js';
+import { vegetationHSL } from './meadow.js';
 import { planck, spectrumToXYZ, xyzToLinearSRGB, toGamut } from './starlight.js';
 
 const AU_DRAW = 46;      // display units at 1 AU
@@ -53,6 +54,37 @@ const GIANTS = (() => {
 const TYPE_IDS = { barren: 0, terrestrial: 1, ocean: 2, ice: 3, lava: 4, 'gas giant': 5, 'ice giant': 6 };
 
 const drawR = (au) => AU_DRAW * Math.pow(Math.max(au, 0.01), R_EXP);
+
+/**
+ * …and the way back. **A display radius must never be read into a physical
+ * law**, and this constant exists so that no shader has to be tempted.
+ *
+ * `drawR()` compresses orbital radius by `au^0.62` so the outer worlds stay on
+ * screen — a stated, purely visual choice, and the HUD reports the true AU
+ * either way (§3: "the numbers are never negotiable; the palette always is").
+ * But three separate places had gone on to *do arithmetic* with the compressed
+ * number, and an inverse-square law fed a compressed radius is not an
+ * inverse-square law:
+ *
+ *     r_draw ∝ au^0.62   ⇒   1/r_draw² ∝ au^−1.24
+ *
+ * So the interplanetary dust and the asteroid belt were both falling off as
+ * `r^−1.24` while their comments claimed `r^−2`, and the deep-time engulfment
+ * test compared a star radius compressed by `√R` against an orbit compressed by
+ * `au^0.62` — two different compressions, subtracted as if they were the same
+ * quantity, which made a red giant swallow worlds out to about 2.3× the orbit
+ * it had actually reached. All three are §8 axis 8: the pixels contradicting
+ * the physics the HUD asserts, quietly, in the one direction nobody checks.
+ *
+ * `drawR()` is now the only thing allowed to compress, and `auOf()` is the only
+ * thing allowed to undo it.
+ */
+const INV_R_EXP = 1 / R_EXP;
+const auOf = (rDraw) => Math.pow(Math.max(rDraw, 1e-6) / AU_DRAW, INV_R_EXP);
+
+/** one solar radius, in astronomical units — the constant that makes a stellar
+ *  radius and an orbital radius the same kind of number */
+const R_SUN_AU = 0.004650467;
 
 function spectralClass(T) {
   return T > 30000 ? 'O' : T > 10000 ? 'B' : T > 7500 ? 'A' : T > 6000 ? 'F'
@@ -177,7 +209,29 @@ export function systemParams(starSeed) {
       case 'terrestrial':
         colA = new THREE.Color().setHSL(0.09 + hue * 0.05, 0.45, 0.32);   // soil
         colB = new THREE.Color().setHSL(0.07, 0.25, 0.55);                 // peaks
-        colC = new THREE.Color().setHSL(0.32 + hue * 0.1, 0.5, inhabited ? 0.3 : 0.22); // veg/shallows
+        // Vegetation, and it was the wrong colour on every world that has one.
+        //
+        // The range was `0.32 + hue·0.1` — HSL 115° to 151°, so green at the
+        // bottom and spring-green/teal at the top. That alone is only the cool
+        // edge of plausible; what made it turquoise on screen is that it
+        // compounds with `grassPalette()`, which rotates a blade's root 62%
+        // toward a pole with blue at 4.5× because a sward's base is lit by
+        // skylight. From a 151° base that lands the root, the hollow and half
+        // the mosaic past cyan — which is most of the mass of a distant field.
+        // `src/meadow.js` carries the full argument and the arithmetic.
+        //
+        // §3's weirdness budget is enforced here, which is where the
+        // constitution says to enforce it: "in the seed→biome function." The top
+        // 5% of the hue draw is not chlorophyll at all — teal, violet, rust —
+        // and the other 95% is green, because rarity is the mechanism by which
+        // strangeness lands.
+        //
+        // Taken from the *same* draw rather than a new one on purpose: an extra
+        // `pr.next()` here would shift every subsequent draw for the world and
+        // move its ocean level, its clouds and its ice caps along with the
+        // grass. One number, two readings, no perturbation (§2.3).
+        const veg = vegetationHSL(hue, inhabited);
+        colC = new THREE.Color().setHSL(veg.h, veg.s, veg.l);
         atmoColor = new THREE.Color(0.28, 0.5, 1.0);
         oceanLevel = pr.float(-0.05, 0.16); clouds = pr.float(0.45, 0.75); iceCap = pr.float(0.72, 0.92);
         break;
@@ -670,7 +724,10 @@ const DUST_FRAG = /* glsl */`
   uniform float uSubDraw;    // sublimation radius, draw units — no dust inside
   uniform float uFlatDraw;   // where the power law turns over, ~6 r_sub
   uniform float uOuterDraw;
-  uniform float uBandDraw;   // asteroid-belt dust band centre, 0 = none
+  uniform float uFlatAU;     // the turnover, in *true* AU
+  uniform float uBandAU;     // asteroid-belt dust band centre, true AU; 0 = none
+  uniform vec3  uEmber;      // the sublimation ring's own colour, ~1500 K
+  uniform float uEmberGain;
   uniform float uSeed;
   in vec3 vW;
   in float vR;
@@ -689,13 +746,38 @@ const DUST_FRAG = /* glsl */`
     // dust-free zone. One monotone fade from the sublimation radius to where
     // the cloud starts obeying its power law.
     float inner = smoothstep(uSubDraw, uFlatDraw, r);
+
+    // …and the hole that fade leaves is wrong, because the dust-free zone is
+    // not where the dust is dimmest — it is the edge of where the dust is
+    // *hottest*. Grains just outside the sublimation radius sit at the
+    // sublimation temperature itself, around 1500 K, and radiate: this is the
+    // inner F-corona, and it is a real, observed, deep-orange ring.
+    //
+    // The previous commit made the inner fade monotone to stop it reading as
+    // two dark lobes flanking the star. It still read as two dark lobes,
+    // because a monotone fade to nothing is still nothing — the fade was never
+    // the fault. What was missing is the emission that belongs there.
+    //
+    // Thermal, so it does not go through the phase function or the path length:
+    // this is dust glowing, not dust scattering, and it is isotropic. Peaked at
+    // the sublimation radius and falling with an e-folding of 1.8 r_sub, which
+    // is the scale over which T drops from 1500 K to where σT⁴ stops mattering.
+    float ember = exp(-max(r - uSubDraw, 0.0) / max(uSubDraw * 1.8, 1e-4))
+                * smoothstep(uSubDraw * 0.62, uSubDraw, r);
     // A long outer fade, because a short one is a *rim*: at 0.72 the cloud was
     // still bright where it started fading, so the edge of the mesh drew a
     // horizon line across the frame and the plane read as a solid table.
     float outer = 1.0 - smoothstep(uOuterDraw * 0.30, uOuterDraw, r);
-    if (inner * outer < 1e-4) discard;
+    // the ember lives where inner is zero by construction, so the early-out
+    // has to ask about both or it discards the very thing it was added for
+    if ((inner + ember) * outer < 1e-4) discard;
 
-    float x = r / uRefDraw;                       // radius in reference units
+    // True AU, not draw units. drawR() compresses orbital radius by au^0.62
+    // for the frame; reading that compressed number into a power law silently
+    // changes the exponent, and this shader spent its whole first life claiming
+    // r^-2.3 while computing r^-1.43. One pow() buys the exponent back and the
+    // comments below become true. See auOf() in this file for the argument.
+    float au = pow(max(r / uRefDraw, 1e-4), ${INV_R_EXP.toFixed(6)});
     // Two populations, because a real system has two.
     //
     //   the zodiacal cloud — n ∝ r^−1.3 (Leinert 1998), irradiance 1/r², fan
@@ -709,13 +791,15 @@ const DUST_FRAG = /* glsl */`
     //   component that is actually *imaged* around other stars in scattered
     //   light, and it is what keeps the plane legible past a few AU instead of
     //   collapsing the whole cloud into a cusp at the star.
-    float xs = max(x, uFlatDraw / uRefDraw);
-    float col = pow(xs, -2.3) + 0.16 * pow(x, -0.9);
+    float aus = max(au, uFlatAU);
+    float col = pow(aus, -2.3) + 0.16 * pow(au, -0.9);
 
     // the IRAS dust bands: collisional debris from the asteroid families, a
-    // real local enhancement at the belt's own radius
-    if (uBandDraw > 0.0) {
-      float d = (r - uBandDraw) / (uBandDraw * 0.22);
+    // real local enhancement at the belt's own radius. Its width is a fraction
+    // of that radius, which is a statement about the belt and therefore has to
+    // be made in AU rather than in compressed draw units.
+    if (uBandAU > 0.0) {
+      float d = (au - uBandAU) / (uBandAU * 0.22);
       col *= 1.0 + 0.85 * exp(-d * d);
     }
 
@@ -741,11 +825,16 @@ const DUST_FRAG = /* glsl */`
     vec3 tint = uChroma * vec3(1.06, 1.0, 0.90);
 
     float grain = 0.82 + 0.30 * fbm3(vec3(vW.xz * (0.9 / uRefDraw), uSeed));
+    // grain is a texture on the frame, so it stays in draw units on purpose —
+    // it is the one term here that is not a physical law
     // one stated ceiling on the geometry terms, so an edge-on sightline through
     // the forward lobe brightens the plane instead of clipping it
     float boost = min(path * hg, 9.0);
     float b = col * boost * grain * uGain * inner * outer;
-    vec3 c = tint * b;
+    // scattered starlight plus the ring's own thermal emission. Two different
+    // physical processes, added rather than blended, because that is what they
+    // do — and the grain texture rides both so the ring is not a clean annulus.
+    vec3 c = tint * b + uEmber * (ember * outer * grain * uEmberGain);
     c = mix(vec3(0.0), c, vec3(equal(c, c)));
     fragColor = vec4(clamp(c, 0.0, 4.0), 1.0);
   }
@@ -821,7 +910,10 @@ const BELT_FRAG = /* glsl */`
 
   void main() {
     vec3 d = vW - uStar;
-    float r = max(length(d) / uRefDraw, 0.02);
+    // true AU: the frame's radii are compressed by au^0.62 (see auOf()), and an
+    // irradiance law handed a compressed radius falls off as r^-1.24. A belt at
+    // 3 AU was therefore being lit as though it sat at 1.9.
+    float au = max(pow(length(d) / uRefDraw, ${INV_R_EXP.toFixed(6)}), 0.02);
     vec3 L = -d / max(length(d), 1e-4);
     vec3 V = normalize(uCamPos - vW);
     vec3 n = normalize(vN);
@@ -834,7 +926,7 @@ const BELT_FRAG = /* glsl */`
     // side either: it sees the rest of the belt. One faint achromatic fill,
     // which is the least §8 axis 2 will accept.
     float lit = ndl * phase + 0.035;
-    vec3 c = vTint * uChroma * (uGain * lit / (r * r));
+    vec3 c = vTint * uChroma * (uGain * lit / (au * au));
     c = mix(vec3(0.0), c, vec3(equal(c, c)));
     fragColor = vec4(clamp(c, 0.0, 6.0), 1.0);
   }
@@ -1179,12 +1271,39 @@ export class SystemScale {
         uChroma: { value: new THREE.Vector3(c[0], c[1], c[2]) },
         uStar: this.uSunPos,
         uCamPos: this.uCamPos,
-        uGain: { value: 0.0016 },
+        // The cloud is lit by *this* star. Surface brightness carries the
+        // irradiance, L/r², and until now it carried only the 1/r² — so an M
+        // dwarf's plane was exactly as bright as a blue giant's, which is §8
+        // axis 8 twice over (the HUD prints the luminosity right beside it).
+        //
+        // L spans five decades across the main sequence and a frame spans about
+        // one, so L enters through the same kind of monotone compression
+        // starExposure() uses on σT⁴, for the same stated reason: the ordering
+        // is the physics and it is what has to survive to the pixels. Exponent
+        // 1/3, clamped to a factor of ten, and calibrated so a G star's plane is
+        // unchanged — this is a correction to the *other* stars, not a retune of
+        // the one that was already photographed.
+        uGain: { value: 0.0016 * Math.min(Math.max(Math.pow(Math.max(P.lum, 1e-4), 1 / 3), 0.34), 3.4) },
         uRefDraw: { value: AU_DRAW },
         uSubDraw: { value: drawR(rSub) },
         uFlatDraw: { value: drawR(rSub * 6) },
         uOuterDraw: { value: drawR(rOut) },
-        uBandDraw: { value: P.belt ? drawR(P.belt.a) : 0 },
+        // the fades above stay in draw units — they are the shape of the mesh,
+        // and monotone either way. These two are physics, so they are AU.
+        uFlatAU: { value: rSub * 6 },
+        uBandAU: { value: P.belt ? P.belt.a : 0 },
+        // The sublimation ring, ~1500 K — the temperature at which silicate
+        // grains stop existing, so it is the same number that sets `rSub` and
+        // not a colour anyone picked. It is deliberately *not* the star's
+        // colour: this is the dust's own light, and a blue giant's inner ring
+        // is the same orange as a red dwarf's because both are 1500 K grains.
+        uEmber: { value: (() => {
+          const c = blackbodyRGB(1500);
+          return new THREE.Vector3(c.r, c.g, c.b);
+        })() },
+        // scaled by the same compressed luminosity the scattered term uses, so
+        // a brighter star drives a brighter ring without either one running away
+        uEmberGain: { value: 0.34 * Math.min(Math.max(Math.pow(Math.max(P.lum, 1e-4), 1 / 3), 0.34), 3.4) },
         uSeed: { value: (hash(P.seed, 0xd057) >>> 8) / 65536 },
       },
       vertexShader: DUST_VERT,
@@ -1270,8 +1389,14 @@ export class SystemScale {
         uCamPos: this.uCamPos,
         uRefDraw: { value: AU_DRAW },
         // one AU of irradiance is the unit; the 1/r² in the shader does the
-        // rest, so a belt around a bright star is genuinely brighter
-        uGain: { value: 0.62 * Math.min(Math.max(this.params.lum, 0.05), 40) ** 0.35 },
+        // rest, so a belt around a bright star is genuinely brighter.
+        //
+        // The constant moved 0.62 → 1.25 when that 1/r² stopped being 1/r^1.24
+        // (see auOf()). A belt sits at 2–4 AU, where the compressed radius was
+        // about 0.6 of the true one, so the old law was over-lighting it by
+        // roughly 2× — the number changed to keep the photographed frame where
+        // it was while the law underneath it became the one the comment claims.
+        uGain: { value: 1.25 * Math.min(Math.max(this.params.lum, 0.05), 40) ** 0.35 },
       },
       vertexShader: BELT_VERT,
       fragmentShader: BELT_FRAG,
@@ -1732,7 +1857,34 @@ export class SystemScale {
     // the temperature has moved a percent or so, so it is rebuilt on that
     // threshold rather than on the clock — the same "set once, not per frame"
     // discipline §11 asks for, applied to a CPU cost instead of a GPU one.
-    const dR = this._starDrawROf(st.R);
+    // ---- what the star has actually swallowed ---------------------------
+    //
+    // Decided in **AU**, once, before anything is drawn: a world is engulfed
+    // when the photosphere reaches its perihelion. `st.R` is in solar radii and
+    // `pp.a·(1−e)` is in AU, so R_SUN_AU is the whole conversion.
+    //
+    // It used to be `dRdraw · 0.98 > drawR(perihelion)`, comparing a stellar
+    // radius compressed by √R against an orbital radius compressed by au^0.62.
+    // Those are different functions, so the crossing point was arbitrary: a
+    // 148 R☉ giant — 0.69 AU, enough to take Mercury and threaten Venus, which
+    // is the fate DEEPTIME_NOTE describes out loud — was swallowing everything
+    // inside about 1.6 AU. Earth went, and the note said it would not.
+    const rStarAU = st.R * R_SUN_AU;
+    let nearestSurvivorAU = Infinity;
+    for (const node of this.planetNodes) {
+      const peri = node.pp.a * (1 - node.pp.e);
+      if (rStarAU < peri) nearestSurvivorAU = Math.min(nearestSurvivorAU, peri);
+    }
+
+    // The frame then has to agree with that ruling, and it does not get there
+    // for free: the star is drawn oversize on purpose (see `_starDrawROf`), so
+    // a disc big enough to *look* like a red giant can cover an orbit it has
+    // not reached. The magnification is therefore capped by the innermost world
+    // still alive — the star may grow until it touches that orbit and no
+    // further, so "the disc has swallowed it" on screen and "the photosphere
+    // has reached it" in AU are the same event.
+    let dR = this._starDrawROf(st.R);
+    if (nearestSurvivorAU < Infinity) dR = Math.min(dR, drawR(nearestSurvivorAU) * 0.94);
     this.starMesh.scale.setScalar(dR / this.starDrawR);
     const su = this.starMesh.material.uniforms;
     if (!(Math.abs(st.T - (this._rampT ?? 0)) < this._rampT * 0.01)) {
@@ -1854,9 +2006,8 @@ export class SystemScale {
       if (node.cloudU) node.cloudU.uAmt.value = o.clouds * (1 - scorch) * (1 - freeze * 0.85);
       pp.atmoColor.copy(o.atmo).multiplyScalar((1 - scorch * 0.8) * (1 - freeze * 0.6));
 
-      // the giant star swallows its innermost children
-      const engulfed = dR * 0.98 > drawR(pp.a * (1 - pp.e));
-      node.group.visible = !engulfed;
+      // the giant star swallows its innermost children — in AU, decided above
+      node.group.visible = !(rStarAU >= pp.a * (1 - pp.e));
     }
   }
 
