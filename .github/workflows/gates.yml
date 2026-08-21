@@ -46,7 +46,13 @@ on:
       - 'src/**'
       - 'index.html'
       - 'vendor/**'
-      - 'tools/**'
+      # the three instruments and the plumbing under them — deliberately not
+      # `tools/**`, which would spend three browser jobs on a README typo
+      - 'tools/pixeldiff.js'
+      - 'tools/touchgate.js'
+      - 'tools/footplant.js'
+      - 'tools/lib.js'
+      - 'tools/png.js'
       - '.github/workflows/gates.yml'
       - '.github/actions/chromium/action.yml'
   workflow_dispatch:

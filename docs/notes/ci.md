@@ -74,9 +74,21 @@ soak run; it is noise, and the tool says so in its own output.
 `invariants.js` has been made to fail on purpose — a PNG in `src/`, a PNG
 renamed to `.dat`, a `package.json` at the root, a `Math.random()` in
 `terrain.js`, a `fetch()` in `rng.js`, the importmap pointed back at the CDN, a
-`TextureLoader`, one byte appended to the art reference. So has the digest, with
-a one-ulp change to a single constant in `zeldovich.js`, which it localised to
-the suite. So has the cross-machine comparison, with a fabricated third digest.
+`TextureLoader`, a bare `import lodash from 'lodash'`, a side-effect
+`import 'some-polyfill'`, a dynamic `import()` of a CDN URL, and one byte
+appended to the art reference. So has the digest, with a one-ulp change to a
+single constant in `zeldovich.js`, which it localised to the suite. So has the
+cross-machine comparison, with a fabricated third digest.
+
+That discipline earned its keep immediately. Two of those checks were **green
+because they were blind**, and only a deliberate failure found it. `strip()`
+blanks a string including its quotes, so `from './rng.js'` reaches the §2.2
+check as `from           ;` and the obvious pattern matched nothing on any file
+ever; and `sites()` measured a match's line from its first character, so a
+pattern opening `(?:^|[\s;}])` consumed the preceding newline and reported the
+line *above* — a comment, on which the caller found nothing and moved on. A
+gate that has never been made to fail is not a gate, and neither of those was
+findable any other way.
 
 **One job per question.** Three steps in one job report as one red X and
 whichever failed first. Three jobs report *which*, which is the entire content

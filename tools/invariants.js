@@ -207,13 +207,21 @@ for (const [snippet, must, why] of SELFTEST) {
 }
 ok(SELFTEST.length);
 
-/** every match of `re` in the *code* of `src`, as {line, text} */
+/** every match of `re` in the *code* of `src`, as {line, text}.
+ *
+ *  The line is measured from the first non-space character of the match, not
+ *  from its start, and that distinction cost a real false negative: a pattern
+ *  that opens `(?:^|[\s;}])` consumes the newline *before* the statement it
+ *  matches, so the reported line was the line above — a comment, on which the
+ *  caller then found nothing to report and silently moved on. The check was
+ *  green because it was looking one line up. */
 function sites(src, re) {
   const code = strip(src);
   const lines = src.split('\n');
   const hits = [];
   for (const m of code.matchAll(re)) {
-    const line = code.slice(0, m.index).split('\n').length;
+    const lead = (m[0].match(/^\s*/) || [''])[0].length;
+    const line = code.slice(0, m.index + lead).split('\n').length;
     hits.push({ line, text: (lines[line - 1] || '').trim().slice(0, 88) });
   }
   return hits;
@@ -400,10 +408,27 @@ if (existsSync(join(REPO, 'node_modules'))) {
 // specifier no browser can resolve — which means a broken page, or a bundler
 // nobody agreed to.
 const IMPORTMAP_KEYS = ['three', 'three/addons/'];
+
+// Two passes, and the reason is a bug this check shipped with for an hour.
+//
+// `strip()` blanks a string *including its quotes*, so by the time the code
+// reaches here `import { hash } from './rng.js';` reads
+//
+//     import { hash } from           ;
+//
+// and the obvious pattern — `from\s*['"]([^'"]+)['"]` — matches nothing, on
+// any file, ever. The check was green because it was blind, which is the worst
+// way for a gate to be green and exactly what `--census` and a deliberate
+// failure are for.
+//
+// So: find the *statement* in stripped code, where a specifier inside a comment
+// cannot be mistaken for one; then read the specifier off the raw line, which
+// is the only place it still exists.
+const IMPORT_STMT = /(?:^|[\s;}])(?:import|export)\b[^;\n]*?\bfrom\b|(?:^|[\s;}])import\s{2,}[;\n]|\bimport\s*\(/gm;
 for (const f of SHIPPED.filter(js)) {
   ok();
-  for (const h of sites(read(f), /(?:^|[\s;}])(?:import|export)\b[^;\n]*?from\s*['"][^'"]+['"]/gm)) {
-    const spec = (h.text.match(/from\s*['"]([^'"]+)['"]/) || [])[1];
+  for (const h of sites(read(f), IMPORT_STMT)) {
+    const spec = (h.text.match(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/) || [])[1];
     if (!spec || spec.startsWith('.') || spec.startsWith('/')) continue;
     if (IMPORTMAP_KEYS.some((k) => spec === k || spec.startsWith(k))) continue;
     fail('§2.2', `${rel(f)}:${h.line}`, `bare specifier '${spec}'`,
