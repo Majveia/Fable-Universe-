@@ -69,10 +69,14 @@ export function addTraveler(s) {
   // by the sun it is standing under rather than by a constant. `_syncLight()`
   // below re-derives them as the day turns.
   //
-  // The shadow sampler is passed only if this build has one. `?paint=` is
-  // default-off and `s.sunShadow` therefore usually does not exist; handing the
-  // figure a `null` there compiles a shader with `shadow = 1.0` folded in as a
-  // literal rather than one that samples a map nobody rendered.
+  // The shadow sampler is passed only if this build has one — and now it
+  // usually does. The map used to be built inside `_paintUniforms()`, so
+  // `s.sunShadow` existed only under `?paint=1` and the figure was almost
+  // always compiled with `shadow = 1.0` folded in as a literal. `surface.js`
+  // builds it under its own `SHADOW` flag now, so this branch takes its live
+  // side in the shipped build and the figure is shaded by the same map the
+  // ground is. The `null` path stays for `?shadow=0`: a shader that samples a
+  // map nobody rendered is worse than one that knows it has none.
   const starT = s.ctx.system?.temp ?? 5778;
   const sunElev = () => (Math.asin(Math.min(Math.max(s.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
   const figure = new Figure({
@@ -105,13 +109,19 @@ export function addTraveler(s) {
 
   // ------------------------------------------------------- contact shadow ----
   //
-  // The figure floated, and `figure.js:163` says why in its own words: "there is
-  // no shadow map in the default build." There is not — `surface.js` builds
-  // `sunShadow` only inside `_paintUniforms()`, which runs only under `?paint=1`,
-  // so `markCaster()` has nothing to render into and every occluder in the frame
-  // casts nothing. §8 axis 1 asks for a readable subject at three distances and
-  // the cheapest thing that separates a body from the ground it is standing on
-  // is the dark shape at its feet.
+  // The figure floated, and `figure.js:163` said why in its own words: "there is
+  // no shadow map in the default build." There was not — `surface.js` built
+  // `sunShadow` only inside `_paintUniforms()`, which runs only under
+  // `?paint=1`, so `markCaster()` had nothing to render into and every occluder
+  // in the frame cast nothing. **That is fixed**: the map is separated from the
+  // grade and ships on its own flag, so the figure now casts a real one.
+  //
+  // This stays regardless, and not as a fallback. §8 axis 1 asks for a readable
+  // subject at three distances, and the cheapest thing that separates a body
+  // from the ground it is standing on is the dark shape at its feet — which the
+  // shadow map cannot always supply, because it spans 480 m around the camera
+  // and the figure can walk out of it. A contact shadow needs no pass and never
+  // leaves the body.
   //
   // This is not the shadow map, and it is not waiting for one. It is the
   // first-order projection of a body onto locally flat ground, which at a

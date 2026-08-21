@@ -43,6 +43,18 @@ const capMs = Number(arg('cap', 300)) * 1000;
 const outDir = String(arg('out', 'docs/captures/shot'));
 const builds = String(arg('builds', 'm2=1')).split(',').map((b) => b.trim()).filter(Boolean);
 const scale = String(arg('scale', 'surface'));
+/**
+ * How long to wait for the app to come up, in seconds.
+ *
+ * It was 120, hardcoded, which is generous on a GPU and nowhere near enough
+ * elsewhere: `docs/notes/AGENT-PROTOCOL.md` §4 records that the surface scale
+ * takes about seven minutes to build on a software rasteriser and says to use
+ * twenty-minute timeouts. A tool that cannot be pointed at the machine it is
+ * running on only works on one machine.
+ *
+ * The default is unchanged, so nothing about a run on real silicon moves.
+ */
+const readyMs = Number(arg('ready', 120)) * 1000;
 /** what the route search is looking for: any rocky world, a living one, or one with an aurora */
 const want = String(arg('want', scale === 'surface' ? 'life' : 'any'));
 const WANT = { any: 'true', life: 'hit.alive', aurora: 'hit.alive && auroral(pl, starSeed, sp)' };
@@ -141,7 +153,7 @@ for (const b of builds) {
   const url = `${site.origin}/index.html?seed=${seed}&${where}${b ? '&' + b : ''}&dt=16.667`;
   await page.goto(url, { waitUntil: 'load' });
   await page.waitForFunction('window.AEON && window.AEON.active && window.AEON.active()',
-    null, { timeout: 120000 });
+    null, { timeout: readyMs });
   const how = await page.evaluate(SETTLE, [frames, capMs]);
   const info = await page.evaluate(() => {
     const i = window.AEON.renderer?.info;

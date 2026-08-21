@@ -221,10 +221,16 @@ export const PAINT_GLSL = /* glsl */`
  * The shadow a standing body throws on locally flat ground.
  *
  * §9.2 gives the shading model and §9.7 puts the spawn sun in an 8–18° band,
- * but nothing in the default build ever drew a shadow at all: `surface.js`
- * builds its shadow map only under `?paint=1`, so `markCaster()` has nothing to
- * render into and every occluder in the frame — the figure, the trees, a 110 m
- * conjured rocket — sits on the ground without touching it.
+ * and for a long time nothing in the default build drew a shadow at all:
+ * `surface.js` built its shadow map only under `?paint=1`, so `markCaster()`
+ * had nothing to render into and every occluder in the frame — the figure, the
+ * trees, a 110 m conjured rocket — sat on the ground without touching it. The
+ * map is separated from the grade now and ships under its own `SHADOW` flag, so
+ * all of those cast.
+ *
+ * This function is not that, and is not made redundant by it: the map spans
+ * 480 m about the camera and a body can stand outside it, where this still
+ * works.
  *
  * This is the first-order answer, and it is exact rather than approximate for
  * the case it claims: a body of height `h` under a sun at elevation `e` casts a

@@ -89,8 +89,39 @@ export function snapCentre(x, z, texel) {
   return [Math.round(x / texel) * texel, Math.round(z / texel) * texel];
 }
 
-/** the sampler, for injection into any fragment shader that has a world pos */
-export const SHADOW_GLSL = /* glsl */`
+/**
+ * The sampler, for injection into any fragment shader that has a world pos.
+ *
+ * A **function of the tap count** rather than a constant, because separating
+ * the map from `?paint=` put this on the terrain — more than half of every
+ * surface frame — and §5's rule is that a change costing frames pays for them
+ * with an LOD *before* the feature, not after the measurement.
+ *
+ * The argument for one tap being enough on the low row is this file's own,
+ * carried one step: the wobble dominates the silhouette, so five taps read the
+ * same as nine, and on a 1024 map at 720p one wobbled tap reads very nearly the
+ * same as five — what the eye is reading is the noise offset, not the filter
+ * width. Both early-outs are untouched, so ground outside the map still costs
+ * nothing on any row.
+ *
+ * `SHADOW_GLSL` stays exported as the five-tap string so every existing caller
+ * and every check that names it keeps working unchanged.
+ */
+export function shadowGLSL(taps = 5) {
+  const cross = [[1, 1], [-1, 1], [1, -1], [-1, -1]].slice(0, Math.max(0, taps - 1));
+  const extra = cross.map(([a, b]) =>
+    `    s += step(pc.z - bias, texture2D(uShadowMap, pc.xy + jo + vec2(${a === 1 ? ' r' : '-r'}, ${b === 1 ? ' r' : '-r'})).r);`).join('\n');
+  const n = cross.length + 1;
+  return SHADOW_HEAD
+    // only declared when something reads it: a one-tap build has no cross, and
+    // an unused declaration is a warning on some drivers and noise on all of them
+    + (extra ? '    float r = uShadowTexel * 1.7;\n' : '')
+    + `    float s  = step(pc.z - bias, texture2D(uShadowMap, pc.xy + jo).r);\n`
+    + (extra ? extra + '\n' : '')
+    + `    return mix(1.0, s * ${(1 / n).toFixed(6)}, fade);\n  }\n`;
+}
+
+const SHADOW_HEAD = /* glsl */`
   uniform sampler2D uShadowMap;
   uniform mat4  uLightMat;
   uniform float uShadowTexel;
@@ -132,15 +163,10 @@ export const SHADOW_GLSL = /* glsl */`
     float j0 = shadowNoise(wp.xz * 2.7) - 0.5;
     float j1 = shadowNoise(wp.zx * 8.3 + 9.7) - 0.5;
     vec2 jo = vec2(j0 * 2.0 + j1 * 0.9, j1 * 1.6 - j0 * 0.7) * uWobbleUV;
-    float r = uShadowTexel * 1.7;
-    float s  = step(pc.z - bias, texture2D(uShadowMap, pc.xy + jo).r);
-    s += step(pc.z - bias, texture2D(uShadowMap, pc.xy + jo + vec2( r,  r)).r);
-    s += step(pc.z - bias, texture2D(uShadowMap, pc.xy + jo + vec2(-r,  r)).r);
-    s += step(pc.z - bias, texture2D(uShadowMap, pc.xy + jo + vec2( r, -r)).r);
-    s += step(pc.z - bias, texture2D(uShadowMap, pc.xy + jo + vec2(-r, -r)).r);
-    return mix(1.0, s * 0.2, fade);
-  }
 `;
+
+/** the five-tap sampler: the default, and what every existing caller gets */
+export const SHADOW_GLSL = shadowGLSL(5);
 
 /**
  * One orthographic depth pass along the sun.

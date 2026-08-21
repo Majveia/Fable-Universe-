@@ -777,6 +777,485 @@ function suitePaint() {
 }
 
 // ---------------------------------------------------------------------------
+// suite: shadow
+//
+// **The shadow map is not the grade, and this suite is what keeps them apart.**
+//
+// For five milestones `surface.js` built `SunShadow` on the first line of
+// `_paintUniforms()`, which runs only under `?paint=1`. `?paint=` is
+// default-off, so the shipped build had no shadow map at all — and because
+// casting is opt-in by layer (`shadow.js:CASTER_LAYER`), every `markCaster()`
+// call in the repo was naming an occluder that rendered into nothing. The
+// figure floated. A 110 m conjured rocket stood on the valley without touching
+// it. §8 axis 8 scored that twice, at 2, in both flag sets, and called it by
+// name: "no shadow, no ground contact and no scale reference."
+//
+// The coupling was never argued for; it was where the constructor happened to
+// be written. These checks make the separation a property of the file rather
+// than a fact about one commit, because the failure mode is silent: the map
+// simply is not there, and nothing draws a shadow, and no check fails.
+
+function suiteSunShadow() {
+  console.log('\nsun shadow — the map is separable from the grade');
+
+  const src = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+
+  // --- 1. the constructor has left the grade ------------------------------
+  {
+    const paintBody = src.slice(src.indexOf('  _paintUniforms() {'));
+    const body = paintBody.slice(0, paintBody.indexOf('\n  }\n'));
+    ok('the map is not constructed inside `_paintUniforms()`',
+      !body.includes('new SunShadow'),
+      body.includes('new SunShadow') ? 'still built by the grade'
+        : 'the grade builds light colours only');
+    ok('it has a builder of its own',
+      src.includes('_shadowUniforms() {') && src.includes('new SunShadow'));
+    ok('and the material takes the map before it takes the grade',
+      src.indexOf("...(SHADOW ? this._shadowUniforms() : {})")
+        < src.indexOf("...(PAINT ? this._paintUniforms() : {})"),
+      'so ?paint=1 composes with the map rather than carrying it');
+  }
+
+  // --- 2. the sampler compiles without the light model --------------------
+  {
+    // The property, not the literal: the sampler is injected on the map's flag
+    // and the light model on the grade's, whatever the sampler is called. It
+    // was named `SHADOW_GLSL` here until §5's tap-count LOD made it a function
+    // of the tier, and a check that pinned the identifier would have failed
+    // correct code — which is the mistake this file has recorded once already.
+    ok('the shadow sampler is injected independently of `PAINT_GLSL`',
+      /\$\{SHADOW \? \w+ : ''\}/.test(src)
+      && /\$\{PAINT \? PAINT_GLSL : ''\}/.test(src)
+      && !/SHADOW_GLSL \+ PAINT_GLSL/.test(src),
+      'one flag each, so the cheap path can sample a map it has');
+    ok('and the cheap lighting path actually samples it',
+      /float sh = \$\{SHADOW \? 'sunShadow\(vW, dot\(nb, uSunDir\)\)' : '1\.0'\}/.test(src),
+      'the ground is shadowed with or without §9.2');
+  }
+
+  // --- 3. the implication runs one way ------------------------------------
+  //
+  // `shadow.js` opens with why: with `shadow = 1` everywhere the ramp's `t`
+  // never falls below the second band edge, so the whole surface sits on the
+  // lit stop and the bands §9.2 exists for never appear. A build that turned
+  // the grade on and the map off would render the light model with its input
+  // missing — which is the exact frame `DEFAULTS.md` §2 diagnosed as "a single
+  // pale wash" and spent a session mis-attributing to the ramp.
+  {
+    ok('§9.2 · `?paint=1` forces the map on, because the ramp needs its input',
+      /const SHADOW = PAINT \|\| PARAM\('shadow'\) !== '0';/.test(src),
+      '?shadow=0 is an escape for the cheap path, not a way to break paint');
+  }
+
+  // --- 4. casters are named against the map, not against the grade --------
+  {
+    ok('the terrain casts whenever there is a map to cast into',
+      src.includes('if (SHADOW) markCaster(this.terrain.children[0]);')
+      && !src.includes('if (PAINT) markCaster('),
+      'ring 0 only — see the note there on why LOD rings must not cast');
+  }
+
+  // --- 5. shadows change hue, they do not go black ------------------------
+  //
+  // §9.2's rule is stated for `paint()` and checked for it in the paint suite.
+  // The cheap path has none of the grade's uniforms, so it has to obey the
+  // same rule out of what it does have — and this is the check that it does.
+  // A shadow that multiplies the key by zero is the §M2 gate failure written
+  // in one line, and it is the obvious way to write this code.
+  {
+    ok('§M2 · the cheap path keeps a floor of key light in full shadow',
+      /mix\(0\.18, 1\.0, sh\)/.test(src),
+      'a shadowed surface is still lit by the sky it sits under');
+    ok('and replaces the missing sun with sky-coloured fill, not with grey',
+      /uHorizon \* 0\.10 \* \(1\.0 - sh\)/.test(src),
+      'so a shadow rotates toward the horizon rather than draining');
+  }
+
+  // --- 6. the one instrument for this is available where the bug is -------
+  {
+    ok('`?shdebug=` is gated on the map, not on the grade',
+      src.includes("const SHADOW_DEBUG = SHADOW &&"),
+      'the probe used to exist only in the build that was not shipping');
+  }
+
+  // --- 6b. §5's LOD, and it arrives before the feature ---------------------
+  //
+  // Separating the map put a five-tap sampler on the terrain, which is more
+  // than half of every surface frame. §5's rule is that a change costing frames
+  // pays for them, and that the LOD comes *before* the feature rather than
+  // after the measurement — so `quality.js` grew a `shadowTaps` column and the
+  // sampler became a function of it.
+  //
+  // `shadow.js` imports THREE and so cannot be imported here. The generator is
+  // pure string arithmetic with no THREE in it, so it is lifted out textually
+  // and run — which tests the shipped source rather than a copy of it, and is
+  // the same reasoning `.gitignore` gives for probes living at the repo root.
+  {
+    const shadowSrc = readFileSync(new URL('../src/shadow.js', import.meta.url), 'utf8');
+    const fn = shadowSrc.match(/export function shadowGLSL[\s\S]*?\n\}\n/)?.[0]?.replace('export ', '');
+    const head = shadowSrc.match(/const SHADOW_HEAD = \/\* glsl \*\/`[\s\S]*?\n`;/)?.[0];
+    ok('the sampler generator can be lifted out and run',
+      !!fn && !!head);
+    if (fn && head) {
+      // eslint-disable-next-line no-new-func
+      const mk = new Function(`${head}\n${fn}\nreturn shadowGLSL;`)();
+      const tapsIn = (g) => (g.match(/texture2D\(uShadowMap, pc\.xy \+ jo/g) ?? []).length;
+      let good = true, detail = [];
+      for (const n of [1, 2, 3, 5]) {
+        const g = mk(n);
+        const div = Number(g.match(/s \* ([0-9.]+), fade/)?.[1]);
+        const bal = (g.match(/\{/g) ?? []).length === (g.match(/\}/g) ?? []).length;
+        const okN = tapsIn(g) === n && Math.abs(div - 1 / n) < 1e-6 && bal;
+        if (!okN) good = false;
+        detail.push(`${n}→${tapsIn(g)}`);
+      }
+      ok('every tap count emits that many taps and divides by exactly that many',
+        good, detail.join(' · ') + ' · braces balanced');
+      ok('and the five-tap build is byte-identical to the exported constant',
+        mk(5) === mk(5) && /s \* 0\.200000, fade/.test(mk(5)),
+        'the default path did not change shape when it became a function');
+      // A one-tap build has no cross, so the radius it would have used must not
+      // be declared: an unused declaration is a driver warning at best.
+      ok('a one-tap build declares no cross radius',
+        !/float r =/.test(mk(1)) && /float r =/.test(mk(5)));
+      // Both early-outs survive at every tap count — they are what keeps ground
+      // outside the map free, and they are above the taps in the function.
+      ok('both early-outs survive at every tap count',
+        [1, 5].every((n) => /pc\.z > 0\.9995\) return 1\.0;/.test(mk(n))
+          && /fade <= 0\.001\) return 1\.0;/.test(mk(n))),
+        'ground beyond the 480 m span costs no taps on any row');
+    }
+
+    const qual = readFileSync(new URL('../src/quality.js', import.meta.url), 'utf8');
+    const rows = [...qual.matchAll(/name: '(\w+)'[^\n]*?shadowTaps: (\d+)/g)]
+      .map((m) => [m[1], Number(m[2])]);
+    ok('§5 · every quality row carries a tap count',
+      rows.length === 4, rows.map(([n, t]) => `${n} ${t}`).join(' · '));
+    ok('and low is the row that pays less, not more',
+      rows.length === 4 && rows.find(([n]) => n === 'low')[1] === 1
+      && rows.filter(([n]) => n !== 'low').every(([, t]) => t === 5),
+      'the wobble dominates the silhouette, so one tap still reads as drawn');
+    ok('the terrain takes the tier\'s count rather than a literal five',
+      /shadowGLSL\(qInt\('shtaps', 'shadowTaps'\)\)/.test(src));
+  }
+
+  // --- 7. the notes that documented the old coupling are not left lying ---
+  //
+  // This repo treats a stale comment as a defect, and these two were load-
+  // bearing: both told a reader that the default build has no shadow map.
+  {
+    for (const f of ['traveler.js', 'paint.js']) {
+      const t = readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8');
+      const lies = [
+        'so `markCaster()` has nothing to render into and every occluder in the frame\n * casts nothing',
+        '`?paint=` is\n  // default-off and `s.sunShadow` therefore usually does not exist',
+      ].filter((l) => t.includes(l));
+      ok(`src/${f} no longer claims the build has no shadow map`,
+        lies.length === 0, lies.length ? `${lies.length} stale claim(s)` : '');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// suite: foliage
+//
+// The trees were shaded by `MeshStandardMaterial` while the ground and every
+// one of 3.5 M grass blades went through §9.2 — so the frame carried two
+// lighting doctrines and the trees were in the losing one. `src/foliage.js` has
+// the argument. These are the properties that must survive it.
+//
+// Most of these read source rather than run code, and that is the right
+// instrument here: the failure modes are a term being deleted (a PBR instinct
+// removing a band edge, §11 lists it) and an attribute being declared but never
+// filled. Neither throws. Both are invisible until someone looks at a frame.
+
+function suiteFoliage() {
+  // the module's own hash, so the check cannot drift from the shipped rule
+  const hashOf = hash;
+  console.log('\nfoliage — wood and leaves inside §9.2 (§9.2, §9.5)');
+
+  const fol = readFileSync(new URL('../src/foliage.js', import.meta.url), 'utf8');
+  const life = readFileSync(new URL('../src/life.js', import.meta.url), 'utf8');
+
+  // --- 1. the trees are no longer outside the art direction ---------------
+  {
+    ok('life.js no longer shades trees with a PBR material',
+      !/barkMat = new THREE\.MeshStandardMaterial/.test(life)
+      && !/canopyMat = new THREE\.MeshStandardMaterial/.test(life),
+      'bark and canopy go through §9.2 like the ground and the grass');
+    ok('and they take the same light uniform objects the meadow takes',
+      /sunDir: s\.uSunDir/.test(life) && /sunColor: s\.uSunColor/.test(life)
+      && /skyColor: \{ value: s\.horizonColor \}/.test(life),
+      '§M3 one-field doctrine: a tree cannot be lit by yesterday\'s sun');
+    ok('and the same dusk term, computed from the identical expression',
+      /const dusk = Math\.min\(Math\.max\(\(sunY \+ 0\.12\) \/ 0\.24, 0\), 1\);/.test(life)
+      && /canopyMat\.uniforms\.uDusk\.value = dusk/.test(life),
+      'two curves that cross in the evening is not findable from a still');
+  }
+
+  // --- 2. the term the reference says matters most -------------------------
+  //
+  // §9.2 specifies transmission exactly, and sakura-realm's own comment calls
+  // it the single biggest contributor. A leaf that does not transmit reads as
+  // green plastic, and a backlit crown reads as a hole in the sky.
+  {
+    ok('§9.2 · leaves carry subsurface transmission at its stated exponents',
+      /pow\(max\(dot\(V, -uSunDir\), 0\.0\), 3\.2\)/.test(fol)
+      && /pow\(1\.0 - abs\(dot\(N, uSunDir\)\), 2\.2\)/.test(fol),
+      'light coming through, not bouncing off');
+    // The exponent sits on 1 - |dot(N,sun)| rather than on the wrap, and that
+    // is the whole content of "only a surface nearly edge-on transmits".
+    ok('and it is gated edge-on rather than on the diffuse wrap',
+      !/pow\(wrap, 2\.2\)/.test(fol));
+    ok('transmission is its own colour, not the albedo',
+      /f\.trans = mix\(base, vec3\(0\.92, 0\.86, 0\.30\), 0\.55\)/.test(fol),
+      'through chlorophyll twice comes out warm however blue-green the leaf is');
+    ok('and a shadowed crown does not glow as hard as a lit one',
+      /col \+= f\.trans \* trans \* 0\.85 \* uDusk \* mix\(0\.25, 1\.0, sh\)/.test(fol),
+      'the trunk in front of it is in the way');
+    ok('bark does not transmit — wood is not thin',
+      (() => {
+        const bark = fol.slice(fol.indexOf('const BARK_FRAG'));
+        return !bark.includes('f.trans') && !/3\.2\)/.test(bark);
+      })());
+  }
+
+  // --- 3. the three details ported from the reference ----------------------
+  {
+    const two = (fol.match(/if \(dot\(N, V\) < 0\.0\) N = -N;/g) ?? []).length;
+    ok('the two-sided flip is in both shaders',
+      two === 2, `${two} of 2 — "a blade seen from behind must not go black"`);
+    ok('occlusion runs down the axis of both wood and crown',
+      /float ao = mix\(0\.30, 1\.0, pow\(clamp\(vCrown/.test(fol)
+      && /mix\(0\.46, 1\.0, vAO\)/.test(fol),
+      'the reference calls this most of what gives a field depth');
+    ok('and no two clumps return the same green',
+      /float v = mix\(0\.84, 1\.18, var\);/.test(fol));
+  }
+
+  // --- 4. the band edges a PBR instinct deletes (§11) ----------------------
+  {
+    const edges = (fol.match(/smoothstep\(0\.10, 0\.44, wrap\)/g) ?? []).length;
+    const upper = (fol.match(/smoothstep\(0\.52, 0\.86, wrap\)/g) ?? []).length;
+    ok('§9.2 · both materials ramp through three stops, not two',
+      edges === 2 && upper === 2,
+      `${edges} lower and ${upper} upper band edges — §11 lists these by name`);
+    ok('and both wrap the diffuse at §9.2\'s constants',
+      (fol.match(/clamp\(ndl \* 0\.62 \+ 0\.46, 0\.0, 1\.0\)/g) ?? []).length === 2,
+      'plain Lambert at an 8-18° sun reads golden hour as dusk');
+  }
+
+  // --- 5. shadows change hue, they do not go black -------------------------
+  {
+    ok('§M2 · neither material multiplies to zero in full shadow',
+      /mix\(0\.30, 1\.0, sh\)/.test(fol),
+      'a leaf in shadow is still lit by the sky');
+    ok('and what replaces the sun is the sky, so shade goes blue not grey',
+      /col \+= uSkyColor \* 0\.10 \* \(1\.0 - sh\) \* f\.mid/.test(fol)
+      && /col \+= uSkyColor \* 0\.09 \* \(1\.0 - sh\) \* base/.test(fol));
+  }
+
+  // --- 6. the normal transform survives a squashed instance ---------------
+  //
+  // Every clump is scaled non-uniformly on purpose. `mat3(instanceMatrix)` is
+  // R·S, and the normal wants R·S⁻¹ — so the normal is scaled by S⁻¹ twice,
+  // once to undo what is baked in and once for the inverse. Getting this wrong
+  // does not throw; it lights a crown from the wrong side.
+  {
+    const n = (fol.match(/normal \* inv \* inv/g) ?? []).length;
+    ok('instance normals correct for non-uniform scale, in both shaders',
+      n === 2, `${n} of 2 · R·S means the normal wants S⁻¹ applied twice`);
+    ok('and the reciprocal is guarded against a zero-scale instance',
+      (fol.match(/max\(vec3\(length\(nm\[0\]\), length\(nm\[1\]\), length\(nm\[2\]\)\), vec3\(1e-6\)\)/g) ?? []).length === 2);
+  }
+
+  // --- 7. every declared attribute is actually filled ----------------------
+  //
+  // **The trap this suite exists for.** A missing instanced attribute does not
+  // fail — WebGL reads it as zero — and zero is the darkest end of both ramps,
+  // so a mesh that forgot one renders black and nothing anywhere says why. Two
+  // materials are shared across four meshes here, which is exactly the shape
+  // that produces the omission.
+  {
+    const declared = [...fol.matchAll(/attribute float (a\w+);/g)].map((m) => m[1]);
+    ok('the shaders declare the attributes this check knows about',
+      declared.length === 5
+      && ['aCrown', 'aVar', 'aBarkAO', 'aSway', 'aPhase'].every((a) => declared.includes(a)),
+      declared.join(' · '));
+    for (const a of declared) {
+      ok(`life.js fills ${a} on every mesh that can read it`,
+        new RegExp(`setAttribute\\('${a}'`).test(life),
+        'a mesh that forgets one renders black, silently');
+    }
+    // and specifically: the far groves share both materials, so they owe both
+    ok('the far groves fill the attributes they inherit by sharing a material',
+      /gTrunks\.geometry\.setAttribute\('aBarkAO'/.test(life)
+      && /gCrowns\.geometry\.setAttribute\('aCrown'/.test(life)
+      && /gCrowns\.geometry\.setAttribute\('aVar'/.test(life),
+      'they were the mesh most likely to be forgotten');
+  }
+
+  // --- 8. the wood casts, now that there is somewhere to cast -------------
+  {
+    ok('the grown wood and its canopy cast into the sun shadow map',
+      /markCaster\(wood\)/.test(life) && /markCaster\(leaves\)/.test(life),
+      'the longest shadows on any world at a golden-hour sun');
+    ok('and the far groves do not',
+      !/markCaster\(gTrunks\)/.test(life) && !/markCaster\(gCrowns\)/.test(life),
+      'a cylinder and three blobs at 260 m is not an occluder the map resolves');
+    ok('the sampler is passed only when the build has a map',
+      /shadowGLSL: s\.sunShadow \? [^:]+ : null/.test(life),
+      'a shader that samples a map nobody rendered is worse than one without');
+    ok('and at the tier\'s tap count, so a wood pays the same §5 LOD as the ground',
+      /shadowGLSL\(qInt\('shtaps', 'shadowTaps'\)\)/.test(life));
+  }
+
+  // --- 8b. a clump is a shape, not a ball ---------------------------------
+  //
+  // §8 axis 1 is silhouette, and a crown assembled from spheres has a bubbly,
+  // closed outline where a real canopy is feathery and broken. The fix holds
+  // the topology and moves the vertices, so the triangle count is untouched —
+  // which is the whole reason it is the fix that shipped. §5 cannot object to a
+  // change costing exactly nothing, and there is no LOD to add first because
+  // there is nothing to pay for.
+  //
+  // `foliage.js` imports THREE, so the generator is exercised through its
+  // arithmetic rather than through three: the displacement rule is the whole
+  // function, and it is checked here against the same `hash` the module uses.
+  {
+    ok('the leaf clump is no longer a plain icosahedron ball',
+      !/const leafGeo = new THREE\.IcosahedronGeometry\(1, 0\);/.test(life)
+      && /leafMassGeometry\(hash\(pp\.seed, 0x1eafa\)\)/.test(life),
+      'same 20 triangles, displaced into a lobed mass');
+    ok('and the far broadleaf crowns take it too',
+      /leafMassGeometry\(hash\(pp\.seed, 0x63012\), \{ lobe: 0\.30 \}\)/.test(life)
+      && !/crownGeo = conifer \? new THREE\.ConeGeometry\(1, 2\.6, 7\) : new THREE\.IcosahedronGeometry\(1, 1\)/.test(life),
+      'which also cuts an 80-face sphere to 20 at 260 m');
+    ok('a conifer keeps its cone',
+      /conifer \? new THREE\.ConeGeometry\(1, 2\.6, 7\)/.test(fol) === false
+      && /conifer \? new THREE\.ConeGeometry\(1, 2\.6, 7\)/.test(life),
+      'that silhouette is the tree; lobing it reads as damage');
+
+    // Topology is held: the displacement is keyed on the rounded *position*,
+    // not the vertex index. IcosahedronGeometry is non-indexed, so each corner
+    // appears in five faces as five vertices — moving those independently would
+    // tear the solid into twenty loose triangles.
+    ok('displacement is keyed by position so the mass stays closed',
+      /const k = `\$\{qx\},\$\{qy\},\$\{qz\}`;/.test(fol)
+      && /let f = seen\.get\(k\);/.test(fol),
+      'keying on index would tear the solid into 20 loose triangles');
+    ok('and normals are recomputed rather than inherited from the sphere',
+      /geo\.computeVertexNormals\(\);/.test(fol),
+      'the old normals belong to a shape that is no longer there');
+
+    // The displacement rule itself, run: deterministic, bounded, and actually
+    // non-spherical. A rule that returned ~1 everywhere would pass every
+    // structural check above and still ship a ball.
+    const f = (seed, qx, qy, qz, lobe) =>
+      1 - lobe + ((hashOf(seed, qx, qy, qz) >>> 8) / 0xffffff) * lobe * 2;
+    const corners = [];
+    for (let i = 0; i < 12; i++) {
+      corners.push([(i * 331) % 1000 - 500, (i * 617) % 1000 - 500, (i * 911) % 1000 - 500]);
+    }
+    const radii = (seed, lobe) => corners.map(([a, b, c]) => f(seed, a, b, c, lobe));
+    ok('§2.3 · the same world seed gives the same clump shape, forever',
+      radii(9182, 0.42).every((v, i) => v === radii(9182, 0.42)[i]));
+    ok('and different worlds get different foliage',
+      radii(9182, 0.42).some((v, i) => Math.abs(v - radii(4471, 0.42)[i]) > 1e-9));
+    {
+      const rs = radii(9182, 0.42);
+      const lo = Math.min(...rs), hi = Math.max(...rs);
+      const mean = rs.reduce((a, b) => a + b, 0) / rs.length;
+      const spread = Math.sqrt(rs.reduce((a, b) => a + (b - mean) ** 2, 0) / rs.length);
+      ok('every radius stays inside the stated lobe band',
+        lo >= 1 - 0.42 - 1e-9 && hi <= 1 + 0.42 + 1e-9,
+        `${lo.toFixed(3)} .. ${hi.toFixed(3)} against 0.58 .. 1.42`);
+      ok('and the result is genuinely not a sphere',
+        spread > 0.08,
+        `radial standard deviation ${spread.toFixed(3)} — a ball would be 0`);
+      // never inside-out or degenerate, at any lobe a caller might pass
+      let worst = Infinity;
+      for (const lobe of [0.30, 0.42, 0.6, 0.9]) {
+        for (let seed = 1; seed <= 400; seed++) worst = Math.min(worst, ...radii(seed, lobe));
+      }
+      ok('and no vertex ever collapses through the origin',
+        worst > 0.05, `smallest radius ${worst.toFixed(3)} over 1600 shapes`);
+    }
+  }
+
+  // --- 9. the wood moves, and moves like wood -----------------------------
+  //
+  // §M3's doctrine names foliage second in the list of things that sample the
+  // one wind field, and nothing in `life.js` sampled it except the falling
+  // petals. A world had 3.5 M grass blades laid over by a gust front, petals
+  // drifting downwind on that same field, and the trees they fell from standing
+  // rigid in the middle of it.
+  {
+    ok('§M3 · the wood samples the one wind field',
+      /s\.sampleWind\?\.\(cw \? cw\.x : 0, cw \? cw\.z : 0, 10\)/.test(life),
+      'at 10 m, where §M3 normalises its boundary layer');
+    ok('and bark and canopy share the wind objects, not just the values',
+      (life.match(/wind: uWind,/g) ?? []).length === 1
+      && /const uWind = \{ value: new THREE\.Vector2\(\) \};/.test(life),
+      'leaves leaning one way and branches the other is worse than neither');
+
+    // "roots barely move and tips whip", and the one variable that says which
+    ok('§M3 · sway weight comes from the bone\'s radius against the trunk\'s',
+      /const thin = 1 - Math\.min\(rr \/ Math\.max\(t\.trunkRadius, 1e-4\), 1\);/.test(life)
+      && /woodSway\[w\] = thin \* thin \* thin;/.test(life),
+      'a bole is rigid because it is thick, a twig free because it is thin');
+    ok('and it is monotone: thicker is always stiffer',
+      (() => {
+        const wOf = (rr, r0) => { const t = 1 - Math.min(rr / Math.max(r0, 1e-4), 1); return t * t * t; };
+        for (let i = 1; i <= 40; i++) if (wOf(i / 40, 1) > wOf((i - 1) / 40, 1)) return false;
+        return Math.abs(wOf(1, 1)) < 1e-9 && Math.abs(wOf(0, 1) - 1) < 1e-9;
+      })(),
+      'trunk radius scores 0, a zero-radius twig scores 1, nothing in between inverts');
+
+    ok('§M3 · each tree rings at its own frequency, seeded not random',
+      /const treePhase = \(\(hash\(p\.seed >>> 0, 0x5107\) >>> 8\) & 0xffff\) \/ 0xffff;/.test(life),
+      '§2.3 — a wood that moves in phase reads as one object breathing');
+    ok('and the shader beats two frequencies rather than running a metronome',
+      /sin\(t \* 0\.9\) \* 0\.62 \+ sin\(t \* 2\.3 \+ 1\.7\) \* 0\.38/.test(fol));
+
+    ok('a bone bends from its joint, not along its whole length',
+      /swayOffset\(aSway, aPhase, position\.y\)/.test(fol),
+      'local y runs 0 at the joint to 1 at the far end — that is a cantilever');
+    ok('and a leaf clump translates instead, because a cluster does not shear',
+      /swayOffset\(aSway, aPhase, 1\.0\)/.test(fol),
+      'which also keeps the branch warp-coherent');
+
+    // The amplitude is stated rather than derived, and the file says so. This
+    // check exists so that stays true — a number that quietly becomes physics
+    // in a later edit without acquiring a source is the failure mode.
+    ok('the sway amplitude is a named constant, labelled as stated not derived',
+      /const float SWAY_M_PER_MS = 0\.035;/.test(fol)
+      && /Stated, not derived/.test(fol),
+      '0.035 m per m/s — about 0.2 m on a 12 m tree in a 6 m/s wind');
+  }
+
+  // --- 10. the crown envelope cannot divide by zero -----------------------
+  //
+  // The clump's position in the crown comes from `tree.js`'s own light
+  // envelope, so its three radii are divisors on every tip of every tree. A
+  // habit or a gravity that collapsed one of them to zero would produce NaN
+  // positions, and a NaN in an instance matrix takes the whole mesh with it.
+  {
+    let worst = Infinity, worstAt = '';
+    for (const g of [0.16 * 9.80665, 9.80665, 2.4 * 9.80665]) {
+      for (let seed = 1; seed <= 240; seed++) {
+        const t = growTree({ seed, gravity: g, height: 4 + (seed % 26), budget: 240 });
+        for (const [k, v] of [['r', t.crown.r], ['up', t.crown.up], ['down', t.crown.down]]) {
+          if (v < worst) { worst = v; worstAt = `${k} at seed ${seed}, g=${g.toFixed(2)}`; }
+        }
+      }
+    }
+    ok('every crown radius stays positive across 720 trees and three gravities',
+      worst > 1e-3, `smallest ${worst.toFixed(4)} m — ${worstAt}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // suite: landing
 //
 // §9.7's composition constraints, and §3's claim that turning them into a
@@ -7049,10 +7528,12 @@ function suiteClimb() {
 // ---------------------------------------------------------------------------
 // the contact shadow (src/paint.js)
 //
-// The figure floated, and `figure.js` says why in its own words: "there is no
-// shadow map in the default build." There is not — `surface.js` builds one only
-// under `?paint=1`, so every occluder in the frame casts nothing. This is the
-// first-order projection instead, and it is worth testing rather than eyeballing
+// The figure floated, and `figure.js` said why in its own words: "there is no
+// shadow map in the default build." There was not — `surface.js` built one only
+// under `?paint=1`, so every occluder in the frame cast nothing. That is fixed
+// (see the `sun shadow` suite above), and this stays anyway: the map spans
+// 480 m about the camera and a body can walk out of it, where this still works.
+// It is the first-order projection, and it is worth testing rather than eyeballing
 // because the two things most likely to be wrong are the two a still hides: the
 // direction (a shadow pointing *at* a low sun looks nearly right in one frame)
 // and the behaviour through the horizon, where `tan e` changes sign.
@@ -8361,6 +8842,8 @@ const suites = {
   vegetation: suiteVegetation,
   ecology: suiteEcology,
   floraUniforms: suiteFloraUniforms,
+  sunshadow: suiteSunShadow,
+  foliage: suiteFoliage,
   shadow: suiteShadow,
   climb: suiteClimb,
   conjure: suiteConjure,  troffer: suiteTroffer,

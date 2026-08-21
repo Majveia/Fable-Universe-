@@ -59,7 +59,7 @@ import {
 import { GrassRing, WindField } from './flora.js';
 import { PART_RADIUS, RINGS } from './meadow.js';
 import { HOVER } from './vehicle.js';
-import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
+import { SunShadow, markCaster, shadowGLSL } from './shadow.js';
 import { Q, TIER, qArr, qInt } from './quality.js';
 
 const PARAM = (k) => {
@@ -128,6 +128,51 @@ const M2 = PARAM('m2') !== '0';
  * the alternative was flipping none, which is where this started.
  */
 const PAINT = PARAM('paint') === '1';
+
+/**
+ * The sun's shadow map — and it is **not** the grade.
+ *
+ * It was, and that was the defect. `SunShadow` was constructed inside
+ * `_paintUniforms()`, which runs only under `?paint=1`, so a build without the
+ * grade had no shadow map at all — and `markCaster()` is opt-in by layer, so
+ * every one of the nine call sites in this repo was naming an occluder that
+ * rendered into nothing. The figure floated. The conjured craft's 110 m tower
+ * stood on the valley without touching it. The trees, the settlement masses and
+ * the terrain's own ridges cast nothing, on every world, in the shipped build.
+ *
+ * `docs/plans/DEFAULTS.md` §5 reached this conclusion and stated the fix in the
+ * form it is taken here: *"an argument for separating the shadow map from the
+ * grade rather than for flipping them together."* They are separable because
+ * they are different claims. §9.2's ramp is an art direction that a capture has
+ * to settle. A shadow is a fact about geometry and a light — §8 axis 8 scores
+ * an object with no ground contact as dishonest, and it is right to.
+ *
+ * So the map ships and the grade stays where its evidence puts it.
+ *
+ * The implication runs one way only: `paint()` **requires** the map. `shadow.js`
+ * opens with why — with `shadow = 1` everywhere the ramp's `t` never falls below
+ * the second band edge, the whole surface sits on the lit stop, and the bands
+ * the model exists for never appear. So `?shadow=0` is an escape hatch for the
+ * cheap path (§2.4 — saved URLs keep resolving), and `?paint=1` overrides it
+ * rather than quietly rendering a light model with its input missing.
+ */
+const SHADOW = PAINT || PARAM('shadow') !== '0';
+
+/**
+ * The sampler, at this tier's tap count — §5's LOD, arriving before the feature
+ * rather than after the measurement.
+ *
+ * Separating the map from the grade put a five-tap sampler on the terrain,
+ * which is more than half of every surface frame. That is a real fill cost and
+ * the low row is the least able to pay it, so `quality.js` carries a
+ * `shadowTaps` column: one on low, five everywhere else. The argument for one
+ * being enough is `shadow.js`'s own — the wobble dominates the silhouette, so
+ * what the eye reads is the noise offset rather than the filter width.
+ *
+ * `?shtaps=` overrides it, like every other knob in that table, so the two can
+ * be compared on one machine without editing the row.
+ */
+const SHADOW_TAPS_GLSL = shadowGLSL(qInt('shtaps', 'shadowTaps'));
 
 /**
  * §9.3's aerial perspective, act 2. Separable both ways for the same reason
@@ -227,8 +272,16 @@ const SKY = PARAM('sky') !== '0';
  */
 const NOCLIP = PARAM('noclip') === '1';
 
-/** `?shdebug=1` — output the shadow term itself, so it can be looked at */
-const SHADOW_DEBUG = PAINT && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');
+/**
+ * `?shdebug=1` — output the shadow term itself, so it can be looked at.
+ * `?shdebug=2` — `shadowProbe`: r = edge fade, g = projected depth, b = what
+ * the map holds there, so one image says which early-out is firing.
+ *
+ * It was gated on `PAINT`, which made the one instrument for diagnosing the
+ * shadow map available only in the build that was not shipping. Now that the
+ * map ships on the cheap path too, so does the probe.
+ */
+const SHADOW_DEBUG = SHADOW && (PARAM('shdebug') === '1' || PARAM('shdebug') === '2');
 
 /**
  * `?solve=1` — choose the opening frame with the §9.7 composition solver
@@ -368,7 +421,8 @@ const TERRAIN_FRAG = /* glsl */`
   varying vec3 vW;
   varying vec3 vN;
   ${NOISE_GLSL}
-  ${PAINT ? SHADOW_GLSL + PAINT_GLSL : ''}
+  ${SHADOW ? SHADOW_TAPS_GLSL : ''}
+  ${PAINT ? PAINT_GLSL : ''}
   ${AERIAL ? AERIAL_GLSL : ''}
   ${MAT ? MATERIAL_GLSL : ''}
 
@@ -475,7 +529,23 @@ const TERRAIN_FRAG = /* glsl */`
     ` : /* glsl */`
     // light: wrapped diffuse so dusk rakes long and soft, like film
     float diff = clamp((dot(nb, uSunDir) + 0.3) / 1.3, 0.0, 1.0);
-    vec3 lit = col * (uSunColor * diff * diff * 1.35 + vec3(0.012, 0.014, 0.02) + uHorizon * 0.26 * dusk);
+    // The cheap path casts too. The map is no longer the grade's to own, so
+    // the ground under a ridge, a tower or a walker is dark here as well as
+    // under ?paint=1 — which is most of what §8 axis 8 is asking for when it
+    // scores an object with no ground contact.
+    float sh = ${SHADOW ? 'sunShadow(vW, dot(nb, uSunDir))' : '1.0'};
+    // §9.2's rule holds even without §9.2: **shadows change hue, they do not go
+    // black.** Two terms carry it, and neither needs the grade's uniforms. The
+    // key keeps 18% of itself in full shadow, because a shadowed surface is
+    // still lit by the sky it sits under; and the fill that replaces the sun is
+    // uHorizon — the actual colour of that sky. So a shadow here rotates
+    // toward the horizon rather than draining toward grey, and §M2's gate
+    // clause about an achromatic-dark surface is met by construction.
+    vec3 key  = uSunColor * diff * diff * 1.35 * mix(0.18, 1.0, sh);
+    vec3 fill = vec3(0.012, 0.014, 0.02) + uHorizon * 0.26 * dusk
+              + uHorizon * 0.10 * (1.0 - sh);
+    vec3 lit = col * (key + fill);
+    ${SHADOW_DEBUG ? (PARAM('shdebug') === '2' ? 'lit = shadowProbe(vW);' : 'lit = vec3(sh);') : ''}
     `}
 
     // wet earth holds a broad sheen of the sky and the sun
@@ -971,8 +1041,25 @@ export class SurfaceScale {
    * spawn, because the beam reddens with the air it crosses — the same reason
    * the horizon is warm.
    */
-  _paintUniforms() {
+  /**
+   * The shadow map, built for any build that wants one.
+   *
+   * This used to be the first line of `_paintUniforms()`, which made the map a
+   * possession of the grade and is why nothing in the shipped frame cast a
+   * shadow. It is its own thing now, and its uniforms go into the material
+   * ahead of the grade's so that `?paint=1` composes with it rather than
+   * carrying it.
+   *
+   * `shadowRes` has been in every row of §5's quality table since the table was
+   * written — 1024 low, 1536 mobile, 2048 desktop, 2560 ultra. The knob was
+   * always there for a map that only ever existed under a flag nobody set.
+   */
+  _shadowUniforms() {
     this.sunShadow = new SunShadow({ res: qInt('shres', 'shadowRes') });
+    return { ...this.sunShadow.uniforms };
+  }
+
+  _paintUniforms() {
     const T = this.ctx.system?.temp ?? 5778;
     const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
     const L = lightFor(T, Math.max(elev, 0.5));
@@ -987,7 +1074,6 @@ export class SurfaceScale {
       uPaintAmbGnd: this._paintLight.uniforms.gnd,
       uPaintShadowTint: this._paintLight.uniforms.sh,
       uPaintExposure: this._paintLight.uniforms.exp,
-      ...this.sunShadow.uniforms,
     };
   }
 
@@ -1380,6 +1466,7 @@ export class SurfaceScale {
     this.terrainMat = new THREE.ShaderMaterial({
       uniforms: {
         uSunDir: this.uSunDir, uSunColor: this.uSunColor,
+        ...(SHADOW ? this._shadowUniforms() : {}),
         ...(PAINT ? this._paintUniforms() : {}),
         ...(AERIAL ? this._aerialUniforms() : {}),
         ...(MAT ? this._materialUniforms() : {}),
@@ -1458,7 +1545,7 @@ export class SurfaceScale {
     // covers the whole map on its own. This is the reference's `uCullR` in a
     // different shape: an occluder that is not resolved at the map's scale is
     // not an occluder.
-    if (PAINT) markCaster(this.terrain.children[0]);
+    if (SHADOW) markCaster(this.terrain.children[0]);
 
     if (RIDGE) this._buildHorizon(rings);
     // §M3's meadow, and the question nobody was asking it: **can anything grow
