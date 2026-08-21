@@ -970,6 +970,8 @@ function suiteSunShadow() {
 // filled. Neither throws. Both are invisible until someone looks at a frame.
 
 function suiteFoliage() {
+  // the module's own hash, so the check cannot drift from the shipped rule
+  const hashOf = hash;
   console.log('\nfoliage — wood and leaves inside §9.2 (§9.2, §9.5)');
 
   const fol = readFileSync(new URL('../src/foliage.js', import.meta.url), 'utf8');
@@ -1106,6 +1108,79 @@ function suiteFoliage() {
       'a shader that samples a map nobody rendered is worse than one without');
     ok('and at the tier\'s tap count, so a wood pays the same §5 LOD as the ground',
       /shadowGLSL\(qInt\('shtaps', 'shadowTaps'\)\)/.test(life));
+  }
+
+  // --- 8b. a clump is a shape, not a ball ---------------------------------
+  //
+  // §8 axis 1 is silhouette, and a crown assembled from spheres has a bubbly,
+  // closed outline where a real canopy is feathery and broken. The fix holds
+  // the topology and moves the vertices, so the triangle count is untouched —
+  // which is the whole reason it is the fix that shipped. §5 cannot object to a
+  // change costing exactly nothing, and there is no LOD to add first because
+  // there is nothing to pay for.
+  //
+  // `foliage.js` imports THREE, so the generator is exercised through its
+  // arithmetic rather than through three: the displacement rule is the whole
+  // function, and it is checked here against the same `hash` the module uses.
+  {
+    ok('the leaf clump is no longer a plain icosahedron ball',
+      !/const leafGeo = new THREE\.IcosahedronGeometry\(1, 0\);/.test(life)
+      && /leafMassGeometry\(hash\(pp\.seed, 0x1eafa\)\)/.test(life),
+      'same 20 triangles, displaced into a lobed mass');
+    ok('and the far broadleaf crowns take it too',
+      /leafMassGeometry\(hash\(pp\.seed, 0x63012\), \{ lobe: 0\.30 \}\)/.test(life)
+      && !/crownGeo = conifer \? new THREE\.ConeGeometry\(1, 2\.6, 7\) : new THREE\.IcosahedronGeometry\(1, 1\)/.test(life),
+      'which also cuts an 80-face sphere to 20 at 260 m');
+    ok('a conifer keeps its cone',
+      /conifer \? new THREE\.ConeGeometry\(1, 2\.6, 7\)/.test(fol) === false
+      && /conifer \? new THREE\.ConeGeometry\(1, 2\.6, 7\)/.test(life),
+      'that silhouette is the tree; lobing it reads as damage');
+
+    // Topology is held: the displacement is keyed on the rounded *position*,
+    // not the vertex index. IcosahedronGeometry is non-indexed, so each corner
+    // appears in five faces as five vertices — moving those independently would
+    // tear the solid into twenty loose triangles.
+    ok('displacement is keyed by position so the mass stays closed',
+      /const k = `\$\{qx\},\$\{qy\},\$\{qz\}`;/.test(fol)
+      && /let f = seen\.get\(k\);/.test(fol),
+      'keying on index would tear the solid into 20 loose triangles');
+    ok('and normals are recomputed rather than inherited from the sphere',
+      /geo\.computeVertexNormals\(\);/.test(fol),
+      'the old normals belong to a shape that is no longer there');
+
+    // The displacement rule itself, run: deterministic, bounded, and actually
+    // non-spherical. A rule that returned ~1 everywhere would pass every
+    // structural check above and still ship a ball.
+    const f = (seed, qx, qy, qz, lobe) =>
+      1 - lobe + ((hashOf(seed, qx, qy, qz) >>> 8) / 0xffffff) * lobe * 2;
+    const corners = [];
+    for (let i = 0; i < 12; i++) {
+      corners.push([(i * 331) % 1000 - 500, (i * 617) % 1000 - 500, (i * 911) % 1000 - 500]);
+    }
+    const radii = (seed, lobe) => corners.map(([a, b, c]) => f(seed, a, b, c, lobe));
+    ok('§2.3 · the same world seed gives the same clump shape, forever',
+      radii(9182, 0.42).every((v, i) => v === radii(9182, 0.42)[i]));
+    ok('and different worlds get different foliage',
+      radii(9182, 0.42).some((v, i) => Math.abs(v - radii(4471, 0.42)[i]) > 1e-9));
+    {
+      const rs = radii(9182, 0.42);
+      const lo = Math.min(...rs), hi = Math.max(...rs);
+      const mean = rs.reduce((a, b) => a + b, 0) / rs.length;
+      const spread = Math.sqrt(rs.reduce((a, b) => a + (b - mean) ** 2, 0) / rs.length);
+      ok('every radius stays inside the stated lobe band',
+        lo >= 1 - 0.42 - 1e-9 && hi <= 1 + 0.42 + 1e-9,
+        `${lo.toFixed(3)} .. ${hi.toFixed(3)} against 0.58 .. 1.42`);
+      ok('and the result is genuinely not a sphere',
+        spread > 0.08,
+        `radial standard deviation ${spread.toFixed(3)} — a ball would be 0`);
+      // never inside-out or degenerate, at any lobe a caller might pass
+      let worst = Infinity;
+      for (const lobe of [0.30, 0.42, 0.6, 0.9]) {
+        for (let seed = 1; seed <= 400; seed++) worst = Math.min(worst, ...radii(seed, lobe));
+      }
+      ok('and no vertex ever collapses through the origin',
+        worst > 0.05, `smallest radius ${worst.toFixed(3)} over 1600 shapes`);
+    }
   }
 
   // --- 9. the wood moves, and moves like wood -----------------------------

@@ -18,7 +18,7 @@ import { airDensity } from './precip.js';
 import { coverDensity } from './scatter.js';
 import { gravityOf } from './avatar.js';
 import { qInt } from './quality.js';
-import { barkMaterial, foliageMaterial } from './foliage.js';
+import { barkMaterial, foliageMaterial, leafMassGeometry } from './foliage.js';
 import { markCaster, shadowGLSL } from './shadow.js';
 
 function bladeTexture(rng) {
@@ -408,7 +408,10 @@ export function addLife(s) {
   // ball centred above a stick. That is the whole difference between a canopy
   // and a hat: the outline of the leaves is the outline of the branching.
   if (tipsAll.length) {
-    const leafGeo = new THREE.IcosahedronGeometry(1, 0);
+    // Not a ball. Same twenty triangles, displaced into a lobed mass whose
+    // shape is this world's own — see `foliage.js:leafMassGeometry` for why the
+    // topology is held fixed and why alpha cards were not the answer.
+    const leafGeo = leafMassGeometry(hash(pp.seed, 0x1eafa));
     const ST = 6;                                  // stride: xyz, grow, crown, phase
     const nLeaf = tipsAll.length / ST;
     const leaves = new THREE.InstancedMesh(leafGeo, canopyMat, nLeaf);
@@ -420,8 +423,13 @@ export function addLife(s) {
       const grow = tipsAll[i * ST + 3];
       const cw = r.float(0.55, 1.15) * grow;
       d.position.set(tipsAll[i * ST], tipsAll[i * ST + 1], tipsAll[i * ST + 2]);
-      d.rotation.set(r.float(0, 3.1), r.float(0, 6.28), 0);
-      d.scale.set(cw, cw * r.float(0.6, 0.95), cw);
+      d.rotation.set(r.float(0, 3.1), r.float(0, 6.28), r.float(0, 6.28));
+      // Wider than the 0.60-0.95 it was, and wider across than down. Leaves
+      // array around a twig rather than balling up on it, so a clump is a
+      // flattened spray — and with the rotation now free on all three axes,
+      // one shape reads as many.
+      d.scale.set(cw * r.float(0.85, 1.30), cw * r.float(0.45, 0.90),
+        cw * r.float(0.85, 1.30));
       d.updateMatrix();
       leaves.setMatrixAt(i, d.matrix);
       leafCrown[i] = tipsAll[i * ST + 4];
@@ -631,7 +639,18 @@ export function addLife(s) {
   if (nFar > 24) {
     const gTrunks = new THREE.InstancedMesh(
       new THREE.CylinderGeometry(0.12, 0.26, 1, 5), barkMat, nFar);
-    const crownGeo = conifer ? new THREE.ConeGeometry(1, 2.6, 7) : new THREE.IcosahedronGeometry(1, 1);
+    // A conifer keeps its cone — that silhouette *is* the tree, and lobing it
+    // would read as a damaged spire rather than as foliage. A broadleaf crown
+    // takes the same lobed mass the grown trees use, at a gentler lobe because
+    // three of them overlap into one head.
+    //
+    // This is also a 4x triangle cut and it should be said plainly: the crown
+    // it replaces was `IcosahedronGeometry(1, 1)` — 80 faces — on a stand that
+    // starts at 260 m, where a whole tree is about 26 px. Eighty faces of
+    // smooth sphere at 26 px was the same defect as the sub-pixel leaf clumps
+    // this file already fixed once, in the one place nobody had looked.
+    const crownGeo = conifer ? new THREE.ConeGeometry(1, 2.6, 7)
+      : leafMassGeometry(hash(pp.seed, 0x63012), { lobe: 0.30 });
     const gCrowns = new THREE.InstancedMesh(crownGeo, canopyMat, nFar * (conifer ? 1 : 3));
     // The far stands share the grown trees' materials, so they owe those
     // materials their attributes. A missing instanced attribute does not fail

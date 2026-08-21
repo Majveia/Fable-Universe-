@@ -61,6 +61,69 @@
 // deleted here.
 
 import * as THREE from 'three';
+import { hash } from './rng.js';
+
+/**
+ * A clump of leaves, as a shape rather than as a ball.
+ *
+ * Foliage was `IcosahedronGeometry(1, 0)` — a 20-triangle sphere — instanced
+ * once per branch tip. The lighting fixed what a clump is *made of*; this fixes
+ * what it *is*. A crown assembled from spheres has a bubbly outline, and an
+ * outline is the first thing §8 scores: axis 1 is silhouette, and a real canopy
+ * is feathery and broken where a heap of balls is smooth and closed.
+ *
+ * The cheapest possible fix, and the reason it is the one taken: **displace the
+ * vertices, keep the topology.** Twenty triangles before, twenty after. Same
+ * draw call, same fill, same everything the budget can see — §5 cannot object
+ * to a change that costs exactly nothing, and there is no LOD to add first
+ * because there is nothing to pay for.
+ *
+ * The alternative was alpha-tested leaf cards, which is what a foliage system
+ * usually reaches for. It was rejected on §5 grounds and it is worth writing
+ * down why, because it will come up again: a card needs `discard`, `discard`
+ * disables early-Z, and crowns are the most overdrawn thing in a surface frame.
+ * That trades a known-zero cost for an unknown multiple of the frame's heaviest
+ * fill, and this container cannot price it. The rule is that any change costing
+ * frames must pay for them; a change that cannot even be measured cannot pay.
+ *
+ * Two details make twenty triangles go further than they sound:
+ *
+ * **Displacement is keyed by position, not by vertex index.** `IcosahedronGeometry`
+ * is non-indexed, so each of the twelve corners appears in five faces as five
+ * separate vertices. Moving those independently would tear the solid open into
+ * twenty loose triangles. Keying the offset on the rounded position moves all
+ * five copies together, so the mass stays closed.
+ *
+ * **Normals are recomputed, not reused.** The original normals belong to the
+ * sphere and would light a shape that is no longer there. `computeVertexNormals`
+ * on non-indexed geometry gives each face its own — which is also the right
+ * look: a faceted mass reads as a cluster of leaves catching light at different
+ * angles, where a smooth one reads as a painted balloon.
+ *
+ * And one thing AEON gets that the reference cannot: the shape comes from the
+ * **world's** seed, so foliage has a different character from world to world,
+ * and the same character every time you return to the same one (§2.3).
+ */
+export function leafMassGeometry(seed, { lobe = 0.42 } = {}) {
+  const geo = new THREE.IcosahedronGeometry(1, 0);
+  const pos = geo.attributes.position;
+  const seen = new Map();
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    // quantised so the five copies of one corner agree on their offset
+    const qx = Math.round(x * 1000), qy = Math.round(y * 1000), qz = Math.round(z * 1000);
+    const k = `${qx},${qy},${qz}`;
+    let f = seen.get(k);
+    if (f === undefined) {
+      f = 1 - lobe + ((hash(seed, qx, qy, qz) >>> 8) / 0xffffff) * lobe * 2;
+      seen.set(k, f);
+    }
+    pos.setXYZ(i, x * f, y * f, z * f);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
 
 /**
  * The leaf colour path, as three stops rather than two.
