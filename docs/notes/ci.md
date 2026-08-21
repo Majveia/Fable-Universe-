@@ -36,7 +36,7 @@ seconds whether or not a browser is downloading beside them.
 | §2.2 zero dependencies | `invariants.js` | a manifest anywhere, `node_modules`, a CDN importmap entry, or any bare specifier the browser cannot resolve |
 | §2.3 determinism (code) | `invariants.js` | a ratchet, not a ban — every legitimate clock read is listed with a reason, and a *new* one fails |
 | §2.3 determinism (across time) | `digest.js --expect` | 6,181 samples of the pure generation path against a committed baseline |
-| §2.3 determinism (across machines) | `determinism.yml` | **measured, not enforced** — the clause is false today on arm64; see the footnote below |
+| §2.3 determinism (across machines) | `determinism.yml` | **measured, not enforced** — x64 agrees across Linux and Windows; arm64 does not. See the footnote below |
 | §2.7 GLSL↔JS parity | `pixeldiff.js` | §2.7 specifies it in numbers; §11 says the drift "will look like a rendering bug and cost a day" |
 | §4 no meteor mechanic | `invariants.js` | `_carveCrater` may be reached from generation and nowhere else |
 | §5 nothing accumulates | `perfgrow.js` | counts, not milliseconds — see below |
@@ -74,25 +74,34 @@ false is worth knowing exactly.
 
 ### Across machines, on one engine
 
+Same Node, same V8, three architectures:
+
 | machine | node | V8 | digest |
 |---|---|---|---|
 | linux/x64 | 22.23.2 | `12.4.254.21-node.56` | `fea8833953d8ca97` |
 | win32/x64 | 22.23.2 | `12.4.254.21-node.56` | `fea8833953d8ca97` |
-| **darwin/arm64** | 22.23.1 | `12.4.254.21-node.56` | **`fc470bc5a2e0a2a1`** |
+| **darwin/arm64** | 22.23.2 | `12.4.254.21-node.56` | **`fc470bc5a2e0a2a1`** |
 
-Linux and Windows agree bit for bit. macOS — **on an identical V8 version
-string** — does not, in three suites: `zeldovich · §M1`, `starlight · §9.6`,
-`tree · §M2`. The three that lean hardest on `sin`, `cos`, `exp` and `pow`.
-`hash`, `terrain`, `cosmology`, `ecology` and `meadow` all held.
+Linux and Windows agree bit for bit. macOS does not, in three suites:
+`zeldovich · §M1`, `starlight · §9.6`, `tree · §M2` — the three that lean
+hardest on `sin`, `cos`, `exp` and `pow`. `hash`, `terrain`, `cosmology`,
+`ecology` and `meadow` all held.
 
-**One caveat, stated because the run cannot rule it out.** macOS drew Node
-22.23.1 and the other two drew 22.23.2 — `node-version: '22'` resolves to
-whatever each runner image carries. So that run had two variables in it,
-architecture and a patch release, and it cannot say which moved the universe.
-Architecture is the strong candidate: arm64 has fused multiply-add, and `a*b+c`
-computed as one FMA rounds once where two instructions round twice. But that is
-a hypothesis, not a result. The matrix now pins an exact Node on all three
-runners, so the next run isolates it.
+**It is the architecture, and that took a second run to establish.** The first
+one was inconclusive through a mistake worth recording: `node-version: '22'`
+resolves to whatever each runner image happens to carry, and it handed macOS
+22.23.1 while the other two got 22.23.2. Two variables were in the room —
+architecture and a patch release — and a matrix whose entire purpose is to
+isolate one variable has to isolate it. The version is pinned exactly now. On
+the pinned run, with every machine on the same Node and the same V8 build
+string, macOS still diverges and Windows still agrees with Linux. A patch
+release is ruled out; `x64` against `arm64` is what is left.
+
+The mechanism is almost certainly fused multiply-add: arm64 has an FMA
+instruction, and `a*b + c` computed as a single FMA rounds once where two
+separate instructions round twice. V8's fdlibm port is one source tree
+compiled per architecture, so its polynomial evaluations can and do land a
+last bit apart.
 
 ### Across engines, on one machine
 
