@@ -38,6 +38,13 @@ import { arg, launch, playwright, serve } from './lib.js';
 const query = process.argv[2] ?? '?seed=7';
 const marks = String(arg('marks', process.argv[3] ?? '20,60,120,240,420,700'))
   .split(',').map(Number).filter(Number.isFinite);
+// A wall-clock ceiling, because frame marks are not reachable at a fixed cost.
+// On SwiftShader the planet scale runs about 1.7 s/frame, so `--marks 400` is
+// eleven minutes and an outer `timeout` will kill the browser mid-`evaluate` —
+// which is how the first run threw away three good samples it had already
+// taken. Stopping early on purpose and reporting the series is strictly better
+// than being stopped by accident and reporting nothing.
+const budget = Number(arg('budget', 900));
 
 const site = await serve();
 const pw = await playwright();
@@ -78,16 +85,29 @@ await page.evaluate(() => {
 });
 
 console.log(`\nperfgrow · ${query}`);
+console.log(`  marks: ${marks.join(', ')} · wall budget ${budget}s`);
 console.log(`  driver: ${renderer}`);
 console.log('  §5 ceilings at surface scale: 900 draws · 2.2 M triangles · 12 ms CPU');
 console.log('  ms/f is wall-clock and is only meaningful on a real GPU (§M0)\n');
 
 const t0 = Date.now();
 const series = [];
+let stopped = '';
 for (const m of marks) {
-  await page.waitForFunction(`window.AEON.frames >= ${m}`, null, { timeout: 300000 })
-    .catch(() => { /* a scale that never reaches the mark still reports where it got to */ });
-  const d = await page.evaluate('window.__last');
+  const left = budget * 1000 - (Date.now() - t0);
+  if (left <= 0) { stopped = `wall budget of ${budget}s reached`; break; }
+  // Every await past this point can lose the browser — to the budget, to an
+  // outer `timeout`, to a crashed tab. None of those should cost the samples
+  // already in hand, so the loop breaks and falls through to the verdict.
+  let d = null;
+  try {
+    await page.waitForFunction(`window.AEON.frames >= ${m}`, null, { timeout: left })
+      .catch(() => { /* short of the mark still reports where it got to */ });
+    d = await page.evaluate('window.__last');
+  } catch (e) {
+    stopped = `browser closed at frame mark ${m} (${String(e.message).split('\n')[0]})`;
+    break;
+  }
   if (!d) continue;
   series.push(d);
   console.log(`  frame ${String(d.frames).padStart(4)}`
@@ -99,6 +119,8 @@ for (const m of marks) {
     + `  tex ${String(d.tex).padStart(4)}`
     + `  progs ${d.progs}`);
 }
+
+if (stopped) console.log(`\n  stopped early · ${stopped}`);
 
 // The verdict, over the second half of the run — the first half is the scale
 // streaming in, which is supposed to climb.
@@ -114,5 +136,7 @@ if (series.length >= 3) {
     : '\n  flat across the settled tail — nothing is accumulating');
 }
 
-await browser.close();
-await site.close();
+// `catch` on both, because the whole point of the block above is that the
+// browser may already be gone.
+await browser.close().catch(() => {});
+await site.close().catch(() => {});
