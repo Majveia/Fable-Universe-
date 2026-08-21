@@ -777,6 +777,119 @@ function suitePaint() {
 }
 
 // ---------------------------------------------------------------------------
+// suite: shadow
+//
+// **The shadow map is not the grade, and this suite is what keeps them apart.**
+//
+// For five milestones `surface.js` built `SunShadow` on the first line of
+// `_paintUniforms()`, which runs only under `?paint=1`. `?paint=` is
+// default-off, so the shipped build had no shadow map at all — and because
+// casting is opt-in by layer (`shadow.js:CASTER_LAYER`), every `markCaster()`
+// call in the repo was naming an occluder that rendered into nothing. The
+// figure floated. A 110 m conjured rocket stood on the valley without touching
+// it. §8 axis 8 scored that twice, at 2, in both flag sets, and called it by
+// name: "no shadow, no ground contact and no scale reference."
+//
+// The coupling was never argued for; it was where the constructor happened to
+// be written. These checks make the separation a property of the file rather
+// than a fact about one commit, because the failure mode is silent: the map
+// simply is not there, and nothing draws a shadow, and no check fails.
+
+function suiteSunShadow() {
+  console.log('\nsun shadow — the map is separable from the grade');
+
+  const src = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+
+  // --- 1. the constructor has left the grade ------------------------------
+  {
+    const paintBody = src.slice(src.indexOf('  _paintUniforms() {'));
+    const body = paintBody.slice(0, paintBody.indexOf('\n  }\n'));
+    ok('the map is not constructed inside `_paintUniforms()`',
+      !body.includes('new SunShadow'),
+      body.includes('new SunShadow') ? 'still built by the grade'
+        : 'the grade builds light colours only');
+    ok('it has a builder of its own',
+      src.includes('_shadowUniforms() {') && src.includes('new SunShadow'));
+    ok('and the material takes the map before it takes the grade',
+      src.indexOf("...(SHADOW ? this._shadowUniforms() : {})")
+        < src.indexOf("...(PAINT ? this._paintUniforms() : {})"),
+      'so ?paint=1 composes with the map rather than carrying it');
+  }
+
+  // --- 2. the sampler compiles without the light model --------------------
+  {
+    ok('`SHADOW_GLSL` is injected independently of `PAINT_GLSL`',
+      /\$\{SHADOW \? SHADOW_GLSL : ''\}/.test(src)
+      && /\$\{PAINT \? PAINT_GLSL : ''\}/.test(src),
+      'one flag each, so the cheap path can sample a map it has');
+    ok('and the cheap lighting path actually samples it',
+      /float sh = \$\{SHADOW \? 'sunShadow\(vW, dot\(nb, uSunDir\)\)' : '1\.0'\}/.test(src),
+      'the ground is shadowed with or without §9.2');
+  }
+
+  // --- 3. the implication runs one way ------------------------------------
+  //
+  // `shadow.js` opens with why: with `shadow = 1` everywhere the ramp's `t`
+  // never falls below the second band edge, so the whole surface sits on the
+  // lit stop and the bands §9.2 exists for never appear. A build that turned
+  // the grade on and the map off would render the light model with its input
+  // missing — which is the exact frame `DEFAULTS.md` §2 diagnosed as "a single
+  // pale wash" and spent a session mis-attributing to the ramp.
+  {
+    ok('§9.2 · `?paint=1` forces the map on, because the ramp needs its input',
+      /const SHADOW = PAINT \|\| PARAM\('shadow'\) !== '0';/.test(src),
+      '?shadow=0 is an escape for the cheap path, not a way to break paint');
+  }
+
+  // --- 4. casters are named against the map, not against the grade --------
+  {
+    ok('the terrain casts whenever there is a map to cast into',
+      src.includes('if (SHADOW) markCaster(this.terrain.children[0]);')
+      && !src.includes('if (PAINT) markCaster('),
+      'ring 0 only — see the note there on why LOD rings must not cast');
+  }
+
+  // --- 5. shadows change hue, they do not go black ------------------------
+  //
+  // §9.2's rule is stated for `paint()` and checked for it in the paint suite.
+  // The cheap path has none of the grade's uniforms, so it has to obey the
+  // same rule out of what it does have — and this is the check that it does.
+  // A shadow that multiplies the key by zero is the §M2 gate failure written
+  // in one line, and it is the obvious way to write this code.
+  {
+    ok('§M2 · the cheap path keeps a floor of key light in full shadow',
+      /mix\(0\.18, 1\.0, sh\)/.test(src),
+      'a shadowed surface is still lit by the sky it sits under');
+    ok('and replaces the missing sun with sky-coloured fill, not with grey',
+      /uHorizon \* 0\.10 \* \(1\.0 - sh\)/.test(src),
+      'so a shadow rotates toward the horizon rather than draining');
+  }
+
+  // --- 6. the one instrument for this is available where the bug is -------
+  {
+    ok('`?shdebug=` is gated on the map, not on the grade',
+      src.includes("const SHADOW_DEBUG = SHADOW &&"),
+      'the probe used to exist only in the build that was not shipping');
+  }
+
+  // --- 7. the notes that documented the old coupling are not left lying ---
+  //
+  // This repo treats a stale comment as a defect, and these two were load-
+  // bearing: both told a reader that the default build has no shadow map.
+  {
+    for (const f of ['traveler.js', 'paint.js']) {
+      const t = readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8');
+      const lies = [
+        'so `markCaster()` has nothing to render into and every occluder in the frame\n * casts nothing',
+        '`?paint=` is\n  // default-off and `s.sunShadow` therefore usually does not exist',
+      ].filter((l) => t.includes(l));
+      ok(`src/${f} no longer claims the build has no shadow map`,
+        lies.length === 0, lies.length ? `${lies.length} stale claim(s)` : '');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // suite: landing
 //
 // §9.7's composition constraints, and §3's claim that turning them into a
@@ -7049,10 +7162,12 @@ function suiteClimb() {
 // ---------------------------------------------------------------------------
 // the contact shadow (src/paint.js)
 //
-// The figure floated, and `figure.js` says why in its own words: "there is no
-// shadow map in the default build." There is not — `surface.js` builds one only
-// under `?paint=1`, so every occluder in the frame casts nothing. This is the
-// first-order projection instead, and it is worth testing rather than eyeballing
+// The figure floated, and `figure.js` said why in its own words: "there is no
+// shadow map in the default build." There was not — `surface.js` built one only
+// under `?paint=1`, so every occluder in the frame cast nothing. That is fixed
+// (see the `sun shadow` suite above), and this stays anyway: the map spans
+// 480 m about the camera and a body can walk out of it, where this still works.
+// It is the first-order projection, and it is worth testing rather than eyeballing
 // because the two things most likely to be wrong are the two a still hides: the
 // direction (a shadow pointing *at* a low sun looks nearly right in one frame)
 // and the behaviour through the horizon, where `tan e` changes sign.
@@ -8361,6 +8476,7 @@ const suites = {
   vegetation: suiteVegetation,
   ecology: suiteEcology,
   floraUniforms: suiteFloraUniforms,
+  sunshadow: suiteSunShadow,
   shadow: suiteShadow,
   climb: suiteClimb,
   conjure: suiteConjure,  troffer: suiteTroffer,
