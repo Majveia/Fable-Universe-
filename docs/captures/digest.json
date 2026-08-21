@@ -1,0 +1,45 @@
+{
+  "sha256": "fea8833953d8ca9790ce279d69c64a02ef8e80fe9268ad0e96cf66c04e65ebfe",
+  "suites": {
+    "hash · §2.3": {
+      "sha256": "d73bffb66bc3581a598cf18b2b87fda88854faea110db476c1d2c69fbd26af20",
+      "samples": 640
+    },
+    "terrain · §2.7": {
+      "sha256": "d5c17cc90a97b47ac519689f7b977084e129f2f8d9478b21d24ab1de467f6250",
+      "samples": 1600
+    },
+    "cosmology · §M1": {
+      "sha256": "f67ff4a5a8968107ac2a526255daa3e8ef3fdcea4cd9527857c81b90c1af7fdc",
+      "samples": 360
+    },
+    "zeldovich · §M1": {
+      "sha256": "3625d875068f4a8c92f2567eece16d8948b227fa6822335c0e2a2efe20c5828e",
+      "samples": 2040
+    },
+    "starlight · §9.6": {
+      "sha256": "208136d98ffa3473c7709641db132a26c5083256564ec63f143861dc9ffd75d0",
+      "samples": 696
+    },
+    "meadow · §M3": {
+      "sha256": "2f9e5e816cd3e29161713b9415be39cb25a0e86512306b31049fdf606b3cad80",
+      "samples": 256
+    },
+    "ecology · §M6": {
+      "sha256": "3e84c10f9103d141660cf2ad6847ffd09ae1b662b3250ec12f2c6984b2c4143e",
+      "samples": 301
+    },
+    "tree · §M2": {
+      "sha256": "85feb37d354b3549504a6970a5b62de65c3cf9124287aa9b01d9b772c3b18435",
+      "samples": 288
+    }
+  },
+  "samples": 6181,
+  "machine": {
+    "node": "v22.22.2",
+    "v8": "12.4.254.21-node.39",
+    "platform": "linux",
+    "arch": "x64",
+    "endianness": "LE"
+  }
+}

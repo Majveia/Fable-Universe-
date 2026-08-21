@@ -78,9 +78,18 @@ const run = (name, args) => new Promise((done) => {
  * list stops being an account of anything.
  */
 const steps = [
-  // first, because every step below it launches a browser to discover the same
-  // thing more slowly: a module that does not parse looks exactly like a page
-  // that would not boot
+  // Before anything else, because it is a second long and because §2 opens
+  // "violating any of these is a revert, not a discussion". There is no point
+  // scoring a milestone built on an invariant that has already gone.
+  ['invariants', ['tools/invariants.js', '--quiet'], '§2 still holds — assets, dependencies, entropy, provenance'],
+  // The other half of §2.3. `invariants` proves no un-seeded entropy has crept
+  // into src/; this proves the generators still produce the universe they
+  // produced. Across *machines* needs more than one machine — that is
+  // .github/workflows/determinism.yml.
+  ['digest', ['tools/digest.js', '--expect', 'docs/captures/digest.json'], 'the generation path, as one SHA-256 (§2.3)'],
+  // then this, because every step below it launches a browser to discover the
+  // same thing more slowly: a module that does not parse looks exactly like a
+  // page that would not boot
   ['parse', ['tools/parse.js', '--quiet'], 'every module the browser loads, parsed'],
   // The gap parse and verify both have: a module can be valid JavaScript and
   // every pure function in it can be green, and it can still throw partway

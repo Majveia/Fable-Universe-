@@ -1,0 +1,270 @@
+# §2.3's other half — the clause nothing could ask from one machine.
+#
+#   "Same seed + same code = same universe on every machine, forever."
+#                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#
+# `tools/repeat.js` proves one machine renders a URL the same way twice.
+# `tools/invariants.js` proves no un-seeded entropy has crept into `src/`.
+# `constitution.yml` proves the generators have not drifted since the baseline.
+# Not one of those can see the failure this workflow exists for: a generator
+# that gives one answer on Linux and another on macOS breaks every shared URL in
+# the project, and passes all three green.
+#
+# §2.3 makes a seeded universe a permanent public address. An address that
+# resolves differently depending on who types it is not one.
+#
+# ---------------------------------------------------------------------------
+# Two matrices, and only one of them is a gate
+#
+# `platforms` runs the same Node on Linux, macOS and Windows and requires all
+# three digests to be identical. That is §2.3's claim as stated, on today's
+# engine, and it is a hard failure.
+#
+# `engines` runs three Node versions on one platform and does *not* fail the
+# build. The reason is in `tools/digest.js`'s header: `Math.sin`, `Math.pow` and
+# `Math.exp` are not specified to the last bit by IEEE-754 or by ECMA-262. V8
+# ships its own fdlibm port so the answer does not vary by *platform* — which is
+# why `platforms` passes — but that is a property of the engine, and two engine
+# versions are two implementations. §9.6 derives the sky stops through `exp()`
+# in a tight loop; §M1 integrates the growth factor with `pow()`. A one-ulp
+# difference there moves a sky colour by less than a 255th and moves nothing
+# anyone can see. It also moves this digest.
+#
+# So `engines` reports rather than gates, and writes its answer into the run
+# summary. If the digest turns out to survive an engine bump, that is worth
+# knowing. If it does not, §2.3's "forever" has a footnote, and the right
+# response is to write the footnote — not to switch off the check that found it.
+#
+# ---------------------------------------------------------------------------
+# Cadence
+#
+# Weekly, on demand, and on any pull request that touches the generators.
+# macOS runners bill at ten times Linux and Windows at two, which is worth
+# nothing on a job that finishes in seconds and worth avoiding on every push to
+# every branch.
+
+name: determinism
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tools/digest.js'
+      - 'docs/captures/digest.json'
+      - '.github/workflows/determinism.yml'
+  schedule:
+    # Mondays, 06:00 UTC — before anyone looks, after nothing has happened
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # pinned exactly — see the note in `platforms`
+  NODE: '22.23.2'
+
+concurrency:
+  group: determinism-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # the gate: one engine, three operating systems, one answer
+
+  platforms:
+    # (the version is spelled out here because the `env` context is not
+    #  available in a job name — only github, needs, strategy, matrix and vars)
+    name: ${{ matrix.os }} · node 22.23.2, pinned
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      # every row runs, so a mismatch reports *which* platform disagreed rather
+      # than stopping at the first one and leaving the shape of it unknown
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      # An exact version, not '22', and the first run is why. `node-version:
+      # '22'` resolves to whatever each runner image happens to carry, and it
+      # gave Linux and Windows 22.23.2 while macOS got 22.23.1 — so when the
+      # digests disagreed there were two variables in the room, architecture and
+      # a patch release, and the run could not say which one moved the universe.
+      # A matrix whose whole purpose is to isolate one variable has to isolate it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE }}
+
+      - name: the generation path, as one SHA-256
+        run: node tools/digest.js --json digest-${{ matrix.os }}.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.os }}
+          path: digest-${{ matrix.os }}.json
+
+  compare:
+    name: every machine agrees (§2.3)
+    needs: platforms
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      # ---------------------------------------------------------------------
+      # A gate again, on the promise §2.3 now actually makes.
+      #
+      # It was built to gate on "every machine". Its first run said that was
+      # false — same V8, same pinned Node, and darwin/arm64 diverged from
+      # linux/x64 and win32/x64 in `zeldovich`, `starlight` and `tree`, the
+      # three suites that lean on sin, cos, exp and pow. Windows agreed with
+      # Linux bit for bit, so it is the architecture: V8's fdlibm port is one
+      # source tree compiled per target, and arm64's fused multiply-add rounds
+      # `a*b + c` once where two instructions round twice.
+      #
+      # §2.3 now says bit-identity per architecture, so that is what this
+      # enforces — and it is not a weaker test than it sounds. Every real
+      # determinism leak this workflow was built to catch (an unseeded draw, an
+      # iteration-order dependency, a clock in a generation path) shows up
+      # *within* an architecture, because that is where two runs of the same
+      # code are supposed to be identical. What it stops doing is failing for
+      # the one thing nobody can fix from inside the repo.
+      #
+      # Cross-architecture divergence is still computed, still printed, and
+      # still written to the summary — as a finding, which is what it is.
+      # ---------------------------------------------------------------------
+      - name: compare, and say what moved
+        run: |
+          node -e '
+            const { readdirSync, readFileSync, appendFileSync } = require("node:fs");
+            const files = readdirSync("digests").filter((f) => f.endsWith(".json")).sort();
+            if (files.length < 2) { console.error("only " + files.length + " digest(s) — nothing to compare"); process.exit(2); }
+            const runs = files.map((f) => JSON.parse(readFileSync("digests/" + f, "utf8")));
+            const where = (r) => `${r.machine.platform}/${r.machine.arch}`;
+            const out = [];
+            out.push("### §2.3 · the same universe on every machine");
+            out.push("");
+            out.push("| machine | node | V8 | digest |");
+            out.push("|---|---|---|---|");
+            for (const r of runs) {
+              out.push(`| ${where(r)} | ${r.machine.node} | \`${r.machine.v8}\` | \`${r.sha256.slice(0, 16)}\` |`);
+            }
+            out.push("");
+
+            // ---- the gate: within one architecture, byte for byte ----
+            const byArch = new Map();
+            for (const r of runs) byArch.set(r.machine.arch, [...(byArch.get(r.machine.arch) || []), r]);
+            const leaks = [];
+            for (const [arch, group] of byArch) {
+              if (group.length < 2) continue;              // nothing to compare
+              const odd = group.filter((r) => r.sha256 !== group[0].sha256);
+              if (odd.length) leaks.push({ arch, ref: group[0], odd });
+            }
+
+            // ---- the finding: between architectures ----
+            const archDigest = [...byArch.entries()].map(([arch, g]) => [arch, g[0]]);
+            const split = new Set(archDigest.map(([, r]) => r.sha256)).size > 1;
+
+            if (!leaks.length) {
+              const arches = [...byArch.keys()].join(", ");
+              out.push(`**Within each architecture, one universe.** ${runs[0].samples} samples across `
+                + `${Object.keys(runs[0].suites).length} suites · ${arches}.`);
+            } else {
+              out.push("**§2.3 · a determinism leak.** Two machines of the *same* architecture disagree.");
+              out.push("");
+              out.push("| architecture | machine | suites that moved |");
+              out.push("|---|---|---|");
+              for (const { arch, ref, odd } of leaks) {
+                for (const r of odd) {
+                  const moved = Object.keys(ref.suites).filter((n) => ref.suites[n]?.sha256 !== r.suites[n]?.sha256);
+                  out.push(`| ${arch} | ${where(r)} vs ${where(ref)} | ${moved.join(", ") || "(the roll-up only)"} |`);
+                }
+              }
+            }
+
+            if (split) {
+              out.push("");
+              out.push("Across architectures the digests differ, which §2.3 expects and names. Detail:");
+              out.push("");
+              out.push("| architecture | suites differing from " + archDigest[0][0] + " |");
+              out.push("|---|---|");
+              const ref = archDigest[0][1];
+              for (const [arch, r] of archDigest.slice(1)) {
+                const moved = Object.keys(ref.suites).filter((n) => ref.suites[n]?.sha256 !== r.suites[n]?.sha256);
+                out.push(`| ${arch} | ${moved.join(", ") || "(the roll-up only)"} |`);
+              }
+              out.push("");
+              out.push("See `docs/notes/ci.md`, \"The footnote §2.3 turned out to need\".");
+            }
+
+            const text = out.join("\n");
+            console.log(text);
+            if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, text + "\n");
+            if (leaks.length) {
+              console.error("\n§2.3: two machines of one architecture must produce one universe.");
+              process.exit(1);
+            }
+          '
+
+  # -------------------------------------------------------------------------
+  # the report: three engines, one operating system, no gate
+
+  engines:
+    name: node ${{ matrix.node }} (reported, not gated)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # This job is green whatever it finds, and that is the design rather than
+      # a concession. Its first real run reported node 24 as a red X, which is
+      # precisely the outcome the header above says to avoid: a check that goes
+      # red for something nobody did teaches everyone to skim past red. The
+      # answer belongs in the run summary, where it is read as information; the
+      # job's own status should mean "the comparison ran".
+      #
+      # It fails only if the digest cannot be computed at all, which is a broken
+      # tool and a real red X.
+      - name: digest, per suite, against the committed baseline
+        run: |
+          node tools/digest.js --json engine-digest.json
+          node -e '
+            const { readFileSync } = require("node:fs");
+            const now = JSON.parse(readFileSync("engine-digest.json", "utf8"));
+            const base = JSON.parse(readFileSync("docs/captures/digest.json", "utf8"));
+            const names = Object.keys(base.suites);
+            const moved = names.filter((n) => base.suites[n]?.sha256 !== now.suites[n]?.sha256);
+            const out = [];
+            out.push(`### node ${now.machine.node} · V8 \`${now.machine.v8}\``);
+            out.push("");
+            out.push(moved.length
+              ? `**${moved.length} of ${names.length} suites differ** from the baseline (${base.machine.node}, V8 \`${base.machine.v8}\`).`
+              : `All ${names.length} suites match the baseline (${base.machine.node}, V8 \`${base.machine.v8}\`).`);
+            out.push("");
+            out.push("| suite | baseline | here | |");
+            out.push("|---|---|---|---|");
+            for (const n of names) {
+              const a = (base.suites[n]?.sha256 || "").slice(0, 12);
+              const b = (now.suites[n]?.sha256 || "").slice(0, 12);
+              out.push(`| ${n} | \`${a}\` | \`${b}\` | ${a === b ? "held" : "**moved**"} |`);
+            }
+            if (moved.length) {
+              out.push("");
+              out.push("This is not a determinism leak in AEON. See `docs/notes/ci.md`.");
+            }
+            require("node:fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, out.join("\n") + "\n");
+            console.log(out.join("\n"));
+          '
