@@ -36,7 +36,7 @@ seconds whether or not a browser is downloading beside them.
 | §2.2 zero dependencies | `invariants.js` | a manifest anywhere, `node_modules`, a CDN importmap entry, or any bare specifier the browser cannot resolve |
 | §2.3 determinism (code) | `invariants.js` | a ratchet, not a ban — every legitimate clock read is listed with a reason, and a *new* one fails |
 | §2.3 determinism (across time) | `digest.js --expect` | 6,181 samples of the pure generation path against a committed baseline |
-| §2.3 determinism (across machines) | `determinism.yml` | the clause's actual wording, and the only one that needs more than one runner |
+| §2.3 determinism (across machines) | `determinism.yml` | **measured, not enforced** — the clause is false today on arm64; see the footnote below |
 | §2.7 GLSL↔JS parity | `pixeldiff.js` | §2.7 specifies it in numbers; §11 says the drift "will look like a rendering bug and cost a day" |
 | §4 no meteor mechanic | `invariants.js` | `_carveCrater` may be reached from generation and nowhere else |
 | §5 nothing accumulates | `perfgrow.js` | counts, not milliseconds — see below |
@@ -59,6 +59,93 @@ seconds whether or not a browser is downloading beside them.
 | **§5** the frame budget | **needs a real GPU** | §M0: "Real GPU, not CI SwiftShader." `docs/GPU-RUN.md` records four runs that lost most of their value to a software rasteriser's numbers being read as evidence. Nothing in CI may be quoted against §5's table. |
 | **§8** all eight critic axes | needs an eye, and a blind comparison against the reference | `blind.js` on real silicon, per §7.6 |
 | **§9.3** alpha survives to the print | `alphaudit.js` does not reach the surface scale inside its 60 s wait on a software rasteriser, and dies on the timeout | a GPU, or a longer wait somebody has decided is honest rather than convenient |
+
+---
+
+## The footnote §2.3 turned out to need
+
+`determinism.yml` answered its own question on its first run, and the answer is
+not the one anybody wanted. §2.3 says:
+
+> Same seed + same code = same universe **on every machine, forever**.
+
+That is now tested. It is false, in a small and specific way, and the way it is
+false is worth knowing exactly.
+
+### Across machines, on one engine
+
+| machine | node | V8 | digest |
+|---|---|---|---|
+| linux/x64 | 22.23.2 | `12.4.254.21-node.56` | `fea8833953d8ca97` |
+| win32/x64 | 22.23.2 | `12.4.254.21-node.56` | `fea8833953d8ca97` |
+| **darwin/arm64** | 22.23.1 | `12.4.254.21-node.56` | **`fc470bc5a2e0a2a1`** |
+
+Linux and Windows agree bit for bit. macOS — **on an identical V8 version
+string** — does not, in three suites: `zeldovich · §M1`, `starlight · §9.6`,
+`tree · §M2`. The three that lean hardest on `sin`, `cos`, `exp` and `pow`.
+`hash`, `terrain`, `cosmology`, `ecology` and `meadow` all held.
+
+**One caveat, stated because the run cannot rule it out.** macOS drew Node
+22.23.1 and the other two drew 22.23.2 — `node-version: '22'` resolves to
+whatever each runner image carries. So that run had two variables in it,
+architecture and a patch release, and it cannot say which moved the universe.
+Architecture is the strong candidate: arm64 has fused multiply-add, and `a*b+c`
+computed as one FMA rounds once where two instructions round twice. But that is
+a hypothesis, not a result. The matrix now pins an exact Node on all three
+runners, so the next run isolates it.
+
+### Across engines, on one machine
+
+Node 24 (V8 13.6) against the Node 22 baseline (V8 12.4) on the same Linux
+box — **four of eight suites moved**: the same three, plus `meadow · §M3`.
+
+Read both results precisely: this is **not** a determinism leak in AEON, and it
+is **not** "anything using a transcendental moved". `ecology` uses `exp` and
+held; `cosmology` uses `pow` and held. A handful of last-bit results at
+particular inputs, out of 6,181 samples. ECMA-262 specifies `Math.sin`,
+`Math.exp` and `Math.pow` only as "an implementation-approximated result"; V8
+carries its own fdlibm port, and that port is compiled per architecture and
+versioned with the engine.
+
+### What it costs, in the terms the project cares about
+
+1. **A shared URL survives a laptop; it does not survive an Apple Silicon
+   laptop.** §2.4 makes every place a URL and §2.3 makes that address
+   permanent. A seed's sky is a colour off, not a different sky — but the
+   claim is bit-identity, and bit-identity moved. In the browser the same
+   question wears different clothes: it is Chrome's V8, on the visitor's
+   architecture.
+2. **§M3's density law is the pointed one.** §M3 specifies the exponent as
+   exactly `1.5` so the *shader* evaluates it as `x·x·inversesqrt(x)` — three
+   single-cycle instructions instead of a general `pow()`. The CPU side calls
+   `Math.pow`. Those are two different functions that agree today. `meadow`
+   moved across engines, and unlike the height field (§2.7, `pixeldiff.js`)
+   **there is no GLSL↔JS parity test for the meadow** — `pixeldiff.js` covers
+   `terrain` and `fragility` only. That gap is now the most interesting one on
+   this page.
+3. **Nobody introduced this.** It is a standing property of the codebase that
+   went unmeasured until there was an instrument. Every gate above it stayed
+   green throughout.
+
+### Why the check reports instead of gating
+
+It was built to gate. Its first run argued it out of it.
+
+A gate that is permanently red for a standing property is exactly what this
+page's own rule warns about: it teaches everyone to skim past red. And
+CLAUDE.md §12 says to stop and ask when an invariant in §2 would have to bend.
+This one bends whichever way it is resolved —
+
+- **relax the clause**, and say plainly that bit-identity is per-architecture;
+- **or change the generators**, quantising the transcendental-heavy paths to a
+  tolerance the last bit cannot cross;
+- **or narrow the promise**, and gate only same-architecture agreement, which
+  still catches a real leak.
+
+— and none of those is a call CI gets to make. So the comparison runs, the
+answer lands in the run summary and here, and the job's status means only "the
+comparison ran". The last line of the compare step turns back into a gate the
+day the question is settled.
 
 ---
 
