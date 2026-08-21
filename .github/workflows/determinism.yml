@@ -1,0 +1,176 @@
+# §2.3's other half — the clause nothing could ask from one machine.
+#
+#   "Same seed + same code = same universe on every machine, forever."
+#                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#
+# `tools/repeat.js` proves one machine renders a URL the same way twice.
+# `tools/invariants.js` proves no un-seeded entropy has crept into `src/`.
+# `constitution.yml` proves the generators have not drifted since the baseline.
+# Not one of those can see the failure this workflow exists for: a generator
+# that gives one answer on Linux and another on macOS breaks every shared URL in
+# the project, and passes all three green.
+#
+# §2.3 makes a seeded universe a permanent public address. An address that
+# resolves differently depending on who types it is not one.
+#
+# ---------------------------------------------------------------------------
+# Two matrices, and only one of them is a gate
+#
+# `platforms` runs the same Node on Linux, macOS and Windows and requires all
+# three digests to be identical. That is §2.3's claim as stated, on today's
+# engine, and it is a hard failure.
+#
+# `engines` runs three Node versions on one platform and does *not* fail the
+# build. The reason is in `tools/digest.js`'s header: `Math.sin`, `Math.pow` and
+# `Math.exp` are not specified to the last bit by IEEE-754 or by ECMA-262. V8
+# ships its own fdlibm port so the answer does not vary by *platform* — which is
+# why `platforms` passes — but that is a property of the engine, and two engine
+# versions are two implementations. §9.6 derives the sky stops through `exp()`
+# in a tight loop; §M1 integrates the growth factor with `pow()`. A one-ulp
+# difference there moves a sky colour by less than a 255th and moves nothing
+# anyone can see. It also moves this digest.
+#
+# So `engines` reports rather than gates, and writes its answer into the run
+# summary. If the digest turns out to survive an engine bump, that is worth
+# knowing. If it does not, §2.3's "forever" has a footnote, and the right
+# response is to write the footnote — not to switch off the check that found it.
+#
+# ---------------------------------------------------------------------------
+# Cadence
+#
+# Weekly, on demand, and on any pull request that touches the generators.
+# macOS runners bill at ten times Linux and Windows at two, which is worth
+# nothing on a job that finishes in seconds and worth avoiding on every push to
+# every branch.
+
+name: determinism
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tools/digest.js'
+      - 'docs/captures/digest.json'
+      - '.github/workflows/determinism.yml'
+  schedule:
+    # Mondays, 06:00 UTC — before anyone looks, after nothing has happened
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: determinism-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # the gate: one engine, three operating systems, one answer
+
+  platforms:
+    name: ${{ matrix.os }} · node 22
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      # every row runs, so a mismatch reports *which* platform disagreed rather
+      # than stopping at the first one and leaving the shape of it unknown
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: the generation path, as one SHA-256
+        run: node tools/digest.js --json digest-${{ matrix.os }}.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.os }}
+          path: digest-${{ matrix.os }}.json
+
+  compare:
+    name: every machine agrees (§2.3)
+    needs: platforms
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      # Deliberately not a shell one-liner over `sha256sum`. When this fails,
+      # the useful output is *which suite* moved on *which platform* — the
+      # thing somebody has to act on — and a diff of two hex strings is not it.
+      - name: compare, and say what moved
+        run: |
+          node -e '
+            const { readdirSync, readFileSync } = require("node:fs");
+            const files = readdirSync("digests").filter((f) => f.endsWith(".json")).sort();
+            if (files.length < 2) { console.error("only " + files.length + " digest(s) — nothing to compare"); process.exit(2); }
+            const runs = files.map((f) => ({ f, ...JSON.parse(readFileSync("digests/" + f, "utf8")) }));
+            for (const r of runs) {
+              console.log(`  ${r.sha256.slice(0, 16)}  ${r.machine.platform}/${r.machine.arch}  ${r.machine.node}  V8 ${r.machine.v8}`);
+            }
+            const first = runs[0];
+            const odd = runs.filter((r) => r.sha256 !== first.sha256);
+            if (!odd.length) {
+              console.log(`\n${runs.length} machines, one universe · ${first.sha256}`);
+              console.log(`  ${first.samples} samples across ${Object.keys(first.suites).length} suites`);
+              process.exit(0);
+            }
+            console.error("\n─── §2.3 · the same seed built different universes ───");
+            for (const r of odd) {
+              console.error(`\n  ${r.machine.platform}/${r.machine.arch} disagrees with ${first.machine.platform}/${first.machine.arch}:`);
+              for (const name of Object.keys(first.suites)) {
+                const a = first.suites[name]?.sha256, b = r.suites[name]?.sha256;
+                if (a !== b) console.error(`    ${name}`);
+              }
+            }
+            console.error("\nEvery shared URL in the project resolves to a different place on those machines.");
+            console.error("§2.3: \"Same seed + same code = same universe on every machine, forever.\"");
+            process.exit(1);
+          '
+
+  # -------------------------------------------------------------------------
+  # the report: three engines, one operating system, no gate
+
+  engines:
+    name: node ${{ matrix.node }} (reported, not gated)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # See the header. An engine bump is not a determinism leak in AEON, and a
+    # red X here would train everyone to ignore a red X.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: digest, against the committed baseline
+        run: |
+          node tools/digest.js --json engine-digest.json || true
+          sha=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("engine-digest.json","utf8")).sha256)')
+          v8=$(node -e 'console.log(process.versions.v8)')
+          base=$(node -e 'console.log(require("./docs/captures/digest.json").sha256)')
+          if [ "$sha" = "$base" ]; then verdict="same universe"; else verdict="**differs from the baseline**"; fi
+          {
+            echo "| node | V8 | digest | vs. baseline |"
+            echo "|---|---|---|---|"
+            echo "| ${{ matrix.node }} | \`$v8\` | \`${sha:0:16}\` | $verdict |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "node ${{ matrix.node }} · V8 $v8 · ${sha:0:16} · $verdict"
+          # The exit status is deliberate and deliberately soft: the answer is
+          # the summary line above, and `continue-on-error` above that.
+          [ "$sha" = "$base" ]

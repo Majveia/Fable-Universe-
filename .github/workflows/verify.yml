@@ -2,30 +2,43 @@
 #
 # AEON's rigor lives in commands that need no GPU: `tools/verify.js` computes
 # every CPU-decidable claim a second, independent way (§7.3), and
-# `tools/parse.js` checks that all 72 modules parse and that raw shaders
-# declare the attributes GLSL will not give them. Together they take about 75
-# seconds and need nothing installed, because §2.2 means this project has no
-# dependencies to install.
+# `tools/parse.js` checks that all 115 modules parse, that raw shaders declare
+# the attributes GLSL will not give them, and that no import names an export
+# that does not exist. Together they take about eighty seconds and need nothing
+# installed, because §2.2 means this project has no dependencies to install.
+#
+# ---------------------------------------------------------------------------
+# Two jobs, not one, and the reason is the 184 MB
+#
+# This used to be a single job that installed Chromium halfway down. `parse.js`
+# is three seconds and `verify.js` is a minute; a broken module therefore
+# reported in about a minute, unless somebody had queued a browser download in
+# front of it, in which case it reported in five.
+#
+# Splitting them means the offline suites answer as fast as they can compute,
+# and the browser job runs beside them rather than behind them. Neither needs
+# the other, so neither should wait for it.
 #
 # ---------------------------------------------------------------------------
 # What this does NOT do, and must never claim to
 #
 # GitHub's runners have no GPU. §M0 is explicit — "Real GPU, not CI
-# SwiftShader" — and `docs/GPU-RUN.md` records four separate runs that lost
-# most of their value to software-rasteriser results being read as evidence.
+# SwiftShader" — and `docs/GPU-RUN.md` records four separate runs that lost most
+# of their value to software-rasteriser results being read as evidence.
 #
 # So nothing here scores a frame, and nothing here produces a capture. This
-# workflow proves that the arithmetic is right and the code parses. Whether the
-# thing is beautiful is a question for `docs/plans/RECKONING.md` Act A, on a
-# machine with real silicon, scored blind.
+# workflow proves the arithmetic is right, the code parses, and the scenes
+# build. Whether the thing is beautiful is a question for
+# `docs/plans/RECKONING.md` Act A, on a machine with real silicon, scored blind.
 #
 # ---------------------------------------------------------------------------
 # §2.2 is not violated by this
 #
 # "Zero dependencies... `python3 -m http.server 8080` must remain sufficient,
-# forever." That is an invariant about what it takes to *run* AEON, and it
-# still holds: no build step, no bundler, nothing installed into the repo. CI
-# is a thing that watches the repo, not a thing the repo needs.
+# forever." That is an invariant about what it takes to *run* AEON, and it still
+# holds: no build step, no bundler, nothing installed into the repo. CI is a
+# thing that watches the repo, not a thing the repo needs — and
+# `constitution.yml` fails the build if that ever stops being true.
 
 name: verify
 
@@ -34,6 +47,9 @@ on:
     branches: ['**']
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 # a new push supersedes an in-flight run on the same ref — there is no reason
 # to finish measuring a commit nobody is looking at any more
@@ -45,10 +61,9 @@ jobs:
   offline:
     name: offline suites (§7.3)
     runs-on: ubuntu-latest
-    # 30 was not enough once the browser install grew a retry loop: three
-    # capped attempts is fifteen minutes of worst case before the suites even
-    # start. A job timeout should bound a hang, not a slow-but-working run.
-    timeout-minutes: 45
+    # No browser in this job, so nothing here can take minutes. A generous
+    # bound on a job that should finish in ninety seconds is still a bound.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -58,71 +73,47 @@ jobs:
 
       # No `npm ci`. There is no package.json, and that is the point (§2.2).
 
-      - name: parse — 72 modules, and the raw-shader lint
-        run: node tools/parse.js
+      - name: parse — every module, the raw-shader lint, and the import edges
+        run: node tools/parse.js --quiet
 
-      # This is the one that matters. 414 checks, each computing its answer a
-      # second, independent way — adaptive quadrature against a lookup table,
-      # finite differences against an analytic derivative, the quadtree's own
-      # walk against the streaming model built on top of it. A snapshot test
+      # This is the one that matters. Hundreds of checks, each computing its
+      # answer a second, independent way — adaptive quadrature against a lookup
+      # table, finite differences against an analytic derivative, the quadtree's
+      # own walk against the streaming model built on top of it. A snapshot test
       # proves only that something has not changed, which is the least
       # interesting property it has.
       - name: verify — every CPU-decidable claim (§7.3)
         run: node tools/verify.js
 
-      # The gap the two steps above share, and the reason this one is worth a
+  scenes:
+    name: every scale still comes up
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: ./.github/actions/chromium
+
+      # Ten seconds, and it covers what a route walk cannot: a shader that only
+      # exists when a world is in flower is not built by a flight that happens
+      # to land out of season. `shaders.yml` runs this too, as a pre-flight in
+      # front of its forty-minute walk; the duplication is deliberate, because
+      # that workflow is PR-only and paths-filtered and this one is neither.
+      - name: every exported shader pair compiles
+        run: node tools/glslcheck.js
+
+      # The gap `parse` and `verify` share, and the reason this is worth a
       # browser on every push: a module can be valid JavaScript, and every pure
       # function in it can be green, and it can still throw partway through
       # building a scene. That is a black screen, and it has shipped from this
       # repo with CI green — `life.js` referenced a local that had been renamed
       # two hundred lines earlier, which took out every world with a biosphere.
       #
-      # No pixel is inspected here. It navigates to each scale and asserts that
+      # No pixel is inspected. It navigates to each scale and asserts that
       # nothing throws, which is minutes rather than the capture set's hour.
-      - name: playwright + chromium
-        run: |
-          npm i -g playwright
-          # No `--with-deps`, and that is the whole fix.
-          #
-          # It put `apt-get` on the critical path of every run, and a slow
-          # Ubuntu mirror then took the job with it -- one PR run sat here 28
-          # minutes and died on the job timeout while the identical commit
-          # passed on its push run in seven.
-          #
-          # Capping the attempt made it strictly worse, which is worth
-          # recording: `timeout` killed the npx process but not the `apt-get`
-          # it had spawned as root, so the orphan kept the dpkg frontend lock
-          # and both retries died instantly against a lock the timeout itself
-          # had created. A slow-but-succeeding install became a guaranteed
-          # failure. Never wrap apt in a timeout you intend to retry around.
-          #
-          # And it was never needed here. The runner log is explicit: every
-          # library Chromium wants -- libnss3, libatk, libgbm, libxkbcommon,
-          # the rest -- reports "is already the newest version" on
-          # ubuntu-24.04. The only NEW packages `--with-deps` fetched were nine
-          # *font* packages, for CJK and Cyrillic text this project never
-          # renders: the gates it feeds compile shaders and build scenes
-          # offscreen.
-          #
-          # So: browser only, from Playwright's CDN, which has served 184 MB in
-          # about two seconds on every run so far. No apt, no lock, no mirror.
-          # If a future runner image does drop a library, Chromium fails to
-          # launch and `boot.js` says so in seconds -- a far better failure than
-          # a silent half-hour.
-          ok=0
-          for attempt in 1 2 3; do
-            if timeout 600 npx playwright install chromium; then ok=1; break; fi
-            echo "playwright install attempt $attempt failed or stalled; retrying"
-            sleep 10
-          done
-          # a loop that exhausts its attempts must fail the job, not fall through
-          # into a browser-less run that reports something else as the defect
-          [ "$ok" = 1 ] || { echo "playwright install failed after 3 attempts"; exit 1; }
-
-      # The `core` tier: every scale, the cheap world kinds, and one world with
-      # a biosphere in flower — the branch that has actually broken. The rest of
-      # the world kinds run per pull request in `shaders.yml`, because a
-      # biosphere world costs three minutes to build on a software rasteriser
-      # and twenty of those is not a gate anyone leaves switched on.
-      - name: boot — every scale comes up without throwing
+      - name: boot — every scale, without throwing
         run: node tools/boot.js --timeout 300

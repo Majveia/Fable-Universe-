@@ -1,0 +1,69 @@
+# §2, machine-checked — the cheapest gate in the repo and the first to run.
+#
+# CLAUDE.md §2 opens: "Violating any of these is a revert, not a discussion."
+# Until `tools/invariants.js` existed, nothing checked a single one of the nine.
+# `verify.js` proves the arithmetic, `parse.js` proves the modules parse,
+# `shadercheck.js` proves the shaders assemble — and a commit adding a 4 MB PNG
+# to `src/`, a `package.json` to the root, or a bare `Math.random()` to a
+# generation path would have gone through all three green.
+#
+# So this runs on every push to every branch, needs no browser and no install,
+# and finishes in about five seconds. If it is red, nothing downstream is worth
+# reading yet.
+#
+# ---------------------------------------------------------------------------
+# Two questions, both about §2.3
+#
+# `invariants.js` asks whether the *code* can be non-deterministic: an entropy
+# source in a generation path, an asset that should have been generated, a
+# dependency that should not exist. It reads bytes on disk.
+#
+# `digest.js` asks the other half of the same clause — "the same universe on
+# every machine" — by reducing the pure generation path to one SHA-256. Here it
+# is compared against the baseline committed alongside it, which catches drift
+# over *time*. The cross-machine half needs more than one machine and lives in
+# `determinism.yml`.
+#
+# A red digest is not automatically a bug, and the tool prints the three things
+# it can mean. But it is always something somebody should have written down.
+
+name: constitution
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: constitution-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  invariants:
+    name: §2 holds
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # No `npm ci`. There is no package.json, and that is the point (§2.2) —
+      # this job is one of the things that keeps it true.
+
+      - name: §2.1 assets · §2.2 dependencies · §2.3 entropy · §4 · §10 provenance
+        run: node tools/invariants.js
+
+      # Pinned to the same Node the baseline was recorded on. Across a *version*
+      # of V8 the transcendental functions are not specified to the last bit, so
+      # comparing a digest taken on node 22 against one taken on node 24 asks a
+      # different and much weaker question than this job means to ask.
+      # `determinism.yml` asks that one on purpose, and separately.
+      - name: §2.3 · the generators still produce the universe they produced
+        run: node tools/digest.js --expect docs/captures/digest.json

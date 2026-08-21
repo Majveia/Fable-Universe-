@@ -1,0 +1,107 @@
+# The instruments that were only ever run by hand.
+#
+# `tools/` holds twenty-two programs. Before this file, CI ran four of them.
+# The three below need a browser but do *not* need real silicon, they finish in
+# well under two minutes each, and each answers a clause of the constitution
+# that no other gate reaches:
+#
+#   pixeldiff   §2.7  the GLSL↔JS height-field parity test, specified in
+#                     numbers — "10^4 samples, max abs error < 1e-4 of planet
+#                     radius" — and §11's named trap: "will look like a
+#                     rendering bug and cost a day"
+#   touchgate   §M7   "controls ≤ 14% of screen area, entirely within the
+#                     bottom 30%, never co-present with keyboard hints, fade
+#                     after 3 s idle". Every clause but the last is a DOM read.
+#   footplant   §M4   a stance foot that slides. Invisible to every other
+#                     instrument here — a screenshot cannot show it and the
+#                     eye is unreasonably good at it.
+#
+# One job each, deliberately. Three steps in one job report as one red X and
+# whichever failed first; three jobs report which of the three failed, which is
+# the whole content of the message.
+#
+# ---------------------------------------------------------------------------
+# What is not here, and why
+#
+# `alphaudit.js` (§9.3, the fog fraction in the alpha channel) belongs in this
+# list on the merits and is not in it: on a software rasteriser it does not
+# reach the surface scale inside its sixty-second wait and dies on the timeout.
+# That is a property of the runner, not a defect in the tool. It stays a
+# hand-run instrument until there is a GPU under it — `docs/notes/ci.md` keeps
+# that on the list of clauses nothing answers.
+#
+# `perfgrow.js` also works here, and takes seven minutes to say so. It runs
+# weekly in `soak.yml` instead.
+#
+# And nothing here scores a frame. §M0 is explicit — "Real GPU, not CI
+# SwiftShader" — and `docs/GPU-RUN.md` records what happens when a software
+# rasteriser's output is read as evidence. These three measure geometry,
+# arithmetic and the DOM, all of which a software rasteriser gets right.
+
+name: gates
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'index.html'
+      - 'vendor/**'
+      - 'tools/**'
+      - '.github/workflows/gates.yml'
+      - '.github/actions/chromium/action.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity:
+    name: §2.7 · the coast from space is the coast you walk
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: ./.github/actions/chromium
+
+      # §2.7: "Change the noise in GLSL, port it in the same commit, with a
+      # numeric parity test over 10^4 samples (max abs error < 1e-4 of planet
+      # radius). Break this and the coast you saw from space stops being the
+      # coast you walk."
+      - run: node tools/pixeldiff.js
+
+  touch:
+    name: §M7 · the thumb layer, measured
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: ./.github/actions/chromium
+
+      # Every clause of §M7's gate that is a DOM read, plus §3's "≤3 persistent
+      # elements" and §8 axis 7's "delete the HUD and lose no orientation".
+      - run: node tools/touchgate.js
+
+  gait:
+    name: §M4 · the stance foot stays where it was put
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: ./.github/actions/chromium
+
+      # Four speeds and a Froude sweep. The thing that makes a walk cycle read
+      # as cheap is not visible in a still, so no capture can gate it.
+      - run: node tools/footplant.js

@@ -1,0 +1,76 @@
+# The question a settled frame cannot ask — CLAUDE.md §5.
+#
+# `capture.js` shoots a settled frame; `?bench=1` flies a fixed route; `gates.yml`
+# measures geometry and arithmetic. None of them answers the one thing that
+# actually kills a streaming renderer: **does the cost keep going up?**
+#
+# A quadtree that never retires a tile, a light added per chunk, a geometry
+# cache with no eviction — every one of those looks fine at frame 60 and is
+# fatal at frame 700, and every one is invisible to a measurement taken once.
+# §5 makes the frame budget a correctness property; a leak is the way a budget
+# goes red slowly enough that nobody notices which commit did it.
+#
+# `tools/perfgrow.js` walks the marks and reports draws, triangles, geometries,
+# textures and programs at each. Flat across the settled tail means nothing is
+# accumulating. It takes about seven minutes on a software rasteriser, which is
+# why this is weekly rather than per-push — and seven minutes once a week is a
+# very cheap way to find out that a tile cache stopped evicting.
+#
+# ---------------------------------------------------------------------------
+# ms/f in this job's output means nothing, and the tool says so itself
+#
+# §M0: "Real GPU, not CI SwiftShader." The *counts* are exact on any rasteriser
+# — a draw call is a draw call — and the counts are the entire subject here.
+# The wall-clock column is noise and must never be quoted against §5's table.
+#
+# The second job is `boot.js --all`: every world kind, including the biosphere
+# and gas-giant worlds that cost minutes each. `verify.yml` runs the cheap half
+# on every push and `shaders.yml` runs `--all` per renderer PR; this catches the
+# case where neither has fired for a week.
+
+name: soak
+
+on:
+  schedule:
+    # Mondays, 04:00 UTC
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soak-${{ github.ref }}
+  cancel-in-progress: false   # a weekly run is not superseded by anything
+
+jobs:
+  growth:
+    name: nothing is accumulating (§5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: ./.github/actions/chromium
+
+      # The planet scale, which streams — the only scale where the question
+      # has teeth. Marks are frame counts, not seconds, so the runner's speed
+      # changes how long this takes and not what it measures.
+      - name: planet scale, out to frame 240
+        run: node tools/perfgrow.js '?seed=7&g=12&s=40&p=1' 20,60,120,240
+
+  worlds:
+    name: every world kind still comes up
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: ./.github/actions/chromium
+
+      - name: boot — the expensive tier
+        run: node tools/boot.js --all --timeout 300
