@@ -890,6 +890,176 @@ function suiteSunShadow() {
 }
 
 // ---------------------------------------------------------------------------
+// suite: foliage
+//
+// The trees were shaded by `MeshStandardMaterial` while the ground and every
+// one of 3.5 M grass blades went through §9.2 — so the frame carried two
+// lighting doctrines and the trees were in the losing one. `src/foliage.js` has
+// the argument. These are the properties that must survive it.
+//
+// Most of these read source rather than run code, and that is the right
+// instrument here: the failure modes are a term being deleted (a PBR instinct
+// removing a band edge, §11 lists it) and an attribute being declared but never
+// filled. Neither throws. Both are invisible until someone looks at a frame.
+
+function suiteFoliage() {
+  console.log('\nfoliage — wood and leaves inside §9.2 (§9.2, §9.5)');
+
+  const fol = readFileSync(new URL('../src/foliage.js', import.meta.url), 'utf8');
+  const life = readFileSync(new URL('../src/life.js', import.meta.url), 'utf8');
+
+  // --- 1. the trees are no longer outside the art direction ---------------
+  {
+    ok('life.js no longer shades trees with a PBR material',
+      !/barkMat = new THREE\.MeshStandardMaterial/.test(life)
+      && !/canopyMat = new THREE\.MeshStandardMaterial/.test(life),
+      'bark and canopy go through §9.2 like the ground and the grass');
+    ok('and they take the same light uniform objects the meadow takes',
+      /sunDir: s\.uSunDir/.test(life) && /sunColor: s\.uSunColor/.test(life)
+      && /skyColor: \{ value: s\.horizonColor \}/.test(life),
+      '§M3 one-field doctrine: a tree cannot be lit by yesterday\'s sun');
+    ok('and the same dusk term, computed from the identical expression',
+      /const dusk = Math\.min\(Math\.max\(\(sunY \+ 0\.12\) \/ 0\.24, 0\), 1\);/.test(life)
+      && /canopyMat\.uniforms\.uDusk\.value = dusk/.test(life),
+      'two curves that cross in the evening is not findable from a still');
+  }
+
+  // --- 2. the term the reference says matters most -------------------------
+  //
+  // §9.2 specifies transmission exactly, and sakura-realm's own comment calls
+  // it the single biggest contributor. A leaf that does not transmit reads as
+  // green plastic, and a backlit crown reads as a hole in the sky.
+  {
+    ok('§9.2 · leaves carry subsurface transmission at its stated exponents',
+      /pow\(max\(dot\(V, -uSunDir\), 0\.0\), 3\.2\)/.test(fol)
+      && /pow\(1\.0 - abs\(dot\(N, uSunDir\)\), 2\.2\)/.test(fol),
+      'light coming through, not bouncing off');
+    // The exponent sits on 1 - |dot(N,sun)| rather than on the wrap, and that
+    // is the whole content of "only a surface nearly edge-on transmits".
+    ok('and it is gated edge-on rather than on the diffuse wrap',
+      !/pow\(wrap, 2\.2\)/.test(fol));
+    ok('transmission is its own colour, not the albedo',
+      /f\.trans = mix\(base, vec3\(0\.92, 0\.86, 0\.30\), 0\.55\)/.test(fol),
+      'through chlorophyll twice comes out warm however blue-green the leaf is');
+    ok('and a shadowed crown does not glow as hard as a lit one',
+      /col \+= f\.trans \* trans \* 0\.85 \* uDusk \* mix\(0\.25, 1\.0, sh\)/.test(fol),
+      'the trunk in front of it is in the way');
+    ok('bark does not transmit — wood is not thin',
+      (() => {
+        const bark = fol.slice(fol.indexOf('const BARK_FRAG'));
+        return !bark.includes('f.trans') && !/3\.2\)/.test(bark);
+      })());
+  }
+
+  // --- 3. the three details ported from the reference ----------------------
+  {
+    const two = (fol.match(/if \(dot\(N, V\) < 0\.0\) N = -N;/g) ?? []).length;
+    ok('the two-sided flip is in both shaders',
+      two === 2, `${two} of 2 — "a blade seen from behind must not go black"`);
+    ok('occlusion runs down the axis of both wood and crown',
+      /float ao = mix\(0\.30, 1\.0, pow\(clamp\(vCrown/.test(fol)
+      && /mix\(0\.46, 1\.0, vAO\)/.test(fol),
+      'the reference calls this most of what gives a field depth');
+    ok('and no two clumps return the same green',
+      /float v = mix\(0\.84, 1\.18, var\);/.test(fol));
+  }
+
+  // --- 4. the band edges a PBR instinct deletes (§11) ----------------------
+  {
+    const edges = (fol.match(/smoothstep\(0\.10, 0\.44, wrap\)/g) ?? []).length;
+    const upper = (fol.match(/smoothstep\(0\.52, 0\.86, wrap\)/g) ?? []).length;
+    ok('§9.2 · both materials ramp through three stops, not two',
+      edges === 2 && upper === 2,
+      `${edges} lower and ${upper} upper band edges — §11 lists these by name`);
+    ok('and both wrap the diffuse at §9.2\'s constants',
+      (fol.match(/clamp\(ndl \* 0\.62 \+ 0\.46, 0\.0, 1\.0\)/g) ?? []).length === 2,
+      'plain Lambert at an 8-18° sun reads golden hour as dusk');
+  }
+
+  // --- 5. shadows change hue, they do not go black -------------------------
+  {
+    ok('§M2 · neither material multiplies to zero in full shadow',
+      /mix\(0\.30, 1\.0, sh\)/.test(fol),
+      'a leaf in shadow is still lit by the sky');
+    ok('and what replaces the sun is the sky, so shade goes blue not grey',
+      /col \+= uSkyColor \* 0\.10 \* \(1\.0 - sh\) \* f\.mid/.test(fol)
+      && /col \+= uSkyColor \* 0\.09 \* \(1\.0 - sh\) \* base/.test(fol));
+  }
+
+  // --- 6. the normal transform survives a squashed instance ---------------
+  //
+  // Every clump is scaled non-uniformly on purpose. `mat3(instanceMatrix)` is
+  // R·S, and the normal wants R·S⁻¹ — so the normal is scaled by S⁻¹ twice,
+  // once to undo what is baked in and once for the inverse. Getting this wrong
+  // does not throw; it lights a crown from the wrong side.
+  {
+    const n = (fol.match(/normal \* inv \* inv/g) ?? []).length;
+    ok('instance normals correct for non-uniform scale, in both shaders',
+      n === 2, `${n} of 2 · R·S means the normal wants S⁻¹ applied twice`);
+    ok('and the reciprocal is guarded against a zero-scale instance',
+      (fol.match(/max\(vec3\(length\(nm\[0\]\), length\(nm\[1\]\), length\(nm\[2\]\)\), vec3\(1e-6\)\)/g) ?? []).length === 2);
+  }
+
+  // --- 7. every declared attribute is actually filled ----------------------
+  //
+  // **The trap this suite exists for.** A missing instanced attribute does not
+  // fail — WebGL reads it as zero — and zero is the darkest end of both ramps,
+  // so a mesh that forgot one renders black and nothing anywhere says why. Two
+  // materials are shared across four meshes here, which is exactly the shape
+  // that produces the omission.
+  {
+    const declared = [...fol.matchAll(/attribute float (a\w+);/g)].map((m) => m[1]);
+    ok('the shaders declare the attributes this check knows about',
+      declared.length === 3 && ['aCrown', 'aVar', 'aBarkAO'].every((a) => declared.includes(a)),
+      declared.join(' · '));
+    for (const a of declared) {
+      ok(`life.js fills ${a} on every mesh that can read it`,
+        new RegExp(`setAttribute\\('${a}'`).test(life),
+        'a mesh that forgets one renders black, silently');
+    }
+    // and specifically: the far groves share both materials, so they owe both
+    ok('the far groves fill the attributes they inherit by sharing a material',
+      /gTrunks\.geometry\.setAttribute\('aBarkAO'/.test(life)
+      && /gCrowns\.geometry\.setAttribute\('aCrown'/.test(life)
+      && /gCrowns\.geometry\.setAttribute\('aVar'/.test(life),
+      'they were the mesh most likely to be forgotten');
+  }
+
+  // --- 8. the wood casts, now that there is somewhere to cast -------------
+  {
+    ok('the grown wood and its canopy cast into the sun shadow map',
+      /markCaster\(wood\)/.test(life) && /markCaster\(leaves\)/.test(life),
+      'the longest shadows on any world at a golden-hour sun');
+    ok('and the far groves do not',
+      !/markCaster\(gTrunks\)/.test(life) && !/markCaster\(gCrowns\)/.test(life),
+      'a cylinder and three blobs at 260 m is not an occluder the map resolves');
+    ok('the sampler is passed only when the build has a map',
+      /shadowGLSL: s\.sunShadow \? SHADOW_GLSL : null/.test(life),
+      'a shader that samples a map nobody rendered is worse than one without');
+  }
+
+  // --- 9. the crown envelope cannot divide by zero ------------------------
+  //
+  // The clump's position in the crown comes from `tree.js`'s own light
+  // envelope, so its three radii are divisors on every tip of every tree. A
+  // habit or a gravity that collapsed one of them to zero would produce NaN
+  // positions, and a NaN in an instance matrix takes the whole mesh with it.
+  {
+    let worst = Infinity, worstAt = '';
+    for (const g of [0.16 * 9.80665, 9.80665, 2.4 * 9.80665]) {
+      for (let seed = 1; seed <= 240; seed++) {
+        const t = growTree({ seed, gravity: g, height: 4 + (seed % 26), budget: 240 });
+        for (const [k, v] of [['r', t.crown.r], ['up', t.crown.up], ['down', t.crown.down]]) {
+          if (v < worst) { worst = v; worstAt = `${k} at seed ${seed}, g=${g.toFixed(2)}`; }
+        }
+      }
+    }
+    ok('every crown radius stays positive across 720 trees and three gravities',
+      worst > 1e-3, `smallest ${worst.toFixed(4)} m — ${worstAt}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // suite: landing
 //
 // §9.7's composition constraints, and §3's claim that turning them into a
@@ -8477,6 +8647,7 @@ const suites = {
   ecology: suiteEcology,
   floraUniforms: suiteFloraUniforms,
   sunshadow: suiteSunShadow,
+  foliage: suiteFoliage,
   shadow: suiteShadow,
   climb: suiteClimb,
   conjure: suiteConjure,  troffer: suiteTroffer,
