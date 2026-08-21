@@ -1010,7 +1010,8 @@ function suiteFoliage() {
   {
     const declared = [...fol.matchAll(/attribute float (a\w+);/g)].map((m) => m[1]);
     ok('the shaders declare the attributes this check knows about',
-      declared.length === 3 && ['aCrown', 'aVar', 'aBarkAO'].every((a) => declared.includes(a)),
+      declared.length === 5
+      && ['aCrown', 'aVar', 'aBarkAO', 'aSway', 'aPhase'].every((a) => declared.includes(a)),
       declared.join(' · '));
     for (const a of declared) {
       ok(`life.js fills ${a} on every mesh that can read it`,
@@ -1038,7 +1039,58 @@ function suiteFoliage() {
       'a shader that samples a map nobody rendered is worse than one without');
   }
 
-  // --- 9. the crown envelope cannot divide by zero ------------------------
+  // --- 9. the wood moves, and moves like wood -----------------------------
+  //
+  // §M3's doctrine names foliage second in the list of things that sample the
+  // one wind field, and nothing in `life.js` sampled it except the falling
+  // petals. A world had 3.5 M grass blades laid over by a gust front, petals
+  // drifting downwind on that same field, and the trees they fell from standing
+  // rigid in the middle of it.
+  {
+    ok('§M3 · the wood samples the one wind field',
+      /s\.sampleWind\?\.\(cw \? cw\.x : 0, cw \? cw\.z : 0, 10\)/.test(life),
+      'at 10 m, where §M3 normalises its boundary layer');
+    ok('and bark and canopy share the wind objects, not just the values',
+      (life.match(/wind: uWind,/g) ?? []).length === 1
+      && /const uWind = \{ value: new THREE\.Vector2\(\) \};/.test(life),
+      'leaves leaning one way and branches the other is worse than neither');
+
+    // "roots barely move and tips whip", and the one variable that says which
+    ok('§M3 · sway weight comes from the bone\'s radius against the trunk\'s',
+      /const thin = 1 - Math\.min\(rr \/ Math\.max\(t\.trunkRadius, 1e-4\), 1\);/.test(life)
+      && /woodSway\[w\] = thin \* thin \* thin;/.test(life),
+      'a bole is rigid because it is thick, a twig free because it is thin');
+    ok('and it is monotone: thicker is always stiffer',
+      (() => {
+        const wOf = (rr, r0) => { const t = 1 - Math.min(rr / Math.max(r0, 1e-4), 1); return t * t * t; };
+        for (let i = 1; i <= 40; i++) if (wOf(i / 40, 1) > wOf((i - 1) / 40, 1)) return false;
+        return Math.abs(wOf(1, 1)) < 1e-9 && Math.abs(wOf(0, 1) - 1) < 1e-9;
+      })(),
+      'trunk radius scores 0, a zero-radius twig scores 1, nothing in between inverts');
+
+    ok('§M3 · each tree rings at its own frequency, seeded not random',
+      /const treePhase = \(\(hash\(p\.seed >>> 0, 0x5107\) >>> 8\) & 0xffff\) \/ 0xffff;/.test(life),
+      '§2.3 — a wood that moves in phase reads as one object breathing');
+    ok('and the shader beats two frequencies rather than running a metronome',
+      /sin\(t \* 0\.9\) \* 0\.62 \+ sin\(t \* 2\.3 \+ 1\.7\) \* 0\.38/.test(fol));
+
+    ok('a bone bends from its joint, not along its whole length',
+      /swayOffset\(aSway, aPhase, position\.y\)/.test(fol),
+      'local y runs 0 at the joint to 1 at the far end — that is a cantilever');
+    ok('and a leaf clump translates instead, because a cluster does not shear',
+      /swayOffset\(aSway, aPhase, 1\.0\)/.test(fol),
+      'which also keeps the branch warp-coherent');
+
+    // The amplitude is stated rather than derived, and the file says so. This
+    // check exists so that stays true — a number that quietly becomes physics
+    // in a later edit without acquiring a source is the failure mode.
+    ok('the sway amplitude is a named constant, labelled as stated not derived',
+      /const float SWAY_M_PER_MS = 0\.035;/.test(fol)
+      && /Stated, not derived/.test(fol),
+      '0.035 m per m/s — about 0.2 m on a 12 m tree in a 6 m/s wind');
+  }
+
+  // --- 10. the crown envelope cannot divide by zero -----------------------
   //
   // The clump's position in the crown comes from `tree.js`'s own light
   // envelope, so its three radii are divisors on every tip of every tree. A

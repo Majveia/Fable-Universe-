@@ -95,6 +95,62 @@ export const FOLIAGE_GLSL = /* glsl */`
   }
 `;
 
+/**
+ * Sway, from the one wind field. CLAUDE.md §M3.
+ *
+ * §M3's doctrine is a single sentence and it is unambiguous: *"One global wind
+ * field sampled by everything: grass, foliage, dust, spores, cloth, water
+ * ripple, cloud advection, smoke."* Foliage is named in it, second. It was not
+ * sampling anything — the only thing in `life.js` that touched the wind was the
+ * falling petals, so a world had three and a half million grass blades laid
+ * over by a gust front, petals drifting downwind on the same field, and the
+ * trees they fell from standing perfectly rigid in the middle of it. §9's north
+ * star is that the wind and the light do the acting, and half the actors were
+ * not moving.
+ *
+ * Two properties are worth more here than amplitude:
+ *
+ * **Roots barely move and tips whip.** §M3 asks for a logarithmic boundary
+ * layer, and the same statement holds inside a tree: sway weight comes from the
+ * element's own radius against the trunk's, so a bole is rigid and a twig is
+ * free. It is not a curve anyone tuned — it is the one variable that separates
+ * the two cases, and `tree.js` already knows it for every bone.
+ *
+ * **Each tree rings at its own frequency after the front passes.** That is
+ * §M3's gate clause for grass, and a wood that all moves in phase reads as a
+ * single object breathing rather than as many trees. One per-tree phase does
+ * it, and it costs one float.
+ *
+ * The amplitude constant is stated rather than derived, and this comment is
+ * where that is admitted. A real deflection would come from the drag on the
+ * crown against the limb's second moment of area, and `tree.js` has the radii
+ * to do it — but it would also need a drag coefficient and a modulus for alien
+ * wood, neither of which this project has any honest source for. So: 0.035 m
+ * of tip travel per m/s, which puts a 12 m tree at about 0.2 m in a 6 m/s wind
+ * and looks right. It is the same kind of number as `paint.js`'s 6 m contact
+ * softening, and it is labelled the same way.
+ */
+export const SWAY_GLSL = /* glsl */`
+  uniform vec2 uWind;      // m/s, the mean flow at this stand
+  uniform float uGust;     // 0 calm .. 1 inside a front
+  uniform float uSwayTime;
+  attribute float aSway;   // 0 rigid bole .. 1 free twig
+  attribute float aPhase;  // this tree's own clock
+
+  // metres of travel per m/s of wind, at aSway = 1. Stated, not derived.
+  const float SWAY_M_PER_MS = 0.035;
+
+  vec3 swayOffset(float weight, float phase, float up) {
+    float t = uSwayTime * (0.9 + 0.55 * phase) + phase * 6.2831;
+    // Two frequencies, not one. A single sine is a metronome; the beat between
+    // a slow sway and a faster ring is what reads as a tree rather than as an
+    // oscillator, and it is why the front and the recovery look different.
+    float ring = sin(t * 0.9) * 0.62 + sin(t * 2.3 + 1.7) * 0.38;
+    float amp = weight * up * SWAY_M_PER_MS * (0.55 + 0.45 * ring) * (1.0 + uGust * 1.6);
+    return vec3(uWind.x * amp, 0.0, uWind.y * amp);
+  }
+`;
+
 const LEAF_VERT = /* glsl */`
   attribute float aCrown;
   attribute float aVar;
@@ -102,12 +158,17 @@ const LEAF_VERT = /* glsl */`
   varying vec3 vN;
   varying float vCrown;
   varying float vVar;
+  ${SWAY_GLSL}
 
   void main() {
     vCrown = aCrown;
     vVar = aVar;
     vec4 wp = instanceMatrix * vec4(position, 1.0);
     vW = (modelMatrix * wp).xyz;
+    // A leaf cluster on a twig translates; it does not shear. So the whole
+    // clump takes one offset — which also makes this warp-coherent, since every
+    // vertex of a clump evaluates the same branch with the same arguments.
+    vW += swayOffset(aSway, aPhase, 1.0);
     // The clump is scaled non-uniformly, so the normal needs the inverse
     // transpose of the instance matrix and not the matrix. Skipping this is the
     // classic instancing bug and it shows up as a crown lit from the wrong side
@@ -192,11 +253,23 @@ const BARK_VERT = /* glsl */`
   varying vec3 vW;
   varying vec3 vN;
   varying float vAO;
+  ${SWAY_GLSL}
 
   void main() {
     vAO = aBarkAO;
     vec4 wp = instanceMatrix * vec4(position, 1.0);
     vW = (modelMatrix * wp).xyz;
+    // A bone is a unit ring translated so its origin is its base, so local
+    // position.y runs 0 at the joint to 1 at the far end: bending by that
+    // makes each segment a cantilever hinged where it meets its parent, which
+    // is what a branch is.
+    //
+    // The bend does not accumulate along a limb — every bone was placed from
+    // its own precomputed start, so displacing one does not carry its children.
+    // What stands in for that is aSway itself, which is smaller for the thick
+    // bones near the trunk, so the visible curve still grows outward. It is an
+    // approximation and this is the sentence that says so.
+    vW += swayOffset(aSway, aPhase, position.y);
     // a bone is a unit ring scaled to its own radius and length, so the same
     // inverse-scale correction the leaves need applies here and matters more:
     // a segment's length-to-radius ratio runs from about 3 to about 40
@@ -277,13 +350,17 @@ const BARK_FRAG = (shadowGLSL) => /* glsl */`
  * tree cannot be lit by yesterday's sun because there is only one sun object
  * and everything on the world points at it.
  */
-function shared({ sunDir, sunColor, skyColor, cam, dusk }) {
+function shared({ sunDir, sunColor, skyColor, cam, dusk, wind, gust, swayTime }) {
   return {
     uSunDir: sunDir,
     uSunColor: sunColor,
     uSkyColor: skyColor,
     uCam: cam,
     uDusk: dusk ?? { value: 1 },
+    // the one wind field, written once a frame by `life.js` for the whole wood
+    uWind: wind ?? { value: new THREE.Vector2() },
+    uGust: gust ?? { value: 0 },
+    uSwayTime: swayTime ?? { value: 0 },
   };
 }
 

@@ -158,11 +158,22 @@ export function addLife(s) {
   //
   // The shadow sampler is passed only if this build has a map. It does now: the
   // map was separated from `?paint=` and ships under its own flag.
+  //
+  // The wind is three uniform objects rather than three numbers, and they are
+  // *shared* between the bark and the canopy: a tree whose leaves lean one way
+  // and whose branches lean the other is worse than a tree that does not move.
+  // §M3's one-field doctrine, at the scale of one object.
+  const uWind = { value: new THREE.Vector2() };
+  const uGust = { value: 0 };
+  const uSwayTime = { value: 0 };
   const lightArgs = {
     sunDir: s.uSunDir,
     sunColor: s.uSunColor,
     skyColor: { value: s.horizonColor },
     cam: s.uCam,
+    wind: uWind,
+    gust: uGust,
+    swayTime: uSwayTime,
     shadowGLSL: s.sunShadow ? SHADOW_GLSL : null,
     shadowUniforms: s.sunShadow ? s.sunShadow.uniforms : null,
   };
@@ -284,6 +295,15 @@ export function addLife(s) {
   // the reference's per-blade ao term applied to wood, and it costs one
   // attribute and no pass.
   const woodAO = new Float32Array(Math.max(segTotal, 1));
+  // Sway weight, and the one variable it comes from.
+  //
+  // §M3 asks for a boundary layer in which "roots barely move and tips whip",
+  // and inside a tree the variable that separates those two cases is the bone's
+  // own radius against the trunk's. A bole is rigid because it is thick; a twig
+  // is free because it is thin. No curve is being tuned here — `tree.js`
+  // already knows every radius, and this is the one ratio that matters.
+  const woodSway = new Float32Array(Math.max(segTotal, 1));
+  const woodPhase = new Float32Array(Math.max(segTotal, 1));
   const tipsAll = [];
   const woodUp = new THREE.Vector3(0, 1, 0);
   const woodDir = new THREE.Vector3();
@@ -293,6 +313,11 @@ export function addLife(s) {
     const t = grown[ti], p = sites[ti];
     const sy = Math.sin(p.yaw), cy = Math.cos(p.yaw);
     const g2 = t.seg;
+    // This tree's own clock, from its own seed. §M3's gate clause for grass —
+    // "blades ring at their own frequency after the front passes" — is the same
+    // requirement one object class up: a wood that moves in phase reads as one
+    // object breathing, not as many trees.
+    const treePhase = ((hash(p.seed >>> 0, 0x5107) >>> 8) & 0xffff) / 0xffff;
     for (let i = 0; i < t.segments; i++) {
       // the tree's own frame, rotated into the world by the trunk's yaw
       const ax = g2.x0[i] * cy - g2.z0[i] * sy, az = g2.x0[i] * sy + g2.z0[i] * cy;
@@ -308,6 +333,11 @@ export function addLife(s) {
       // normalised height up this tree, so the flare darkens the bole and not
       // a limb that happens to droop low
       woodAO[w] = Math.min(g2.y0[i] / Math.max(t.height, 1e-3), 1);
+      // thin against the trunk, cubed: a limb half the trunk's radius moves an
+      // eighth as much, which is steep enough that a bole reads as rigid
+      const thin = 1 - Math.min(rr / Math.max(t.trunkRadius, 1e-4), 1);
+      woodSway[w] = thin * thin * thin;
+      woodPhase[w] = treePhase;
       wood.setMatrixAt(w++, d.matrix);
     }
     // Foliage LOD — §9.5's law again, one object class over.
@@ -357,12 +387,14 @@ export function addLife(s) {
       const dy = tip.y - t.crown.y;
       const vy = dy / Math.max(dy > 0 ? t.crown.up : t.crown.down, 1e-3);
       tipsAll.push(p.x + tx, p.y + tip.y, p.z + tz, grow,
-        Math.min(Math.hypot(rad, vy), 1));
+        Math.min(Math.hypot(rad, vy), 1), treePhase);
     }
   }
   wood.count = w;
   wood.instanceMatrix.needsUpdate = true;
   wood.geometry.setAttribute('aBarkAO', new THREE.InstancedBufferAttribute(woodAO, 1));
+  wood.geometry.setAttribute('aSway', new THREE.InstancedBufferAttribute(woodSway, 1));
+  wood.geometry.setAttribute('aPhase', new THREE.InstancedBufferAttribute(woodPhase, 1));
   // §9.2's shadow is opt-in by layer, and until the commit before this one
   // there was no map to opt into. A stand of trees at a golden-hour sun throws
   // the longest shadows on the world, and they are most of what makes a wood
@@ -375,25 +407,36 @@ export function addLife(s) {
   // and a hat: the outline of the leaves is the outline of the branching.
   if (tipsAll.length) {
     const leafGeo = new THREE.IcosahedronGeometry(1, 0);
-    const nLeaf = tipsAll.length / 5;
+    const ST = 6;                                  // stride: xyz, grow, crown, phase
+    const nLeaf = tipsAll.length / ST;
     const leaves = new THREE.InstancedMesh(leafGeo, canopyMat, nLeaf);
     const leafCrown = new Float32Array(nLeaf);
     const leafVar = new Float32Array(nLeaf);
+    const leafSway = new Float32Array(nLeaf);
+    const leafPhase = new Float32Array(nLeaf);
     for (let i = 0; i < nLeaf; i++) {
-      const grow = tipsAll[i * 5 + 3];
+      const grow = tipsAll[i * ST + 3];
       const cw = r.float(0.55, 1.15) * grow;
-      d.position.set(tipsAll[i * 5], tipsAll[i * 5 + 1], tipsAll[i * 5 + 2]);
+      d.position.set(tipsAll[i * ST], tipsAll[i * ST + 1], tipsAll[i * ST + 2]);
       d.rotation.set(r.float(0, 3.1), r.float(0, 6.28), 0);
       d.scale.set(cw, cw * r.float(0.6, 0.95), cw);
       d.updateMatrix();
       leaves.setMatrixAt(i, d.matrix);
-      leafCrown[i] = tipsAll[i * 5 + 4];
+      leafCrown[i] = tipsAll[i * ST + 4];
       // §9.5: no two clumps the same green
       leafVar[i] = r.next();
+      // Every clump hangs on a twig, so every clump is free to move — but the
+      // outside of a crown is more exposed than its interior, and the envelope
+      // score already says which is which. That is the same shelter term §M3
+      // applies to terrain, at the scale of one tree.
+      leafSway[i] = 0.72 + 0.28 * leafCrown[i];
+      leafPhase[i] = tipsAll[i * ST + 5];
     }
     leaves.instanceMatrix.needsUpdate = true;
     leaves.geometry.setAttribute('aCrown', new THREE.InstancedBufferAttribute(leafCrown, 1));
     leaves.geometry.setAttribute('aVar', new THREE.InstancedBufferAttribute(leafVar, 1));
+    leaves.geometry.setAttribute('aSway', new THREE.InstancedBufferAttribute(leafSway, 1));
+    leaves.geometry.setAttribute('aPhase', new THREE.InstancedBufferAttribute(leafPhase, 1));
     markCaster(leaves);
     s.scene.add(leaves);
   }
@@ -600,10 +643,18 @@ export function addLife(s) {
     // it sits near the lit end of the envelope. Both are honest at 260 m and
     // neither is ever seen closer.
     const gTrunkAO = new Float32Array(nFar).fill(0.92);
+    // The far stands sway too, and barely: at 260 m and beyond a 0.2 m tip
+    // travel is well under a pixel, so this is here to keep the attribute
+    // filled rather than to be seen. A trunk is rigid; a crown is not.
+    const gTrunkSway = new Float32Array(nFar).fill(0.05);
+    const gPhaseT = new Float32Array(nFar);
+    for (let i = 0; i < nFar; i++) gPhaseT[i] = r.next();
     const nCrown = nFar * (conifer ? 1 : 3);
     const gCrownT = new Float32Array(nCrown).fill(0.86);
     const gCrownV = new Float32Array(nCrown);
-    for (let i = 0; i < nCrown; i++) gCrownV[i] = r.next();
+    const gCrownSway = new Float32Array(nCrown).fill(0.85);
+    const gPhaseC = new Float32Array(nCrown);
+    for (let i = 0; i < nCrown; i++) { gCrownV[i] = r.next(); gPhaseC[i] = r.next(); }
     let gt = 0, gc = 0;
     for (let i = 0; i < nFar * 3 && gt < nFar; i++) {
       const c = farCenters[i % Math.max(farCenters.length, 1)];
@@ -643,8 +694,12 @@ export function addLife(s) {
     gTrunks.count = gt;
     gCrowns.count = gc;
     gTrunks.geometry.setAttribute('aBarkAO', new THREE.InstancedBufferAttribute(gTrunkAO, 1));
+    gTrunks.geometry.setAttribute('aSway', new THREE.InstancedBufferAttribute(gTrunkSway, 1));
+    gTrunks.geometry.setAttribute('aPhase', new THREE.InstancedBufferAttribute(gPhaseT, 1));
     gCrowns.geometry.setAttribute('aCrown', new THREE.InstancedBufferAttribute(gCrownT, 1));
     gCrowns.geometry.setAttribute('aVar', new THREE.InstancedBufferAttribute(gCrownV, 1));
+    gCrowns.geometry.setAttribute('aSway', new THREE.InstancedBufferAttribute(gCrownSway, 1));
+    gCrowns.geometry.setAttribute('aPhase', new THREE.InstancedBufferAttribute(gPhaseC, 1));
     // The far stands do not cast. They begin at 260 m and the shadow map spans
     // 480 m about the camera, so most of them are outside it — and the ones
     // that are not are approximated by a cylinder and three blobs, which is
@@ -871,6 +926,26 @@ export function addLife(s) {
       const dusk = Math.min(Math.max((sunY + 0.12) / 0.24, 0), 1);
       barkMat.uniforms.uDusk.value = dusk;
       canopyMat.uniforms.uDusk.value = dusk;
+
+      // §M3's one field, arriving at the wood.
+      //
+      // One sample a frame for the whole stand, taken at the eye rather than
+      // per tree. That is deliberate and it is the reference's own trick: a
+      // gust cell is tens of metres across and a wood is not much wider, so
+      // sampling per tree would buy a difference nobody can see for one field
+      // evaluation per tree per frame. Sampling once is what makes this
+      // effectively free — and it is the same warp-coherence argument §M3 makes
+      // for the wind fallback, moved to the CPU.
+      //
+      // The height is 10 m because that is where §M3 normalises its boundary
+      // layer, and a canopy is the part of a tree that actually lives up there.
+      uSwayTime.value = time;
+      const cw = s.camLocal?.();
+      const wind = s.sampleWind?.(cw ? cw.x : 0, cw ? cw.z : 0, 10);
+      if (wind) {
+        uWind.value.set(wind.x, wind.z);
+        uGust.value = wind.front ?? 0;
+      }
       if (petalDrift) {
         const u = petalDrift.material.uniforms;
         u.uTime.value = time;
