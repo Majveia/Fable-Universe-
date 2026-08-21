@@ -1,7 +1,7 @@
 # The instruments that were only ever run by hand.
 #
 # `tools/` holds twenty-two programs. Before this file, CI ran four of them.
-# The three below need a browser but do *not* need real silicon, they finish in
+# The four below need a browser but do *not* need real silicon, they finish in
 # well under two minutes each, and each answers a clause of the constitution
 # that no other gate reaches:
 #
@@ -9,6 +9,9 @@
 #                     numbers — "10^4 samples, max abs error < 1e-4 of planet
 #                     radius" — and §11's named trap: "will look like a
 #                     rendering bug and cost a day"
+#   pixeldiff   §M3   the density law's two sides: `Math.pow(x, 1.5)` on the
+#     --suite         CPU against `x·x·inversesqrt(x)` in the shader, which §M3
+#     meadow          makes a deliberate pair and nothing used to check
 #   touchgate   §M7   "controls ≤ 14% of screen area, entirely within the
 #                     bottom 30%, never co-present with keyboard hints, fade
 #                     after 3 s idle". Every clause but the last is a DOM read.
@@ -16,8 +19,8 @@
 #                     instrument here — a screenshot cannot show it and the
 #                     eye is unreasonably good at it.
 #
-# One job each, deliberately. Three steps in one job report as one red X and
-# whichever failed first; three jobs report which of the three failed, which is
+# One job each, deliberately. Four steps in one job report as one red X and
+# whichever failed first; four jobs report which of the four failed, which is
 # the whole content of the message.
 #
 # ---------------------------------------------------------------------------
@@ -81,6 +84,28 @@ jobs:
       # radius). Break this and the coast you saw from space stops being the
       # coast you walk."
       - run: node tools/pixeldiff.js
+
+  meadow:
+    name: §M3 · the density law, both sides of it
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: ./.github/actions/chromium
+
+      # §M3 fixes the exponent at exactly 1.5 so the *shader* can evaluate
+      # `x·x·inversesqrt(x)` — three single-cycle instructions against ten for a
+      # general pow(), on ~12 M vertices a frame. `src/meadow.js` calls
+      # Math.pow. They are two different functions by design, they agree to
+      # 1.3e-7 today, and nothing but this required them to keep agreeing.
+      #
+      # `determinism.yml` is why it exists: its digest moved `meadow · §M3`
+      # across a V8 version and there was nothing to say whether the shader had
+      # moved with it. Same reasoning as §2.7's height field, one milestone over.
+      - run: node tools/pixeldiff.js --suite meadow
 
   touch:
     name: §M7 · the thumb layer, measured

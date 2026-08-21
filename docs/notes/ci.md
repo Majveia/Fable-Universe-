@@ -16,7 +16,7 @@ holds", when nine of its clauses were never asked about.
 |---|---|---|---|
 | **constitution** | every push, every PR | ~10 s | §2.1 assets · §2.2 dependencies · §2.3 entropy · §4 · §10 provenance · the generators have not drifted |
 | **verify** | every push, every PR | ~90 s ∥ ~4 min | the arithmetic (§7.3) · every module parses · every exported shader compiles · every scale builds |
-| **gates** | PR touching `src/` | ~2 min ×3 | §2.7 height-field parity · §M7 the thumb layer · §M4 the stance foot |
+| **gates** | PR touching `src/` | ~2 min ×4 | §2.7 height-field parity · §M3 the density law · §M7 the thumb layer · §M4 the stance foot |
 | **shaders** | PR touching the renderer | ~40 min | §M0's compile gate: every shader **as assembled**, all six scales, every world kind |
 | **determinism** | PR touching `src/`, weekly | ~13 runner-min | §2.3 across Linux, macOS and Windows · and, reported not gated, across three V8 versions |
 | **soak** | weekly | ~15 min | §5: nothing accumulates out to frame 240 · every world kind still boots |
@@ -36,8 +36,9 @@ seconds whether or not a browser is downloading beside them.
 | §2.2 zero dependencies | `invariants.js` | a manifest anywhere, `node_modules`, a CDN importmap entry, or any bare specifier the browser cannot resolve |
 | §2.3 determinism (code) | `invariants.js` | a ratchet, not a ban — every legitimate clock read is listed with a reason, and a *new* one fails |
 | §2.3 determinism (across time) | `digest.js --expect` | 6,181 samples of the pure generation path against a committed baseline |
-| §2.3 determinism (across machines) | `determinism.yml` | **measured, not enforced** — x64 agrees across Linux and Windows; arm64 does not. See the footnote below |
+| §2.3 determinism (across machines) | `determinism.yml` | **gated per architecture**, which is what §2.3 now promises: two machines of one architecture must agree. Cross-architecture divergence is computed and reported. See the footnote below |
 | §2.7 GLSL↔JS parity | `pixeldiff.js` | §2.7 specifies it in numbers; §11 says the drift "will look like a rendering bug and cost a day" |
+| §M3 the density law's two sides | `pixeldiff.js --suite meadow` | `Math.pow(x, 1.5)` against `x·x·inversesqrt(x)`, 10⁴ samples × 4 rings, plus the structural claim that the keep ratio never exceeds one |
 | §4 no meteor mechanic | `invariants.js` | `_carveCrater` may be reached from generation and nowhere else |
 | §5 nothing accumulates | `perfgrow.js` | counts, not milliseconds — see below |
 | §7.3 the maths | `verify.js` | each claim computed a second, independent way |
@@ -128,33 +129,41 @@ versioned with the engine.
    exactly `1.5` so the *shader* evaluates it as `x·x·inversesqrt(x)` — three
    single-cycle instructions instead of a general `pow()`. The CPU side calls
    `Math.pow`. Those are two different functions that agree today. `meadow`
-   moved across engines, and unlike the height field (§2.7, `pixeldiff.js`)
-   **there is no GLSL↔JS parity test for the meadow** — `pixeldiff.js` covers
-   `terrain` and `fragility` only. That gap is now the most interesting one on
-   this page.
+   moved across engines, and unlike the height field there was **no GLSL↔JS
+   parity test for the meadow** at all. There is now: `pixeldiff.js --suite
+   meadow`, 10⁴ samples across all four rings, max |Δ| 1.3e-7 today, plus the
+   structural claim `src/meadow.js` states in words and nothing checked — that
+   the keep ratio never exceeds one, because "if it ever exceeded 1 the shader
+   would be being asked to invent blades it does not have". Made to fail two
+   ways before being believed: the CPU exponent nudged to 1.51 (2.4e-3, four
+   rings red) and the shader's clamp removed (the ratio reached 28,636).
 3. **Nobody introduced this.** It is a standing property of the codebase that
    went unmeasured until there was an instrument. Every gate above it stayed
    green throughout.
 
-### Why the check reports instead of gating
+### How it was resolved
 
-It was built to gate. Its first run argued it out of it.
+Asked, per CLAUDE.md §12, and answered: **relax the clause.** §2.3 now promises
+bit-identity *per CPU architecture* and says why, and §11 carries the boundary
+that goes with it — a quantity reaching the frame through `sin`, `cos`, `exp`
+or `pow` may land a last bit apart; one reaching a *count*, an *index* or a
+*branch* must not, and must be quantised before it crosses that line. A blade
+count decided by a last bit is a visible pop; a hash bucket decided by one is a
+different world.
 
-A gate that is permanently red for a standing property is exactly what this
-page's own rule warns about: it teaches everyone to skim past red. And
-CLAUDE.md §12 says to stop and ask when an invariant in §2 would have to bend.
-This one bends whichever way it is resolved —
+So `compare` is a gate again, on the promise the constitution actually makes:
+**two machines of the same architecture must produce one universe.** That is
+not the weaker test it sounds like. Every real leak this workflow was built to
+catch — an unseeded draw, an iteration-order dependency, a clock in a
+generation path — shows up *within* an architecture, because that is where two
+runs of the same code are supposed to be identical. What it stopped doing is
+failing for the one thing nobody can fix from inside the repo.
 
-- **relax the clause**, and say plainly that bit-identity is per-architecture;
-- **or change the generators**, quantising the transcendental-heavy paths to a
-  tolerance the last bit cannot cross;
-- **or narrow the promise**, and gate only same-architecture agreement, which
-  still catches a real leak.
-
-— and none of those is a call CI gets to make. So the comparison runs, the
-answer lands in the run summary and here, and the job's status means only "the
-comparison ran". The last line of the compare step turns back into a gate the
-day the question is settled.
+Cross-architecture divergence is still computed, still printed, still written
+to the summary — as a finding, which is what it is. Both paths were tested
+before being believed: today's real digests pass with the split reported, and a
+fabricated second x64 machine disagreeing with the first fails with the suite
+named.
 
 ---
 

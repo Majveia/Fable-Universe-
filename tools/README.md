@@ -200,6 +200,39 @@ The control still clears §7.3's bar, which is the point: half a percent of
 run-to-run noise passes a 97% threshold and quietly masks any regression
 smaller than itself. Exact is worth having.
 
+## `pixeldiff.js` — the two parity gates
+
+```bash
+node tools/pixeldiff.js                      # both
+node tools/pixeldiff.js --suite terrain      # §2.7, the height field
+node tools/pixeldiff.js --suite meadow       # §M3, the density law
+```
+
+`terrain` is §2.7 itself, specified in numbers: 10⁴ samples, max abs error
+below 1e-4 of planet radius. Break it and the coast you saw from space stops
+being the coast you walk.
+
+`meadow` is the same shape of exposure one milestone over, and it exists
+because `determinism.yml` found the hole. §M3 fixes the density exponent at
+**exactly 1.5** so the *shader* can evaluate `x·x·inversesqrt(x)` — three
+single-cycle instructions against roughly ten for a general `pow()`, on ~12 M
+vertices a frame — while `src/meadow.js` calls `Math.pow`. Two different
+functions, on purpose. `src/meadow.js` said in its own header that "the suite
+checks the two agree to float precision", which was true about the intention
+and about nothing else. The digest then moved `meadow · §M3` across a V8
+version and there was nothing to say whether the shader had moved with it.
+
+It measures three things across 10⁴ log-spaced distances × 4 rings:
+`meadowFalloff` against `density()/ringB()`, the keep ratio against
+`keepProbability()`, and — at zero tolerance, because it is structural rather
+than numeric — that the ratio **never exceeds one**. `src/meadow.js` states
+that last one outright: "if it ever exceeded 1 the shader would be being asked
+to invent blades it does not have." Max |Δ| is 1.3e-7 today.
+
+Both suites read their GLSL **through the page's own import map**, never from a
+copy kept in the tool. A copy would pass forever and prove nothing about the
+shader anybody runs.
+
 ## `capture.js` — the numbered set
 
 ```bash

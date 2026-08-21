@@ -118,32 +118,26 @@ jobs:
           merge-multiple: true
 
       # ---------------------------------------------------------------------
-      # This reports. It does not gate, and that is not the shape it was built
-      # in — it is the shape its first run argued it into.
+      # A gate again, on the promise §2.3 now actually makes.
       #
-      # The first run said:
+      # It was built to gate on "every machine". Its first run said that was
+      # false — same V8, same pinned Node, and darwin/arm64 diverged from
+      # linux/x64 and win32/x64 in `zeldovich`, `starlight` and `tree`, the
+      # three suites that lean on sin, cos, exp and pow. Windows agreed with
+      # Linux bit for bit, so it is the architecture: V8's fdlibm port is one
+      # source tree compiled per target, and arm64's fused multiply-add rounds
+      # `a*b + c` once where two instructions round twice.
       #
-      #   fc470bc5a2e0a2a1  darwin/arm64  V8 12.4.254.21-node.56
-      #   fea8833953d8ca97  linux/x64     V8 12.4.254.21-node.56
-      #   fea8833953d8ca97  win32/x64     V8 12.4.254.21-node.56
+      # §2.3 now says bit-identity per architecture, so that is what this
+      # enforces — and it is not a weaker test than it sounds. Every real
+      # determinism leak this workflow was built to catch (an unseeded draw, an
+      # iteration-order dependency, a clock in a generation path) shows up
+      # *within* an architecture, because that is where two runs of the same
+      # code are supposed to be identical. What it stops doing is failing for
+      # the one thing nobody can fix from inside the repo.
       #
-      # Linux and Windows agree bit for bit. macOS, on the *same V8*, does not
-      # — in `zeldovich`, `starlight` and `tree`, the three transcendental-heavy
-      # suites. §2.3 says "the same universe on every machine, forever", and on
-      # the evidence that is not true today.
-      #
-      # Which means a red X here is not a defect anybody introduced. It is a
-      # standing property of the codebase, and a gate that is permanently red
-      # for a standing property is the thing this workflow's own header warns
-      # about: it trains everyone to skim past red.
-      #
-      # CLAUDE.md §12 says to stop and ask when an invariant in §2 would have to
-      # bend. This one bends either way — relax the clause to name an
-      # architecture, or change the generators so it holds — and neither is a
-      # call CI gets to make. So the comparison runs, the answer goes in the
-      # summary and in `docs/notes/ci.md`, and the job's status means only
-      # "the comparison ran". Turn the last line back on the day the question
-      # is settled.
+      # Cross-architecture divergence is still computed, still printed, and
+      # still written to the summary — as a finding, which is what it is.
       # ---------------------------------------------------------------------
       - name: compare, and say what moved
         run: |
@@ -161,32 +155,61 @@ jobs:
             for (const r of runs) {
               out.push(`| ${where(r)} | ${r.machine.node} | \`${r.machine.v8}\` | \`${r.sha256.slice(0, 16)}\` |`);
             }
-            // the reference is the digest the most machines produced, not the
-            // one that sorts first: "1 of 3 disagrees with x64" is the finding,
-            // and "2 of 3 disagree with arm64" is the same fact told backwards
-            const tally = new Map();
-            for (const r of runs) tally.set(r.sha256, (tally.get(r.sha256) || 0) + 1);
-            const winner = [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0];
-            const first = runs.find((r) => r.sha256 === winner);
-            const odd = runs.filter((r) => r.sha256 !== winner);
             out.push("");
-            if (!odd.length) {
-              out.push(`**${runs.length} machines, one universe.** ${first.samples} samples across ${Object.keys(first.suites).length} suites.`);
+
+            // ---- the gate: within one architecture, byte for byte ----
+            const byArch = new Map();
+            for (const r of runs) byArch.set(r.machine.arch, [...(byArch.get(r.machine.arch) || []), r]);
+            const leaks = [];
+            for (const [arch, group] of byArch) {
+              if (group.length < 2) continue;              // nothing to compare
+              const odd = group.filter((r) => r.sha256 !== group[0].sha256);
+              if (odd.length) leaks.push({ arch, ref: group[0], odd });
+            }
+
+            // ---- the finding: between architectures ----
+            const archDigest = [...byArch.entries()].map(([arch, g]) => [arch, g[0]]);
+            const split = new Set(archDigest.map(([, r]) => r.sha256)).size > 1;
+
+            if (!leaks.length) {
+              const arches = [...byArch.keys()].join(", ");
+              out.push(`**Within each architecture, one universe.** ${runs[0].samples} samples across `
+                + `${Object.keys(runs[0].suites).length} suites · ${arches}.`);
             } else {
-              out.push(`**${odd.length} of ${runs.length} machines disagree with ${where(first)}.**`);
+              out.push("**§2.3 · a determinism leak.** Two machines of the *same* architecture disagree.");
               out.push("");
-              out.push("| machine | suites that moved |");
+              out.push("| architecture | machine | suites that moved |");
+              out.push("|---|---|---|");
+              for (const { arch, ref, odd } of leaks) {
+                for (const r of odd) {
+                  const moved = Object.keys(ref.suites).filter((n) => ref.suites[n]?.sha256 !== r.suites[n]?.sha256);
+                  out.push(`| ${arch} | ${where(r)} vs ${where(ref)} | ${moved.join(", ") || "(the roll-up only)"} |`);
+                }
+              }
+            }
+
+            if (split) {
+              out.push("");
+              out.push("Across architectures the digests differ, which §2.3 expects and names. Detail:");
+              out.push("");
+              out.push("| architecture | suites differing from " + archDigest[0][0] + " |");
               out.push("|---|---|");
-              for (const r of odd) {
-                const moved = Object.keys(first.suites).filter((n) => first.suites[n]?.sha256 !== r.suites[n]?.sha256);
-                out.push(`| ${where(r)} | ${moved.join(", ") || "(the roll-up only)"} |`);
+              const ref = archDigest[0][1];
+              for (const [arch, r] of archDigest.slice(1)) {
+                const moved = Object.keys(ref.suites).filter((n) => ref.suites[n]?.sha256 !== r.suites[n]?.sha256);
+                out.push(`| ${arch} | ${moved.join(", ") || "(the roll-up only)"} |`);
               }
               out.push("");
-              out.push("Reported, not gated — see `docs/notes/ci.md`, \"The footnote §2.3 turned out to need\".");
+              out.push("See `docs/notes/ci.md`, \"The footnote §2.3 turned out to need\".");
             }
+
             const text = out.join("\n");
             console.log(text);
             if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, text + "\n");
+            if (leaks.length) {
+              console.error("\n§2.3: two machines of one architecture must produce one universe.");
+              process.exit(1);
+            }
           '
 
   # -------------------------------------------------------------------------

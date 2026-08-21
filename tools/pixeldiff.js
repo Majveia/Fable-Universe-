@@ -1,6 +1,6 @@
 // The GLSL↔JS parity gate for §2.7 (CLAUDE.md §7.3).
 //
-//   node tools/pixeldiff.js [--suite terrain|fragility] [--cases 10000] [--int]
+//   node tools/pixeldiff.js [--suite terrain|meadow|fragility] [--cases 10000] [--int]
 //
 // §2.7 specifies this test in numbers — *"a numeric parity test over 10^4
 // samples (max abs error < 1e-4 of planet radius)"* — and it had never been run,
@@ -36,6 +36,7 @@
 // history has them intact.
 
 import { fbm as cpuFbm, planetHeight, ridged as cpuRidged, snoise as cpuSnoise } from '../src/terrain.js';
+import { RINGS, density, keepProbability, ringB } from '../src/meadow.js';
 import { arg, launch, playwright, REPO, serve } from './lib.js';
 
 // ---------------------------------------------------------------------------
@@ -587,12 +588,244 @@ async function fragilitySuite(n) {
   return anyFragile ? 1 : 0;
 }
 
+
+// ---------------------------------------------------------------------------
+// the meadow suite — §M3's density law, GLSL against src/meadow.js
+//
+// §2.7 gates the height field because a drift there makes the coast you saw
+// from space stop being the coast you walk. §M3's density law has exactly the
+// same shape of exposure and had no gate at all, which
+// `.github/workflows/determinism.yml` turned up the hard way: the digest moved
+// `meadow · §M3` across a V8 version, and there was nothing to say whether the
+// shader had moved with it.
+//
+// The exposure is written into the constitution as a deliberate choice. §M3:
+//
+//   > Use exponent **1.5**, not 1.45 or 1.7 — at exactly 1.5 the shader
+//   > evaluates it as `x·x·inversesqrt(x)`, three single-cycle instructions
+//   > against roughly ten for a general `pow()`, and it runs on ~12 M vertices
+//   > per frame.
+//
+// So the two sides are, on purpose, *different functions*: `Math.pow(x, 1.5)`
+// on the CPU and `x * x * inversesqrt(x)` on the GPU. They agree today. They
+// are not required to by anything except this test, and `src/meadow.js` says in
+// its own header that "the suite checks the two agree to float precision" — a
+// sentence that was true about the intention and about nothing else, because no
+// such suite existed.
+//
+// What a drift here would look like: the CPU sizes a chunk's instance count
+// from the law, and the vertex shader thins per blade against the same law. If
+// the shader's copy runs slightly *high*, the ratio in `meadowKeep` exceeds one
+// and the shader is asked to keep blades that were never instanced — the fine
+// thinning stops thinning. If it runs slightly low, every ring is quietly
+// under-populated and the horizon goes back to reading as a green plane, which
+// is §M3's gate clause and the whole reason the exponent is what it is.
+//
+// Three things are measured:
+//
+//   1. `meadowFalloff(d)` against `density(r, d) / ringB(r)`
+//   2. the keep ratio against `keepProbability(r, d, dNear)`
+//   3. that the ratio never exceeds one — a *structural* claim rather than a
+//      numeric one, and the one that actually breaks the renderer
+//
+// The third is the interesting one and it is not a tolerance question.
+// `src/meadow.js` states it outright: "if it ever exceeded 1 the shader would
+// be being asked to invent blades it does not have." That is asserted here
+// exactly, at zero tolerance, because a probability above one is not a rounding
+// error — it is a different algorithm.
+
+const MEADOW_RUN = ({ glsl, ds, dNears, count, W, rings }) => {
+  const H = Math.ceil(count / W);
+  const cv = document.createElement('canvas');
+  const gl = cv.getContext('webgl2', { antialias: false });
+  if (!gl) return { error: 'no webgl2' };
+  if (!gl.getExtension('EXT_color_buffer_float')) return { error: 'no EXT_color_buffer_float' };
+
+  const compile = (type, src) => {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+    return sh;
+  };
+  const VS = `#version 300 es
+    void main() {
+      vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+      gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+    }`;
+  // MEADOW_GLSL declares uRingDn, uChunkNear and uDensityMul itself — it is
+  // pasted in whole, exactly as flora.js receives it, rather than having its
+  // functions retyped here. A copy would pass this test forever and prove
+  // nothing about the shader anybody runs.
+  const FS = `#version 300 es
+    precision highp float;
+    precision highp sampler2D;
+    uniform sampler2D uD;
+    out vec4 oColor;
+${glsl}
+    void main() {
+      ivec2 t = ivec2(gl_FragCoord.xy);
+      float d = texelFetch(uD, t, 0).r;
+      float f = meadowFalloff(d);
+      float keep = f / max(meadowFalloff(uChunkNear), 1e-9);
+      // .a carries the width floor, which shares the ring constants and would
+      // catch a uniform wired to the wrong ring
+      oColor = vec4(f, keep, meadowFalloff(uChunkNear), meadowWidth(d, 2.0, 900.0));
+    }`;
+
+  let prog;
+  try {
+    prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return { error: 'link: ' + gl.getProgramInfoLog(prog) };
+  } catch (e) { return { error: 'compile: ' + e.message }; }
+  gl.useProgram(prog);
+
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  const rgba = new Float32Array(W * H * 4);
+  for (let i = 0; i < count; i++) rgba[i * 4] = ds[i];
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, rgba);
+  gl.uniform1i(gl.getUniformLocation(prog, 'uD'), 0);
+  gl.uniform1f(gl.getUniformLocation(prog, 'uDensityMul'), 1.0);
+
+  const out = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, out);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, null);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, out, 0);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+    return { error: 'incomplete framebuffer' };
+  }
+  gl.viewport(0, 0, W, H);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+
+  const results = {};
+  const buf = new Float32Array(W * H * 4);
+  for (let r = 0; r < rings.length; r++) {
+    gl.uniform1f(gl.getUniformLocation(prog, 'uRingDn'), rings[r]);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uChunkNear'), dNears[r]);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.FLOAT, buf);
+    results[r] = Array.from(buf.subarray(0, count * 4));
+  }
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  return { results, renderer: gl.getParameter(dbg ? dbg.UNMASKED_RENDERER_WEBGL : gl.RENDERER) };
+};
+
+async function meadowSuite(n) {
+  const count = Math.max(n, 10000);
+
+  const site = await serve();
+  const pw = await playwright();
+  const browser = await launch(pw);
+  const page = await browser.newPage();
+  await page.goto(`${site.origin}/index.html`, { waitUntil: 'load' });
+  // the string flora.js receives, read through the page's own import map —
+  // never a copy kept in this file
+  await page.addScriptTag({ type: 'module', content:
+    `import { MEADOW_GLSL } from '${site.origin}/src/meadow.js';
+     window.__meadow = MEADOW_GLSL;` });
+  await page.waitForFunction('window.__meadow', null, { timeout: 60000 });
+  const glsl = await page.evaluate(() => window.__meadow);
+  console.log(`  chunk: MEADOW_GLSL · ${glsl.length} chars`
+    + (glsl.includes('inversesqrt') ? ' · x*x*inversesqrt(x)' : ' · NO inversesqrt — the shader is not using the 1.5 identity'));
+
+  // Distances spanning every ring's band and past its far edge, so the clamp at
+  // x = 1 and the tail are both sampled. Log-spaced, because the law is a power
+  // law and a linear sweep would put nine tenths of the samples in the tail.
+  const D_MIN = 0.25, D_MAX = 2000;
+  const ds = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    ds[i] = D_MIN * Math.pow(D_MAX / D_MIN, i / (count - 1));
+  }
+  // the chunk's nearest corner, per ring — where the CPU sizes the instance
+  // count. Deliberately inside the band, which is where the ratio is tightest.
+  const dNears = RINGS.map((ring) => ring.dn * 0.9);
+
+  const out = await page.evaluate(MEADOW_RUN, {
+    glsl, ds: Array.from(ds), dNears, count, W: 512, rings: RINGS.map((r) => r.dn),
+  });
+  await browser.close();
+  await site.close();
+
+  if (out.error) { console.error('pixeldiff meadow · ' + out.error); return 1; }
+
+  console.log('\npixeldiff · §M3 · the density law, GLSL against src/meadow.js');
+  console.log('  driver: ' + out.renderer);
+  console.log('  GPU side: x * x * inversesqrt(x), from MEADOW_GLSL');
+  console.log('  CPU side: Math.pow(x, 1.5), from src/meadow.js — two functions, on purpose');
+  // float32 carries ~7 decimal digits and GLSL ES 3.0 allows `inversesqrt` 2
+  // ULP, so a few times 1e-6 is the floor an exact port can reach. 1e-5 on a
+  // quantity in [0,1] is that floor with room, and is still four orders below
+  // anything a blade count could notice.
+  const TOL = 1e-5;
+  console.log(`  ${count} samples x ${RINGS.length} rings · gate: max |Δ| < ${TOL.toExponential(0)}`
+    + ' on a quantity in [0,1], and keep ≤ 1 exactly');
+
+  let failed = 0;
+  for (let r = 0; r < RINGS.length; r++) {
+    const got = out.results[r];
+    const dNear = dNears[r];
+    const b = ringB(r);
+    let maxF = 0, maxK = 0, over = 0, worstKeep = 0, atF = 0;
+    for (let i = 0; i < count; i++) {
+      const d = ds[i];
+      const gf = got[i * 4], gk = got[i * 4 + 1];
+      const cf = density(r, d) / b;                       // the law, normalised
+      const ck = keepProbability(r, d, dNear);
+      const df = Math.abs(gf - cf);
+      if (df > maxF) { maxF = df; atF = d; }
+      // the shader's own clamp is `min(keep, 1.0)` at the call site, so compare
+      // the *unclamped* ratio against the CPU's clamped one only where the CPU
+      // is not clamping — otherwise this measures the clamp, not the law
+      if (ck < 1) maxK = Math.max(maxK, Math.abs(Math.min(gk, 1) - ck));
+      worstKeep = Math.max(worstKeep, gk);
+      if (gk > 1 + 1e-6) over++;
+    }
+    const bad = maxF > TOL || maxK > TOL || over > 0;
+    if (bad) failed++;
+    console.log(`  ${bad ? 'FAIL' : 'ok  '} ring ${r}  dn ${String(RINGS[r].dn).padStart(4)} m`
+      + `   max |Δfalloff| ${maxF.toExponential(2)}  (at ${atF.toFixed(2)} m)`
+      + `   max |Δkeep| ${maxK.toExponential(2)}`);
+    console.log(`        keep ≤ 1: ${over === 0 ? 'held' : `BROKEN on ${over}/${count} samples`}`
+      + `  ·  worst ratio ${worstKeep.toFixed(9)}`
+      + `  ·  chunk sized at ${dNear.toFixed(1)} m`);
+  }
+
+  if (failed) {
+    console.error('\n§M3\'s two sides have drifted. The CPU sizes the instance count and the');
+    console.error('shader thins per blade; when they disagree the fine thinning stops being');
+    console.error('a thinning — high, and the shader is asked for blades nobody instanced;');
+    console.error('low, and every ring is under-populated and the horizon reads as a plane.');
+    return 1;
+  }
+  console.log('\n§M3 parity holds on every ring · pow(x, 1.5) and x*x*inversesqrt(x) agree to float');
+  return 0;
+}
+
 // ----------------------------------------------------------------- report ---
 
 async function main() {
   const suite = String(arg('suite', 'all'));
   const n = Number(arg('cases', 10000));
   if (suite === 'fragility') process.exit(await fragilitySuite(n));
+  if (suite === 'meadow') process.exit(await meadowSuite(n));
+  if (suite === 'all') {
+    // both parity suites, and the exit code is the worse of the two — a green
+    // height field does not excuse a drifted density law
+    const a = await terrainSuite(n, true);
+    const b = await meadowSuite(n);
+    process.exit(a || b);
+  }
   // `exact` defaults to --int; `all` pins it true, because that is the path
   // §2.7 is closed on (§28.6) and the one src/wind.js and src/flora.js sample.
   process.exit(await terrainSuite(n, suite === 'all' ? true : undefined));
