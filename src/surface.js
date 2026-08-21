@@ -59,7 +59,7 @@ import {
 import { GrassRing, WindField } from './flora.js';
 import { PART_RADIUS, RINGS } from './meadow.js';
 import { HOVER } from './vehicle.js';
-import { SHADOW_GLSL, SunShadow, markCaster } from './shadow.js';
+import { SunShadow, markCaster, shadowGLSL } from './shadow.js';
 import { Q, TIER, qArr, qInt } from './quality.js';
 
 const PARAM = (k) => {
@@ -157,6 +157,22 @@ const PAINT = PARAM('paint') === '1';
  * rather than quietly rendering a light model with its input missing.
  */
 const SHADOW = PAINT || PARAM('shadow') !== '0';
+
+/**
+ * The sampler, at this tier's tap count — §5's LOD, arriving before the feature
+ * rather than after the measurement.
+ *
+ * Separating the map from the grade put a five-tap sampler on the terrain,
+ * which is more than half of every surface frame. That is a real fill cost and
+ * the low row is the least able to pay it, so `quality.js` carries a
+ * `shadowTaps` column: one on low, five everywhere else. The argument for one
+ * being enough is `shadow.js`'s own — the wobble dominates the silhouette, so
+ * what the eye reads is the noise offset rather than the filter width.
+ *
+ * `?shtaps=` overrides it, like every other knob in that table, so the two can
+ * be compared on one machine without editing the row.
+ */
+const SHADOW_TAPS_GLSL = shadowGLSL(qInt('shtaps', 'shadowTaps'));
 
 /**
  * §9.3's aerial perspective, act 2. Separable both ways for the same reason
@@ -405,7 +421,7 @@ const TERRAIN_FRAG = /* glsl */`
   varying vec3 vW;
   varying vec3 vN;
   ${NOISE_GLSL}
-  ${SHADOW ? SHADOW_GLSL : ''}
+  ${SHADOW ? SHADOW_TAPS_GLSL : ''}
   ${PAINT ? PAINT_GLSL : ''}
   ${AERIAL ? AERIAL_GLSL : ''}
   ${MAT ? MATERIAL_GLSL : ''}

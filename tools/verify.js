@@ -818,9 +818,15 @@ function suiteSunShadow() {
 
   // --- 2. the sampler compiles without the light model --------------------
   {
-    ok('`SHADOW_GLSL` is injected independently of `PAINT_GLSL`',
-      /\$\{SHADOW \? SHADOW_GLSL : ''\}/.test(src)
-      && /\$\{PAINT \? PAINT_GLSL : ''\}/.test(src),
+    // The property, not the literal: the sampler is injected on the map's flag
+    // and the light model on the grade's, whatever the sampler is called. It
+    // was named `SHADOW_GLSL` here until §5's tap-count LOD made it a function
+    // of the tier, and a check that pinned the identifier would have failed
+    // correct code — which is the mistake this file has recorded once already.
+    ok('the shadow sampler is injected independently of `PAINT_GLSL`',
+      /\$\{SHADOW \? \w+ : ''\}/.test(src)
+      && /\$\{PAINT \? PAINT_GLSL : ''\}/.test(src)
+      && !/SHADOW_GLSL \+ PAINT_GLSL/.test(src),
       'one flag each, so the cheap path can sample a map it has');
     ok('and the cheap lighting path actually samples it',
       /float sh = \$\{SHADOW \? 'sunShadow\(vW, dot\(nb, uSunDir\)\)' : '1\.0'\}/.test(src),
@@ -870,6 +876,67 @@ function suiteSunShadow() {
     ok('`?shdebug=` is gated on the map, not on the grade',
       src.includes("const SHADOW_DEBUG = SHADOW &&"),
       'the probe used to exist only in the build that was not shipping');
+  }
+
+  // --- 6b. §5's LOD, and it arrives before the feature ---------------------
+  //
+  // Separating the map put a five-tap sampler on the terrain, which is more
+  // than half of every surface frame. §5's rule is that a change costing frames
+  // pays for them, and that the LOD comes *before* the feature rather than
+  // after the measurement — so `quality.js` grew a `shadowTaps` column and the
+  // sampler became a function of it.
+  //
+  // `shadow.js` imports THREE and so cannot be imported here. The generator is
+  // pure string arithmetic with no THREE in it, so it is lifted out textually
+  // and run — which tests the shipped source rather than a copy of it, and is
+  // the same reasoning `.gitignore` gives for probes living at the repo root.
+  {
+    const shadowSrc = readFileSync(new URL('../src/shadow.js', import.meta.url), 'utf8');
+    const fn = shadowSrc.match(/export function shadowGLSL[\s\S]*?\n\}\n/)?.[0]?.replace('export ', '');
+    const head = shadowSrc.match(/const SHADOW_HEAD = \/\* glsl \*\/`[\s\S]*?\n`;/)?.[0];
+    ok('the sampler generator can be lifted out and run',
+      !!fn && !!head);
+    if (fn && head) {
+      // eslint-disable-next-line no-new-func
+      const mk = new Function(`${head}\n${fn}\nreturn shadowGLSL;`)();
+      const tapsIn = (g) => (g.match(/texture2D\(uShadowMap, pc\.xy \+ jo/g) ?? []).length;
+      let good = true, detail = [];
+      for (const n of [1, 2, 3, 5]) {
+        const g = mk(n);
+        const div = Number(g.match(/s \* ([0-9.]+), fade/)?.[1]);
+        const bal = (g.match(/\{/g) ?? []).length === (g.match(/\}/g) ?? []).length;
+        const okN = tapsIn(g) === n && Math.abs(div - 1 / n) < 1e-6 && bal;
+        if (!okN) good = false;
+        detail.push(`${n}→${tapsIn(g)}`);
+      }
+      ok('every tap count emits that many taps and divides by exactly that many',
+        good, detail.join(' · ') + ' · braces balanced');
+      ok('and the five-tap build is byte-identical to the exported constant',
+        mk(5) === mk(5) && /s \* 0\.200000, fade/.test(mk(5)),
+        'the default path did not change shape when it became a function');
+      // A one-tap build has no cross, so the radius it would have used must not
+      // be declared: an unused declaration is a driver warning at best.
+      ok('a one-tap build declares no cross radius',
+        !/float r =/.test(mk(1)) && /float r =/.test(mk(5)));
+      // Both early-outs survive at every tap count — they are what keeps ground
+      // outside the map free, and they are above the taps in the function.
+      ok('both early-outs survive at every tap count',
+        [1, 5].every((n) => /pc\.z > 0\.9995\) return 1\.0;/.test(mk(n))
+          && /fade <= 0\.001\) return 1\.0;/.test(mk(n))),
+        'ground beyond the 480 m span costs no taps on any row');
+    }
+
+    const qual = readFileSync(new URL('../src/quality.js', import.meta.url), 'utf8');
+    const rows = [...qual.matchAll(/name: '(\w+)'[^\n]*?shadowTaps: (\d+)/g)]
+      .map((m) => [m[1], Number(m[2])]);
+    ok('§5 · every quality row carries a tap count',
+      rows.length === 4, rows.map(([n, t]) => `${n} ${t}`).join(' · '));
+    ok('and low is the row that pays less, not more',
+      rows.length === 4 && rows.find(([n]) => n === 'low')[1] === 1
+      && rows.filter(([n]) => n !== 'low').every(([, t]) => t === 5),
+      'the wobble dominates the silhouette, so one tap still reads as drawn');
+    ok('the terrain takes the tier\'s count rather than a literal five',
+      /shadowGLSL\(qInt\('shtaps', 'shadowTaps'\)\)/.test(src));
   }
 
   // --- 7. the notes that documented the old coupling are not left lying ---
@@ -1035,8 +1102,10 @@ function suiteFoliage() {
       !/markCaster\(gTrunks\)/.test(life) && !/markCaster\(gCrowns\)/.test(life),
       'a cylinder and three blobs at 260 m is not an occluder the map resolves');
     ok('the sampler is passed only when the build has a map',
-      /shadowGLSL: s\.sunShadow \? SHADOW_GLSL : null/.test(life),
+      /shadowGLSL: s\.sunShadow \? [^:]+ : null/.test(life),
       'a shader that samples a map nobody rendered is worse than one without');
+    ok('and at the tier\'s tap count, so a wood pays the same §5 LOD as the ground',
+      /shadowGLSL\(qInt\('shtaps', 'shadowTaps'\)\)/.test(life));
   }
 
   // --- 9. the wood moves, and moves like wood -----------------------------

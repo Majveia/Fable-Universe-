@@ -19,7 +19,7 @@ import { coverDensity } from './scatter.js';
 import { gravityOf } from './avatar.js';
 import { qInt } from './quality.js';
 import { barkMaterial, foliageMaterial } from './foliage.js';
-import { SHADOW_GLSL, markCaster } from './shadow.js';
+import { markCaster, shadowGLSL } from './shadow.js';
 
 function bladeTexture(rng) {
   const cv = document.createElement('canvas');
@@ -174,7 +174,9 @@ export function addLife(s) {
     wind: uWind,
     gust: uGust,
     swayTime: uSwayTime,
-    shadowGLSL: s.sunShadow ? SHADOW_GLSL : null,
+    // the tier's tap count, same as the ground's: a wood can fill a lot of
+    // screen, so it pays the same §5 LOD the terrain does
+    shadowGLSL: s.sunShadow ? shadowGLSL(qInt('shtaps', 'shadowTaps')) : null,
     shadowUniforms: s.sunShadow ? s.sunShadow.uniforms : null,
   };
   const barkMat = barkMaterial({
