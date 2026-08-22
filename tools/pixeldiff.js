@@ -653,14 +653,24 @@ const MEADOW_RUN = ({ glsl, ds, dNears, count, W, rings }) => {
       vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
       gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
     }`;
-  // MEADOW_GLSL declares uRingDn, uChunkNear and uDensityMul itself — it is
-  // pasted in whole, exactly as flora.js receives it, rather than having its
-  // functions retyped here. A copy would pass this test forever and prove
-  // nothing about the shader anybody runs.
+  // MEADOW_GLSL declares uRingDn and uDensityMul itself — it is pasted in
+  // whole, exactly as flora.js receives it, rather than having its functions
+  // retyped here. A copy would pass this test forever and prove nothing about
+  // the shader anybody runs.
+  //
+  // `uChunkNear` is declared HERE, by the fixture, and that is the correction
+  // this suite needed. It used to come from MEADOW_GLSL as a uniform, this
+  // fixture set it, the arithmetic checked out — and the application never set
+  // it on any world, ever. A parity test that supplies an input the app forgets
+  // to supply passes forever on a broken renderer: it proved the formula and
+  // said nothing about the wiring, which is the same shape as an `alphaTest`
+  // with no alphaMap. It is a per-chunk *argument* now, so a caller that does
+  // not pass one no longer compiles.
   const FS = `#version 300 es
     precision highp float;
     precision highp sampler2D;
     uniform sampler2D uD;
+    uniform float uChunkNear;   // the fixture's own: see the note above
     out vec4 oColor;
 ${glsl}
     void main() {
@@ -668,9 +678,13 @@ ${glsl}
       float d = texelFetch(uD, t, 0).r;
       float f = meadowFalloff(d);
       float keep = f / max(meadowFalloff(uChunkNear), 1e-9);
+      // Exercise the real entry point too, so a change to its signature breaks
+      // here rather than silently leaving this suite testing a function the
+      // renderer no longer calls.
+      float viaFn = meadowKeep(d, 0.0, uChunkNear) ? 1.0 : 0.0;
       // .a carries the width floor, which shares the ring constants and would
       // catch a uniform wired to the wrong ring
-      oColor = vec4(f, keep, meadowFalloff(uChunkNear), meadowWidth(d, 2.0, 900.0));
+      oColor = vec4(f, keep, meadowFalloff(uChunkNear) * viaFn, meadowWidth(d, 2.0, 900.0));
     }`;
 
   let prog;

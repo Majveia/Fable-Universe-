@@ -4836,9 +4836,46 @@ function suiteMeadow() {
     ok('§9.5 · the shader spends three instructions on the falloff, not ten',
       /x \* x \* inversesqrt/.test(code) && !/pow\(/.test(code));
     ok('and the per-blade test divides by the density the CPU actually assumed',
-      /meadowFalloff\(d\) \/ max\(meadowFalloff\(uChunkNear\)/.test(code));
+      /meadowFalloff\(d\) \/ max\(meadowFalloff\(chunkNear\)/.test(code));
     ok('and clamps it so a blade can be removed but never conjured',
       /min\(keep, 1\.0\)/.test(code));
+
+    // The check this suite was missing, and the reason the meadow was empty for
+    // four milestones while every clause above passed.
+    //
+    // `chunkNear` was `uniform float uChunkNear`, and **nothing in src/ ever
+    // set it**. The assertion above tested the shader's *text* and was
+    // satisfied; `tools/pixeldiff.js` set the uniform itself and its parity
+    // checked out; and an unset uniform is 0, which made the denominator the
+    // density at point-blank range and applied the absolute density law a
+    // second time on top of the CPU's. Three blades in four collapsed to zero
+    // height beyond every ring's dn.
+    //
+    // Every instrument was looking at the formula. None was looking at whether
+    // the value arrived. So: a per-chunk quantity may not be a uniform on this
+    // chunk at all — the material is shared across a ring, three uploads a
+    // material's uniforms only when it thinks the material changed, and 411 of
+    // every 412 writes are dropped. That is not a rule anyone should have to
+    // remember; it is one an argument enforces at compile time.
+    ok('§M3 · a per-chunk quantity is an argument, not a uniform this cannot deliver',
+      !/uniform\s+float\s+uChunkNear/.test(code)
+      && /bool meadowKeep\(float d, float rand01, float chunkNear\)/.test(code));
+  }
+
+  // --- and the caller actually passes one ----------------------------------
+  //
+  // The other half. A signature nobody calls correctly is still a signature,
+  // and `src/flora.js` is the only consumer that matters.
+  {
+    const flora = readFileSync(new URL('../src/flora.js', import.meta.url), 'utf8');
+    ok('§M3 · flora.js derives the chunk distance rather than expecting it sent',
+      /meadowKeep\(d, aRand, chunkNear\)/.test(flora)
+      && /float chunkNear = length\(/.test(flora));
+    // The derivation has to be the same arithmetic chunkNearDist() uses to size
+    // the instance count, or the shader thins against a distance the CPU never
+    // drew for — the same class of disagreement, one step along.
+    ok('and from the channel three actually uploads per draw — the model matrix',
+      /modelMatrix\[3\]\.xz/.test(flora) && /uChunkSize/.test(flora));
   }
 }
 

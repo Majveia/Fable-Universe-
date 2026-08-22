@@ -317,6 +317,7 @@ const BLADE_VERT = /* glsl */`
   ${HEIGHT_GLSL}
   ${WIND_MEAN_GLSL}
   ${WIND_SAMPLE_GLSL}
+  uniform float uChunkSize;   // this ring's chunk extent, in metres
   ${MEADOW_GLSL}
   ${MEADOW_PART_GLSL}
 
@@ -339,9 +340,34 @@ const BLADE_VERT = /* glsl */`
     float d = length(base - uCam);
     vDist = d;
 
+    // The chunk's nearest corner, derived rather than uploaded.
+    //
+    // This is the second half of the bug the constructor's note describes, and
+    // it went unfixed for four milestones while the first half was being
+    // celebrated. Two uniforms rode onBeforeRender; both were silently dropped
+    // on 411 of every 412 draws; uChunkOrigin was rescued into the model matrix
+    // and uChunkNear was simply deleted, leaving meadowKeep dividing by an
+    // unset uniform -- which is 0, which makes its denominator the density at
+    // point-blank range, which applies the absolute density law a second time
+    // on top of the CPU's. Roughly three blades in four collapsed to zero
+    // height beyond every ring's dn. That is the empty meadow.
+    //
+    // It is derived here rather than sent because a per-chunk value cannot ride
+    // a ring-shared material -- that is precisely the condition that broke it --
+    // and because it never needed to be sent at all: the model matrix carries
+    // the chunk origin, uChunkSize carries the extent, uCam carries the eye,
+    // and the nearest corner is the three of them. Nothing can desynchronise
+    // from the CPU, because there is no second copy to drift.
+    //
+    // Same arithmetic as chunkNearDist() in src/meadow.js, which is what sized
+    // the instance count this frame.
+    vec2 c0 = modelMatrix[3].xz;
+    vec2 outside = max(max(c0 - uCam.xz, uCam.xz - (c0 + uChunkSize)), vec2(0.0));
+    float chunkNear = length(outside);
+
     // the fine thinning. Collapsing is a multiply, not a branch — see the note
     // in src/flora.js on why that matters at this vertex count.
-    float live = max(meadowKeep(d, aRand) ? 1.0 : 0.0, uDbg);
+    float live = max(meadowKeep(d, aRand, chunkNear) ? 1.0 : 0.0, uDbg);
 
     vT = position.y;
     vSide = aSide;
@@ -650,6 +676,12 @@ export class GrassRing {
         uPartR: { value: PART_RADIUS },
         uForce: { value: this.wf.wind.force },
         uRingDn: { value: this.spec.dn },
+        // Ring-constant, and that is the whole reason it is allowed to be a
+        // uniform here: every chunk in a ring is the same size, so this never
+        // varies across the meshes that share this material. The thing that
+        // does vary per chunk -- the distance to its nearest corner -- is
+        // derived in the shader from the model matrix instead. See BLADE_VERT.
+        uChunkSize: { value: this.spec.chunk },
         uDensityMul: { value: density },
         uHeightTex: this.wf.uniforms.uHeightTex,
         uHeightOrigin: this.wf.uniforms.uHeightOrigin,
