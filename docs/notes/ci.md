@@ -43,6 +43,7 @@ seconds whether or not a browser is downloading beside them.
 | §5 nothing accumulates | `perfgrow.js` | counts, not milliseconds — see below |
 | §7.3 the maths | `verify.js` | each claim computed a second, independent way |
 | §M0 shaders as assembled | `shadercheck.js`, `glslcheck.js` | the gate that cannot be replaced by a linter |
+| §9.2 the light model reaches props | `paintcheck.js` | `painted.js` splices PAINT_GLSL into a stock material, so the program does not exist until three assembles it. Twenty seconds against `shadercheck`'s forty minutes, because it builds five materials instead of six scales |
 | §M4 the stance foot | `footplant.js` | invisible to every capture: a screenshot cannot show a slide |
 | §M7 the thumb layer | `touchgate.js` | 18 clauses, every one a DOM read |
 | §10 the reference is unedited | `invariants.js` | SHA-256 and byte count, read *out of* `docs/reference/README.md` rather than copied |
@@ -59,6 +60,7 @@ seconds whether or not a browser is downloading beside them.
 | **§2.8** black belongs to vacuum | needs frames | `gate.js` computes it from decoded PNGs — it is not in CI because the frames are not |
 | **§5** the frame budget | **needs a real GPU** | §M0: "Real GPU, not CI SwiftShader." `docs/GPU-RUN.md` records four runs that lost most of their value to a software rasteriser's numbers being read as evidence. Nothing in CI may be quoted against §5's table. |
 | **§8** all eight critic axes | needs an eye, and a blind comparison against the reference | `blind.js` on real silicon, per §7.6 |
+| **§9.7** a hero landmark, a leading line, a valley | the solver measures all three and they score 0.06 / 0.02 / 0.04. The landform fix moved the terrain under it; the terms have not been re-measured since | re-run the solve and read its own log |
 | **§9.3** alpha survives to the print | `alphaudit.js` does not reach the surface scale inside its 60 s wait on a software rasteriser, and dies on the timeout | a GPU, or a longer wait somebody has decided is honest rather than convenient |
 
 ---

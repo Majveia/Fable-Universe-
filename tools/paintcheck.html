@@ -1,0 +1,96 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/":"/vendor/addons/"}}</script>
+</head><body><div id="out">running</div>
+<script type="module">
+import * as THREE from 'three';
+import { cardMask, paintedStandard, stopsFrom } from '/src/painted.js';
+import { shadowGLSL } from '/src/shadow.js';
+const fails = [];
+const P = WebGL2RenderingContext.prototype;
+const cs = P.compileShader, lp = P.linkProgram;
+P.compileShader = function (sh) {
+  cs.call(this, sh);
+  if (!this.getShaderParameter(sh, this.COMPILE_STATUS)) fails.push('COMPILE ' + this.getShaderInfoLog(sh));
+};
+P.linkProgram = function (pr) {
+  lp.call(this, pr);
+  if (!this.getProgramParameter(pr, this.LINK_STATUS)) fails.push('LINK ' + this.getProgramInfoLog(pr));
+};
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setSize(256, 256);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(52, 1, 0.1, 100);
+cam.position.set(0, 1.68, 4); cam.lookAt(0, 0.5, 0);
+const v3 = (a, b, c) => ({ value: new THREE.Vector3(a, b, c) });
+const wiring = {
+  paint: {
+    uPaintSun: v3(1.0, 0.84, 0.61), uPaintAmbSky: v3(0.62, 0.78, 0.90),
+    uPaintAmbGnd: v3(0.67, 0.61, 0.39), uPaintShadowTint: v3(0.36, 0.43, 0.62),
+    uPaintExposure: { value: 1 },
+  },
+  sun: v3(0.31, 0.23, 0.92), shadow: null, shadowGLSL: null,
+};
+// the production path: the terrain's shadow map is wired in, so the injected
+// chunk carries sunShadow() and its four uniforms
+const shadowWiring = {
+  ...wiring,
+  shadow: {
+    uShadowMap: { value: new THREE.WebGLRenderTarget(64, 64).texture },
+    uLightMat: { value: new THREE.Matrix4() },
+    uShadowTexel: { value: 1 / 64 },
+    uWobbleUV: { value: 0.01 },
+  },
+  shadowGLSL: shadowGLSL(5),
+};
+const light = { sun: [1, 0.84, 0.61], shadowTint: [0.36, 0.43, 0.62] };
+const results = [];
+{
+  const m = paintedStandard({ flatShading: true }, wiring, { ...stopsFrom([0.42, 0.40, 0.38], light), rim: 0.3 });
+  const mesh = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.5, 0), m, 3);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 3; i++) { d.position.set(i - 1, 0, 0); d.updateMatrix(); mesh.setMatrixAt(i, d.matrix); }
+  scene.add(mesh); results.push('mineral instanced');
+}
+{
+  const m = paintedStandard(
+    { alphaMap: cardMask('bent', 20250601), alphaTest: 0.42, side: THREE.DoubleSide },
+    wiring, { ...stopsFrom([0.30, 0.42, 0.24], light), trans: 0.85, transCol: [0.6, 0.9, 0.3], rim: 0.95 });
+  const g = new THREE.PlaneGeometry(1, 1); g.translate(0, 0.5, 0);
+  const mesh = new THREE.InstancedMesh(g, m, 4);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 4; i++) { d.position.set(i - 1.5, 0, 1); d.updateMatrix(); mesh.setMatrixAt(i, d.matrix); }
+  scene.add(mesh); results.push('plant card instanced + alphaMap');
+}
+{
+  const m = paintedStandard({}, wiring, { ...stopsFrom([0.5, 0.4, 0.3], light) });
+  scene.add(new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), m));
+  results.push('non-instanced');
+}
+{
+  // the branch the app actually takes
+  const m = paintedStandard({ flatShading: true }, shadowWiring,
+    { ...stopsFrom([0.45, 0.42, 0.38], light), rim: 0.3 });
+  const mesh = new THREE.InstancedMesh(new THREE.TetrahedronGeometry(0.6, 0), m, 2);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 2; i++) { d.position.set(i * 1.4 - 0.7, 0.2, -1); d.updateMatrix(); mesh.setMatrixAt(i, d.matrix); }
+  scene.add(mesh); results.push('mineral + real sunShadow() chunk');
+}
+{
+  const m = paintedStandard(
+    { alphaMap: cardMask('reed', 4242), alphaTest: 0.4, side: THREE.DoubleSide },
+    shadowWiring, { ...stopsFrom([0.28, 0.40, 0.22], light), trans: 0.85, rim: 0.95 });
+  const g = new THREE.PlaneGeometry(1, 1); g.translate(0, 0.5, 0);
+  scene.add(new THREE.Mesh(g, m));
+  results.push('card + real sunShadow() chunk');
+}
+renderer.render(scene, cam);
+renderer.render(scene, cam);
+const gl = renderer.getContext();
+const px = new Uint8Array(4 * 256 * 256);
+gl.readPixels(0, 0, 256, 256, gl.RGBA, gl.UNSIGNED_BYTE, px);
+let lit = 0;
+for (let i = 0; i < px.length; i += 4) if (px[i] + px[i + 1] + px[i + 2] > 12) lit++;
+window.__result = { fails, results, litFraction: lit / (256 * 256) };
+document.getElementById('out').textContent = 'done';
+</script></body></html>
