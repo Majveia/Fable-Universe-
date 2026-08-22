@@ -59,6 +59,46 @@
 // `--preset none` drops all of it, for running the same tool on a machine that
 // does not need the help.
 
+// ---------------------------------------------------------------------------
+// Two limitations, both found by this tool being wrong in front of me
+//
+// **1 · The preset can remove the thing being measured.**
+//
+// A meadow fix that restores 1.7x the visible blades produced a byte-identical
+// glimpse, because `grass=0.012` is about one per cent of normal density and
+// 1.7x of almost nothing is still almost nothing. That is not the fix failing;
+// it is this tool being asked a question its own preset had already answered.
+//
+// So before trusting a null result, check that the knob you wrecked is not the
+// subsystem you are testing. If it is, either raise that one knob and wreck the
+// others harder (`--flags "grass=0.3"`, which now actually overrides — see
+// mergeFlags), or use an instrument that does not depend on density at all:
+// `?bladedbg=2` makes a blade eight times tall and sixty times wide, which is
+// visible at any count.
+//
+// **A null result from a wrecked preset is not evidence of no change.**
+//
+// **2 · Anything resolution-dependent is systematically misrepresented.**
+//
+// Worse, because the numbers still move and look meaningful. §9.5's angular
+// width floor holds a blade at `wpx` *pixels*, so its world width is
+// `wpx * d / pxPerRadian` -- at 320x180 the floor honestly asks for a 34 cm
+// blade at 40 m where 1440p asks for 4 cm. Fat blades merge into flat coverage
+// and *lower* the near-ground gradient, so a change that adds texture at
+// shipping resolution reads here as a loss.
+//
+// Measured, and left in as the worked example: the width floor at real density
+// came back gradient 9.34 / saturation 0.297 against a one-per-cent-density
+// baseline of 12.38 / 0.337. Neither number says the change is good. Neither
+// says it is bad. They are not measurements of the same thing, and reporting
+// the direction would have been the most confident kind of wrong.
+//
+// So this tool answers *is anything drawn there at all* -- which is what
+// `?bladedbg=` settled in twenty seconds. It cannot answer *is it the right
+// size*. That needs the resolution it will ship at, which means a GPU. §M0 said
+// so in advance; building a proxy did not repeal it, it moved the line, and the
+// line is now written down.
+
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { decodePNG } from './png.js';
