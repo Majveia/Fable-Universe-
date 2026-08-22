@@ -128,9 +128,10 @@ per world. Five HSL literals nailed to the file are the thing it forbids, and a
 pale blue cone on an ochre desert is what it looks like. They are tints of the
 world's own `colB` now.
 
-## 5 · The composition solver has nothing to find
+## 5 · The composition solver had nothing to find
 
-With `?solve=1` on, seed 700181046 reports its own terms:
+With `?solve=1` on, seed 700181046 reported its own terms — the app's log, not
+a model of it:
 
 ```
 [§9.7] landing solved in 183 ms · score 0.298
@@ -138,16 +139,34 @@ With `?solve=1` on, seed 700181046 reports its own terms:
        hero 0.06  lead 0.02  walls 0.04
 ```
 
-The two clauses that are about *where you are standing* pass. The three that
-are about **what there is to look at** — a hero landmark, a leading line, a
-valley cross-section — score essentially zero. §9.7 asks for all five.
+The two clauses about *where you are standing* passed. The three about **what
+there is to look at** — a hero landmark, a leading line, a valley cross-section
+— were essentially zero. §9.7 asks for all five.
 
-That is the flat empty plain, as a number. It is **not fixed here**, and it is
-the most interesting thing left on this page: either the candidate pre-filter
-(which its own comment describes as landing you on "a narrow band of
-near-identical coastal shelf") is starving the composition stage, or the
-terrain generator does not produce 90 m prominences to find. Those call for
-different fixes and the measurement that distinguishes them has not been taken.
+The question that number could not answer on its own was whether the solver was
+starving or the world was empty. §4's prominence census answered it: the world
+was empty. After the landform fix, same seed, same app:
+
+```
+[§9.7] landing solved in 196 ms · score 0.773
+       lowHorizon 0.58  offCentre 0.50  band 1.00
+       hero 0.71  lead 0.63  walls 1.00
+```
+
+`walls` — §9.7's valley cross-section, which the reference's own comments call
+the thing that *"makes the whole composition"* — went from 0.04 to **1.00**.
+The score went 0.298 → 0.773 for thirteen extra milliseconds of solve.
+
+`lowHorizon` fell from 0.98 to 0.58, and that is the change working rather than
+a regression: a featureless plain scores that clause trivially, because there is
+nothing above the eye line to fail it. Trading it for a valley is the trade
+§9.7 is asking for.
+
+One thing this does **not** show is a picture. A 420x240 frame of the fixed
+scene does not render inside two minutes on a software rasteriser — the build
+completes and logs cleanly, `[ground]` places 16 462 objects across 9 kinds, and
+the screenshot call times out. §M0 says it: real GPU, not CI SwiftShader. Every
+number on this page is measured; none of them is a substitute for looking.
 
 ## 6 · What the solve actually costs
 
