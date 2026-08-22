@@ -186,6 +186,39 @@ function nearGroundGradient({ width, height, data }) {
   return { gradient: n ? sum / n : 0, min: lo, max: hi, samples: n };
 }
 
+/**
+ * §9.3's fog fraction, by horizontal band — only meaningful under `?fogview=1`.
+ *
+ * `src/print.js` computes `fog = 1.0 - alpha` and, with that flag, outputs it
+ * as the picture instead of the picture. So this reads greyscale luminance and
+ * calls it fog, which is true only with the flag set and nonsense without it.
+ *
+ * Bands rather than one number, because the question is not "how much haze" but
+ * **where it starts**. `docs/plans/BENCHMARK.md` §2 property 3 is the whole
+ * point: in the reference frames the near and middle ground are clear and
+ * coloured and only the horizon band is desaturated, while ours "reaches the
+ * player's feet" -- which it calls "the highest-value single measurement open
+ * in the project", and which nobody had taken. A single mean would average the
+ * clear sky and the hazed distance into a number that says nothing.
+ */
+function fogBands({ width, height, data }, n = 8) {
+  const out = [];
+  for (let b = 0; b < n; b++) {
+    const y0 = Math.floor((b / n) * height), y1 = Math.floor(((b + 1) / n) * height);
+    let sum = 0, cnt = 0, over = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        const v = (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255;
+        sum += v; cnt++;
+        if (v > 0.8) over++;
+      }
+    }
+    out.push({ band: b, mean: cnt ? sum / cnt : 0, over80: cnt ? over / cnt : 0 });
+  }
+  return out;
+}
+
 /** saturation and hue spread, which are axis 6's numbers */
 function colour({ width, height, data }) {
   let sat = 0, n = 0;
@@ -277,6 +310,8 @@ if (!png) { console.error('\nglimpse · no frame'); process.exit(2); }
 const img = decodePNG(png);
 const near = nearGroundGradient(img);
 const col = colour(img);
+const fogview = /(^|&)fogview=1/.test(flags);
+const fog = fogview ? fogBands(img) : null;
 
 await mkdir(join(REPO, OUT), { recursive: true });
 await writeFile(join(REPO, OUT, `${NAME}.png`), png);
@@ -288,12 +323,21 @@ const report = {
   url, preset, viewport: { w: W, h: H }, frames: FRAMES,
   builtMs: built, perFrameMs: Math.round(perFrame), settled: ok,
   nearGround: near, colour: col, notes,
+  ...(fog ? { fogFractionByBand: fog } : {}),
 };
 await writeFile(join(REPO, OUT, `${NAME}.json`), JSON.stringify(report, null, 2) + '\n');
 
 for (const line of ascii(img)) console.log('  ' + line);
 console.log();
 for (const n of notes.slice(0, 8)) console.log('  · ' + n);
+if (fog) {
+  console.log('\n  §9.3 fog fraction, top band to bottom (1.0 = fully hazed):');
+  for (const b of fog) {
+    const bar = '#'.repeat(Math.round(b.mean * 40));
+    console.log(`    ${b.band}  ${b.mean.toFixed(3)}  ${(b.over80 * 100).toFixed(0).padStart(3)}% past 0.8  ${bar}`);
+  }
+  console.log('    BENCHMARK.md §2: the reference frames histogram the NEAR field at ~0.');
+}
 console.log(`\nglimpse · near-ground gradient ${near.gradient.toFixed(2)}/255`
   + ` · luma ${near.min.toFixed(0)}–${near.max.toFixed(0)}`
   + ` · saturation ${col.saturation.toFixed(3)}`);

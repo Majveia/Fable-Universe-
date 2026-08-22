@@ -272,3 +272,71 @@ day it was orphaned.
 - §5 is red and this is the second measurement saying so: **80.4 M vertices in
   one frame** at the low row, against a 2.2 M *triangle* budget. `RECKONING.md`
   Act C called it and it is still open.
+
+
+---
+
+# The haze does not reach the feet
+
+`docs/plans/BENCHMARK.md` §2 property 3 is the strongest claim in the project's
+own analysis of why its frames look washed out:
+
+> **Our haze reaches the player's feet**, which flattens the near field into the
+> same wash as the distance and costs §8 axis 3 its third plane, axis 5 its
+> materials, and axis 6 its colour, all from one cause.
+>
+> Property 3 is the highest-value single measurement open in the project.
+
+It was open because nobody had taken it. `?fogview=1` has existed the whole
+time — `src/print.js` outputs `1.0 - alpha` as the picture instead of the
+picture — and `tools/glimpse.js` can now read it in bands down the frame.
+
+Seed 700181046, surface, eye at 1.68 m:
+
+| band | | fog | past 0.8 |
+|---|---|---|---|
+| 0–2 | sky | 0.82 – 0.93 | 61–95% |
+| 3 | horizon | 0.786 | 76% |
+| 4 | mid | 0.297 | 21% |
+| 5–6 | near | 0.045 / 0.059 | 1–2% |
+| 7 | at the feet | **0.000** | **0%** |
+
+**The near field is clear.** That is the shape BENCHMARK.md attributes to the
+*reference* frames and says ours does not have.
+
+Two reasons this measurement is trustworthy where the width-floor one was not:
+
+- **Fog fraction is not resolution-dependent.** It is a per-fragment function of
+  distance and height, so a 320x180 software frame computes the same number a
+  1440p one does. The width floor is the opposite — it is defined in pixels —
+  which is why a glimpse can settle this and cannot settle that.
+- The analytic curve agrees. `1 - exp(-(d/far)^1.28 · 3.1 · heightFalloff)` at
+  `far = 1700` gives 0.002 at 5 m, 0.011 at 20 m, 0.052 at 70 m, 0.18 at 200 m,
+  0.91 at 1400 m — a clear near field and a hazed distance, which is what the
+  bands show.
+
+## What it does not settle
+
+**One world.** `aerialParams()` derives `far = visibility / (atmo · hazeX)`, so
+a thick-atmosphere world genuinely collapses the extinction length: at `atmo=5`,
+`far` falls to 340 m and fog at 40 m rises to about 0.20. BENCHMARK's claim may
+well hold *there* and not here. The honest statement is that the fog is correct
+on a temperate world and that "the haze reaches the feet" is not a property of
+the aerial perspective as written.
+
+## So the pale near field has another cause
+
+Which matters more than the result itself, because it redirects the effort
+BENCHMARK.md was pointing at the fog. What is left on the table:
+
+- **The ground has no material.** §8 axis 5 scored 1 and 2, and
+  `RECKONING.md` already calls this "the blocking axis" and "more than half of
+  every frame". §M2 act 4's own gate asks for "generated detail arrays inside
+  30 m" and that near-field half does not exist.
+- **`?paint=` against `?mat=`.** `docs/plans/DEFAULTS.md` §2 measured
+  `paint=1&mat=1` as *paler* than `paint=0&mat=1`, with the mid-ground mottling
+  gone, and withdrew the flip on that evidence. It has been flipped back on the
+  argument that the solver now supplies the geometry the ramp wants — and **that
+  A/B has not been re-taken.** It should be, before anything else is tuned.
+- The grass, which was two thirds absent for reasons recorded above and is now
+  unmeasured at shipping resolution.
