@@ -20,7 +20,7 @@ The state before this commit, measured by loading the site and looking at it:
 | `?m1=` | the whole M1 cosmic-web enrichment | **off** |
 | `?web=` | the second hue channel, M1 §13 | **off** |
 | `?m1=` (post) | the ordered dither | **off** |
-| `?paint=` | §9.2's light model — the heart of the art bible | **off** (stays off; §2) |
+| `?paint=` | §9.2's light model — the heart of the art bible | **off** (stays off; §2, and again in §6) |
 | `?mat=` | §M2 act 4, four-layer triplanar materials | **off** |
 | `?sea=` | §M2 act 5, twelve Gerstner waves | **off** |
 | `?ridge=` | §M2 act 6, far ridges as silhouette | **off** |
@@ -241,3 +241,63 @@ What is now known and was not before:
 `?paint=0` and `?paint=1`, score both blind on §8, and decide. If the grade
 wins, the follow-up is to lift `sunShadow` out of `_paintUniforms()` so the map
 can ship independently of the grade that currently gates it.
+
+---
+
+## 6 · `?paint=` — flipped on again, and withdrawn again, this time with the A/B
+
+*Appended later, from the session that produced `tools/glimpse.js`.*
+
+§2 and §5 both close by asking for the same thing: two frames at `?paint=0` and
+`?paint=1`, same seed, same station, judged. Between then and now I **flipped
+the flag on without taking that measurement**, on the argument that §24.4's two
+named blockers (four-layer materials, the §9.7 solver) now existed. The argument
+was sound. It was also not the test this document had asked for twice, and a
+sound argument is not a substitute for a frame.
+
+The test, finally taken. `tools/glimpse.js`, 420x240, seed 700181046,
+`g=1153665109&s=679069590&p=1`, two runs differing in one character:
+
+| | near-ground gradient | luma range | saturation |
+|---|---|---|---|
+| `?paint=0&mat=1` | **17.63**/255 | 77 – 249 | 0.351 |
+| `?paint=1&mat=1` | **11.06**/255 | 99 – 250 | 0.340 |
+
+A 37% loss of near-ground gradient. Same direction, same character as §2's
+table recorded the first time — *"paler, mottling gone"* — reached by a
+different instrument on a different seed. Two independent measurements agree,
+so `PAINT` goes back to opt-in (`src/surface.js`, `PARAM('paint') === '1'`).
+
+Read the numbers as **relative only**: `glimpse` runs a wrecked preset at a
+resolution nothing ships at, and its own header explains why its gradient is
+not comparable to `SCORE.md`'s 1.15/255. Both arms ran identical settings, and
+that is the one thing it is built to be trusted for.
+
+**What the loss is, and what it is not.** The lifted floor (77 → 99) is not the
+defect — that is §9.2's shadow-hue blend doing exactly what §3 row 1 asks of it
+inside an atmosphere. The defect is that the near field flattens, and the near
+field is the region every failing §8 axis in `docs/captures/blind/SCORE.md`
+names. The light model costs the axis it was meant to win.
+
+**Why, and what unblocks it.** §9.2 is a lighting model, and the ground it
+lights has no relief to light: `src/material.js` varies in **colour only** — no
+normal, no roughness, `sf.ao` a hardcoded `1.0` — and the finest feature in any
+channel is about 0.6 m. A hue ramp over a flat normal can only average what was
+already there. So the flag is not abandoned, it is **sequenced behind Act 3b**
+of `docs/plans/` current plan: near-field detail normal, the dead per-layer
+`rough` wired, a real cavity AO. The A/B above is the test it has to pass on the
+way back in, and it should be re-taken on a GPU as §2 and §5 both asked.
+
+**Two things did not go back off with it,** because they were never the grade:
+
+- the **shadow map**, separated from this flag exactly as §5 recommended;
+- **props**, which light through `paint()` unconditionally — `ground-cover.js`
+  calls `paintedStandard` with no reference to `PAINT` — so §24.4's open *"the
+  rocks read as near-black silhouettes"* stays closed at `?paint=0`.
+
+That second point exposed one more dead wiring on the way out.
+`_syncPaintLight()` opened with `if (!PAINT || …) return`, so a `paint=0` build
+froze the props' key light, sky and ground ambient, and shadow tint at their
+build-time values while the sun crossed the sky. It is the same shape as the
+four wirings recorded in `docs/notes/props.md`: a function that exists, that a
+test exercises, and that the renderer never calls. The guard is gone.

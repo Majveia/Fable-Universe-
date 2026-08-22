@@ -128,32 +128,68 @@ const M2 = PARAM('m2') !== '0';
  * the alternative was flipping none, which is where this started.
  */
 /**
- * **Now default-on**; `?paint=0` restores the legacy wrapped-Lambert path.
+ * **Back to opt-in.** `?paint=1` turns §9.2's light model on for the terrain;
+ * the default is the wrapped-Lambert path. This is the second withdrawal of the
+ * same flip and the second time a measurement, not a taste, decided it.
  *
- * §24.4 named the two things that had to exist first, and both now do:
+ * The argument for flipping it on was sound and is still on the record below.
+ * §24.4 named two blockers — four-layer materials to supply real
+ * `shade`/`mid`/`lit` stops, and §9.7's solver to stop spawning you on a smooth
+ * dome where the ramp has nothing to do — and both now exist. What that
+ * argument did not do was re-take `docs/plans/DEFAULTS.md` §2's A/B, which had
+ * withdrawn the flag once already on measured evidence. I flipped it back
+ * without the measurement. This is the measurement.
  *
- * - **Act 4's four-layer materials** supply real `shade`/`mid`/`lit` stops
- *   instead of three points on a line through one colour. `?mat=` flipped on.
- * - **§9.7's landing solver** puts the spawn where the ramp has something to
- *   do. `?solve=` flips on in this commit, immediately below, and the two are
- *   one change: the wash §24.4 photographed is what the ramp does on a smooth
- *   dome under a high sun, and the solver's entire job is to not spawn you on
- *   one.
+ * One seed, one station, one instrument, two runs differing in one character
+ * (`tools/glimpse.js`, 420x240, seed 700181046, `g=1153665109&s=679069590`):
  *
- * The arithmetic behind that, since "it looks better" is not a reason: the mid
- * band spans `t` in 0.17–0.58, and `t` is the half-Lambert wrap, so the band is
- * reached at `ndl` in −0.47–0.19. Flat ground under any sun this project spawns
- * sits above it. What reaches into the band is *relief* — a slope turned away
- * from the star — which is exactly what the solver selects for and what the old
- * height-above-waterline heuristic actively avoided by landing you on a
- * coastal shelf.
+ *   ?paint=0&mat=1   near-ground gradient 17.63/255 · luma  77-249 · sat 0.351
+ *   ?paint=1&mat=1   near-ground gradient 11.06/255 · luma  99-250 · sat 0.340
  *
- * §24.4 also recorded, and left open, the defect this closes: "the rocks read
- * as near-black silhouettes, which §M2's own gate calls a failure in those
- * words." They did, in every capture since. `src/painted.js` puts them and
- * every other prop through the same function as the ground.
+ * A 37% loss of near-ground gradient, in the same direction and of the same
+ * kind DEFAULTS.md §2 recorded: *"paler, mottling gone."* The ASCII thumbnails
+ * in that run agree without needing the number — the lower third under
+ * `paint=0` still has structure in it, and under `paint=1` it is one wash.
+ *
+ * The lifted floor (77 -> 99) is not the defect; that is §9.2's shadow-hue
+ * blend doing precisely what §3 row 1 asks of it inside an atmosphere. The
+ * defect is that the near field flattens, and the near field is the region
+ * every failing §8 axis in `docs/captures/blind/SCORE.md` names. Turning on the
+ * light model costs the axis it was meant to win.
+ *
+ * That is not a verdict on §9.2. It is a verdict on §9.2 **over a ground with
+ * no normal, no roughness and no AO** — `src/material.js` varies in colour
+ * alone, `sf.ao` is a hardcoded 1.0, and the finest feature in any channel is
+ * about 0.6 m. A hue ramp over a surface whose normal is flat can only average
+ * what was there. So this flag is not abandoned, it is **sequenced**: it goes
+ * back on when the ground it lights has relief to be lit, and the A/B above is
+ * the test it has to pass to get there.
+ *
+ * Two things stay behind, because they were never the grade:
+ *
+ * - the **shadow map** (`SHADOW`, below), separated from this flag in the same
+ *   commit that first flipped it — a shadow is a fact about geometry, not an
+ *   art direction, and §8 axis 8 scores an unanchored object as dishonest;
+ * - **props** light through `paint()` unconditionally (`ground-cover.js` calls
+ *   `paintedStandard` with no reference to this flag), which is what closes
+ *   §24.4's open "the rocks read as near-black silhouettes". `_syncPaintLight`
+ *   is no longer gated on `PAINT` for exactly that reason: with the guard in
+ *   place, `paint=0` left the props' key light frozen at build time while the
+ *   sun moved. That is the same shape as the four dead wirings in
+ *   `docs/notes/props.md` and it was one line from being the fifth.
+ *
+ * ---------------------------------------------------------------------------
+ * The original case for flipping it on, kept because it is still the case that
+ * has to be answered, and it is now answered by Act 3b rather than by 24.4:
+ *
+ * The mid band spans `t` in 0.17-0.58, and `t` is the half-Lambert wrap, so the
+ * band is reached at `ndl` in -0.47-0.19. Flat ground under any sun this
+ * project spawns sits above it. What reaches into the band is *relief* — a
+ * slope turned away from the star — which is exactly what the solver selects
+ * for. The solver supplies relief at valley scale. It cannot supply it at arm's
+ * length, and arm's length is where the frame is being scored.
  */
-const PAINT = PARAM('paint') !== '0';
+const PAINT = PARAM('paint') === '1';
 
 /**
  * The sun's shadow map — and it is **not** the grade.
@@ -1420,8 +1456,13 @@ export class SurfaceScale {
     return best;
   }
 
+  // Not gated on `PAINT`. `ground-cover.js` lights every prop through §9.2
+  // whether or not the terrain does, so this block has a consumer either way —
+  // and with the old `!PAINT ||` guard a `paint=0` build froze the props' key
+  // light, sky/ground ambient and shadow tint at their build-time values while
+  // the sun crossed the sky. One more function that exists and is never called.
   _syncPaintLight() {
-    if (!PAINT || !this._paintLight) return;
+    if (!this._paintLight) return;
     const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
     const L = lightFor(this._paintLight.T, Math.max(elev, 0.5));
     const u = this._paintLight.uniforms;

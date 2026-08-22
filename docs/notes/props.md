@@ -354,3 +354,60 @@ BENCHMARK.md was pointing at the fog. What is left on the table:
   A/B has not been re-taken.** It should be, before anything else is tuned.
 - The grass, which was two thirds absent for reasons recorded above and is now
   unmeasured at shipping resolution.
+
+---
+
+# The A/B, re-taken — and the fifth dead wiring
+
+The item above says the `?paint=` A/B "should be re-taken, before anything else
+is tuned." Taken. `tools/glimpse.js`, 420x240, seed 700181046, one station, two
+runs differing in one character:
+
+| | near-ground gradient | luma | saturation |
+|---|---|---|---|
+| `?paint=0&mat=1` | **17.63**/255 | 77 – 249 | 0.351 |
+| `?paint=1&mat=1` | **11.06**/255 | 99 – 250 | 0.340 |
+
+37% less near-ground gradient with the light model on. Same direction and same
+character as `DEFAULTS.md` §2 found the first time, by a different instrument on
+a different seed. `PAINT` is opt-in again; `DEFAULTS.md` §6 has the full
+reasoning, including why the lifted floor is not the defect and why the fix is
+Act 3b rather than an edit to §9.2.
+
+The thumbnails say it without the arithmetic. Bottom three rows, `paint=0`:
+
+```
+::::==*:--+=%-%++--=@-*=#@==**====*===***========+*+=+====+-:=--
+..:::::::::-:-----------+----+=*====+=-**-=+-===+-==---=:--::---
+......:::::-::::------------------------*--=-+--=::-:=--:::::::.
+```
+
+and `paint=1`:
+
+```
+---=++#==+*+%+%*#+++@*#*%@**##++*********==**+*+=**+++====+===--
+-------======+++++++++*********#++**+*****=*++++*+===-===-------
+:::-------=-=======++=++++++++++++++++++*++=+++====-==-------:::
+```
+
+The second is smoother, lighter, and has less in it. That is the whole finding.
+
+## The fifth
+
+Flipping it back off surfaced one more instance of this file's pattern — a
+function that exists, that a test exercises, and that the renderer never calls.
+
+`_syncPaintLight()` in `src/surface.js` opened `if (!PAINT || !this._paintLight)
+return;`. But props do **not** go through `PAINT`: `ground-cover.js` calls
+`paintedStandard` unconditionally, which is how §M2 §24.4's "the rocks read as
+near-black silhouettes" stays closed on a `paint=0` build. So with the flag off,
+every prop in the world kept the key light, sky ambient, ground ambient and
+shadow tint it was built with, while the sun crossed the sky.
+
+Nothing would have caught it. `verify.js` asserts the function's contents.
+`paintcheck.js` compiles the programs and finds 18.5% of the frame lit — from a
+single frame, where a frozen light and a live one are identical. It needed the
+flag to move for the defect to exist at all, which is the least testable shape
+this class of bug comes in.
+
+Count is five. Every one is a wiring, not a formula.
