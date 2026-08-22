@@ -15,6 +15,7 @@
 // be machinery in service of nothing.
 
 import * as THREE from 'three';
+import { cardMask, paintedStandard, stopsFrom } from './painted.js';
 import { RNG, hash } from './rng.js';
 import {
   COVER_NEAR, MINERALS, SPECIES, coverDensity, mineralChunk, scatterChunk,
@@ -162,18 +163,115 @@ export function addGroundCover(s) {
     return c;
   };
 
-  const rock = (h, sat, l) => new THREE.MeshStandardMaterial({
-    color: new THREE.Color().setHSL(h, sat, l), roughness: 1, flatShading: true,
-  });
-  const plantMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(pp.colC?.r ?? 0.3, pp.colC?.g ?? 0.42, pp.colC?.b ?? 0.24),
-    roughness: 0.95, side: THREE.DoubleSide, transparent: true, alphaTest: 0.35,
-    flatShading: true,
-  });
+  // --- materials -----------------------------------------------------------
+  //
+  // Two things changed here and both were bugs rather than taste.
+  //
+  // **The five minerals were five hardcoded HSL constants** — `shard` was
+  // `setHSL(0.55, …)`, which is *blue*, on every world in the universe. §9.1
+  // is explicit that there is no default palette and that every colour is
+  // derived per world; five literals nailed to the file are the exact thing it
+  // forbids, and a pale blue cone on an ochre desert is what it looks like.
+  // They are tints of the world's own rock colour now, so a boulder belongs to
+  // the ground it is sitting on.
+  //
+  // **The plant material had `alphaTest: 0.35` and no alphaMap.** Alpha was
+  // uniformly 1.0, the test passed at every texel, and every plant rendered as
+  // an opaque rectangle — a few hundred hard-edged dark quads per frame at
+  // every angle, which is the single most conspicuous artefact in a surface
+  // capture. `cardMask()` generates the silhouette the comments always assumed
+  // was there (§2.1: on-device, from `hash(seed, …)`).
+  //
+  // And both now light through §9.2 rather than through three's PBR, which is
+  // what `docs/plans/M2.md` §24.4 says is the fix for "the rocks read as
+  // near-black silhouettes" — a failure that section records and leaves open.
+  // The terrain's own light and its own shadow map, so a boulder and the
+  // ground it sits on cannot disagree about where the sun is or what is in
+  // shade (§9.2: one function, one light).
+  const wiring = s.paintWiring();
+  const light = s._paintLight
+    ? { sun: [...s._paintLight.uniforms.sun.value], shadowTint: [...s._paintLight.uniforms.sh.value] }
+    : { sun: [1, 0.84, 0.61], shadowTint: [0.36, 0.43, 0.62] };
+  const arr = (c, f) => [(c?.r ?? f[0]), (c?.g ?? f[1]), (c?.b ?? f[2])];
+  const rockBase = arr(pp.colB, [0.42, 0.40, 0.38]);
+  const soilBase = arr(pp.colA, [0.34, 0.27, 0.20]);
+  const vegBase = arr(pp.colC, [0.30, 0.42, 0.24]);
+
+  /**
+   * A mineral, as a tint of this world's rock.
+   *
+   * `k` is brightness against the world's stone and `warmth` slides it toward
+   * the soil — scree is stone freshly broken and stays stone; crust is stone
+   * that has been weathering in the dirt for an age and has taken its colour.
+   */
+  const mineral = (k, warmth, look, params) => {
+    const base = rockBase.map((v, i) => (v * (1 - warmth) + soilBase[i] * warmth) * k);
+    return paintedStandard(
+      { color: new THREE.Color(base[0], base[1], base[2]), flatShading: true, ...params },
+      wiring,
+      // Stone barely shifts hue and takes a hard band edge; §9.2's `soft` is
+      // what separates a mineral from a leaf as much as the colour does.
+      { ...stopsFrom(base, light, { warm: 0.10, cool: 0.16, range: 0.30 }),
+        soft: 0.085, jit: 0.05, rim: 0.30, ambient: 1.0, ...look });
+  };
+
+  // One mask per species, generated once per world. Six 64x64 RGBA masks is
+  // 96 KB of device memory and, per §2.1, zero bytes shipped.
+  const masks = new Map();
+  const maskFor = (id) => {
+    if (!masks.has(id)) masks.set(id, cardMask(id, seed));
+    return masks.get(id);
+  };
+
   const mats = {
-    boulder: rock(0.08, 0.10, 0.30), scree: rock(0.07, 0.12, 0.34),
-    shard: rock(0.55, 0.16, 0.72), ripple: rock(0.10, 0.18, 0.52),
-    crust: rock(0.03, 0.30, 0.18),
+    boulder: mineral(0.78, 0.22),
+    scree: mineral(0.92, 0.10),
+    // A shard is a fractured crystal face: brighter, cooler, and the one
+    // mineral allowed a real rim, because a broken edge catching a low sun is
+    // the whole reason it is worth drawing.
+    shard: mineral(1.18, 0.0, { rim: 0.85, soft: 0.06 }),
+    // The one mineral that is a card rather than a solid, and so the one that
+    // needs the mask for the same reason the plants do: a 2.6 m opaque quad
+    // lying on the floor has a straight edge, and no patch of sand does.
+    ripple: mineral(1.06, 0.70, { rim: 0.18, soft: 0.14 },
+      { alphaMap: maskFor('ripple'), alphaTest: 0.3, side: THREE.DoubleSide }),
+    crust: mineral(0.62, 0.55, { rim: 0.22 }),
+  };
+
+  /**
+   * A plant, which is the material that most needed §9.2.
+   *
+   * `trans` is the subsurface term: a leaf edge-on to a low sun transmits
+   * rather than reflects, and §9.2 calls that the difference between foliage
+   * and green cardboard. `rim` is high for the same reason — the backlight is
+   * "the connective tissue of the whole image" and a card is nearly all rim.
+   */
+  const plantMats = new Map();
+  const plantMat = (id) => {
+    if (plantMats.has(id)) return plantMats.get(id);
+    // each species sits a little off the world's vegetation colour, so a
+    // meadow is a mosaic rather than one green (§9.5)
+    const j = new RNG(hash(seed, 0x91a7, id.length));
+    const base = vegBase.map((v) => v * j.float(0.82, 1.18));
+    const m = paintedStandard(
+      {
+        color: new THREE.Color(base[0], base[1], base[2]),
+        alphaMap: maskFor(id),
+        alphaTest: 0.42,
+        side: THREE.DoubleSide,
+        flatShading: false,
+      },
+      wiring,
+      {
+        ...stopsFrom(base, light, { warm: 0.34, cool: 0.20, range: 0.24 }),
+        soft: 0.16, jit: 0.10, rim: 0.95, ambient: 1.0,
+        trans: 0.85,
+        // light coming through a leaf is yellow-green, never the leaf's own
+        // colour brightened — §9.5's root-to-tip path, at the far end
+        transCol: [base[0] * 1.7 + 0.10, base[1] * 2.0 + 0.16, base[2] * 0.7],
+      });
+    plantMats.set(id, m);
+    return m;
   };
 
   const group = new THREE.Group();
@@ -181,7 +279,7 @@ export function addGroundCover(s) {
   let drawn = 0, placed = 0;
   for (const [id, list] of byKind) {
     const isMineral = MINERALS.some((m) => m.id === id);
-    const mesh = new THREE.InstancedMesh(geo(id), isMineral ? mats[id] : plantMat, list.length);
+    const mesh = new THREE.InstancedMesh(geo(id), isMineral ? mats[id] : plantMat(id), list.length);
     for (let i = 0; i < list.length; i++) {
       const o = list[i];
       // A boulder sits *in* the ground, not on it — `bury` is the fraction sunk,

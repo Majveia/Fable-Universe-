@@ -127,7 +127,33 @@ const M2 = PARAM('m2') !== '0';
  * Flipping nine flags and keeping eight is the outcome, not a failure of it —
  * the alternative was flipping none, which is where this started.
  */
-const PAINT = PARAM('paint') === '1';
+/**
+ * **Now default-on**; `?paint=0` restores the legacy wrapped-Lambert path.
+ *
+ * §24.4 named the two things that had to exist first, and both now do:
+ *
+ * - **Act 4's four-layer materials** supply real `shade`/`mid`/`lit` stops
+ *   instead of three points on a line through one colour. `?mat=` flipped on.
+ * - **§9.7's landing solver** puts the spawn where the ramp has something to
+ *   do. `?solve=` flips on in this commit, immediately below, and the two are
+ *   one change: the wash §24.4 photographed is what the ramp does on a smooth
+ *   dome under a high sun, and the solver's entire job is to not spawn you on
+ *   one.
+ *
+ * The arithmetic behind that, since "it looks better" is not a reason: the mid
+ * band spans `t` in 0.17–0.58, and `t` is the half-Lambert wrap, so the band is
+ * reached at `ndl` in −0.47–0.19. Flat ground under any sun this project spawns
+ * sits above it. What reaches into the band is *relief* — a slope turned away
+ * from the star — which is exactly what the solver selects for and what the old
+ * height-above-waterline heuristic actively avoided by landing you on a
+ * coastal shelf.
+ *
+ * §24.4 also recorded, and left open, the defect this closes: "the rocks read
+ * as near-black silhouettes, which §M2's own gate calls a failure in those
+ * words." They did, in every capture since. `src/painted.js` puts them and
+ * every other prop through the same function as the ground.
+ */
+const PAINT = PARAM('paint') !== '0';
 
 /**
  * The sun's shadow map — and it is **not** the grade.
@@ -287,14 +313,42 @@ const SHADOW_DEBUG = SHADOW && (PARAM('shdebug') === '1' || PARAM('shdebug') ===
  * `?solve=1` — choose the opening frame with the §9.7 composition solver
  * instead of `findLandingSite`'s height-above-waterline heuristic.
  *
- * Default-off per §7.4, and this one has a specific reason to stay off: the
- * solve costs 127–337 ms of main thread, once, inside `_buildTerrain`. That is
- * 10–28× §5's 12 ms frame budget in the frame it lands, and §2.5 forbids
- * covering it with a cut. Flipping the default waits on either a measurement
- * showing the hyperzoom absorbs it or a change that slices the solve across
- * frames — a separate commit either way.
+ * **Now default-on**; `?solve=0` restores the height-above-waterline
+ * heuristic.
+ *
+ * It was held off because the solve costs 127–337 ms of main thread, once,
+ * inside `_buildTerrain` — "10–28× §5's 12 ms frame budget in the frame it
+ * lands" — and the condition for flipping was stated as *"a measurement
+ * showing the hyperzoom absorbs it, or a change that slices the solve across
+ * frames."*
+ *
+ * The measurement came back and the comparison it overturns is the wrong one.
+ * §5's 12 ms is a **steady-state per-frame** budget; this is a one-time
+ * construction cost, and it is not the largest one in `_buildTerrain`. Measured
+ * on seed 700181046, one surface build, software rasteriser:
+ *
+ *     [§M3]  meadow · 4 rings · 412 chunks · 160² wind field    207 ms
+ *     [§9.7] landing solved                                     183 ms
+ *     [§M2.6] horizon · 15 876 height samples                    48 ms
+ *
+ * The solve is second of three and smaller than the meadow that has shipped
+ * on by default since M3. There is no frame in which it is the reason the main
+ * thread is busy, and no version of this build where removing it makes the
+ * scale appear meaningfully sooner.
+ *
+ * §2.5 is satisfied for the same reason it is satisfied for the rest of the
+ * build: the scale change is a hyperzoom under a passing snapshot
+ * (`transition.js`), so the construction stall is behind the transition that
+ * already exists rather than behind a cut this would have to introduce. The
+ * numbers are in `docs/notes/worlds.md`.
+ *
+ * What the old default cost is the thing that made this worth paying: it
+ * ranked sites on height above the waterline alone, which its own comment
+ * describes as landing you on "a narrow band of near-identical coastal shelf."
+ * Flat, wet, featureless, and — per §24.4's arithmetic — the exact geometry on
+ * which §9.2's hue ramp collapses to one band.
  */
-const SOLVE = PARAM('solve') === '1';
+const SOLVE = PARAM('solve') !== '0';
 
 /**
  * §M2 act 4 — four-layer triplanar materials. **Now default-on**; `?mat=0`
@@ -1054,12 +1108,50 @@ export class SurfaceScale {
    * written — 1024 low, 1536 mobile, 2048 desktop, 2560 ultra. The knob was
    * always there for a map that only ever existed under a flag nobody set.
    */
+  /**
+   * Everything a prop needs to light itself the way the ground does.
+   *
+   * §9.2 opens "every lit surface goes through one function", and for a long
+   * time exactly one surface did. The reason was never disagreement — it was
+   * that a module wanting in had to reach into three private members of this
+   * class and know the order they are built in. So it is one call now, and
+   * adding a module to the light model is a three-line change in that module
+   * rather than a negotiation with this one.
+   *
+   * Safe before `_buildTerrain` only for the paint block; `sunShadow` does not
+   * exist until the terrain material is built, and the shape of this return
+   * says so rather than throwing.
+   */
+  paintWiring() {
+    return {
+      paint: this._paintUniforms(),
+      sun: this.uSunDir,
+      shadow: this.sunShadow ? { ...this.sunShadow.uniforms } : null,
+      shadowGLSL: this.sunShadow ? SHADOW_TAPS_GLSL : null,
+    };
+  }
+
   _shadowUniforms() {
     this.sunShadow = new SunShadow({ res: qInt('shres', 'shadowRes') });
     return { ...this.sunShadow.uniforms };
   }
 
+  /**
+   * Idempotent, and it has to be: `ground-cover.js` asks for the same block so
+   * that a boulder and the ground under it cannot disagree about where the sun
+   * is. Rebuilding it on the second call would hand the second caller a fresh
+   * set of uniform objects and leave the terrain holding the old ones — the
+   * two would then drift apart silently as the day advanced, which is the
+   * worst shape a bug like this can take.
+   */
   _paintUniforms() {
+    if (this._paintLight) {
+      const u = this._paintLight.uniforms;
+      return {
+        uPaintSun: u.sun, uPaintAmbSky: u.sky, uPaintAmbGnd: u.gnd,
+        uPaintShadowTint: u.sh, uPaintExposure: u.exp,
+      };
+    }
     const T = this.ctx.system?.temp ?? 5778;
     const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
     const L = lightFor(T, Math.max(elev, 0.5));
