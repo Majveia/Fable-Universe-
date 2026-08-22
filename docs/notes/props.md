@@ -315,12 +315,26 @@ Two reasons this measurement is trustworthy where the width-floor one was not:
   0.91 at 1400 m — a clear near field and a hazed distance, which is what the
   bands show.
 
+A second world, a different planet of the same star (index 0 rather than 1 —
+built in 5.0 s against 17.0 s, so materially simpler air):
+
+| band | world A | world B |
+|---|---|---|
+| sky | 0.82 – 0.93 | 0.73 – 0.86 |
+| horizon | 0.786 | 0.524 |
+| mid | 0.297 | 0.039 |
+| near | 0.045 / 0.059 | 0.044 / 0.058 |
+| feet | **0.000** | **0.000** |
+
+Same profile. The near field is clear on both.
+
 ## What it does not settle
 
-**One world.** `aerialParams()` derives `far = visibility / (atmo · hazeX)`, so
+**Two worlds, neither of them thick-aired.** `aerialParams()` derives `far = visibility / (atmo · hazeX)`, so
 a thick-atmosphere world genuinely collapses the extinction length: at `atmo=5`,
 `far` falls to 340 m and fog at 40 m rises to about 0.20. BENCHMARK's claim may
-well hold *there* and not here. The honest statement is that the fog is correct
+well hold *there*, and finding such a world is the obvious next probe — neither
+of these two is one. The honest statement is that the fog is correct
 on a temperate world and that "the haze reaches the feet" is not a property of
 the aerial perspective as written.
 
