@@ -411,3 +411,69 @@ flag to move for the defect to exist at all, which is the least testable shape
 this class of bug comes in.
 
 Count is five. Every one is a wiring, not a formula.
+
+---
+
+# What §5 costs, measured — and where cutting stops being free
+
+`RECKONING.md` Act C has been open since M5: *"§5's budgets measured with the
+grass off… Still open."* Closed, and red. One frame, seed 700181046, the low
+row, real density, `tools/drawcensus.js`:
+
+| | calls | instances | triangles |
+|---|---|---|---|
+| meadow | 164 | 3,511,140 blades | 11,496,160 |
+| everything else | 84 | | 1,902,503 |
+| **frame** | **248** | | **13,398,663** |
+| §5 | 900 | | **2,200,000** |
+
+Draw calls green with room to spare. Triangles 6.1× over, on the cheapest tier.
+
+## The one cut that was free
+
+Ring 0 — the grass inside 26 metres — was spending **5,368,656 triangles, two
+fifths of the entire frame**, because `flora.js` inferred §9.5's curved
+cross-section as `seg >= 3`. Twelve triangles a blade against six, on the two
+rows least able to pay, chosen by nobody. `curvedRings` is a quality column now.
+
+    before   frame 13,398,663   6.1x over
+    after    frame 10,714,335   4.9x over
+
+2,684,328 triangles, and **not one blade fewer** — 3,511,140 before and after.
+That is the whole of what can be cut without an eye on the result.
+
+## Where it stops
+
+The next four candidates each trade something a still would show, and this
+container cannot see a still:
+
+- **Rings 2 and 3** — 2,301,230 blades, 4,602,460 triangles, 43% of what is
+  left. The obvious cut, and the plan proposed it. But their width floors are
+  `wpx` 2.75 and 4.00, so those blades are **held at three to four pixels wide
+  by construction** — they are marks, not sub-pixel noise, and holding them
+  there is exactly the fix that landed two commits ago to stop the horizon
+  reading as a green plane. Deleting them undoes Act 1 on the strength of a
+  number that says nothing about how it looks. Needs a capture.
+- **The low row's density.** 3,511,140 blades where §M3's gate asks 800,000 —
+  though the gate is a *floor*, and stated for desktop, so low is not 4.4× over
+  spec so much as unexamined. Thinning it toward the gate is the largest
+  remaining lever and it makes the near field barer, which is the precise defect
+  this whole plan exists to fix. Needs a capture.
+- **Ground cover has no distance LOD** — `coverDensity()` thins by count and
+  every survivor is full detail, so a dodecahedron boulder at 400 m still costs
+  36 triangles. Real, and worth about 112,000 triangles: 1% of the frame.
+- **`life.js`'s bark.** The largest non-meadow line, 608,800 triangles over two
+  draws sharing one material — about 39,300 branch segments at 10 triangles and
+  10,800 far trunks at 20. Lean already; nothing obvious to take.
+
+## The number that decides the milestone
+
+It is not the meadow's. **Delete the meadow entirely and the frame still spends
+1,902,503 triangles — 86% of the whole cap, on the cheapest tier, before a
+single blade.** That leaves 297,497 for grass, and a blade is two triangles at
+its cheapest, so §5-green means about 148,000 blades.
+
+§5 and §M3 cannot both hold as written. Ruled: cut what is indefensible, leave
+the clause for a machine that can measure frames per second — which is the
+property §5's tier table is actually stated in, and the one thing this container
+cannot produce.
