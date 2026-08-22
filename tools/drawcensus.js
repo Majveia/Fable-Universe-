@@ -47,8 +47,20 @@ const WHERE = String(arg('at', 'g=1153665109&s=679069590&p=1'));
 const CHEAP = String(arg('preset', 'cheap')) === 'none' ? ''
   : 'q=low&grass=0.012,0.010,0.006,0.006&blades=1,1,1,1&wind=64&shres=512&shtaps=1&qd=10&qr=17&vc=0';
 
-const url = `/index.html?seed=${SEED}&${WHERE}&dt=0.0166`
-  + [CHEAP, extra].filter(Boolean).map((s) => '&' + s).join('');
+// same precedence rule as tools/glimpse.js, and for the same reason: a
+// repeated key resolves to its FIRST occurrence, so a preset placed ahead of
+// `--flags` silently eats the override.
+const merged = (() => {
+  const out = new Map();
+  for (const g of [CHEAP, extra]) {
+    for (const pair of String(g || '').split('&').filter(Boolean)) {
+      const i = pair.indexOf('=');
+      out.set(i < 0 ? pair : pair.slice(0, i), i < 0 ? '' : pair.slice(i + 1));
+    }
+  }
+  return [...out].map(([k, v]) => (v === '' ? k : `${k}=${v}`)).join('&');
+})();
+const url = `/index.html?seed=${SEED}&${WHERE}&dt=0.0166${merged ? '&' + merged : ''}`;
 
 const pw = await playwright();
 const { origin, close } = await serve();

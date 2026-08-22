@@ -185,3 +185,90 @@ The solve is second of three and smaller than the meadow, which has shipped on
 by default since M3. §2.5 is satisfied for the same reason it already is for the
 rest of the build: the scale change is a hyperzoom under a passing snapshot, so
 the stall is behind a transition that exists rather than a cut this introduces.
+
+
+---
+
+# The empty meadow, and the shape of the defect behind it
+
+A later session, and the same shape three more times. Recorded together because
+the pattern is the finding, not any one instance.
+
+`docs/captures/blind/SCORE.md` had stood for four milestones on two facts that
+contradicted each other:
+
+> **In the frame, there is no grass.** Visually confirmed at magnification.
+> **In the CPU's bookkeeping, there are 3.5 M blades across 162 chunks.**
+> Both are facts and they do not agree. The reconciliation is *not* known.
+> **Naming the cause needs a draw-call inspection, not another still.**
+
+`tools/drawcensus.js` did the inspection. **3.5 M instances genuinely reach the
+driver** — 328 draw calls, 7.02 M instances across two passes, 9.8 vertices
+each. The bookkeeping was right, the frame was right, and the loss is entirely
+downstream of the draw. Two causes, both in `src/flora.js`, both the same shape:
+
+| the thing | where it lives | who calls it |
+|---|---|---|
+| `uChunkNear` | declared in `MEADOW_GLSL` | **nobody, ever** |
+| `meadowWidth()` | defined in `MEADOW_GLSL`, `wpx` in `RINGS` | **nobody, ever** |
+
+**The shape: a function or value that exists, that a test exercises, and that
+the renderer never calls.**
+
+- `uChunkNear` was a uniform nothing set. An unset uniform is 0, so the
+  denominator became the density at point-blank range and the absolute density
+  law ran twice. 1.7x too few blades — measured over the real chunk grid, not
+  estimated.
+- `meadowWidth()` is §9.5's angular width floor, the mechanism that lets far
+  rings *"trade count for width one-for-one."* `flora.js` used a flat 2.8 cm
+  instead, at every distance. That is **0.04 px** at ring 3's far edge. Coverage
+  at ring 3 was **0.0007** — seven hundredths of one per cent of the ground.
+  That is the bare ground, and it is the larger of the two by a wide margin.
+
+## Why every instrument missed both
+
+Not neglect. Each one was aimed at whether the arithmetic was *right* rather
+than whether it *ran*:
+
+- `tools/verify.js` asserted the shader's **text** — that it divides by
+  `meadowFalloff(uChunkNear)`. It did. Green.
+- `tools/pixeldiff.js` **set `uChunkNear` itself** in its fixture and checked
+  parity to 1.3e-7. Green. A parity test that supplies an input the application
+  forgets to supply passes forever on a broken renderer.
+- `?bladedbg=` — the instrument built for exactly this question, with the
+  decision tree written into its own comment — had never been run.
+
+That last one settled it in twenty seconds once there was a tool that could
+render a frame: `?bladedbg=2` (eight times tall, sixty times wide) took frame
+saturation from 0.337 to 0.673. The blades were there, correctly placed, and
+too thin to register — which is the branch the comment says means *"the fault
+is a dimension."*
+
+## The guard that generalises
+
+Both fixes make the value an **argument** or a **called function**, so a caller
+that forgets one no longer compiles. And `verify.js` now asserts the shape
+rather than the spelling:
+
+- a per-chunk quantity may not be a uniform on a ring-shared material — three
+  uploads a material's uniforms only when it thinks the material changed, and
+  411 of every 412 writes are dropped;
+- `meadowWidth()` must actually appear in `flora.js`.
+
+The same audit is worth running against every shared GLSL chunk in `src/`. The
+existing `suitePaintUniforms` already does it for `PAINT_GLSL` — read the
+uniforms off the chunk, require every consumer to supply them by name — and
+that pattern, pointed at `MEADOW_GLSL`, would have caught `uChunkNear` on the
+day it was orphaned.
+
+## Still open
+
+- **1.7x more blades and a real width floor is not yet proven to be a meadow.**
+  Measured coverage says it should be (0.0007 to 0.58 at ring 3), and nobody
+  has looked at it on a GPU.
+- The width floor is capped at the mean blade spacing, because past that width
+  buys overdraw and nothing else. That cap is derived, not tuned, and also
+  unlooked-at.
+- §5 is red and this is the second measurement saying so: **80.4 M vertices in
+  one frame** at the low row, against a 2.2 M *triangle* budget. `RECKONING.md`
+  Act C called it and it is still open.

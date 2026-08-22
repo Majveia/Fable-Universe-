@@ -200,6 +200,9 @@ const SHADOW = PAINT || PARAM('shadow') !== '0';
  */
 const SHADOW_TAPS_GLSL = shadowGLSL(qInt('shtaps', 'shadowTaps'));
 
+/** scratch for the per-frame drawing-buffer query — §5 does not want a Vector2 a frame */
+const _bufSize = new THREE.Vector2();
+
 /**
  * §9.3's aerial perspective, act 2. Separable both ways for the same reason
  * `?paint=` is: `?m2=1&aerial=0` is the print over the old one-line fog, and
@@ -3086,7 +3089,18 @@ export class SurfaceScale {
             : 0.75 * foot * Math.min(1, Math.hypot(this.vel?.x ?? 0, this.vel?.z ?? 0) / 1.5 + 0.35),
         };
       }
+      // §9.5's angular width floor needs to know how big a pixel is.
+      //
+      // A vertex shader can read `projectionMatrix` but has no way to know how
+      // many pixels tall the target is, and that is the other half of the
+      // conversion — so it is computed here, where both the FOV and the drawing
+      // buffer are in reach, and pushed. Frame-constant and identical for every
+      // chunk, which is why it can be a uniform at all (see the note in
+      // flora.js's constructor about the two that could not).
+      const px = this.app.renderer.getDrawingBufferSize(_bufSize);
+      const pxPerRadian = px.y / (this.camera.fov * Math.PI / 180);
       for (const ring of this.meadow) {
+        ring.setPixelScale(pxPerRadian);
         ring.update(this.body.x, this.body.z, this.body.y, this.uTime.value,
           this._frustum, dusk, walker);
         blades += ring.blades;

@@ -78,7 +78,31 @@ const BUDGET = Number(arg('timeout', 900)) * 1000;
 const SEED = String(arg('seed', '700181046'));
 const WHERE = String(arg('at', 'g=1153665109&s=679069590&p=1'));
 
-const flags = [preset === 'none' ? '' : CHEAP, extra].filter(Boolean).join('&');
+/**
+ * `--flags` overrides the preset, and it took a wrong answer to get this right.
+ *
+ * The first version concatenated `preset + '&' + extra`, and
+ * `URLSearchParams.get()` returns the **first** occurrence of a repeated key —
+ * so `--flags "grass=0.3"` after a preset carrying `grass=0.012` was silently
+ * discarded. The run completed, reported a number, and the number was for the
+ * preset's density. A tool whose override does not override is worse than one
+ * with no override, because it answers confidently.
+ *
+ * So they are merged into a map. No key appears twice and precedence is a
+ * property of the data rather than of string order.
+ */
+function mergeFlags(...groups) {
+  const out = new Map();
+  for (const g of groups) {
+    for (const pair of String(g || '').split('&').filter(Boolean)) {
+      const i = pair.indexOf('=');
+      out.set(i < 0 ? pair : pair.slice(0, i), i < 0 ? '' : pair.slice(i + 1));
+    }
+  }
+  return [...out].map(([k, v]) => (v === '' ? k : `${k}=${v}`)).join('&');
+}
+
+const flags = mergeFlags(preset === 'none' ? '' : CHEAP, extra);
 const url = `/index.html?seed=${SEED}&${WHERE}&dt=0.0166${flags ? '&' + flags : ''}`;
 
 /**

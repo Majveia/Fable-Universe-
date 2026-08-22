@@ -4876,6 +4876,28 @@ function suiteMeadow() {
     // drew for — the same class of disagreement, one step along.
     ok('and from the channel three actually uploads per draw — the model matrix',
       /modelMatrix\[3\]\.xz/.test(flora) && /uChunkSize/.test(flora));
+
+    // The same failure, one function along, and the larger of the two.
+    //
+    // `meadowWidth()` is §9.5's angular width floor — the mechanism that lets
+    // the far rings "trade count for width one-for-one". It has been in
+    // MEADOW_GLSL since the chunk was written, `wpx` has been in the RINGS
+    // table since the table was written, `tools/pixeldiff.js` has been checking
+    // its arithmetic, and **nothing in src/ ever called it**. flora.js used a
+    // flat `uWidth` of 2.8 cm at every distance instead, which is under one
+    // pixel past about 40 m: every blade beyond the near ring was sub-pixel,
+    // hit the sample point or missed it, and averaged to the mean. §M3's gate
+    // clause failing in the exact words it is written in — "grass reads as
+    // *meadow* at the horizon, not as a green plane."
+    //
+    // A function no caller calls is the shape of defect this whole file kept
+    // missing, because every check was aimed at whether the arithmetic was
+    // right rather than at whether it ran.
+    ok('§9.5 · the angular width floor is actually called by the renderer',
+      /meadowWidth\(/.test(flora),
+      'wpx exists per ring so that a distant blade never falls under a pixel');
+    ok('and it is fed a real pixel scale rather than a placeholder',
+      /uPxPerRadian/.test(flora) && /setPixelScale/.test(flora));
   }
 }
 
