@@ -33,6 +33,28 @@
 // Anything unmatched is reported as `?` with a source excerpt rather than
 // silently bucketed, because a census that quietly drops the interesting draw
 // is worse than no census.
+//
+// ---------------------------------------------------------------------------
+// Triangles, and the column heading that was wrong
+//
+// The first version of this file multiplied the instance count by the draw's
+// `count` parameter and called the result "vertices". For `drawArrays*` that is
+// true. For `drawElementsInstanced` — which is every instanced draw in this
+// repo — `count` is the number of **indices**, and an indexed mesh exists
+// precisely so that its index count and its vertex count are different numbers.
+// The figures were right and the heading was not, which is the worse of the two
+// ways to be wrong: a mislabelled budget number is exactly the kind of thing
+// that gets quoted into a decision.
+//
+// So the column is now **triangles**, which is the unit §5 actually budgets —
+// *"≤ 2.2 M triangles"*, per frame, at surface scale. It is `count / 3` under
+// `TRIANGLES` and undefined under any other primitive mode, so modes are
+// counted separately and a non-triangle draw contributes zero rather than a
+// third of a line strip.
+//
+// §5's cap is stated **per frame**, and a frame here includes every pass the
+// renderer makes — the shadow map is not free because it is not the picture.
+// So the total below is the number to compare, undivided.
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -102,23 +124,28 @@ await page.addInitScript(() => {
     };
     P.useProgram = function (pr) { cur = pr; return o.useProgram.call(this, pr); };
 
-    const record = (instances, verts) => {
+    // `count` is indices for drawElements* and vertices for drawArrays*; under
+    // TRIANGLES (mode 4) both are three per triangle, and under anything else
+    // there is no triangle to count.
+    const record = (mode, instances, count) => {
       if (!cur) return;
       let e = stats.get(cur);
       if (!e) {
         const v = progVert.get(cur) || '';
         let tag = '?';
         for (const [name, re] of TAGS) if (re.test(v)) { tag = name; break; }
-        e = { tag, calls: 0, instances: 0, verts: 0,
+        e = { tag, calls: 0, instances: 0, elements: 0, tris: 0, modes: {},
           excerpt: tag === '?' ? v.slice(0, 160).replace(/\s+/g, ' ') : '' };
         stats.set(cur, e);
       }
-      e.calls++; e.instances += instances; e.verts += instances * verts;
+      e.calls++; e.instances += instances; e.elements += instances * count;
+      e.modes[mode] = (e.modes[mode] || 0) + 1;
+      if (mode === 4) e.tris += (instances * count) / 3;
     };
-    P.drawElementsInstanced = function (m, c, t, off, n) { record(n, c); return o.drawElementsInstanced.call(this, m, c, t, off, n); };
-    P.drawArraysInstanced = function (m, f, c, n) { record(n, c); return o.drawArraysInstanced.call(this, m, f, c, n); };
-    P.drawElements = function (m, c, t, off) { record(1, c); return o.drawElements.call(this, m, c, t, off); };
-    P.drawArrays = function (m, f, c) { record(1, c); return o.drawArrays.call(this, m, f, c); };
+    P.drawElementsInstanced = function (m, c, t, off, n) { record(m, n, c); return o.drawElementsInstanced.call(this, m, c, t, off, n); };
+    P.drawArraysInstanced = function (m, f, c, n) { record(m, n, c); return o.drawArraysInstanced.call(this, m, f, c, n); };
+    P.drawElements = function (m, c, t, off) { record(m, 1, c); return o.drawElements.call(this, m, c, t, off); };
+    P.drawArrays = function (m, f, c) { record(m, 1, c); return o.drawArrays.call(this, m, f, c); };
   };
   install(window.WebGL2RenderingContext?.prototype);
   install(window.WebGLRenderingContext?.prototype);
@@ -155,25 +182,89 @@ try {
 }
 
 const rows = await page.evaluate(() => window.__census());
+
+/**
+ * The per-ring breakdown the census structurally cannot give.
+ *
+ * All four rings share one `RawShaderMaterial` — deliberately, and the
+ * constructor in `src/flora.js` says why — so three compiles one program for
+ * them and every draw the census sees names that one program. Four rings
+ * collapse into one row, and "which ring is the budget" is exactly the question
+ * Act 3a has to answer.
+ *
+ * `GrassRing.update()` already records `blades` (what the CPU instanced this
+ * frame, before the shader's own thinning) and `drawn` (the chunks that
+ * survived the frustum), so the numbers exist; nothing was reading them. This
+ * reads them off the live ring objects after the same settled frame, and
+ * multiplies by the ring's own geometry to get triangles.
+ */
+const meadow = await page.evaluate(() => {
+  const st = window.AEON?.stack || [];
+  const s = st[st.length - 1];
+  if (!s?.meadow) return null;
+  return s.meadow.map((r, i) => ({
+    ring: i,
+    chunk: r.spec.chunk,
+    far: r.spec.far,
+    blades: r.blades | 0,
+    drawn: r.drawn | 0,
+    curved: !!r.curved,
+    triPerBlade: (r.geometry?.index?.count || 0) / 3,
+    densityMul: r.densityMul,
+  }));
+});
 await browser.close();
 await close();
 
-console.log(`\n  ${'subsystem'.padEnd(30)} ${'calls'.padStart(6)} ${'instances'.padStart(11)} ${'vertices'.padStart(12)}`);
-let ti = 0, tv = 0;
+const n0 = (x) => Math.round(x).toLocaleString();
+console.log(`\n  ${'subsystem'.padEnd(30)} ${'calls'.padStart(6)} ${'instances'.padStart(11)} ${'triangles'.padStart(12)}`);
+let ti = 0, tt = 0, tc = 0;
 for (const r of rows) {
-  ti += r.instances; tv += r.verts;
+  ti += r.instances; tt += r.tris; tc += r.calls;
   console.log(`  ${r.tag.padEnd(30)} ${String(r.calls).padStart(6)}`
-    + ` ${r.instances.toLocaleString().padStart(11)} ${r.verts.toLocaleString().padStart(12)}`);
+    + ` ${r.instances.toLocaleString().padStart(11)} ${n0(r.tris).padStart(12)}`
+    + (Object.keys(r.modes).some((m) => m !== '4') ? `  (modes ${Object.keys(r.modes).join(',')})` : ''));
   if (r.excerpt) console.log(`      ${r.excerpt}`);
 }
 console.log(`  ${'—'.repeat(30)} ${'—'.repeat(6)} ${'—'.repeat(11)} ${'—'.repeat(12)}`);
-console.log(`  ${'total'.padEnd(30)} ${''.padStart(6)} ${ti.toLocaleString().padStart(11)} ${tv.toLocaleString().padStart(12)}`);
+console.log(`  ${'total'.padEnd(30)} ${String(tc).padStart(6)} ${ti.toLocaleString().padStart(11)} ${n0(tt).padStart(12)}`);
+
+// §5, stated per frame and compared per frame. `frames` is how many the census
+// counted, so the per-frame figure is the total over it — the shadow pass is
+// inside a frame, not beside it.
+if (meadow) {
+  console.log(`\n  ${'meadow'.padEnd(10)} ${'chunks'.padStart(7)} ${'blades'.padStart(11)}`
+    + ` ${'tri/blade'.padStart(9)} ${'triangles'.padStart(12)}  reach`);
+  let mb = 0, mt = 0;
+  for (const r of meadow) {
+    const t = r.blades * r.triPerBlade;
+    mb += r.blades; mt += t;
+    console.log(`  ring ${r.ring}     ${String(r.drawn).padStart(7)} ${r.blades.toLocaleString().padStart(11)}`
+      + ` ${String(r.triPerBlade).padStart(9)} ${Math.round(t).toLocaleString().padStart(12)}`
+      + `  ${r.far} m${r.curved ? ' · curved' : ''}`);
+  }
+  console.log(`  ${'total'.padEnd(10)} ${''.padStart(7)} ${mb.toLocaleString().padStart(11)}`
+    + ` ${''.padStart(9)} ${Math.round(mt).toLocaleString().padStart(12)}`
+    + `   (§M3 gate: 800,000 blades)`);
+}
+
+const TRI_CAP = 2_200_000, CALL_CAP = 900;
+const triF = tt / FRAMES, callF = tc / FRAMES;
+console.log(`\n  §5 · ${n0(triF)} triangles/frame against 2,200,000`
+  + `  ${triF <= TRI_CAP ? 'GREEN' : `RED · ${(triF / TRI_CAP).toFixed(1)}x over`}`);
+console.log(`  §5 · ${n0(callF)} draw calls/frame against 900`
+  + `  ${callF <= CALL_CAP ? 'GREEN' : `RED · ${(callF / CALL_CAP).toFixed(1)}x over`}`);
 
 const out = join(REPO, 'docs/captures/glimpse');
 await mkdir(out, { recursive: true });
 await writeFile(join(out, `census${extra ? '-' + extra.replace(/\W+/g, '') : ''}.json`),
-  JSON.stringify({ url, frames: FRAMES, settled: ok, rows, totals: { instances: ti, verts: tv }, pageNotes }, null, 2) + '\n');
+  JSON.stringify({ url, frames: FRAMES, settled: ok, rows,
+    totals: { instances: ti, triangles: tt, calls: tc },
+    perFrame: { triangles: tt / FRAMES, calls: tc / FRAMES },
+    budget: { triangles: 2200000, calls: 900, source: 'CLAUDE.md §5, per frame' },
+    meadow,
+    pageNotes }, null, 2) + '\n');
 
 for (const n of pageNotes.slice(0, 4)) console.log(`\n  · ${n}`);
 console.log(`\ndrawcensus · ${rows.length} programs · ${ti.toLocaleString()} instances`
-  + ` · ${tv.toLocaleString()} vertices over ${FRAMES} frame(s)` + (ok ? '' : ' · INCOMPLETE'));
+  + ` · ${n0(tt)} triangles over ${FRAMES} frame(s)` + (ok ? '' : ' · INCOMPLETE'));
