@@ -1740,6 +1740,11 @@ export class SurfaceScale {
 
     const grassMul = qArr('grass', 'grass');
     const segs = qArr('blades', 'blades');
+    // How many near rings get §9.5's curved cross-section. `?curved=` overrides
+    // it like every other knob in that table, so the trade can be seen on one
+    // machine without editing the row — which is the whole point, because what
+    // it costs is measurable here and what it buys is not.
+    const curvedRings = qInt('curved', 'curvedRings');
     // §9.1 · one base colour, and grassPalette() derives the ramp from it. The
     // nine greens are the world's, not the reference's.
     const palette = { base: [this.pp.colC.r, this.pp.colC.g, this.pp.colC.b] };
@@ -1752,6 +1757,7 @@ export class SurfaceScale {
       this.meadow.push(new GrassRing(r, this.windField, {
         seed: hash(this.pp.seed, 0x9ea6 + r),
         seg: segs[r],
+        curved: r < curvedRings,
         density: grassMul[r],
         palette,
         // the *same* uniform objects the sky and terrain hold, so the grass
@@ -1769,7 +1775,8 @@ export class SurfaceScale {
     const chunks = this.meadow.reduce((a, m) => a + m.chunks.length, 0);
     console.info(`[§M3] meadow · wind ${this.windSys.base.toFixed(2)} m/s at 10 m · `
       + `force ${this.windSys.force.toFixed(3)} of Earth · ${this.meadow.length} rings · `
-      + `${chunks} chunks · seg ${segs.join('/')} · density ${grassMul.join('/')} · `
+      + `${chunks} chunks · seg ${segs.join('/')} · curved ${curvedRings} · `
+      + `density ${grassMul.join('/')} · `
       + `${this.windField.size}² field · ${(performance.now() - t0) | 0} ms`);
   }
 
