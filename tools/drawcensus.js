@@ -116,10 +116,17 @@ await page.addInitScript(() => {
     P.shaderSource = function (sh, s) { src.set(sh, String(s)); return o.shaderSource.call(this, sh, s); };
     P.attachShader = function (pr, sh) {
       const s = src.get(sh) || '';
-      // the vertex shader is the one that declares attributes
-      if (/\battribute\b|\bin\s+vec|gl_Position/.test(s) && !/gl_FragColor|\bout\s+vec4\s+\w*frag/i.test(s)) {
-        progVert.set(pr, s);
-      }
+      // **`gl_Position`, and nothing else.** The first version asked whether
+      // the source declared attributes or varyings and then tried to exclude
+      // fragment shaders by looking for `gl_FragColor` or an `out vec4 frag…`.
+      // Under GLSL3 a fragment shader declares its varyings as `in vec…` too,
+      // and `src/flora.js` names its output `outColor` — so the blade's
+      // *fragment* source passed the test and overwrote its vertex source. The
+      // whole meadow then tagged as `terrain tile`, because the fragment shader
+      // happens to carry a varying called `vW`.
+      //
+      // Only a vertex shader writes `gl_Position`. There is no second rule.
+      if (/gl_Position/.test(s)) progVert.set(pr, s);
       return o.attachShader.call(this, pr, sh);
     };
     P.useProgram = function (pr) { cur = pr; return o.useProgram.call(this, pr); };
@@ -151,7 +158,15 @@ await page.addInitScript(() => {
   install(window.WebGLRenderingContext?.prototype);
 
   window.__census = () => [...stats.values()].sort((a, b) => b.instances - a.instances);
-  window.__censusReset = () => stats.clear();
+  window.__censusReset = () => {
+    stats.clear();
+    // the frame the count started on, so the divisor is measured not assumed
+    window.AEON.__censusBase = window.AEON.frames || 0;
+    Object.defineProperty(window.AEON, '__censusFrames', {
+      configurable: true,
+      get: () => (window.AEON.halted || window.AEON.frames || 0) - window.AEON.__censusBase,
+    });
+  };
 });
 
 console.log(`drawcensus · ${url}`);
@@ -171,8 +186,18 @@ try {
   console.log('  surface built');
   // Count ONE settled frame, not the build. The build issues uploads and
   // one-off passes; the question is what a steady frame asks for.
-  await page.evaluate(() => window.__censusReset());
-  await page.evaluate((n) => window.AEON.haltAt((window.AEON.frames || 0) + n), FRAMES);
+  //
+  // Reset and halt in **one** evaluate. They were two, and the loop kept
+  // running between them — so `--frames 1` counted the frame that slipped
+  // through the gap plus the frame it halted on, and reported a doubled figure
+  // against a divisor of one. That is how a 13.4 M frame came to be written
+  // down as 26.8 M and then explained as "two passes": the tool was measuring
+  // two frames and saying one. A single evaluate runs between animation frames,
+  // so the reset and the deadline are set on the same frame boundary.
+  await page.evaluate((n) => {
+    window.__censusReset();
+    window.AEON.haltAt((window.AEON.frames || 0) + n);
+  }, FRAMES);
   await page.waitForFunction(() => window.AEON._haltAt && window.AEON.frames >= window.AEON._haltAt,
     null, { timeout: BUDGET });
 } catch (e) {
@@ -182,6 +207,11 @@ try {
 }
 
 const rows = await page.evaluate(() => window.__census());
+
+// What the loop actually drew, rather than what was asked for. If these differ
+// the divisor below is wrong and every per-frame number with it, so it is read
+// back rather than assumed.
+const counted = await page.evaluate(() => window.AEON.__censusFrames || 0);
 
 /**
  * The per-ring breakdown the census structurally cannot give.
@@ -249,7 +279,12 @@ if (meadow) {
 }
 
 const TRI_CAP = 2_200_000, CALL_CAP = 900;
-const triF = tt / FRAMES, callF = tc / FRAMES;
+const nf = counted > 0 ? counted : FRAMES;
+if (counted !== FRAMES) {
+  console.log(`\n  note · asked for ${FRAMES} frame(s), the loop drew ${counted}`
+    + ` — dividing by ${nf}`);
+}
+const triF = tt / nf, callF = tc / nf;
 console.log(`\n  §5 · ${n0(triF)} triangles/frame against 2,200,000`
   + `  ${triF <= TRI_CAP ? 'GREEN' : `RED · ${(triF / TRI_CAP).toFixed(1)}x over`}`);
 console.log(`  §5 · ${n0(callF)} draw calls/frame against 900`
@@ -258,13 +293,13 @@ console.log(`  §5 · ${n0(callF)} draw calls/frame against 900`
 const out = join(REPO, 'docs/captures/glimpse');
 await mkdir(out, { recursive: true });
 await writeFile(join(out, `census${extra ? '-' + extra.replace(/\W+/g, '') : ''}.json`),
-  JSON.stringify({ url, frames: FRAMES, settled: ok, rows,
+  JSON.stringify({ url, frames: FRAMES, framesCounted: counted, settled: ok, rows,
     totals: { instances: ti, triangles: tt, calls: tc },
-    perFrame: { triangles: tt / FRAMES, calls: tc / FRAMES },
+    perFrame: { triangles: tt / nf, calls: tc / nf },
     budget: { triangles: 2200000, calls: 900, source: 'CLAUDE.md §5, per frame' },
     meadow,
     pageNotes }, null, 2) + '\n');
 
 for (const n of pageNotes.slice(0, 4)) console.log(`\n  · ${n}`);
 console.log(`\ndrawcensus · ${rows.length} programs · ${ti.toLocaleString()} instances`
-  + ` · ${n0(tt)} triangles over ${FRAMES} frame(s)` + (ok ? '' : ' · INCOMPLETE'));
+  + ` · ${n0(tt)} triangles over ${nf} frame(s)` + (ok ? '' : ' · INCOMPLETE'));
