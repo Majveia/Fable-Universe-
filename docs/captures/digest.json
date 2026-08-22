@@ -1,5 +1,5 @@
 {
-  "sha256": "fea8833953d8ca9790ce279d69c64a02ef8e80fe9268ad0e96cf66c04e65ebfe",
+  "sha256": "d33f6d933f1642d35a2921df814e9d194ad45a9a8eb8e5428dc65e7cf0bb73bf",
   "suites": {
     "hash · §2.3": {
       "sha256": "d73bffb66bc3581a598cf18b2b87fda88854faea110db476c1d2c69fbd26af20",
@@ -29,12 +29,16 @@
       "sha256": "3e84c10f9103d141660cf2ad6847ffd09ae1b662b3250ec12f2c6984b2c4143e",
       "samples": 301
     },
+    "landform · §9.7": {
+      "sha256": "48cc9ed6b86f5be3e01fc23c16e72cbffab33f5e019ebaca112c19ebe9084961",
+      "samples": 1340
+    },
     "tree · §M2": {
       "sha256": "85feb37d354b3549504a6970a5b62de65c3cf9124287aa9b01d9b772c3b18435",
       "samples": 288
     }
   },
-  "samples": 6181,
+  "samples": 7521,
   "machine": {
     "node": "v22.22.2",
     "v8": "12.4.254.21-node.39",

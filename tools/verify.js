@@ -98,6 +98,7 @@ import {
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
   roomShape, sharedBits, starAt, thinDepth, thinPoint,
 } from '../src/liminal.js';
+import { SILHOUETTES, coverageOf, maskData } from '../src/silhouette.js';
 import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
@@ -4835,9 +4836,68 @@ function suiteMeadow() {
     ok('§9.5 · the shader spends three instructions on the falloff, not ten',
       /x \* x \* inversesqrt/.test(code) && !/pow\(/.test(code));
     ok('and the per-blade test divides by the density the CPU actually assumed',
-      /meadowFalloff\(d\) \/ max\(meadowFalloff\(uChunkNear\)/.test(code));
+      /meadowFalloff\(d\) \/ max\(meadowFalloff\(chunkNear\)/.test(code));
     ok('and clamps it so a blade can be removed but never conjured',
       /min\(keep, 1\.0\)/.test(code));
+
+    // The check this suite was missing, and the reason the meadow was empty for
+    // four milestones while every clause above passed.
+    //
+    // `chunkNear` was `uniform float uChunkNear`, and **nothing in src/ ever
+    // set it**. The assertion above tested the shader's *text* and was
+    // satisfied; `tools/pixeldiff.js` set the uniform itself and its parity
+    // checked out; and an unset uniform is 0, which made the denominator the
+    // density at point-blank range and applied the absolute density law a
+    // second time on top of the CPU's. Three blades in four collapsed to zero
+    // height beyond every ring's dn.
+    //
+    // Every instrument was looking at the formula. None was looking at whether
+    // the value arrived. So: a per-chunk quantity may not be a uniform on this
+    // chunk at all — the material is shared across a ring, three uploads a
+    // material's uniforms only when it thinks the material changed, and 411 of
+    // every 412 writes are dropped. That is not a rule anyone should have to
+    // remember; it is one an argument enforces at compile time.
+    ok('§M3 · a per-chunk quantity is an argument, not a uniform this cannot deliver',
+      !/uniform\s+float\s+uChunkNear/.test(code)
+      && /bool meadowKeep\(float d, float rand01, float chunkNear\)/.test(code));
+  }
+
+  // --- and the caller actually passes one ----------------------------------
+  //
+  // The other half. A signature nobody calls correctly is still a signature,
+  // and `src/flora.js` is the only consumer that matters.
+  {
+    const flora = readFileSync(new URL('../src/flora.js', import.meta.url), 'utf8');
+    ok('§M3 · flora.js derives the chunk distance rather than expecting it sent',
+      /meadowKeep\(d, aRand, chunkNear\)/.test(flora)
+      && /float chunkNear = length\(/.test(flora));
+    // The derivation has to be the same arithmetic chunkNearDist() uses to size
+    // the instance count, or the shader thins against a distance the CPU never
+    // drew for — the same class of disagreement, one step along.
+    ok('and from the channel three actually uploads per draw — the model matrix',
+      /modelMatrix\[3\]\.xz/.test(flora) && /uChunkSize/.test(flora));
+
+    // The same failure, one function along, and the larger of the two.
+    //
+    // `meadowWidth()` is §9.5's angular width floor — the mechanism that lets
+    // the far rings "trade count for width one-for-one". It has been in
+    // MEADOW_GLSL since the chunk was written, `wpx` has been in the RINGS
+    // table since the table was written, `tools/pixeldiff.js` has been checking
+    // its arithmetic, and **nothing in src/ ever called it**. flora.js used a
+    // flat `uWidth` of 2.8 cm at every distance instead, which is under one
+    // pixel past about 40 m: every blade beyond the near ring was sub-pixel,
+    // hit the sample point or missed it, and averaged to the mean. §M3's gate
+    // clause failing in the exact words it is written in — "grass reads as
+    // *meadow* at the horizon, not as a green plane."
+    //
+    // A function no caller calls is the shape of defect this whole file kept
+    // missing, because every check was aimed at whether the arithmetic was
+    // right rather than at whether it ran.
+    ok('§9.5 · the angular width floor is actually called by the renderer',
+      /meadowWidth\(/.test(flora),
+      'wpx exists per ring so that a distant blade never falls under a pixel');
+    ok('and it is fed a real pixel scale rather than a placeholder',
+      /uPxPerRadian/.test(flora) && /setPixelScale/.test(flora));
   }
 }
 
@@ -8006,6 +8066,129 @@ function suiteInvariants() {
 // It hid well: a hooded figure in a long coat is *supposed* to read dark, and
 // grepping `uPaintExposure` found a caller — `surface.js`'s terrain — so it
 // looked wired. This makes the requirement structural instead of remembered.
+
+// ---------------------------------------------------------------------------
+// §2.1 · the silhouettes, which existed only as a comment
+//
+// `ground-cover.js` built every plant as a card and both it and `scatter.js`
+// said the shape "lives in alpha, not in geometry." The material carried
+// `alphaTest: 0.35` with no alphaMap and no map, on every world, ever — so
+// alpha was uniformly 1.0, the test passed at every texel, and every plant
+// rendered as an opaque rectangle.
+//
+// That is the failure this suite exists to make impossible to reintroduce, and
+// it is a *numeric* one: a mask of uniform coverage 1.0 is, in code, exactly
+// the bug. So the assertions are about coverage — that a shape has an inside
+// and an outside, that the two are in a sane ratio, that a plant is attached to
+// the ground it grows from, and that no two species are the same picture.
+function suiteSilhouette() {
+  console.log('\nsilhouette — a card whose alpha is all 1 is the bug (§2.1)');
+
+  const seed = 20250601;
+  const N = 64;
+  const cov = (d) => coverageOf(d);
+  const at = (d, u, v) => d[((Math.min(N - 1, Math.floor(v * N)) * N)
+    + Math.min(N - 1, Math.floor(u * N))) * 4 + 1] / 255;
+
+  ok('every species scatter.js places has a silhouette',
+    ['cover', 'bent', 'broad', 'stalk', 'bloom', 'reed'].every((k) => SILHOUETTES.includes(k)),
+    SILHOUETTES.join(', '));
+
+  const masks = new Map(SILHOUETTES.map((k) => [k, maskData(k, seed, N)]));
+
+  for (const [k, d] of masks) {
+    const c = cov(d);
+    // The two ways a mask is useless. Uniformly opaque is the original bug
+    // exactly; uniformly clear is a plant nobody can see, which is the fix
+    // overshooting and is just as invisible in a code review.
+    ok(`§2.1 · ${k} has an inside and an outside`, c > 0.02 && c < 0.72,
+      `coverage ${(c * 100).toFixed(1)}%`);
+  }
+
+  // A card is translated so it grows from its root, so a species whose base is
+  // empty is a plant floating above the ground — which reads, at a glance,
+  // exactly like the terrain being in the wrong place.
+  for (const k of ['bent', 'reed', 'stalk', 'bloom', 'broad']) {
+    const d = masks.get(k);
+    let base = 0;
+    for (let x = 0; x < N; x++) base = Math.max(base, at(d, (x + 0.5) / N, 0.03));
+    ok(`§9.5 · ${k} is attached at its root`, base > 0.4, `base coverage ${base.toFixed(2)}`);
+  }
+
+  // ...and thins out toward the tip.
+  //
+  // The first version of this asserted the silhouette is literally narrower at
+  // the top, and that was wrong about plants: a tuft of grass *fans*, so its
+  // envelope is widest at the tip even though every blade in it tapers. It
+  // still caught a real defect — `reed` came back a solid column — so the
+  // assertion is kept and corrected to the thing that actually distinguishes a
+  // clump from a rectangle: **density**. Toward the tip a clump is mostly the
+  // gaps between blades, and a card is not.
+  // `bloom` is deliberately not in this list, and it is the interesting
+  // exclusion: a flower is a stem carrying a head *at the top*, so it is
+  // densest exactly where the others thin out. It failed this check on the
+  // shape being right, which is the second time in this suite the assertion
+  // was wrong rather than the silhouette — worth leaving written down, because
+  // the temptation on a red gate is to flatten the flower.
+  for (const k of ['bent', 'reed', 'stalk']) {
+    const d = masks.get(k);
+    const band = (lo, hi) => {
+      let sum = 0, n = 0;
+      for (let yi = 0; yi < N; yi++) {
+        const v = (yi + 0.5) / N;
+        if (v < lo || v >= hi) continue;
+        for (let x = 0; x < N; x++) { sum += at(d, (x + 0.5) / N, v); n++; }
+      }
+      return n ? sum / n : 0;
+    };
+    const mid = band(0.25, 0.6), tip = band(0.85, 1.0);
+    ok(`§9.5 · ${k} thins toward the tip rather than ending in a flat edge`,
+      tip < mid * 0.85, `mid ${mid.toFixed(3)} vs tip ${tip.toFixed(3)}`);
+  }
+
+  // and the flower is head-heavy, which is the same claim from the other side
+  {
+    const d = masks.get('bloom');
+    const band = (lo, hi) => {
+      let sum = 0, n = 0;
+      for (let yi = 0; yi < N; yi++) {
+        const v = (yi + 0.5) / N;
+        if (v < lo || v >= hi) continue;
+        for (let x = 0; x < N; x++) { sum += at(d, (x + 0.5) / N, v); n++; }
+      }
+      return n ? sum / n : 0;
+    };
+    ok('§9.1 · bloom carries its head at the top — the one accent colour',
+      band(0.7, 1.0) > band(0.2, 0.6) * 1.5,
+      `stem ${band(0.2, 0.6).toFixed(3)} vs head ${band(0.7, 1.0).toFixed(3)}`);
+  }
+
+  // Six species that are one picture is a meadow of clones (§9.5 asks for a
+  // mosaic), and it is the likely outcome of a seeding mistake.
+  const sigs = [...masks.values()].map(cov);
+  const distinct = new Set(sigs.map((c) => c.toFixed(3))).size;
+  ok('§9.5 · the species are not one shape repeated', distinct >= SILHOUETTES.length - 1,
+    `${distinct} distinct coverages across ${SILHOUETTES.length} species`);
+
+  // §2.3: same seed, same picture; different seed, different picture.
+  const a = maskData('bent', 1234, N), b = maskData('bent', 1234, N), c2 = maskData('bent', 9876, N);
+  ok('§2.3 · a species is a pure function of the seed',
+    a.every((v, i) => v === b[i]));
+  ok('§2.3 · and two seeds are two plants',
+    !a.every((v, i) => v === c2[i]));
+
+  // The channel the bug would hide in. three r170 reads alphaMap.g; a mask
+  // written only to .a is a mask nothing looks at, and would reproduce the
+  // original defect while looking correct in every debug view.
+  const d0 = masks.get('bent');
+  let sameRGBA = true;
+  for (let i = 0; i < d0.length; i += 4) {
+    if (d0[i] !== d0[i + 1] || d0[i + 1] !== d0[i + 2] || d0[i + 2] !== d0[i + 3]) { sameRGBA = false; break; }
+  }
+  ok('§2.1 · coverage is in every channel, because alphamap_fragment reads .g',
+    sameRGBA);
+}
+
 function suitePaintUniforms() {
   console.log('\npaint — a consumer of §9.2 must supply all of §9.2 (§M2)');
 
@@ -8837,6 +9020,7 @@ const suites = {
   precip: suitePrecip,
   scatter: suiteScatter,
   tree: suiteTree,
+  silhouette: suiteSilhouette,
   paintUniforms: suitePaintUniforms,
   invariants: suiteInvariants,
   vegetation: suiteVegetation,

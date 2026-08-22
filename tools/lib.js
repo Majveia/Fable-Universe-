@@ -116,9 +116,23 @@ export async function launch(pw) {
   });
 }
 
+/**
+ * A command-line argument, or `true` for a bare flag, or the fallback.
+ *
+ * The empty string is a *value*, not an absence, and the first version of this
+ * could not tell the two apart: `next && !next.startsWith('--')` is false for
+ * `''`, so `--at ""` returned `true` and the caller cheerfully interpolated the
+ * string "true" into a URL. That cost an eight-minute headless run which
+ * measured a page with no deep link in it and reported nothing.
+ *
+ * A bare `--flag` at the end of argv has `next === undefined`; `--flag ""` has
+ * `next === ''`. Testing for undefined keeps every existing caller's behaviour
+ * and stops silently converting "nothing" into "yes".
+ */
 export function arg(name, fallback = null) {
   const i = process.argv.indexOf('--' + name);
   if (i < 0) return fallback;
   const next = process.argv[i + 1];
-  return next && !next.startsWith('--') ? next : true;
+  if (next === undefined || next.startsWith('--')) return true;
+  return next;
 }

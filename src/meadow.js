@@ -451,7 +451,6 @@ export const MEADOW_PART_GLSL = /* glsl */`
 
 export const MEADOW_GLSL = /* glsl */`
   uniform float uRingDn;      // this ring's quoted distance
-  uniform float uChunkNear;   // the distance the CPU sized this chunk at
   uniform float uDensityMul;  // the quality row's multiplier for this ring
 
   // (dn/d)^1.5 without a pow(): x*x*inversesqrt(x), three instructions
@@ -465,8 +464,36 @@ export const MEADOW_GLSL = /* glsl */`
   // chunk from its NEAREST corner, so this ratio is never above one and the
   // shader can only ever remove — it is never asked to invent a blade that was
   // not instanced.
-  bool meadowKeep(float d, float rand01) {
-    float keep = meadowFalloff(d) / max(meadowFalloff(uChunkNear), 1e-9);
+  //
+  // ---------------------------------------------------------------------------
+  // chunkNear is an ARGUMENT, and it is the whole empty meadow.
+  //
+  // It was a uniform -- uChunkNear -- and nothing in src/ ever set it. An unset
+  // uniform is 0, meadowFalloff(0) clamps x to 1 and returns 1, so the
+  // denominator was the density at point-blank range on every chunk in the
+  // universe. That turns a *relative* thinning -- remove the surplus this chunk
+  // was over-drawn by -- into the absolute density law applied a second time, on
+  // top of the CPU's. Every blade beyond a ring's own dn was thinned twice:
+  // about 76% of ring 0 wrongly collapsed at 20 m, about 90% of ring 3 at its
+  // far edge. Both facts in docs/captures/blind/SCORE.md were true -- 3.5 M
+  // blades submitted, and a frame with no grass in it -- and this is where they
+  // meet.
+  //
+  // The reason it was never set is recorded in src/flora.js's constructor and is
+  // worth reading: two uniforms used to ride onBeforeRender, three only uploads
+  // a material's uniforms when it thinks the material changed, and 411 of every
+  // 412 writes were silently dropped. uChunkOrigin was moved into the model
+  // matrix, which three sets on every draw. **uChunkNear was removed and never
+  // given a replacement channel**, while this function went on dividing by it.
+  // flora.js still computes the value every frame into mesh.userData.near,
+  // where nothing reads it.
+  //
+  // So it cannot be a uniform: it varies per chunk and the material is shared
+  // across a ring, which is exactly the condition that broke it the first time.
+  // The caller derives it from the model matrix -- the channel that does work --
+  // and hands it over. See BLADE_VERT in src/flora.js.
+  bool meadowKeep(float d, float rand01, float chunkNear) {
+    float keep = meadowFalloff(d) / max(meadowFalloff(chunkNear), 1e-9);
     return rand01 < min(keep, 1.0);
   }
 

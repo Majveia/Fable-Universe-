@@ -74,6 +74,8 @@ import { airmass, beamXYZ, planck, scatteredXYZ, toGamut, xyzToLinearSRGB } from
 import { RINGS, density, keepProbability, ringB, ringK, shuffledIndices } from '../src/meadow.js';
 import { ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import { WOOD, curvature, forkRadii, lengthOf, radiusForHeight } from '../src/tree.js';
+import { pickLandform } from '../src/landform.js';
+import { makeGround } from '../src/ground.js';
 
 // ---------------------------------------------------------------------------
 // the accumulator
@@ -196,6 +198,46 @@ const SUITES = {
       const e = ecologyAt(dir, 20250601, i * 11);
       t.all(Object.keys(e).sort().map((k) => e[k]).filter((v) => typeof v === 'number'));
       t.push(logistic(3, 900, i * 11));
+    }
+    return t;
+  },
+
+  /**
+   * The shape of a world, which this file did not cover and should have.
+   *
+   * Found the hard way: `landform.js` was changed so that `rolling` — a third
+   * of every world in the universe — stopped contributing zero, which moved
+   * the terrain under every seed that draws it, and the digest did not budge.
+   * It was reading `terrain.js`'s planet-scale height field and nothing that
+   * sits on top of it, so the entire *local* landscape a walker stands in was
+   * outside the tripwire.
+   *
+   * That is the more interesting half for §2.3: the macro field decides which
+   * continent a URL lands on, but this decides what you actually see when you
+   * get there, and a shared link that resolves to a different valley is just
+   * as broken as one that resolves to a different planet.
+   */
+  'landform · §9.7' () {
+    const t = new Tape();
+    for (const seed of SEEDS) {
+      for (const typeId of [0, 1, 3, 4]) {
+        const pp = { seed, typeId, oceanLevel: typeId === 1 ? 0.06 : -1, radiusE: 1.0,
+          noiseSeed: (hash(seed, 7) >>> 0) % 100 };
+        const lf = pickLandform(pp, { x: 1, y: 0 });
+        t.str(lf.id).push(lf.amp).push(lf.floatingIsles ? 1 : 0);
+        // the form itself, sampled on a coarse lattice — a landform that stops
+        // contributing is exactly the change this failed to catch
+        const nz = (x, z) => Math.sin(x * 12.9898 + z * 78.233) * 0.5;
+        for (let i = 0; i < 40; i++) {
+          const x = (i % 8) * 220 - 770, z = ((i / 8) | 0) * 260 - 650;
+          t.push(lf.contribute(x, z, nz, 1));
+        }
+        // and the ground it produces, which is what a walker stands on
+        const g = makeGround(pp, [0.31, 0.62, 0.72]);
+        for (let i = 0; i < 24; i++) {
+          t.push(g.heightAt((i % 6) * 180 - 450, ((i / 6) | 0) * 200 - 300));
+        }
+      }
     }
     return t;
   },

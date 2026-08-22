@@ -51,6 +51,9 @@ on:
       - 'vendor/**'
       # the three instruments and the plumbing under them — deliberately not
       # `tools/**`, which would spend three browser jobs on a README typo
+      - 'tools/painted.js'
+      - 'tools/paintcheck.js'
+      - 'tools/paintcheck.html'
       - 'tools/pixeldiff.js'
       - 'tools/touchgate.js'
       - 'tools/footplant.js'
@@ -68,6 +71,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  painted:
+    name: §9.2 · the light model still compiles onto a prop
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: ./.github/actions/chromium
+
+      # Twenty seconds, and it exists because `src/painted.js` splices
+      # PAINT_GLSL into a stock MeshStandardMaterial: the program does not exist
+      # until three assembles it, so reading the source proves nothing — §M0's
+      # argument for the compile gate, one layer out.
+      #
+      # Its first run found `getShadowMask()`, which is a lambert/phong chunk
+      # and does not exist in a standard material. Six programs dead, every prop
+      # in the world rendering broken, and nothing in the console saying so. It
+      # cost a twenty-minute surface build to find that way.
+      #
+      # It also asserts something was drawn. A shader that compiles and outputs
+      # black is a green gate and a black world.
+      - run: node tools/paintcheck.js
+
   parity:
     name: §2.7 · the coast from space is the coast you walk
     runs-on: ubuntu-latest

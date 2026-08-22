@@ -46,7 +46,7 @@ import {
 } from './wind.js';
 import {
   MEADOW_COLOUR_GLSL, MEADOW_GLSL, MEADOW_PART_GLSL, PALETTE_KEYS, PART_RADIUS,
-  RINGS, bladeRoots, chunkGrid, chunkInstances, chunkNearDist, grassPalette,
+  RINGS, bladeRoots, chunkGrid, chunkInstances, chunkNearDist, grassPalette, ringB,
 } from './meadow.js';
 
 /**
@@ -317,6 +317,10 @@ const BLADE_VERT = /* glsl */`
   ${HEIGHT_GLSL}
   ${WIND_MEAN_GLSL}
   ${WIND_SAMPLE_GLSL}
+  uniform float uChunkSize;   // this ring's chunk extent, in metres
+  uniform float uWpx;         // this ring's angular width floor, in pixels
+  uniform float uRingB;       // blades per m² at uRingDn, for the saturation cap
+  uniform float uPxPerRadian; // the projection's pixel scale, frame-constant
   ${MEADOW_GLSL}
   ${MEADOW_PART_GLSL}
 
@@ -339,9 +343,34 @@ const BLADE_VERT = /* glsl */`
     float d = length(base - uCam);
     vDist = d;
 
+    // The chunk's nearest corner, derived rather than uploaded.
+    //
+    // This is the second half of the bug the constructor's note describes, and
+    // it went unfixed for four milestones while the first half was being
+    // celebrated. Two uniforms rode onBeforeRender; both were silently dropped
+    // on 411 of every 412 draws; uChunkOrigin was rescued into the model matrix
+    // and uChunkNear was simply deleted, leaving meadowKeep dividing by an
+    // unset uniform -- which is 0, which makes its denominator the density at
+    // point-blank range, which applies the absolute density law a second time
+    // on top of the CPU's. Roughly three blades in four collapsed to zero
+    // height beyond every ring's dn. That is the empty meadow.
+    //
+    // It is derived here rather than sent because a per-chunk value cannot ride
+    // a ring-shared material -- that is precisely the condition that broke it --
+    // and because it never needed to be sent at all: the model matrix carries
+    // the chunk origin, uChunkSize carries the extent, uCam carries the eye,
+    // and the nearest corner is the three of them. Nothing can desynchronise
+    // from the CPU, because there is no second copy to drift.
+    //
+    // Same arithmetic as chunkNearDist() in src/meadow.js, which is what sized
+    // the instance count this frame.
+    vec2 c0 = modelMatrix[3].xz;
+    vec2 outside = max(max(c0 - uCam.xz, uCam.xz - (c0 + uChunkSize)), vec2(0.0));
+    float chunkNear = length(outside);
+
     // the fine thinning. Collapsing is a multiply, not a branch — see the note
     // in src/flora.js on why that matters at this vertex count.
-    float live = max(meadowKeep(d, aRand) ? 1.0 : 0.0, uDbg);
+    float live = max(meadowKeep(d, aRand, chunkNear) ? 1.0 : 0.0, uDbg);
 
     vT = position.y;
     vSide = aSide;
@@ -369,6 +398,19 @@ const BLADE_VERT = /* glsl */`
     // than any dimension in it.
     h *= mix(1.0, 8.0, uDbgFat);
     float wMul = mix(1.0, 60.0, uDbgFat);
+    // The blade's own width: never thinner than this ring's pixel floor.
+    // Below about a pixel a blade stops being a blade and becomes noise that
+    // averages to the mean — which is what a "green plane" is.
+    //
+    // ...and never wider than the gap between blades. §9.5 trades count for
+    // width one-for-one, and that trade saturates: once a blade is as wide as
+    // the mean spacing, the ground is already covered and further width buys
+    // overdraw and nothing else. Without the cap the pixel floor asks for a
+    // 3.15 m blade at ring 3's far edge, which is a billboard rather than a
+    // trade. Spacing is 1/sqrt(density), and density is this ring's own law.
+    float dens = max(uRingB * meadowFalloff(d) * uDensityMul, 1e-6);
+    float wBlade = clamp(meadowWidth(d, uWpx, uPxPerRadian),
+                         uWidth * 0.22, inversesqrt(dens));
 
     // the logarithmic boundary layer: roots barely move, tips whip
     float lean = windProfile(vT * max(h, 0.05)) * uForce;
@@ -379,7 +421,7 @@ const BLADE_VERT = /* glsl */`
     vec2 across = vec2(-fdir.y, fdir.x);
 
     vec3 p = base;
-    p.xz += across * position.x * uWidth * wMul * live;
+    p.xz += across * position.x * wBlade * wMul * live;
     p.y += vT * h;
     p.xz += fdir * bend * h;
     // §6 M3 · the walker parts the grass. Applied after the wind rather than
@@ -388,7 +430,7 @@ const BLADE_VERT = /* glsl */`
     p.xz += meadowPart(world, vT) * h * live;
     // the curve out of the blade's own plane, and the bow that shortens it —
     // a bending blade does not stretch
-    p.xz += fdir * position.z * uWidth * wMul * live;
+    p.xz += fdir * position.z * wBlade * wMul * live;
     p.y -= bend * bend * h * 0.35;
     vW = p;
 
@@ -645,11 +687,38 @@ export class GrassRing {
         uDbgFat: { value: BLADE_DBG >= 2 ? 1 : 0 },
         uDbgGround: { value: 0 },
         uWidth: { value: 0.028 },
+        // §9.5's angular width floor, finally wired.
+        //
+        // `uWidth` alone is a flat 2.8 cm at every distance, and a 2.8 cm blade
+        // at 40 m subtends less than one pixel — so every blade past the near
+        // ring was sub-pixel, hit the sample point or missed it, and averaged
+        // into a flat tone. That is §M3's own gate clause failing in the exact
+        // words it is written in: "grass reads as *meadow* at the horizon, not
+        // as a green plane."
+        //
+        // `wpx` has been in the RINGS table since the table was written — 1.70,
+        // 2.00, 2.75, 4.00 — and `meadowWidth()` has been in MEADOW_GLSL, and
+        // `tools/pixeldiff.js` has been checking it. Nothing in src/ ever called
+        // it. Same shape as uChunkNear, one function along.
+        uWpx: { value: this.spec.wpx },
+        // blades per m² at this ring's own quoted distance — the other half of
+        // the saturation cap below
+        uRingB: { value: ringB(this.ring) },
+        // Pixels per radian: frame-constant, not chunk-varying, so it uploads
+        // for the same reason uCam does — one write per frame is enough when
+        // every mesh sharing the material wants the same value.
+        uPxPerRadian: { value: 900 },
         uCurl: { value: curved ? 0.55 : 0.0 },
         uWalker: { value: new THREE.Vector4(0, -1e6, 0, 0) },
         uPartR: { value: PART_RADIUS },
         uForce: { value: this.wf.wind.force },
         uRingDn: { value: this.spec.dn },
+        // Ring-constant, and that is the whole reason it is allowed to be a
+        // uniform here: every chunk in a ring is the same size, so this never
+        // varies across the meshes that share this material. The thing that
+        // does vary per chunk -- the distance to its nearest corner -- is
+        // derived in the shader from the model matrix instead. See BLADE_VERT.
+        uChunkSize: { value: this.spec.chunk },
         uDensityMul: { value: density },
         uHeightTex: this.wf.uniforms.uHeightTex,
         uHeightOrigin: this.wf.uniforms.uHeightOrigin,
@@ -772,6 +841,17 @@ export class GrassRing {
    * is the difference between walking through a meadow and rebuilding one every
    * step.
    */
+  /**
+   * The projection's pixel scale, for §9.5's angular width floor.
+   *
+   * Frame-constant and viewport-dependent, so it is pushed rather than derived:
+   * a vertex shader can read `projectionMatrix` but has no way to know how many
+   * pixels tall the target is, and that is the other half of the conversion.
+   */
+  setPixelScale(pxPerRadian) {
+    this.material.uniforms.uPxPerRadian.value = pxPerRadian;
+  }
+
   update(camX, camZ, camY, t, frustum = null, dusk = 1, walker = null) {
     const chunk = this.spec.chunk;
     const ox = Math.floor(camX / chunk), oz = Math.floor(camZ / chunk);

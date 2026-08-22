@@ -6,6 +6,16 @@
 #     git add -f docs/captures/M0/*.png
 docs/captures/**/*.png
 
+# A glimpse is not a capture, and the whole directory is ignored rather than
+# only its frames. `tools/glimpse.js` renders with the quality knobs
+# deliberately wrecked — a hundredth of the grass, one segment per blade — so
+# that a software rasteriser can produce a frame at all, and it stamps
+# `gateValid: false` on every number it reports. Its JSON would be the more
+# dangerous half to keep: a PNG that looks wrong is self-evidently wrong, and a
+# committed statistic looks like a measurement of the thing we ship. It is an
+# instrument reading, taken and discarded, exactly as the note above intends.
+docs/captures/glimpse/
+
 # The dev instruments (tools/*.js) drive Playwright, which some machines have
 # globally and some do not. A local `npm i playwright` is how you get a capture
 # out of a container that has the browsers but not the module — and it must

@@ -127,6 +127,68 @@ const M2 = PARAM('m2') !== '0';
  * Flipping nine flags and keeping eight is the outcome, not a failure of it —
  * the alternative was flipping none, which is where this started.
  */
+/**
+ * **Back to opt-in.** `?paint=1` turns §9.2's light model on for the terrain;
+ * the default is the wrapped-Lambert path. This is the second withdrawal of the
+ * same flip and the second time a measurement, not a taste, decided it.
+ *
+ * The argument for flipping it on was sound and is still on the record below.
+ * §24.4 named two blockers — four-layer materials to supply real
+ * `shade`/`mid`/`lit` stops, and §9.7's solver to stop spawning you on a smooth
+ * dome where the ramp has nothing to do — and both now exist. What that
+ * argument did not do was re-take `docs/plans/DEFAULTS.md` §2's A/B, which had
+ * withdrawn the flag once already on measured evidence. I flipped it back
+ * without the measurement. This is the measurement.
+ *
+ * One seed, one station, one instrument, two runs differing in one character
+ * (`tools/glimpse.js`, 420x240, seed 700181046, `g=1153665109&s=679069590`):
+ *
+ *   ?paint=0&mat=1   near-ground gradient 17.63/255 · luma  77-249 · sat 0.351
+ *   ?paint=1&mat=1   near-ground gradient 11.06/255 · luma  99-250 · sat 0.340
+ *
+ * A 37% loss of near-ground gradient, in the same direction and of the same
+ * kind DEFAULTS.md §2 recorded: *"paler, mottling gone."* The ASCII thumbnails
+ * in that run agree without needing the number — the lower third under
+ * `paint=0` still has structure in it, and under `paint=1` it is one wash.
+ *
+ * The lifted floor (77 -> 99) is not the defect; that is §9.2's shadow-hue
+ * blend doing precisely what §3 row 1 asks of it inside an atmosphere. The
+ * defect is that the near field flattens, and the near field is the region
+ * every failing §8 axis in `docs/captures/blind/SCORE.md` names. Turning on the
+ * light model costs the axis it was meant to win.
+ *
+ * That is not a verdict on §9.2. It is a verdict on §9.2 **over a ground with
+ * no normal, no roughness and no AO** — `src/material.js` varies in colour
+ * alone, `sf.ao` is a hardcoded 1.0, and the finest feature in any channel is
+ * about 0.6 m. A hue ramp over a surface whose normal is flat can only average
+ * what was there. So this flag is not abandoned, it is **sequenced**: it goes
+ * back on when the ground it lights has relief to be lit, and the A/B above is
+ * the test it has to pass to get there.
+ *
+ * Two things stay behind, because they were never the grade:
+ *
+ * - the **shadow map** (`SHADOW`, below), separated from this flag in the same
+ *   commit that first flipped it — a shadow is a fact about geometry, not an
+ *   art direction, and §8 axis 8 scores an unanchored object as dishonest;
+ * - **props** light through `paint()` unconditionally (`ground-cover.js` calls
+ *   `paintedStandard` with no reference to this flag), which is what closes
+ *   §24.4's open "the rocks read as near-black silhouettes". `_syncPaintLight`
+ *   is no longer gated on `PAINT` for exactly that reason: with the guard in
+ *   place, `paint=0` left the props' key light frozen at build time while the
+ *   sun moved. That is the same shape as the four dead wirings in
+ *   `docs/notes/props.md` and it was one line from being the fifth.
+ *
+ * ---------------------------------------------------------------------------
+ * The original case for flipping it on, kept because it is still the case that
+ * has to be answered, and it is now answered by Act 3b rather than by 24.4:
+ *
+ * The mid band spans `t` in 0.17-0.58, and `t` is the half-Lambert wrap, so the
+ * band is reached at `ndl` in -0.47-0.19. Flat ground under any sun this
+ * project spawns sits above it. What reaches into the band is *relief* — a
+ * slope turned away from the star — which is exactly what the solver selects
+ * for. The solver supplies relief at valley scale. It cannot supply it at arm's
+ * length, and arm's length is where the frame is being scored.
+ */
 const PAINT = PARAM('paint') === '1';
 
 /**
@@ -173,6 +235,9 @@ const SHADOW = PAINT || PARAM('shadow') !== '0';
  * be compared on one machine without editing the row.
  */
 const SHADOW_TAPS_GLSL = shadowGLSL(qInt('shtaps', 'shadowTaps'));
+
+/** scratch for the per-frame drawing-buffer query — §5 does not want a Vector2 a frame */
+const _bufSize = new THREE.Vector2();
 
 /**
  * §9.3's aerial perspective, act 2. Separable both ways for the same reason
@@ -287,14 +352,42 @@ const SHADOW_DEBUG = SHADOW && (PARAM('shdebug') === '1' || PARAM('shdebug') ===
  * `?solve=1` — choose the opening frame with the §9.7 composition solver
  * instead of `findLandingSite`'s height-above-waterline heuristic.
  *
- * Default-off per §7.4, and this one has a specific reason to stay off: the
- * solve costs 127–337 ms of main thread, once, inside `_buildTerrain`. That is
- * 10–28× §5's 12 ms frame budget in the frame it lands, and §2.5 forbids
- * covering it with a cut. Flipping the default waits on either a measurement
- * showing the hyperzoom absorbs it or a change that slices the solve across
- * frames — a separate commit either way.
+ * **Now default-on**; `?solve=0` restores the height-above-waterline
+ * heuristic.
+ *
+ * It was held off because the solve costs 127–337 ms of main thread, once,
+ * inside `_buildTerrain` — "10–28× §5's 12 ms frame budget in the frame it
+ * lands" — and the condition for flipping was stated as *"a measurement
+ * showing the hyperzoom absorbs it, or a change that slices the solve across
+ * frames."*
+ *
+ * The measurement came back and the comparison it overturns is the wrong one.
+ * §5's 12 ms is a **steady-state per-frame** budget; this is a one-time
+ * construction cost, and it is not the largest one in `_buildTerrain`. Measured
+ * on seed 700181046, one surface build, software rasteriser:
+ *
+ *     [§M3]  meadow · 4 rings · 412 chunks · 160² wind field    207 ms
+ *     [§9.7] landing solved                                     183 ms
+ *     [§M2.6] horizon · 15 876 height samples                    48 ms
+ *
+ * The solve is second of three and smaller than the meadow that has shipped
+ * on by default since M3. There is no frame in which it is the reason the main
+ * thread is busy, and no version of this build where removing it makes the
+ * scale appear meaningfully sooner.
+ *
+ * §2.5 is satisfied for the same reason it is satisfied for the rest of the
+ * build: the scale change is a hyperzoom under a passing snapshot
+ * (`transition.js`), so the construction stall is behind the transition that
+ * already exists rather than behind a cut this would have to introduce. The
+ * numbers are in `docs/notes/worlds.md`.
+ *
+ * What the old default cost is the thing that made this worth paying: it
+ * ranked sites on height above the waterline alone, which its own comment
+ * describes as landing you on "a narrow band of near-identical coastal shelf."
+ * Flat, wet, featureless, and — per §24.4's arithmetic — the exact geometry on
+ * which §9.2's hue ramp collapses to one band.
  */
-const SOLVE = PARAM('solve') === '1';
+const SOLVE = PARAM('solve') !== '0';
 
 /**
  * §M2 act 4 — four-layer triplanar materials. **Now default-on**; `?mat=0`
@@ -1054,12 +1147,50 @@ export class SurfaceScale {
    * written — 1024 low, 1536 mobile, 2048 desktop, 2560 ultra. The knob was
    * always there for a map that only ever existed under a flag nobody set.
    */
+  /**
+   * Everything a prop needs to light itself the way the ground does.
+   *
+   * §9.2 opens "every lit surface goes through one function", and for a long
+   * time exactly one surface did. The reason was never disagreement — it was
+   * that a module wanting in had to reach into three private members of this
+   * class and know the order they are built in. So it is one call now, and
+   * adding a module to the light model is a three-line change in that module
+   * rather than a negotiation with this one.
+   *
+   * Safe before `_buildTerrain` only for the paint block; `sunShadow` does not
+   * exist until the terrain material is built, and the shape of this return
+   * says so rather than throwing.
+   */
+  paintWiring() {
+    return {
+      paint: this._paintUniforms(),
+      sun: this.uSunDir,
+      shadow: this.sunShadow ? { ...this.sunShadow.uniforms } : null,
+      shadowGLSL: this.sunShadow ? SHADOW_TAPS_GLSL : null,
+    };
+  }
+
   _shadowUniforms() {
     this.sunShadow = new SunShadow({ res: qInt('shres', 'shadowRes') });
     return { ...this.sunShadow.uniforms };
   }
 
+  /**
+   * Idempotent, and it has to be: `ground-cover.js` asks for the same block so
+   * that a boulder and the ground under it cannot disagree about where the sun
+   * is. Rebuilding it on the second call would hand the second caller a fresh
+   * set of uniform objects and leave the terrain holding the old ones — the
+   * two would then drift apart silently as the day advanced, which is the
+   * worst shape a bug like this can take.
+   */
   _paintUniforms() {
+    if (this._paintLight) {
+      const u = this._paintLight.uniforms;
+      return {
+        uPaintSun: u.sun, uPaintAmbSky: u.sky, uPaintAmbGnd: u.gnd,
+        uPaintShadowTint: u.sh, uPaintExposure: u.exp,
+      };
+    }
     const T = this.ctx.system?.temp ?? 5778;
     const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
     const L = lightFor(T, Math.max(elev, 0.5));
@@ -1325,8 +1456,13 @@ export class SurfaceScale {
     return best;
   }
 
+  // Not gated on `PAINT`. `ground-cover.js` lights every prop through §9.2
+  // whether or not the terrain does, so this block has a consumer either way —
+  // and with the old `!PAINT ||` guard a `paint=0` build froze the props' key
+  // light, sky/ground ambient and shadow tint at their build-time values while
+  // the sun crossed the sky. One more function that exists and is never called.
   _syncPaintLight() {
-    if (!PAINT || !this._paintLight) return;
+    if (!this._paintLight) return;
     const elev = (Math.asin(Math.min(Math.max(this.uSunDir.value.y, -1), 1)) * 180) / Math.PI;
     const L = lightFor(this._paintLight.T, Math.max(elev, 0.5));
     const u = this._paintLight.uniforms;
@@ -2994,7 +3130,18 @@ export class SurfaceScale {
             : 0.75 * foot * Math.min(1, Math.hypot(this.vel?.x ?? 0, this.vel?.z ?? 0) / 1.5 + 0.35),
         };
       }
+      // §9.5's angular width floor needs to know how big a pixel is.
+      //
+      // A vertex shader can read `projectionMatrix` but has no way to know how
+      // many pixels tall the target is, and that is the other half of the
+      // conversion — so it is computed here, where both the FOV and the drawing
+      // buffer are in reach, and pushed. Frame-constant and identical for every
+      // chunk, which is why it can be a uniform at all (see the note in
+      // flora.js's constructor about the two that could not).
+      const px = this.app.renderer.getDrawingBufferSize(_bufSize);
+      const pxPerRadian = px.y / (this.camera.fov * Math.PI / 180);
       for (const ring of this.meadow) {
+        ring.setPixelScale(pxPerRadian);
         ring.update(this.body.x, this.body.z, this.body.y, this.uTime.value,
           this._frustum, dusk, walker);
         blades += ring.blades;
