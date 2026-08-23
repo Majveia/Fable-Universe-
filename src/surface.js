@@ -11,6 +11,7 @@ import { RNG, arand, hash } from './rng.js';
 import { NOISE_GLSL, makeSurfaceMaterial, makeRingMaterial, makeAtmosphereMaterial } from './planet.js';
 import { softDotTexture } from './nebula.js';
 import { addLife, isBiosphere } from './life.js';
+import { perpetualBloom } from './blossom.js';
 import { addCivilization } from './civilization.js';
 import { addTraveler } from './traveler.js';
 import { CONJURE_TIME, Conjuration } from './conjure.js';
@@ -66,7 +67,7 @@ import {
 } from './cloudshade.js';
 import { DRAINAGE_GLSL, packDrainage, solveDrainage } from './drainage.js';
 import { Q, TIER, qArr, qInt } from './quality.js';
-import { registerFor } from './register.js';
+import { registerFor, registerName } from './register.js';
 import { Adaptation, apertureFor } from './exposure.js';
 
 const PARAM = (k) => {
@@ -3829,8 +3830,19 @@ export class SurfaceScale {
       ['biosphere', this.life ? 'flora + fauna' : '—'],
       // §8 axis 8: if the canopy is in flower the readout must say so, because
       // the flower is a claim about where this world is in its own orbit
-      ...(this.life?.openness > 0.02 ? [['season', this.life.openness > 0.75
-        ? 'full bloom' : this.life.openness > 0.35 ? 'in flower' : 'first blossom']] : []),
+      ...(this.life?.openness > 0.02 ? [['season', (this.life.openness > 0.75
+        ? 'full bloom' : this.life.openness > 0.35 ? 'in flower' : 'first blossom')
+        // §8 axis 8 again, one level down: on a world with no axial tilt and a
+        // round orbit there is no annual cue to flower against, so there is no
+        // spring — and a HUD that said "full bloom" without saying that would
+        // be asserting a season this world does not have. The tilt is two rows
+        // up in the same panel; this is what it means.
+        + (perpetualBloom(pp) ? ' · no season, always' : '')]] : []),
+      // Which print this world is being rendered in, and it is not a setting —
+      // it is a readout of the air. `docs/plans/SAKURA.md`: hoshi-no-tani and
+      // sakura-realm are photographs of different air, and this says which one
+      // you are standing in. It moves while you watch when the weather does.
+      ['print', registerName(this.printRegister())],
       ...(pp.res?.line ? [['mood', pp.res.line]] : []),
       ['craters', this.impacts.length ? String(this.impacts.length) : '—'],
       ['surface gravity', g.toFixed(2) + ' g'],

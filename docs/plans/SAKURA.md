@@ -166,6 +166,59 @@ authored.
 
 ---
 
+## 4b · The second twist — a spring is a property of an orbit
+
+The plan above makes the *print* sakura-realm's. It ran straight into a second
+problem on the way, and the fix is the better half of the ask.
+
+Sakura-realm's tree is in bloom because it was built in bloom. AEON's is in
+bloom when its world's orbit says so — `blossom.js` opens a window across 32% of
+a year, so **two visits in three arrive to bare wood.** "Make our worlds look
+like sakura-realm" is not satisfiable while that is true, and widening the
+window for everyone would answer it by deleting the best idea in that module:
+*a season you can miss is the only kind worth catching.*
+
+The answer was already on the planet record, unread.
+
+**A spring is not a property of life. It is a property of an orbit.** A world's
+year only has seasons if something modulates the light around that year, and
+only two things can: the axis being tilted, and the orbit not being a circle.
+Both are already generated — `system.js` needed `tilt` to lean the rings and `e`
+to draw the ellipse.
+
+```
+S = √( sin²ε + (2e)² )          0.398 and 0.033 on Earth
+window half-width = 0.16 · S_earth / S
+```
+
+In quadrature because the forcings are orthogonal: obliquity makes hemispheres
+take turns, eccentricity makes the whole world do it together. Inverse because
+the window is the interval over which the cue is unambiguous, and ambiguity goes
+as one over amplitude.
+
+A world with neither gives its flora **no annual cue to synchronise to**, so it
+does not synchronise. It has no long spring — it has no spring, and is always in
+flower.
+
+Measured over `system.js`'s own draws for `tilt` and `e`, in its own order,
+across 20,000 worlds:
+
+| | |
+|---|---|
+| Earth-like window | **0.160**, the constant the file shipped with, to twelve places |
+| worlds that never leave flower | **17.9%** |
+| visits that arrive to flowers | **29.6% → 52.5%** |
+
+Half of all landings now find blossom and the other half still has a season to
+miss. Nothing was chosen: the numbers fall out of an obliquity distribution
+drawn years before anybody asked about cherry trees.
+
+And it is *findable*. A low tilt and a round orbit are visible on the system
+diagram before you land, so a hanami world is something you learn to recognise
+rather than something you roll for.
+
+---
+
 ## 5 · Acts, in order
 
 | # | Act | Files | Gate |
@@ -174,6 +227,7 @@ authored.
 | 2 | The print takes it | `src/print.js` | `glslcheck` compiles it; `print` suite unchanged at `R=1` |
 | 3 | Photometric exposure | `src/exposure.js` **new** | `exposure` suite: fixture returns 1.000; adaptation is monotone, asymmetric, and slew-bounded |
 | 4 | Wiring | `src/post.js`, `src/surface.js`, `src/main.js` | `parse`, `invariants`, `digest` |
+| 4b | The orbit's spring | `src/blossom.js`, `src/life.js` | `blossom` suite: Earth-like returns 0.16 to twelve places; the distribution is measured, not asserted |
 | 5 | Flip | one commit, on its own | §7.4 — the flip is separate from the build |
 
 ---
@@ -198,9 +252,9 @@ this container (CI is SwiftShader, §14) — stated as an expectation, per §16 
 
 ## 7 · What is *not* in this plan
 
-- **The tree.** Already ported — `src/tree.js`, `src/blossom.js`, and
-  `petalHue()` already derives a flower's colour from the leaf it advertises
-  against. Nothing to add.
+- **The tree's geometry.** Already ported — `src/tree.js` grows it under four
+  laws and `petalHue()` already derives a flower's colour from the leaf it
+  advertises against. §4b changes *when* it flowers, not how.
 - **The grass.** `src/meadow.js`'s density law and `grassPalette()` are already
   the reference's shape. What made sakura-realm's meadow read chartreuse is
   exposure and saturation, both of which this plan moves.
@@ -223,16 +277,25 @@ been run for this change.
 
 What *is* established here, offline:
 
-- `R = 1` reproduces the shipped print to 1e-12 over 4096 colours.
+- `R = 1` reproduces the shipped print **exactly** — worst |Δ| 0.00e+0 over
+  61,440 channels, at five points across §2.8's cross-fade.
 - The law hits `R = 1.000` at 1700 m and `R = 0.000` at 22 km.
-- The exposure fixture returns 1.000000.
+- The aperture fixture returns 1.000000000000, and the 24-hour range is 1.81
+  stops against the reference's measured 1.78.
+- An Earth-like bloom window returns 0.160000000000; 17.9% of worlds never leave
+  flower; arriving to flowers goes 29.6% → 52.5%.
 
 ---
 
 ## 9 · Rollback
 
-Every act is one flag. `?reg=1` pins the painted register, `?ae=0` pins
-exposure at 1, and both together are today's build, byte for byte.
+Acts 1–4 are two flags. `?reg=1` pins the painted register, `?ae=0` pins
+exposure at 1, and both together are the previous build, byte for byte.
+
+Act 4b has no flag and does not need one: it is a **law replacing a constant**,
+and the constant is what the law returns for an Earth-like world. `?bloom=` and
+`?season=` still override it as they always did. Reverting it is reverting one
+argument at one call site in `life.js`.
 
 ---
 

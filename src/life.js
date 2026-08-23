@@ -11,8 +11,8 @@ import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
 import { growTree, tipsOf } from './tree.js';
 import {
-  PETAL_GLSL, blossomsFor, paramNumber, petalFall, petalHue, seasonOpenness,
-  seasonPhaseOf,
+  PETAL_GLSL, blossomsFor, bloomWidth, paramNumber, petalFall, petalHue,
+  seasonOpenness, seasonPhaseOf,
 } from './blossom.js';
 import { airDensity } from './precip.js';
 import { coverDensity } from './scatter.js';
@@ -462,6 +462,17 @@ export function addLife(s) {
   // Most worlds are not in bloom when you arrive, and that is the point: a
   // season you can miss is the only kind worth catching.
   //
+  // How many is `bloomWidth(pp)`'s answer rather than a constant, and it is the
+  // one place `docs/plans/SAKURA.md`'s twist reaches the frame. A spring is a
+  // property of an orbit, not of life: a world's year only has seasons if its
+  // axis is tilted or its orbit is not a circle, and a world with neither gives
+  // its flora no annual cue to synchronise to. Such a world does not have a
+  // long spring — it has **no spring**, and is always in flower.
+  //
+  // So the window widens exactly where the physics says the signal is weak, an
+  // Earth-like world keeps the 0.16 this line shipped with to the digit, and
+  // the sentence above stays true for the worlds it was written about.
+  //
   // Two overrides, because they are two different questions and one knob
   // cannot answer both. `?season=` moves the world along its own orbit — the
   // honest one, the same number `M0` carries — but *where* a world's spring
@@ -471,7 +482,7 @@ export function addLife(s) {
   const forcedBloom = paramNumber(PARAM('bloom'));
   const openness = Number.isFinite(forcedBloom)
     ? Math.min(Math.max(forcedBloom, 0), 1)
-    : seasonOpenness(seasonPhase(pp), pp.seed >>> 0);
+    : seasonOpenness(seasonPhase(pp), pp.seed >>> 0, bloomWidth(pp));
   let petalDrift = null;
   if (openness > 0.02 && grown.length) {
     const ph = petalHue(vegH, pp.seed >>> 0);

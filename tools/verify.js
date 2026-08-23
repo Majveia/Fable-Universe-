@@ -99,7 +99,7 @@ import { walkable, wonderDestination, wonderScore } from '../src/wonder.js';
 import {
   RHO, TROFFER_GLSL, bounceGain, cavityBounce, ceilingQuad, polygonIrradiance,
 } from '../src/troffer.js';
-import { hash } from '../src/rng.js';
+import { RNG, hash } from '../src/rng.js';
 import {
   BAO_AMPLITUDE, HUBBLE_DIST, SOUND_HORIZON, acoustic, growth, lookbackAt, scaleAt,
   shell, windingAt,
@@ -130,7 +130,8 @@ import {
 import { phaseOf, precipFor, subpixel, terminalVelocity, wrap } from '../src/precip.js';
 import {
   EXTINCTION as BLOSSOM_L, PETAL, blossomsFor, floweringAt, opticalDepth,
-  paramNumber, petalFall, petalHue, seasonOpenness, seasonPhaseOf,
+  SEASONALITY_EARTH, WIDTH_EARTH, WIDTH_MIN, bloomWidth, paramNumber,
+  perpetualBloom, petalFall, petalHue, seasonOpenness, seasonPhaseOf, seasonality,
 } from '../src/blossom.js';
 import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
@@ -8953,6 +8954,70 @@ function suiteBlossom() {
   ok('§2.3 · and two worlds of one star do not flower together',
     new Set([...Array(60)].map((_, i) => Math.round(seasonOpenness(0.5, i) * 50))).size > 6,
     'the centre is seeded, so a system has a staggered spring');
+
+  // --- law 3b · whose spring, and how long — `docs/plans/SAKURA.md` -------
+  //
+  // A spring is a property of an **orbit**, not of life. Only two things can
+  // modulate the light a world gets around its own year — a tilted axis and a
+  // non-circular orbit — and a world with neither gives its flora no annual cue
+  // to synchronise to, so it does not synchronise, so it is always in flower.
+  {
+    const EARTH = { tilt: (23.44 * Math.PI) / 180, e: 0.0167 };
+    ok("§9.6 · an Earth-like world's window is the constant this file shipped with",
+      Math.abs(bloomWidth(EARTH) - WIDTH_EARTH) < 1e-12,
+      `${bloomWidth(EARTH).toFixed(12)} against ${WIDTH_EARTH}, by construction`);
+
+    ok('and obliquity dominates it, which is the fact most people have backwards',
+      Math.abs(Math.sin(EARTH.tilt) / (2 * EARTH.e) - 11.9) < 0.3,
+      `Earth's axis forces ${(Math.sin(EARTH.tilt) / (2 * EARTH.e)).toFixed(1)}x`
+      + ' what its eccentricity does — its seasons are a tilt, not a distance');
+
+    ok('§2.3 · the two forcings add in quadrature and neither can cancel the other',
+      Math.abs(seasonality({ tilt: 0.3, e: 0 }) - Math.sin(0.3)) < 1e-12
+      && Math.abs(seasonality({ tilt: 0, e: 0.2 }) - 0.4) < 1e-12
+      && seasonality({ tilt: 0.3, e: 0.2 }) > Math.max(Math.sin(0.3), 0.4),
+      'obliquity makes hemispheres take turns; eccentricity makes them agree');
+
+    ok('inverse: twice the forcing is half the window',
+      Math.abs(bloomWidth({ tilt: Math.asin(2 * Math.sin(EARTH.tilt)), e: 2 * EARTH.e })
+        - WIDTH_EARTH / 2) < 1e-9);
+
+    ok('a world with no tilt and a round orbit has no spring at all — it is always in flower',
+      perpetualBloom({ tilt: 0, e: 0 }) && perpetualBloom({ tilt: 0.07, e: 0.01 })
+      && !perpetualBloom(EARTH),
+      `S = 0 gives a half-width of ${bloomWidth({ tilt: 0, e: 0 })}, the whole year`);
+
+    ok('§8 axis 8 · and it is bounded at both ends, so no spring is one afternoon',
+      bloomWidth({ tilt: 1.5, e: 0.42 }) === WIDTH_MIN
+      && bloomWidth({ tilt: NaN, e: NaN }) === 0.5
+      && bloomWidth({}) === 0.5);
+
+    // The measurement the ask turns on, over `system.js`'s own draws for tilt
+    // and e in its own order. This is what changed, and it is stated as a
+    // number so it cannot quietly drift back.
+    let perp = 0, before = 0, after = 0, n = 0;
+    for (let sd = 0; sd < 20000; sd++) {
+      const pr = new RNG((sd * 2654435761) >>> 0);
+      const e = Math.min(Math.abs(pr.gauss()) * 0.055 + 0.004
+        + (pr.chance(0.06) ? pr.float(0.15, 0.3) : 0), 0.42);
+      const M0 = pr.float(0, Math.PI * 2);
+      const tilt = Math.abs(pr.gauss()) * 0.3;
+      const pp = { tilt, e };
+      const ph = (M0 / (Math.PI * 2)) % 1;
+      if (perpetualBloom(pp)) perp++;
+      if (seasonOpenness(ph, sd >>> 0, WIDTH_EARTH) > 0.02) before++;
+      if (seasonOpenness(ph, sd >>> 0, bloomWidth(pp)) > 0.02) after++;
+      n++;
+    }
+    ok('§1 · so about a fifth of worlds are hanami worlds, and it is measured not chosen',
+      perp / n > 0.14 && perp / n < 0.24,
+      `${((perp / n) * 100).toFixed(1)}% never leave flower — a readout of`
+      + " system.js's own tilt and e, drawn in its own order");
+    ok('and arriving to flowers goes from a third of visits to half',
+      after / n > before / n * 1.5 && after / n < 0.62,
+      `${((before / n) * 100).toFixed(1)}% -> ${((after / n) * 100).toFixed(1)}%,`
+      + ' and the other half still has a season to miss');
+  }
 
   // --- law 4 · a tree in bloom carries thousands of flowers ---------------
   const full = blossomsFor(tree, { seed: 3, openness: 1, budget: 40000 });
