@@ -64,8 +64,8 @@ import {
 } from '../src/ocean.js';
 import {
   AERIAL_ALPHA_IS_CLARITY, AERIAL_GLSL, EARTH_AIR, HAZE_FRACTION, REFERENCE_AIR,
-  REFERENCE_PARAMS, aerial, aerialParams, airFor, molarMass, scaleHeight,
-  surfaceTemp,
+  REFERENCE_PARAMS, REFERENCE_VISIBILITY, VISIBILITY, aerial, aerialParams,
+  airFor, molarMass, scaleHeight, surfaceTemp, visibilityFor,
 } from '../src/aerial.js';
 import {
   BASE_DROP, HORIZON_VERT, MAX_BANDS, RIDGE_SEGS, SATURATION, bandPlan,
@@ -86,6 +86,15 @@ import {
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
+import {
+  CLEAR_FLOOR, KNOBS, MIST_TOP, PAINTED, PHOTOGRAPHIC, SHOULDER_D2,
+  registerFor, registerMix, registerName,
+} from '../src/register.js';
+import {
+  ADAPT_BRIGHTEN, ADAPT_DARKEN, ADAPT_MAX_STOPS_PER_SEC, Adaptation,
+  APERTURE_FIXTURE, EXPOSURE_MAX, EXPOSURE_MIN, K_DIURNAL, K_ORBITAL,
+  apertureFor, sceneLuminance,
+} from '../src/exposure.js';
 import { walkable, wonderDestination, wonderScore } from '../src/wonder.js';
 import {
   RHO, TROFFER_GLSL, bounceGain, cavityBounce, ceilingQuad, polygonIrradiance,
@@ -9844,7 +9853,376 @@ function suiteTroffer() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// suite: register
+//
+// `docs/plans/SAKURA.md`. The axis between AEON's two vendored art references,
+// and the one property that makes it reviewable: **at R = 1 it must be the
+// print that shipped before it existed.**
+//
+// That check is the whole suite's reason to exist. Everything else here — the
+// law's anchors, the shoulder's root, the monotonicity — is arithmetic that
+// could be read off the file. "The reference case did not move" cannot be read
+// off anything; it has to be computed against the expression it replaced, which
+// is what `gradeRegRef` below is a transcription of.
+
+/**
+ * §9.4 steps 1–4 with the register in, mirroring `print.js`'s `grade()` as
+ * patched. The *other* mirror, `gradeRef`, is deliberately left alone: it is
+ * the pre-register expression, and holding the two against each other at R = 1
+ * is the measurement. Two copies of a grade is normally the fault §2.7 names —
+ * here it is the instrument, and it stops being one the moment they are made to
+ * share code.
+ */
+function gradeRegRef(c0, paint, r, satAmt = SAT_AMOUNT) {
+  const k = registerMix(r);
+  const cl = (x, a, b) => (x < a ? a : x > b ? b : x);
+  const ss = (e0, e1, x) => { const t = cl((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+  const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const mx = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+
+  const tmPrint = (x) => {
+    x = Math.max(x, 0);
+    const a = x * (x * 0.36 + 0.42);
+    const b = x * (x * (0.34 + SHOULDER_D2 * k.shoulder) + 0.66) + 0.11;
+    return cl(a / b, 0, 1);
+  };
+  const tm = (x) => {
+    const v = tonemapVacuum(x), p = tmPrint(x);
+    return v + (p - v) * paint;
+  };
+
+  let c = c0.map((v) => tm(Math.max(v, 0)));
+  let l = lum(c);
+  const shadowPush = mx([0.90, 0.95, 1.16], [1, 1, 1], ss(0, 0.34, l));
+  const highPush = mx([1, 1, 1], [1.055, 1.012, 0.925], ss(0.44, 0.98, l));
+  c = c.map((v, i) => v * mx([1, 1, 1], shadowPush, k.shadowPush * paint)[i]);
+  c = c.map((v, i) => v * mx([1, 1, 1], highPush, k.highPush * paint)[i]);
+  const lift = [0.017 * paint, 0.021 * paint, 0.036 * paint];
+  c = c.map((v, i) => v * (1 - lift[i]) + lift[i]);
+  c = mx(c, c.map((v) => v * v * (3 - 2 * v)), k.sBend * paint);
+  l = lum(c);
+  const e = satAmt * k.satX * paint * ss(0.10, 0.42, l) * (1 - ss(0.62, 0.96, l));
+  const d = c.map((v) => v - l);
+  let lim = 1e9;
+  for (const v of d) {
+    if (v > 1e-6) lim = Math.min(lim, (1 - l) / v);
+    else if (v < -1e-6) lim = Math.min(lim, -l / v);
+  }
+  const h = Math.max(lim - 1, 0);
+  const sc = 1 + (e * h) / Math.max(e + h, 1e-6);
+  return d.map((v) => l + sc * v);
+}
+
+function suiteRegister() {
+  console.log('\nregister — the axis between the two references, and that R=1 does not move');
+
+  // --- the table ----------------------------------------------------------
+  ok('§5 · both rows carry every knob, in one order a caller cannot mis-pack',
+    KNOBS.length === Object.keys(PAINTED).length
+    && KNOBS.length === Object.keys(PHOTOGRAPHIC).length
+    && KNOBS.every((k) => Number.isFinite(PAINTED[k]) && Number.isFinite(PHOTOGRAPHIC[k])),
+    `${KNOBS.length} knobs, both rows complete`);
+
+  ok('and the endpoints are the endpoints — no interpolation at 0 or 1',
+    KNOBS.every((k) => registerMix(1)[k] === PAINTED[k] && registerMix(0)[k] === PHOTOGRAPHIC[k]));
+
+  ok('§2.4 · out of range clamps rather than extrapolating',
+    KNOBS.every((k) => registerMix(4)[k] === PAINTED[k] && registerMix(-2)[k] === PHOTOGRAPHIC[k])
+    && KNOBS.every((k) => registerMix(NaN)[k] === PAINTED[k]),
+    'there is no such thing as more painted than paper, and NaN prints the fixture');
+
+  // --- THE check ----------------------------------------------------------
+  //
+  // A 4096-colour sweep of the whole gamut the print can be handed, at five
+  // points across §2.8's cross-fade. If any of these moves, a capture of the
+  // painted end taken before this axis existed has stopped being comparable
+  // with one taken after, and every A/B in the repo is void.
+  {
+    let worst = 0, n = 0, at = null;
+    for (const paint of [0, 0.25, 0.5, 0.75, 1]) {
+      for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) for (let k = 0; k < 16; k++) {
+        const c = [(i / 15) * 1.4, (j / 15) * 1.4, (k / 15) * 1.4];
+        const a = gradeRef(c, paint), b = gradeRegRef(c, paint, 1);
+        for (let ch = 0; ch < 3; ch++) {
+          const d = Math.abs(a[ch] - b[ch]);
+          if (d > worst) { worst = d; at = [c, paint]; }
+          n++;
+        }
+      }
+    }
+    ok('§7.4 · at R=1 the print is the print that shipped, over the whole gamut',
+      worst < 1e-12,
+      `${n} channels over 4096 colours × 5 uPaint · worst |Δ| ${worst.toExponential(2)}`
+      + (worst >= 1e-12 ? ` at ${JSON.stringify(at)}` : ''));
+  }
+
+  // --- the shoulder, which is the one knob that needed a derivation --------
+  //
+  // The claim in `register.js` is specific and falsifiable: as written the
+  // curve *clips* at x = 12.44, and at full photographic the positive root is
+  // gone entirely. Solve it here rather than trusting the comment.
+  {
+    // a/b = 1  ->  (0.36 - d2)x^2 + (0.42 - 0.66)x - 0.11 = 0
+    const clipAt = (d2) => {
+      const A = 0.36 - d2, B = -0.24, C = -0.11;
+      const disc = B * B - 4 * A * C;
+      if (disc < 0) return Infinity;
+      const roots = [(-B + Math.sqrt(disc)) / (2 * A), (-B - Math.sqrt(disc)) / (2 * A)]
+        .filter((x) => x > 0 && Number.isFinite(x));
+      return roots.length ? Math.min(...roots) : Infinity;
+    };
+    const painted = clipAt(0.34);
+    const photo = clipAt(0.34 + SHOULDER_D2);
+    ok('§9.4 · the print curve as written reaches white, and that is the defect',
+      Math.abs(painted - 12.44) < 0.02, `clips at x = ${painted.toFixed(3)}`);
+    ok('and at full photographic nothing clips at all — a shoulder, not ACES',
+      photo === Infinity,
+      `asymptote ${(0.36 / (0.34 + SHOULDER_D2)).toFixed(4)}`
+      + ` = ${Math.round((0.36 / (0.34 + SHOULDER_D2)) * 255)}/255, below white`);
+
+    // and it has to still be a tonemap: monotone, and 0 -> 0
+    const tm = (x, d2) => (x * (x * 0.36 + 0.42)) / (x * (x * d2 + 0.66) + 0.11);
+    let mono = true;
+    for (let i = 1; i <= 4000; i++) {
+      const x0 = (i - 1) * 0.01, x1 = i * 0.01;
+      if (tm(x1, 0.34 + SHOULDER_D2) < tm(x0, 0.34 + SHOULDER_D2) - 1e-12) mono = false;
+    }
+    ok('and it is still monotone over 40 stops, so no highlight inverts',
+      mono && tm(0, 0.34 + SHOULDER_D2) === 0);
+  }
+
+  // --- the law ------------------------------------------------------------
+  //
+  // The anchors are the WMO's, and the point of checking them is that the two
+  // references land on the two ends *without* either number having been moved
+  // to make it happen.
+  ok("§2 · hoshi-no-tani's own air prints painted",
+    Math.abs(registerFor(REFERENCE_VISIBILITY) - 1) < 1e-9,
+    `V = ${REFERENCE_VISIBILITY} m (WMO mist) · R = ${registerFor(REFERENCE_VISIBILITY).toFixed(4)}`);
+  ok("and sakura-realm's prints photographic",
+    registerFor(VISIBILITY.clear) === 0,
+    `V = ${VISIBILITY.clear} m (WMO clear) · R = ${registerFor(VISIBILITY.clear).toFixed(4)}`);
+
+  {
+    // The row the ask turns on. `visibilityFor()` on a temperate Earth-like
+    // world, run through the law — no constant in either function was chosen
+    // with the other in mind.
+    const V = visibilityFor({ Teq: 255, massE: 1, radiusE: 1, typeId: 1 }, 1);
+    const R = registerFor(V);
+    ok('§1 · a temperate world prints mostly photographic, and nothing was tuned for it',
+      R > 0.15 && R < 0.40,
+      `visibilityFor -> ${Math.round(V)} m · R = ${R.toFixed(4)} (${registerName(R)})`);
+  }
+
+  ok('monotone in the air: thicker air never prints less painted',
+    (() => {
+      let prev = -1;
+      for (let v = 40000; v >= 300; v -= 100) {
+        const r = registerFor(v);
+        if (r < prev - 1e-12) return false;
+        prev = r;
+      }
+      return true;
+    })());
+
+  ok("and the resonance's mood divides the air rather than the register",
+    registerFor(6000, 2) > registerFor(6000, 1)
+    && registerFor(6000, 0.5) < registerFor(6000, 1)
+    && Math.abs(registerFor(6000, 2) - registerFor(3000, 1)) < 1e-12,
+    'hazeX 2 at 6 km is exactly 3 km of air, which is what a haze multiplier means');
+
+  ok('§2.3 · no entropy, no clock: the same air prints the same register',
+    registerFor(6000) === registerFor(6000) && registerMix(0.37).wash === registerMix(0.37).wash);
+
+  // --- the names ----------------------------------------------------------
+  ok('§8 axis 7 · the register has a word, so the HUD can orient without a number',
+    registerName(1) === 'painted' && registerName(0) === 'photographic'
+    && registerName(registerFor(6000)) === 'clear');
+
+  // --- the shader carries the knobs it says it does ------------------------
+  //
+  // §M0: what matters is the string as `gl.shaderSource` receives it, and the
+  // failure mode this catches is specific — a knob wired into `register.js` and
+  // into `setRegister()` but never actually read by the fragment shader renders
+  // a perfectly good frame that silently ignores one axis of the table.
+  {
+    const src = readFileSync(new URL('../src/print.js', import.meta.url), 'utf8');
+    const frag = src.slice(src.indexOf('fragmentShader:'));
+    const wired = [
+      ['shoulder', 'uShoulder'], ['shadowPush', 'uPush.x'], ['highPush', 'uPush.y'],
+      ['sBend', 'uSBend'], ['satX', 'uSatX'],
+      ['wash', 'uWash.x'], ['bleedBase', 'uWash.y'], ['bleedGain', 'uWash.z'],
+      ['tooth', 'uTooth.x'], ['fibre', 'uTooth.y'],
+      ['vignette', 'uVig.x'], ['vigWarm', 'uVig.y'],
+      ['bloomX', 'uBloomReg.x'], ['halation', 'uBloomReg.y'],
+    ];
+    const missing = wired.filter(([, u]) => !frag.includes(u)).map(([k]) => k);
+    ok('§M0 · every knob in the table is read by the shader as assembled',
+      missing.length === 0 && wired.length === KNOBS.length,
+      `${wired.length} knobs, ${wired.length - missing.length} present`
+      + (missing.length ? ` · missing ${missing.join(', ')}` : ''));
+
+    ok('and each is packed exactly once, by the one function allowed to',
+      (src.match(/uniforms\.uShoulder\.value =/g) ?? []).length === 1
+      && /export function setRegister\(/.test(src));
+
+    ok('§9.4 · the literals the knobs replaced are gone from the shader',
+      !/0\.42 \* fog/.test(frag) && !/0\.16 \* paint/.test(frag)
+      && !/0\.09 \+ 0\.17 \* wet/.test(frag) && !/0\.85 \* paint/.test(frag),
+      'a knob beside the literal it was supposed to replace is a knob that does nothing');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// suite: exposure
+//
+// `src/exposure.js`. `print.js` has carried a `uExposure` uniform since it was
+// written and nothing has ever driven it, so this suite is checking a system
+// that starts from "1, everywhere, forever."
+//
+// The properties that matter are three: the fixture is exactly 1 (or every
+// capture ever taken becomes incomparable), the 24-hour range is the order the
+// reference measured (or the compensation is wrong again), and the adaptation
+// is asymmetric and slew-bounded (or it is a cut, which §2.5 forbids).
+
+function suiteExposure() {
+  console.log('\nexposure — a photometric aperture, and what it must not move');
+
+  ok('§9.6 · the fixture returns exactly 1, by construction and not by fitting',
+    Math.abs(apertureFor(APERTURE_FIXTURE) - 1) < 1e-12,
+    `${apertureFor(APERTURE_FIXTURE).toFixed(12)} · a G2 star, 1 AU, 45°, albedo 0.18`);
+
+  ok('and both terms are separately zero there, so neither can hide the other',
+    Math.abs(apertureFor({ ...APERTURE_FIXTURE, lum: 1, au: 1 }) - 1) < 1e-12
+    && Math.abs(Math.log2(1 / 1 ** 2)) < 1e-12);
+
+  // --- the range, against the reference's own measured curve ---------------
+  {
+    const noon = apertureFor({ elevDeg: 90 });
+    const night = apertureFor({ elevDeg: -18 });
+    const stops = Math.log2(night / noon);
+    // sakura-realm's eighteen keys run 0.80 at solar noon to 2.75 at midnight.
+    const refStops = Math.log2(2.75 / 0.80);
+    ok("§4 · the 24-hour range is the order the reference's hand-authored curve is",
+      Math.abs(stops - refStops) < 0.25,
+      `${stops.toFixed(2)} stops from irradiance vs ${refStops.toFixed(2)} from its 18 keys`);
+
+    ok('and it never reaches its clamp during an ordinary day',
+      noon > EXPOSURE_MIN * 1.5 && night < EXPOSURE_MAX * 0.95,
+      `noon ${noon.toFixed(3)} · night ${night.toFixed(3)} · clamp [${EXPOSURE_MIN}, ${EXPOSURE_MAX}]`);
+  }
+
+  ok('monotone in the sun: the aperture never closes as the light goes away',
+    (() => {
+      let prev = -1;
+      for (let h = -25; h <= 90; h += 0.5) {
+        const e = apertureFor({ elevDeg: h });
+        if (e > prev + 1e-12 && prev >= 0) return false;
+        prev = e;
+      }
+      return true;
+    })());
+
+  // --- the twist, and it has to be measurable to be worth claiming ---------
+  {
+    const bright = apertureFor({ lum: 3, au: 0.4, elevDeg: 13.5 });
+    const home = apertureFor({ lum: 1, au: 1, elevDeg: 13.5 });
+    const far = apertureFor({ lum: 1, au: 2.2, elevDeg: 13.5 });
+    ok('§4 · the orbit is legible in the aperture — this is the part no keyframe can do',
+      bright < home * 0.5 && far > home * 1.5,
+      `18.8x irradiance stops down to ${bright.toFixed(3)}, 0.21x opens to ${far.toFixed(3)},`
+      + ` against ${home.toFixed(3)} at 1 AU`);
+
+    ok('and it is the inverse square doing it, not a curve',
+      Math.abs(apertureFor({ lum: 4, au: 2, elevDeg: 13.5 }) - home) < 1e-12,
+      'L/au^2 = 1 by two different routes gives one aperture');
+  }
+
+  ok('§5 · K_ORBITAL exceeds K_DIURNAL, because the renderer varies one and not the other',
+    K_ORBITAL > K_DIURNAL && K_DIURNAL > 0 && K_ORBITAL < 1,
+    `diurnal ${K_DIURNAL} (the renderer already dims its own key light),`
+    + ` orbital ${K_ORBITAL} (it carries no L/au^2 at all)`);
+
+  // --- the light itself ----------------------------------------------------
+  ok('§2 · the night has a floor, so no world sends log2 to negative infinity',
+    sceneLuminance({ elevDeg: -60 }) > 0 && Number.isFinite(apertureFor({ elevDeg: -60 })),
+    `midnight luminance ${sceneLuminance({ elevDeg: -60 }).toExponential(2)} W/m^2/sr`);
+
+  ok('and twilight is a real decade, not a softened edge',
+    sceneLuminance({ elevDeg: 0 }) / sceneLuminance({ elevDeg: -6 }) > 30,
+    `sunset is ${(sceneLuminance({ elevDeg: 0 }) / sceneLuminance({ elevDeg: -6 })).toFixed(0)}x`
+    + ' the end of civil twilight');
+
+  ok('§8 axis 8 · a NaN world does not become a NaN frame',
+    Number.isFinite(apertureFor({ lum: NaN, au: 0, elevDeg: NaN, albedo: -3 })));
+
+  // --- the eye -------------------------------------------------------------
+  {
+    const a = new Adaptation();
+    ok('§2.5 · the first frame of a place is exposed for that place',
+      Math.abs(a.prime(2.4) - 2.4) < 1e-12 && a.primed);
+
+    // Asymmetry is the mechanism, so measure it rather than reading the constants.
+    // Half a stop, deliberately. The slew ceiling binds on any gap wider than
+    // ADAPT_MAX_STOPS_PER_SEC/ADAPT_BRIGHTEN = 0.71 stops, and a test that
+    // clamps both directions to the same ceiling measures the ceiling rather
+    // than the asymmetry — which is what the first version of this did, and it
+    // passed a build whose adaptation ran backwards.
+    const brighten = new Adaptation(); brighten.prime(1.0);
+    const darken = new Adaptation(); darken.prime(1.0);
+    const b1 = brighten.step(0.25, 1 / Math.SQRT2);  // scene brighter -> stop down, fast
+    const d1 = darken.step(0.25, Math.SQRT2);        // scene darker  -> open up, slow
+    const bMoved = Math.abs(Math.log2(b1 / 1.0)) / 0.5;
+    const dMoved = Math.abs(Math.log2(d1 / 1.0)) / 0.5;
+    ok('§4 · stopping down is faster than opening up — the eye, and every iris',
+      bMoved > dMoved * 1.5,
+      `${(bMoved * 100).toFixed(0)}% of the way down vs ${(dMoved * 100).toFixed(0)}% up,`
+      + ' over the same quarter second');
+
+    ok('and the ratio is the ported one, so it is a retina and not a taste',
+      Math.abs(ADAPT_BRIGHTEN / ADAPT_DARKEN - 3.06) < 0.05,
+      `${(ADAPT_BRIGHTEN / ADAPT_DARKEN).toFixed(2)}x`);
+
+    // The slew ceiling is not redundant with the lambda, and this is why: a
+    // long dt makes the exponential cover nearly the whole distance in one
+    // step, and `repeat.js` compares two cold runs at a fixed frame index.
+    const jump = new Adaptation(); jump.prime(0.2);
+    const after = jump.step(4.0, 4.0);
+    const stops = Math.abs(Math.log2(after / 0.2));
+    ok('§2.5 · a four-second frame still ramps rather than cutting',
+      stops <= ADAPT_MAX_STOPS_PER_SEC * 4 + 1e-9,
+      `${stops.toFixed(2)} stops in one 4 s step, ceiling ${(ADAPT_MAX_STOPS_PER_SEC * 4).toFixed(2)}`);
+
+    // and it converges, which a slew limit alone does not guarantee.
+    //
+    // Twenty seconds, not ten, and the difference is the point: 3.09 stops at
+    // the slow lambda has a 1.6 s time constant, so ten seconds still leaves
+    // 0.006 stops on the table. That is not a bug — dark adaptation genuinely
+    // takes that long, and a test tight enough to fail it would be a test
+    // asking the eye to be faster than an eye.
+    const conv = new Adaptation(); conv.prime(0.2);
+    for (let i = 0; i < 1200; i++) conv.step(1 / 60, 1.7);
+    ok('and it arrives, rather than orbiting the target',
+      Math.abs(conv.step(1 / 60, 1.7) - 1.7) < 1e-3,
+      'twenty seconds of dark adaptation, which is about what one takes');
+
+    ok('§2.3 · the same dusk at the same dt adapts to the same aperture',
+      (() => {
+        const run = () => {
+          const x = new Adaptation(); x.prime(1);
+          let v = 1;
+          for (let i = 0; i < 400; i++) v = x.step(1 / 120, apertureFor({ elevDeg: 20 - i * 0.1 }));
+          return v;
+        };
+        return run() === run();
+      })());
+  }
+}
+
 const suites = {
+  register: suiteRegister, exposure: suiteExposure,
   blossom: suiteBlossom,
   cover: suiteCover,
   precip: suitePrecip,
