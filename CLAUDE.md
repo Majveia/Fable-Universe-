@@ -3,6 +3,8 @@
 **Repo:** `Majveia/Fable-Universe-` · **Stack:** vanilla JS + GLSL, vendored `three@r170`, no build step
 **Art north star:** `docs/reference/hoshi-no-tani.html` (vendored, 6,133 lines, self-contained)
 
+**Read this file and §9 in full at the start of every session**, then `docs/plans/RECKONING.md` §0 for the live debt ledger. §§1–12 are the constitution and the art bible; **§§13–16 are the map of the repository as it stands** — modules, commands, CI, and current state.
+
 **Read this file and §9 in full at the start of every session.** It supersedes conversational instruction unless the human explicitly overrides a clause in-session. If you are about to violate anything in §2, stop and ask.
 
 ---
@@ -360,3 +362,205 @@ red and cannot be paid back, or the critic fails the same axis three times.
 ```
 
 That is the whole prompt. Everything else lives in this file, in version control, where it can be argued with.
+
+---
+
+## 13 · The repository as it stands
+
+~43 k lines of ES modules in `src/`, loaded directly by `index.html` — no
+bundler, no manifest, no `package.json` anywhere in the tree (its absence is
+enforced; see §14, `invariants.js`). `vendor/` holds `three@r170` and the
+importmap that resolves it. `tools/` is dev-time only and is never imported by
+`src/`.
+
+```
+index.html          the only entry point — importmap + <canvas>
+src/                the universe (see the map below)
+vendor/three@r170   the one dependency, vendored
+tools/              the instrument: gates, captures, offline suites (§14)
+docs/plans/         one per milestone + RECKONING.md, the live debt ledger
+docs/notes/         cross-module integration notes, ci.md, AGENT-PROTOCOL.md
+docs/reference/     hoshi-no-tani.html — the art north star (§10)
+docs/captures/      committed capture sets, perf JSON, digest/pixeldiff baselines
+docs/constitution/  superseded versions of this file
+```
+
+### Module map
+
+**Foundations — touch these last and carefully.**
+`rng.js` (the only entropy source, §2.3) · `clock.js` (one monotonic scene
+time; nothing else reads a wall clock in a generation path) · `quality.js`
+(the §5 four-row tier table) · `main.js` (App, scale graph, deep-link schema
+§2.4, input dispatch) · `transition.js` (hyperzooms, §2.5).
+
+**Scales**, one file each, in the order you fall through them:
+`cosmic.js` (0 · the web) → `galaxy.js` (1) → `system.js` (2) →
+`planetscale.js` (2.5 · the whole planet) → `surface.js` (3 · walkable, the
+largest file in the repo) → `blackhole.js` (3b) · plus `clouds.js` (3½ ·
+inside a giant), `orbital.js`, `ascent.js`/`climb.js` (surface ↔ orbit),
+`liminal.js`/`rooms.js`/`interior.js` (the rooms between).
+
+**Simulation & procgen** (`sim`'s ground, guards §2.3 and §2.7):
+`cosmology.js` · `zeldovich.js` · `nbody.js` · `lightcone.js` ·
+`collision.js` · `planet.js` · `terrain.js` (the CPU port of the orbital
+height field — §2.7 lives here) · `landform.js` · `hydrology.js` ·
+`rivers.js` · `quadtree.js` + `tilebuild.js` (streaming cube-sphere LOD,
+float64 tile-relative vertices, §2.6) · `ecology.js` · `life.js` ·
+`resonance.js`.
+
+**Light, materials, print** (`graphics`, owns §9):
+`paint.js` (§9.2 for the ground) · `painted.js` (§9.2 for everything else) ·
+`material.js` · `foliage.js` · `shadow.js` · `aerial.js` (§9.3, writes the fog
+fraction to alpha) · `starlight.js` + `scatterlut.js` (§9.6 — sky stops derived
+from the star's blackbody, not hardcoded) · `starfield.js` · `night.js` ·
+`print.js` + `soft.js` + `wash.js` (§9.4) · `post.js` + `bloom.js` +
+`godrays.js` + `flare.js` · `horizon.js` (far ridges as silhouette) ·
+`ocean.js` · `nebula.js` · `magnetosphere.js` / `aurora.js` / `curtain.js`.
+
+**Wind and flora** (M3): `wind.js` (the one global field — gust cells,
+turbulence, terrain coupling, log boundary layer; everything that moves samples
+it) · `flora.js` · `meadow.js` (the §9.5 density law; note §11's CPU/GPU pair) ·
+`grass.js` · `scatter.js` · `ground-cover.js` · `tree.js` · `blossom.js`.
+
+**Body, camera, input** (`interaction`): `avatar.js` · `figure.js` ·
+`traveler.js` · `camera.js` · `collision.js`(galactic) / capsule collision in
+`avatar.js` · `input.js` (one layer — desktop and touch never mount together) ·
+`touch.js` (§M7) · `hud.js` · `tour.js`.
+
+**World-building & inhabitants:** `landing.js` (the composition solver, §9.7) ·
+`settlement.js` → `civilization.js` → `city.js` · `caravan.js` · `festival.js` ·
+`ruins.js` · `interior.js` · `troffer.js` · `vehicle.js` + `craft.js` +
+`conjure.js` (M5) · `ships.js` · `herds.js` / `wildlife.js` / `megafauna.js` ·
+`strange.js` / `wonder.js` (the ≤5% weirdness budget) · `constellations.js` ·
+`weather.js` / `precip.js` · `silhouette.js` · `audio.js` + `score.js`.
+
+**Instrumentation inside `src/`:** `bench.js` (`?bench=1`, §5) — it and
+`city.js` are the sanctioned clock readers in §14's entropy ratchet.
+
+### Conventions
+
+- ES modules, no transpilation, no TypeScript. Import with explicit `.js`.
+- Shaders are template literals inside their module; assemble by interpolation
+  and remember §M0 — they are compile-checked **post-assembly**.
+- Every file opens with a one-line comment naming what it is and the CLAUDE.md
+  clause it answers to. Keep that; it is how the map above stays true.
+- New location kind ⇒ extend the deep-link schema in `main.js` in the same
+  commit (§2.4). Deep-link keys today: `seed`, `g`, `s`, `p`, `pl`, `moon`,
+  `cl`, `room`, `bh`.
+- New generation-path entropy ⇒ `rng.js` only, and expect `invariants.js` to
+  refuse anything the ratchet has not been taught.
+
+### Feature flags
+
+Read via `PARAM(...)` at module top-level. Two shapes, and the shape *is* the
+status: `!== '0'` means **shipped, with an escape hatch** so §2.4's saved URLs
+still resolve; `=== '1'` means **built but not shipped** (§7.4).
+
+Shipped (default on, `?x=0` disables): `m1`, `web`, `m2`, `mat`, `sea`,
+`ridge`, `m3`, `m4`, `m5`, `m7`, `solve`, `sky`, `shadow`, `aerial`, `dither`.
+
+Default-off (`?x=1` enables): `paint` — the §9.2 light model, the last
+unflipped item in RECKONING's ledger — plus debug views `comp`, `fogview`,
+`windview`, `bladedbg`, `shdebug`, `noclip`, and the experiments `airmat`,
+`aurora`, `built`, `climb`.
+
+Harness/diagnostic params: `bench=1`, `dt=<ms>` (pinned timestep — required for
+`repeat.js`), `quad=1`, `tier=<n>`.
+
+---
+
+## 14 · Commands
+
+No package manager. Node for the tools, Playwright as a *global* install.
+
+```bash
+python3 -m http.server 8080          # run the universe. This must never stop working.
+npm i -g playwright && npx playwright install chromium
+
+node tools/check.js --milestone M<n>   # parse → verify → shadercheck → capture → gate
+node tools/check.js --skip capture     # the fast half, no browser
+```
+
+`check.js` names the GPU it ran on and says whether the artefacts count: a
+software rasteriser gets a warning, real silicon a tick. **Capture output only
+gates a milestone when `gateValid` is true** (§M0, `docs/captures/README.md`).
+
+Offline, seconds, no browser — run these before anything else:
+
+| tool | what it decides |
+|---|---|
+| `invariants.js` | §2 from the bytes on disk: assets, manifests, the entropy **ratchet** (new sites, not legitimacy), the meteor mechanic's continued absence, the reference's SHA-256. `--census` lists every entropy site. |
+| `parse.js` | every module the browser loads actually parses (a backtick in a GLSL comment ends the template and the symptom is only "the page did not boot"). |
+| `verify.js [suite]` | the maths against an *independent* second derivation — finite differences, eigen-decomposition, Simpson quadrature. Not snapshots. |
+| `digest.js` | one SHA-256 over 6,181 samples of the pure generation path. `--json` writes a baseline, `--expect` compares. Per-architecture, see §2.3. |
+| `shadercheck.js` / `glslcheck.js` | compile every shader string as passed to `gl.shaderSource`. |
+
+With a browser: `capture.js` (the fixed six-scale route → numbered PNGs + perf
+JSON), `gate.js` (the numeric gate clauses — hue families, banding, vacuum
+black), `repeat.js` (one URL twice from cold, compared at app frame N, ≥97%
+within 2/255), `pixeldiff.js` (CPU reference vs. shader, §7.3), `blind.js`
+(shuffles capture sets for §8 scoring), `drawcensus.js` / `perfgrow.js` /
+`alphaudit.js` / `tone.js` / `footplant.js` / `glimpse.js` (targeted audits),
+`serve.js` (serves the reference so its importmap resolves offline), `boot.js`,
+`shot.js`, `contact.js`.
+
+`docs/notes/ci.md` records how each check was made to fail on purpose. A gate
+nobody has seen go red is not evidence.
+
+### CI
+
+`.github/workflows/`: `constitution.yml` (invariants) · `verify.yml` (parse +
+maths) · `shaders.yml` · `gates.yml` · `determinism.yml` (digest across
+Linux/macOS/Windows, all three must agree; three Node versions *report* rather
+than gate) · `soak.yml`. CI runs on SwiftShader — it proves the pipeline runs,
+it never gates §5.
+
+---
+
+## 15 · Git & session operations
+
+`docs/notes/AGENT-PROTOCOL.md` is operational law in this container and is
+short. The rule that matters:
+
+> **Commit and push each increment as it becomes green — per increment, not per
+> round or per session.** The working tree has been observed reverting without
+> warning; nothing has ever survived except what was pushed. Gate the *index*,
+> then commit the index — never gate a working tree other agents are writing to.
+
+Parallelise across modules, never across a file (§7). Agents commit their own
+files; ownership is disjoint by construction.
+
+---
+
+## 16 · Current state — read RECKONING before proposing work
+
+`docs/plans/RECKONING.md` is the live debt ledger and **§0 of it gets reported
+at the start of every session**. Do not begin M6 until its acts are closed or
+explicitly waived in a commit that says so.
+
+As of this writing:
+
+- **M0–M5 built.** M6 (civilisation) has substantial code in `settlement.js`,
+  `civilization.js`, `city.js` but is not a passed milestone.
+- **Act B is mostly closed** — the M2/M3/M5 flags, the materials, the sea, the
+  ridges and the composition solver have been flipped on. **`?paint=1` — the
+  §9.2 light model — is still default-off**, and is the last big one.
+- **§8's critic has run** (Act A, blind, on an RTX 3060): all-flags **3.00**
+  against a gate of ≥4 per axis and ≥4.5 mean. It **FAILS**. The named blocking
+  axis was the ground's material; work since has moved it, and any claim about
+  the current score needs a fresh blind capture, not this paragraph.
+- **M1 gate clause (b) is open**: 3 distinguishable hue families of 4, after
+  nine measured iterations. The fourth is blocked behind pricing the frame
+  (§5 with the grass on). See RECKONING Act D — it needs a human decision, not
+  another attempt.
+- **§5 was last measured with the meadow off.** Any performance number quoted
+  from before that re-run describes a frame with no grass in it.
+
+Rules that follow from all of this, and that override optimism:
+
+1. Any claim about how something **looks** cites a capture or says plainly that
+   it is unverified. "The suite passes" is not evidence about a frame.
+2. Before proposing a feature, state its cost against §5 **measured with the
+   grass on**. If that number does not exist, get it first.
+3. A default-off flag is not shipped. Finishing work behind one includes saying
+   what flipping it would take and cost.
