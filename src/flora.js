@@ -40,6 +40,7 @@
 // 2.5 s to interactive, for detail the coupling cannot use.
 
 import * as THREE from 'three';
+import { CLOUD_SHADE_GLSL, CSHADE_ON } from './cloudshade.js';
 import {
   HEIGHT_RES, WIND_MEAN_GLSL, WIND_NOISE_GLSL, WIND_PASS_GLSL, WIND_SAMPLE_GLSL,
   WIND_SPAN, bakeHeight, windUniforms,
@@ -465,6 +466,7 @@ const BLADE_FRAG = /* glsl */`
   uniform vec3 uSkyColor;
   uniform vec3 uSward;      // the mean the far field settles toward
   uniform float uDusk;
+  ${CSHADE_ON ? CLOUD_SHADE_GLSL : ''}
   ${MEADOW_COLOUR_GLSL}
 
   void main() {
@@ -486,7 +488,17 @@ const BLADE_FRAG = /* glsl */`
     // held back. The blade's three stops go through it as a ramp rather than a
     // lerp, so the band edges §9.2 asks for survive.
     float ndl = dot(N, uSunDir);
-    float wrap = clamp(ndl * 0.62 + 0.46, 0.0, 1.0);
+    // §9.2's wrap, and the deck overhead.
+    //
+    // A cloud shadow on a meadow does not multiply the grass darker — it moves
+    // it *down its own ramp*, onto the shade stop, which is a hue change rather
+    // than a brightness drop. That is exactly what paint() does with s.shadow
+    // (mix(0.34, 1.0, shadow) on the wrap) and it is the whole reason §9.2
+    // insists shadows change hue: a meadow under a cloud goes blue-green and
+    // flat, not black, and every eye knows the difference even when it cannot
+    // say which one it saw.
+    ${CSHADE_ON ? 'vec2 cs = cloudShade(vW);' : 'vec2 cs = vec2(1.0, 0.0);'}
+    float wrap = clamp(ndl * 0.62 + 0.46, 0.0, 1.0) * mix(0.34, 1.0, cs.x);
     // a blade is shadowed by the sward it stands in, and most at its base
     float selfShadow = mix(0.62, 1.0, pow(vT, 0.75));
     float ao = mix(0.34, 1.0, pow(vT, 0.55));
@@ -496,14 +508,17 @@ const BLADE_FRAG = /* glsl */`
     col *= selfShadow * mix(0.55, 1.0, ao);
     col *= uSunColor * mix(0.35, 1.0, uDusk);
     // skylight, which is what actually lights the bottom of a sward
-    col += uSkyColor * (0.10 + 0.14 * ao) * b.mid;
+    // and the sky it is lit by gets *brighter* as the beam goes: an overcast
+    // dome scatters more down than a clear one, which is why the meadow under a
+    // cloud reads flat rather than dark
+    col += uSkyColor * (0.10 + 0.14 * ao) * b.mid * (1.0 + 0.18 * cs.y);
 
     // §9.2's subsurface transmission: only a blade nearly edge-on to the sun
     // transmits, because that is light coming *through* rather than off
     float trans = pow(max(dot(V, -uSunDir), 0.0), 3.2)
                 * pow(1.0 - abs(dot(N, uSunDir)), 2.2)
                 * smoothstep(0.12, 0.68, vT);
-    col += b.trans * trans * 0.55 * uDusk;
+    col += b.trans * trans * 0.55 * uDusk * cs.x;
 
     // §9.5's wind flash. A blade laid over by a gust turns its broad face up
     // and catches the light — this is what makes a gust *visible* as a pale
@@ -511,7 +526,11 @@ const BLADE_FRAG = /* glsl */`
     float geom = pow(clamp(1.0 - abs(dot(N, V)), 0.0, 1.0), 1.9) * 0.45
                + pow(clamp(dot(N, normalize(uSunDir + V)), 0.0, 1.0), 3.2) * 0.55;
     float flash = smoothstep(0.34, 0.86, vBend) * smoothstep(0.14, 0.78, vT);
-    col = mix(col, P_SHEEN, geom * flash * 0.55 * (0.32 + 0.68 * nearK) * uDusk);
+    // §9.5's wind flash needs a sun to flash. A gust crossing a shadowed
+    // stretch still lays the blades over — the geometry is the wind's, not the
+    // light's — it simply does not glint, and the front reappears the instant
+    // it runs back out into the beam.
+    col = mix(col, P_SHEEN, geom * flash * 0.55 * (0.32 + 0.68 * nearK) * uDusk * cs.x);
 
     // a seed head on one blade in ten: a warm bronze plume at the very top
     if (vHead > 0.5) {
@@ -736,6 +755,7 @@ export class GrassRing {
         uPal: { value: packed },
         uSward: { value: swardMean },
         uSunDir: opts.sunDir ?? { value: new THREE.Vector3(0.3, 0.4, 0.86) },
+        ...(CSHADE_ON ? (opts.cloudShade ?? {}) : {}),
         uSunColor: opts.sunColor ?? { value: new THREE.Vector3(1, 0.92, 0.78) },
         uSkyColor: opts.skyColor ?? { value: new THREE.Vector3(0.36, 0.52, 0.78) },
         uDusk: { value: 1 },

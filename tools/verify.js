@@ -29,6 +29,13 @@ import {
 import {
   SUN_BAND, frameAt, macroHeight, scoreComposition, solveLandingSite,
 } from '../src/landing.js';
+import {
+  COVER_EDGE, COVER_MEAN, CLOUD_SHADE_GLSL, DETAIL_SCALE, FIELD_LACUNARITY,
+  FIELD_OCTAVES, FIELD_SCALE, MAX_THROW, R_SUN_AU, SUN_FADE, WARP_SCALE,
+  angularRadius, cloudFieldRaw, cloudShadeTransfer, composeSunShadow, deckPoint,
+  fieldOctaves, measureCoverMean, octaveWavelength, penumbraMetres, sunFade,
+} from '../src/cloudshade.js';
+import { CLOUD_FIELD_GLSL } from '../src/cloudfield.js';
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
 import {
@@ -822,12 +829,17 @@ function suiteSunShadow() {
     // The property, not the literal: the sampler is injected on the map's flag
     // and the light model on the grade's, whatever the sampler is called. It
     // was named `SHADOW_GLSL` here until §5's tap-count LOD made it a function
-    // of the tier, and a check that pinned the identifier would have failed
-    // correct code — which is the mistake this file has recorded once already.
+    // of the tier, and `cloudshade.js` then made it a *composition* — the map
+    // and the deck answering one question — so the interpolation moved to a
+    // module-level `SUN_SHADOW_GLSL` and the call to `SUN_SHADOW`. The property
+    // has not moved: one flag each, and the grade does not carry the map. A
+    // check that pinned the shape rather than the property would have failed
+    // correct code, which is the mistake this file has now recorded twice.
     ok('the shadow sampler is injected independently of `PAINT_GLSL`',
-      /\$\{SHADOW \? \w+ : ''\}/.test(src)
+      /\$\{SUN_SHADOW_GLSL\}/.test(src)
+      && /const SUN_SHADOW_GLSL = CSHADE\n\s*\? composeSunShadow\(SHADOW \?/.test(src)
       && /\$\{PAINT \? PAINT_GLSL : ''\}/.test(src)
-      && !/SHADOW_GLSL \+ PAINT_GLSL/.test(src),
+      && !/SHADOW_TAPS_GLSL \+ PAINT_GLSL/.test(src),
       'one flag each, so the cheap path can sample a map it has');
     // `nGeo`, not `nb`, since act 3b. The shadow lookup derives its depth bias
     // from dot(N, L), and `nb` now carries a 9 cm detail normal — feeding that
@@ -835,10 +847,12 @@ function suiteSunShadow() {
     // rather than being deleted, because what it is actually holding is that
     // the cheap path samples the map at all.
     ok('and the cheap lighting path actually samples it',
-      /float sh = \$\{SHADOW \? 'sunShadow\(vW, dot\(nGeo, uSunDir\)\)' : '1\.0'\}/.test(src),
-      'the ground is shadowed with or without §9.2');
+      /float sh = \$\{SUN_SHADOW\};/.test(src)
+      && /const SUN_SHADOW = \(SHADOW \|\| CSHADE\)/.test(src),
+      'the ground is shadowed with or without §9.2 — and now with or without a map');
     ok('§9.2 · and both paths bias the shadow off the geometric normal',
-      (src.match(/sunShadow\(vW, dot\(nGeo, uSunDir\)\)/g) || []).length >= 2
+      /sf\.shadow = \$\{SUN_SHADOW\};/.test(src)
+      && /'sunShadow\(vW, dot\(nGeo, uSunDir\)\)' : '1\.0'/.test(src)
       && !/sunShadow\(vW, dot\(nb,/.test(src),
       'a detail normal on the depth bias is shadow acne, not texture');
   }
@@ -1113,11 +1127,25 @@ function suiteFoliage() {
     ok('and the far groves do not',
       !/markCaster\(gTrunks\)/.test(life) && !/markCaster\(gCrowns\)/.test(life),
       'a cylinder and three blobs at 260 m is not an occluder the map resolves');
-    ok('the sampler is passed only when the build has a map',
-      /shadowGLSL: s\.sunShadow \? [^:]+ : null/.test(life),
-      'a shader that samples a map nobody rendered is worse than one without');
-    ok('and at the tier\'s tap count, so a wood pays the same §5 LOD as the ground',
-      /shadowGLSL\(qInt\('shtaps', 'shadowTaps'\)\)/.test(life));
+    // Both of these used to be assertions about life.js's own wiring. They are
+    // assertions about `surface.js:sunShadowWiring()` now, because life.js and
+    // traveler.js each built the block themselves — fine while the map was the
+    // only caster, and a way to forget the deck the moment it was not. The
+    // property is unchanged and the number of places that can get it wrong went
+    // from three to one.
+    {
+      const surf = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+      const body = surf.slice(surf.indexOf('  sunShadowWiring() {'));
+      const w = body.slice(0, body.indexOf('\n  }\n'));
+      ok('the wood takes the one composed sampler rather than building its own',
+        /\.\.\.s\.sunShadowWiring\(\)/.test(life)
+        && !/shadowGLSL: s\.sunShadow/.test(life));
+      ok('the sampler is passed only when the build has a map',
+        /this\.sunShadow \? SHADOW_TAPS_GLSL : null/.test(w),
+        'a shader that samples a map nobody rendered is worse than one without');
+      ok('and at the tier\'s tap count, so a wood pays the same §5 LOD as the ground',
+        /shadowGLSL\(qInt\('shtaps', 'shadowTaps'\)\)/.test(surf));
+    }
   }
 
   // --- 8b. a clump is a shape, not a ball ---------------------------------
@@ -8995,6 +9023,313 @@ function suiteBlossom() {
     && blossomsFor({ seg: { r1: [] } }).length === 0);
 }
 
+
+// ---------------------------------------------------------------------------
+// suite: cloudshade
+//
+// §7.3, and clouds.js:452's invariant — "a shadow must always belong to a cloud
+// you can point at." That sentence is the thing this suite turns into a number,
+// in check 6: the shadow evaluates fewer octaves of the field than the deck
+// does, because the sun's own angular size has already blurred the rest away,
+// and the question that makes legitimate rather than merely cheaper is whether
+// the silhouette moved further than the penumbra it was traded for.
+//
+// Nothing here is a snapshot. The angular radius goes against the small-angle
+// limit and against the Sun's measured 0.2665°; the projection goes against an
+// independent ray/plane intersection; and the blur goes against the property
+// that actually defines a low-pass — that it preserves the mean.
+
+function suiteCloudShade() {
+  console.log('\ncloud shadow — the deck reaches the ground');
+
+  // --- 1. the mirrored field constants still describe the field -----------
+  {
+    const glsl = CLOUD_FIELD_GLSL;
+    ok('FIELD_SCALE matches the chunk', glsl.includes(String(FIELD_SCALE)),
+      `${FIELD_SCALE} in "(q - uCloudDrift) * ..."`);
+    ok('FIELD_LACUNARITY matches', glsl.includes(`* ${FIELD_LACUNARITY} +`));
+    ok('WARP_SCALE matches', glsl.includes(`p * ${WARP_SCALE} +`));
+    ok('DETAIL_SCALE matches', glsl.includes(`p * ${DETAIL_SCALE} +`));
+    // matched numerically rather than textually: GLSL wants a decimal point
+    // where `String(0.30)` gives "0.3", and a check that fails on formatting
+    // teaches the next reader to weaken it
+    {
+      const m = glsl.match(/smoothstep\((-?[\d.]+), ([\d.]+), cloudFieldRaw/);
+      ok('COVER_EDGE matches the chunk',
+        !!m && Number(m[1]) === COVER_EDGE[0] && Number(m[2]) === COVER_EDGE[1],
+        m ? `[${m[1]}, ${m[2]}]` : 'no smoothstep found in cloudField()');
+    }
+    ok('cloudField() still reads the shipped octave counts',
+      glsl.includes(`cloudFieldRaw(q, ${FIELD_OCTAVES.warp}, ${FIELD_OCTAVES.body}, `
+        + `${FIELD_OCTAVES.detail})`));
+  }
+
+  // --- 2. the star's angular radius ---------------------------------------
+  {
+    // The measured value, which is the only external number in this suite:
+    // the Sun subtends 0.5330° across, so 0.2665° of radius from 1 AU.
+    near('the Sun from 1 AU, in degrees',
+      angularRadius(1, 1) * 180 / Math.PI, 0.2665, 2e-4);
+    // and the small-angle limit it must approach from below
+    for (const [R, a] of [[1, 1], [0.1, 1], [0.013, 0.1]]) {
+      const exact = angularRadius(R, a), small = R * R_SUN_AU / a;
+      ok(`small-angle limit holds at R=${R} a=${a}`,
+        exact < small && (small - exact) / small < 1e-4,
+        `atan ${exact.toExponential(4)} vs r/a ${small.toExponential(4)}`);
+    }
+    // a red giant larger than its own orbit must not produce a NaN
+    ok('a star wider than its orbit still returns a finite angle',
+      Number.isFinite(angularRadius(45, 0.05)) && angularRadius(45, 0.05) < Math.PI / 2);
+    ok('and a zero orbit does not divide by zero',
+      Number.isFinite(angularRadius(1, 0)));
+  }
+
+  // --- 3. the penumbra, against similar triangles -------------------------
+  {
+    // An extended source of angular radius θ seen from h below spreads its
+    // terminator over the chord 2·h·tanθ. Derived here the other way round —
+    // from the two rays that graze opposite limbs — so the two derivations are
+    // independent rather than the same line typed twice.
+    for (const [R, a, h] of [[1, 1, 900], [25, 1, 900], [0.013, 0.1, 620]]) {
+      const th = angularRadius(R, a);
+      const rayGap = h * Math.tan(th) - h * Math.tan(-th);   // limb to limb
+      near(`penumbra from grazing rays, R=${R} h=${h}`,
+        penumbraMetres(th, h), rayGap, 1e-9);
+    }
+    ok('a point source casts no penumbra', penumbraMetres(0, 900) === 0);
+    ok('and the penumbra grows with the deck',
+      penumbraMetres(angularRadius(1, 1), 1800)
+        > penumbraMetres(angularRadius(1, 1), 900));
+  }
+
+  // --- 4. how much of the field survives the disc -------------------------
+  {
+    const sun = fieldOctaves(penumbraMetres(angularRadius(1, 1), 900));
+    ok('a Sun-like star removes no octave — and saying so is the honest answer',
+      sun.warp === FIELD_OCTAVES.warp && sun.body === FIELD_OCTAVES.body
+        && sun.detail === FIELD_OCTAVES.detail,
+      `8.4 m of penumbra against a finest octave of ${octaveWavelength(2, DETAIL_SCALE)
+        .toFixed(0)} m`);
+    const giant = fieldOctaves(penumbraMetres(angularRadius(25, 1), 900));
+    ok('a red giant removes several', giant.body < FIELD_OCTAVES.body
+      && giant.detail < FIELD_OCTAVES.detail, JSON.stringify(giant));
+    // monotone, and never degenerate
+    let prev = 99;
+    for (let w = 0; w <= 4000; w += 37) {
+      const o = fieldOctaves(w), tot = o.warp + o.body + o.detail;
+      if (tot > prev) { ok('octave count is monotone in the penumbra', false, `at w=${w}`); break; }
+      if (o.warp < 1 || o.body < 1 || o.detail < 1) {
+        ok('no chain is ever driven to zero octaves', false, `at w=${w}`); break;
+      }
+      prev = tot;
+      if (w >= 4000 - 37) {
+        ok('octave count is monotone in the penumbra', true);
+        ok('no chain is ever driven to zero octaves', true, 'floor of 1 holds to w=4 km');
+      }
+    }
+  }
+
+  // --- 5. the blur preserves the mean -------------------------------------
+  //
+  // This is the check the first implementation would have failed, and the
+  // reason it exists. Widening the smoothstep *looks* like softening an edge
+  // and is not: the transition is centred on 0.1325 and the field's mean is 0,
+  // so a wider transition raises coverage everywhere. A low-pass converges on
+  // the local mean and leaves the mean alone, so that is the property to test.
+  {
+    near('COVER_MEAN still describes the field',
+      measureCoverMean({}, 220, 30000), COVER_MEAN, 6e-3);
+
+    const N = 160, span = 30000;
+    const meanAt = (blur) => {
+      let s = 0, n = 0;
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+          const f = cloudFieldRaw((i / N - 0.5) * span, (j / N - 0.5) * span, {});
+          s += cloudShadeTransfer({ f, blur, amount: 1, tau: 3.4 }).cover; n++;
+        }
+      }
+      return s / n;
+    };
+    const m0 = meanAt(0), m5 = meanAt(0.5), m1 = meanAt(1);
+    near('mean coverage is unchanged at half blur', m5, m0, 6e-3);
+    near('mean coverage is unchanged at full blur', m1, m0, 6e-3);
+
+    // and it really is doing something: variance must collapse
+    const varAt = (blur) => {
+      let s = 0, ss = 0, n = 0;
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+          const f = cloudFieldRaw((i / N - 0.5) * span, (j / N - 0.5) * span, {});
+          const c = cloudShadeTransfer({ f, blur, amount: 1, tau: 3.4 }).cover;
+          s += c; ss += c * c; n++;
+        }
+      }
+      return ss / n - (s / n) ** 2;
+    };
+    ok('and full blur removes the shadow rather than darkening the world',
+      varAt(1) < 1e-12 && varAt(0) > 0.01,
+      `var ${varAt(0).toFixed(4)} → ${varAt(1).toExponential(2)}`);
+  }
+
+  // --- 6. Beer's law, and the guards --------------------------------------
+  {
+    near('a clear sky passes the whole beam',
+      cloudShadeTransfer({ f: -10, amount: 1, tau: 3.4 }).beam, 1, 1e-12);
+    near('full cover passes exp(-tau)',
+      cloudShadeTransfer({ f: 10, amount: 1, tau: 3.4 }).beam, Math.exp(-3.4), 1e-9);
+    let prev = 1.0000001;
+    let mono = true;
+    for (let f = -0.4; f <= 0.6; f += 0.01) {
+      const b = cloudShadeTransfer({ f, amount: 1, tau: 3.4 }).beam;
+      if (b > prev + 1e-12) mono = false;
+      prev = b;
+    }
+    ok('the beam falls monotonically as coverage rises', mono);
+    ok('a world with no deck is not shadowed',
+      cloudShadeTransfer({ f: 10, amount: 0, tau: 3.4 }).beam === 1);
+    ok('the ambient fill rises as the beam falls',
+      cloudShadeTransfer({ f: 10, amount: 1 }).ambient > 1
+      && cloudShadeTransfer({ f: -10, amount: 1 }).ambient === 1,
+      'an overcast dome scatters more down, which is why overcast reads flat');
+  }
+
+  // --- 7. the projection, against a ray/plane intersection ----------------
+  {
+    // Independent: solve for the parameter where the ray meets the plane
+    // y = deck, rather than reusing the closed form under test.
+    const hit = (P, s, deck) => {
+      const denom = s.y;
+      const tt = (deck - P.y) / denom;
+      return [P.x + tt * s.x, P.z + tt * s.z];
+    };
+    const e = 13.5 * Math.PI / 180;
+    const s = { x: Math.cos(e) * 0.6, y: Math.sin(e), z: Math.cos(e) * 0.8 };
+    for (const P of [{ x: 0, y: 0, z: 0 }, { x: 120, y: 240, z: -80 }]) {
+      const a = deckPoint(P, s, 900), b = hit(P, s, 900);
+      near(`projection x at y=${P.y}`, a[0], b[0], 1e-9);
+      near(`projection z at y=${P.y}`, a[1], b[1], 1e-9);
+    }
+    // flat ground is a pure translation — a planar field lit by parallel rays
+    const p0 = deckPoint({ x: 0, y: 0, z: 0 }, s, 900);
+    const p1 = deckPoint({ x: 500, y: 0, z: 0 }, s, 900);
+    near('flat ground translates rather than stretching', p1[0] - p0[0], 500, 1e-9);
+    // and a hill samples nearer the sun, which is the shadow climbing it
+    const up = deckPoint({ x: 0, y: 300, z: 0 }, s, 900);
+    ok('a hilltop samples the deck nearer the sun', up[0] < p0[0],
+      `${up[0].toFixed(0)} m vs ${p0[0].toFixed(0)} m`);
+
+    ok('below the fade there is no deck shadow',
+      deckPoint({ x: 0, y: 0, z: 0 }, { x: 1, y: 0.005, z: 0 }, 900) === null);
+    ok('nor above the deck', deckPoint({ x: 0, y: 2000, z: 0 }, s, 900) === null);
+    ok('the throw is capped before it can leave float32 metres',
+      Math.abs(deckPoint({ x: 0, y: 0, z: 0 }, { x: 1, y: 0.021, z: 0 }, 900)[0])
+        <= MAX_THROW + 1);
+    near('the fade is closed at the top', sunFade(SUN_FADE[1]), 1, 1e-12);
+    near('and at the bottom', sunFade(SUN_FADE[0]), 0, 1e-12);
+  }
+
+  // --- 8. the silhouette — a shadow belongs to a cloud you can point at ---
+  //
+  // The shadow evaluates fewer octaves than the deck draws. The question is
+  // whether that moved the outline, and the honest form of the question is:
+  // where the two disagree about being inside the cloud, is there a point
+  // within one penumbra where the *deck's own* outline runs? If there is, the
+  // disagreement is inside the blur the star already imposes, and the shadow
+  // still belongs to a cloud you could point at. If it is not, the octave cut
+  // has invented a cloud, and that is a different picture.
+  {
+    const mid = (COVER_EDGE[0] + COVER_EDGE[1]) / 2;
+    for (const [name, R, a] of [['a red giant', 25, 1], ['a mid giant', 45, 3]]) {
+      const w = penumbraMetres(angularRadius(R, a), 900);
+      const oct = fieldOctaves(w);
+      const full = (x, z) => cloudFieldRaw(x, z, {});
+      const cut = (x, z) => cloudFieldRaw(x, z, oct);
+      let disagree = 0, excused = 0, n = 0;
+      const span = 20000, N = 90;
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+          const x = (i / N - 0.5) * span, z = (j / N - 0.5) * span;
+          n++;
+          if ((full(x, z) > mid) === (cut(x, z) > mid)) continue;
+          disagree++;
+          // is the deck's own edge within one penumbra of here?
+          const inside = full(x, z) > mid;
+          let near_ = false;
+          for (let k = 1; k <= 8 && !near_; k++) {
+            const r = (k / 8) * w;
+            for (let t = 0; t < 8; t++) {
+              const th = (t / 8) * Math.PI * 2;
+              if ((full(x + r * Math.cos(th), z + r * Math.sin(th)) > mid) !== inside) {
+                near_ = true; break;
+              }
+            }
+          }
+          if (near_) excused++;
+        }
+      }
+      const frac = disagree / n;
+      const held = disagree === 0 ? 1 : excused / disagree;
+      ok(`${name}: every moved pixel is inside the penumbra it was traded for`,
+        held >= 0.98,
+        `${(frac * 100).toFixed(2)}% of samples moved · ${(held * 100).toFixed(1)}%`
+        + ` within ${w.toFixed(0)} m of the deck's own edge`);
+    }
+    // and the case that must be exact
+    const sunOct = fieldOctaves(penumbraMetres(angularRadius(1, 1), 900));
+    let same = true;
+    for (let i = 0; i < 400 && same; i++) {
+      const x = (i * 137.5) % 9000 - 4500, z = (i * 311.7) % 9000 - 4500;
+      if (cloudFieldRaw(x, z, {}) !== cloudFieldRaw(x, z, sunOct)) same = false;
+    }
+    ok('under a Sun-like star the shadow is the cloud, bit for bit', same);
+  }
+
+  // --- 9. the composition ------------------------------------------------
+  {
+    const map = 'float sunShadow(vec3 wp, float ndl) {\n  return 0.5;\n}\n';
+    const c = composeSunShadow(map);
+    ok('the map is renamed rather than duplicated',
+      c.includes('float sunShadowMap(vec3 wp, float ndl) {')
+      && (c.match(/float sunShadow\(vec3 wp, float ndl\) \{/g) || []).length === 1);
+    ok('and the composed answer multiplies both',
+      /sunShadowMap\(wp, ndl\) \* cloudShade\(wp\)\.x/.test(c));
+    ok('the forward declaration makes include order irrelevant',
+      c.indexOf('vec2 cloudShade(vec3 wp);') < c.indexOf('cloudShade(wp).x'));
+    const none = composeSunShadow(null);
+    ok('with no map the deck is the only caster',
+      /float sunShadow\(vec3 wp, float ndl\) \{\n  return 1\.0 \* cloudShade\(wp\)\.x;/.test(none));
+
+    // and the chunk must not redeclare a uniform its hosts already have
+    ok('the chunk does not redeclare uSunDir',
+      !/uniform\s+vec3\s+uSunDir/.test(CLOUD_SHADE_GLSL),
+      'a redeclaration is a compile error, not a warning — hence uCsSun');
+    ok('the chunk carries the field with it',
+      CLOUD_SHADE_GLSL.includes('float cloudFieldRaw('));
+    ok('and the octave counts are uniforms, so the chunk can be module-level',
+      /uniform\s+int\s+uCsOctW/.test(CLOUD_SHADE_GLSL));
+  }
+
+  // --- 10. the wiring, from the bytes on disk -----------------------------
+  {
+    const src = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+    ok('the deck rides in on the composed sunShadow, not a second call site',
+      src.includes('sunShadowWiring()')
+      && !/shadowGLSL: s\.sunShadow \?/.test(src));
+    for (const [f, what] of [
+      ['src/flora.js', 'the meadow'], ['src/horizon.js', 'the far ridges'],
+    ]) {
+      const t = readFileSync(new URL('../' + f, import.meta.url), 'utf8');
+      ok(`${what} sample the deck`, t.includes('cloudShade('), f);
+    }
+    ok('the deck and its shadow share one uniform object',
+      /fieldUniforms: CSHADE \? this\._cloudFieldUniforms\(\)/.test(src)
+      && readFileSync(new URL('../src/clouds.js', import.meta.url), 'utf8')
+        .includes('fieldUniforms?.uCloudDrift ||'),
+      'there is no second field that could drift out of sync');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // the luminous ceiling (src/troffer.js)
 //
@@ -9166,6 +9501,7 @@ const suites = {
   tree: suiteTree,
   silhouette: suiteSilhouette,
   paintUniforms: suitePaintUniforms,
+  cloudshade: suiteCloudShade,
   invariants: suiteInvariants,
   vegetation: suiteVegetation,
   ecology: suiteEcology,

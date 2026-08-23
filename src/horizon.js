@@ -513,7 +513,11 @@ export const HORIZON_VERT = /* glsl */`
  *     that gradient by hand (`mix(0.72, 0.30, t)`); here it is derived, and it
  *     therefore changes correctly when the air does.
  */
-export function horizonFragment(aerialChunk = '') {
+/**
+ * @param {string} aerialChunk §9.3, or '' for the un-graded build
+ * @param {string} cloudChunk  the deck's shadow, or '' — see cloudshade.js
+ */
+export function horizonFragment(aerialChunk = '', cloudChunk = '') {
   return /* glsl */`
   precision highp float;
   uniform vec3 uSunDir;
@@ -526,6 +530,7 @@ export function horizonFragment(aerialChunk = '') {
   varying float vTrueD;
   varying float vTrueY;
   varying vec3 vW;
+  ${cloudChunk}
   ${aerialChunk}
 
   void main() {
@@ -535,6 +540,15 @@ export function horizonFragment(aerialChunk = '') {
     // on shining after the ground has gone dark is a defect nothing in a
     // daylight capture would reveal.
     float dusk = smoothstep(-0.12, 0.12, uSunDir.y);
+
+    // The deck reaches all the way out here, and this is the cheapest place in
+    // the frame it can be spent: a band of shadow travelling along a ridge
+    // twelve kilometres away separates that ridge from the one behind it for
+    // the price of one field lookup, and §8 axis 3 has been asking for a third
+    // depth plane since the first blind pass. It attenuates the *beam* only —
+    // the sunward arc and the ridgeline backlight — because §9.3's haze is the
+    // sky's and the sky is still there under a cloud.
+    ${cloudChunk ? 'float beam = cloudShade(vW).x;' : 'float beam = 1.0;'}
 
     // The sunward arc. Guarded on the sun's azimuthal length: at zenith the
     // sun has no azimuth, normalize() of a zero vector is a NaN, and a NaN here
@@ -548,11 +562,11 @@ export function horizonFragment(aerialChunk = '') {
       side = mix(0.5, clamp(dot(outward / ol, sxz / sl) * 0.5 + 0.5, 0.0, 1.0),
                  smoothstep(0.0, 0.16, sl));
     }
-    col = mix(col * 0.94, mix(col, uRidgeWarm, 0.34), side);
+    col = mix(col * 0.94, mix(col, uRidgeWarm, 0.34), side * beam);
 
     // ridgelines are lighter than their bases — the part of that which is
     // backlight rather than haze, since §9.3 supplies the haze part itself
-    col = mix(col, col * 1.06, smoothstep(0.55, 1.0, vH));
+    col = mix(col, col * 1.06, smoothstep(0.55, 1.0, vH) * beam);
     col *= mix(0.35, 1.0, dusk);
 
     // The distance the fog is told is the *terrain's*, not the curtain's,

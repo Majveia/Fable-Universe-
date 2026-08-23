@@ -60,6 +60,9 @@ import { GrassRing, WindField } from './flora.js';
 import { PART_RADIUS, RINGS } from './meadow.js';
 import { HOVER } from './vehicle.js';
 import { SunShadow, markCaster, shadowGLSL } from './shadow.js';
+import {
+  CLOUD_SHADE_GLSL, CSHADE_ON, cloudShadeUniforms, composeSunShadow,
+} from './cloudshade.js';
 import { Q, TIER, qArr, qInt } from './quality.js';
 
 const PARAM = (k) => {
@@ -221,6 +224,15 @@ const PAINT = PARAM('paint') === '1';
 const SHADOW = PAINT || PARAM('shadow') !== '0';
 
 /**
+ * §9.2, and clouds.js:452's own invariant: a shadow must always belong to a
+ * cloud you can point at. The deck has hung over this scale since M2 casting
+ * nothing; `?cshade=1` lets it reach the ground.
+ *
+ * Default-off per §7.4 — the flip is its own commit, with the §5 cost stated.
+ */
+const CSHADE = CSHADE_ON;
+
+/**
  * The sampler, at this tier's tap count — §5's LOD, arriving before the feature
  * rather than after the measurement.
  *
@@ -235,6 +247,24 @@ const SHADOW = PAINT || PARAM('shadow') !== '0';
  * be compared on one machine without editing the row.
  */
 const SHADOW_TAPS_GLSL = shadowGLSL(qInt('shtaps', 'shadowTaps'));
+
+/**
+ * The map and the deck, composed once, at the definition of the one question
+ * every lit surface already asks. See `cloudshade.js` §3 on why this is not a
+ * shortcut: a shadow that stopped at the grass line because a call site was
+ * forgotten would be worse than no shadow, and composing here makes that
+ * impossible rather than merely unlikely.
+ *
+ * `?shadow=0&cshade=1` is a real build — no map, and the deck the only thing
+ * casting — so the compose handles a null map rather than assuming one.
+ */
+const CLOUD_SHADE_CHUNK = CSHADE ? CLOUD_SHADE_GLSL : '';
+const SUN_SHADOW_GLSL = CSHADE
+  ? composeSunShadow(SHADOW ? SHADOW_TAPS_GLSL : null)
+  : (SHADOW ? SHADOW_TAPS_GLSL : '');
+/** the call, for the paths that used to write the literal 1.0 */
+const SUN_SHADOW = (SHADOW || CSHADE)
+  ? 'sunShadow(vW, dot(nGeo, uSunDir))' : '1.0';
 
 /** scratch for the per-frame drawing-buffer query — §5 does not want a Vector2 a frame */
 const _bufSize = new THREE.Vector2();
@@ -546,7 +576,8 @@ const TERRAIN_FRAG = /* glsl */`
   varying vec3 vW;
   varying vec3 vN;
   ${NOISE_GLSL}
-  ${SHADOW ? SHADOW_TAPS_GLSL : ''}
+  ${CLOUD_SHADE_CHUNK}
+  ${SUN_SHADOW_GLSL}
   ${PAINT ? PAINT_GLSL : ''}
   ${AERIAL ? AERIAL_GLSL : ''}
   ${MAT ? MATERIAL_GLSL : ''}
@@ -668,7 +699,7 @@ const TERRAIN_FRAG = /* glsl */`
     // the painterly wobble: the band edge is drawn, not computed, and it is
     // keyed in metres so it keeps its shape at every distance
     sf.jit   = (fbm3(vec3(vW.xz * 0.09, uSeed)) * 0.5) * 0.055;
-    sf.shadow = sunShadow(vW, dot(nGeo, uSunDir));
+    sf.shadow = ${SUN_SHADOW};
     sf.trans = 0.0; sf.transCol = vec3(0.0);
     sf.rim = 0.55;
     // Was the literal 1.0 at every pixel, on every world, since the model was
@@ -686,7 +717,7 @@ const TERRAIN_FRAG = /* glsl */`
     // the ground under a ridge, a tower or a walker is dark here as well as
     // under ?paint=1 — which is most of what §8 axis 8 is asking for when it
     // scores an object with no ground contact.
-    float sh = ${SHADOW ? 'sunShadow(vW, dot(nGeo, uSunDir))' : '1.0'};
+    float sh = ${SUN_SHADOW};
     // §9.2's rule holds even without §9.2: **shadows change hue, they do not go
     // black.** Two terms carry it, and neither needs the grade's uniforms. The
     // key keeps 18% of itself in full shadow, because a shadowed surface is
@@ -874,8 +905,9 @@ const OCEAN_FRAG = /* glsl */`
   varying vec3 vN;
   varying vec2 vQ;
   ${NOISE_GLSL}
-  ${AERIAL ? AERIAL_GLSL : ''}
+  ${CLOUD_SHADE_CHUNK}
   ${SEA ? OCEAN_GLSL : ''}
+  ${AERIAL ? AERIAL_GLSL : ''}
 
   void main() {
     // three bands of chop riding the swell, all drifting downwind
@@ -889,7 +921,12 @@ const OCEAN_FRAG = /* glsl */`
       snoise(vec3(p + 40.0 - drift * 0.017, uTime * 0.17)) * 0.1 +
       snoise(vec3(p * 5.1 + 9.0, uTime * 0.4)) * 0.04));
     vec3 view = normalize(uCam - vW);
-    float day = smoothstep(-0.15, 0.25, uSunDir.y);
+    // A cloud shadow on water is not the same event as one on grass: every
+    // specular term below — the glitter, the lane, the Fresnel sky — is the
+    // *beam*, so a deck passing overhead does not dim the sea, it switches the
+    // sun off it. Which is why the sea goes flat grey under a cloud and lights
+    // up like foil the moment the gap arrives.
+    float day = smoothstep(-0.15, 0.25, uSunDir.y)${CSHADE ? ' * cloudShade(vW).x' : ''};
 ${SEA ? /* glsl */`
     // §M2 act 5 · Schlick rather than a tuned power. R0 = 0.02 is water's own
     // number, and it is why a lake is a window at your feet and a mirror at
@@ -1229,8 +1266,12 @@ export class SurfaceScale {
     return {
       paint: this._paintUniforms(),
       sun: this.uSunDir,
-      shadow: this.sunShadow ? { ...this.sunShadow.uniforms } : null,
-      shadowGLSL: this.sunShadow ? SHADOW_TAPS_GLSL : null,
+      // The deck rides in on the shadow block, because it *is* a shadow: one
+      // composed `sunShadow()` means a boulder, a blade, a walker and the
+      // ground under all three are dark at the same instant, and no consumer
+      // had to be told about clouds to get it right.
+      shadow: this.sunShadowWiring().shadowUniforms,
+      shadowGLSL: this.sunShadowWiring().shadowGLSL,
       // §9.3, from the same uniform block the terrain and the ocean read, so a
       // boulder and the ground behind it cannot disagree about how far away the
       // horizon is. `painted.js` has the note on why the air is applied there
@@ -1242,6 +1283,27 @@ export class SurfaceScale {
       air: AERIAL && PROPAIR
         ? { glsl: AERIAL_GLSL, uniforms: { ...this._aerialUniforms(), uCam: this.uCam } }
         : null,
+    };
+  }
+
+  /**
+   * The one composed answer to "how much of the beam reaches this point",
+   * and the block that answers it.
+   *
+   * `life.js` and `traveler.js` each built this themselves out of
+   * `s.sunShadow`, which was fine while the map was the only caster and became
+   * a way to forget the deck the moment it was not. Three call sites, one
+   * method, and a wood, a walker and the ground they stand on cannot disagree.
+   */
+  sunShadowWiring() {
+    return {
+      shadowGLSL: CSHADE
+        ? CLOUD_SHADE_CHUNK + composeSunShadow(this.sunShadow ? SHADOW_TAPS_GLSL : null)
+        : (this.sunShadow ? SHADOW_TAPS_GLSL : null),
+      shadowUniforms: {
+        ...(this.sunShadow ? this.sunShadow.uniforms : {}),
+        ...(CSHADE ? this._cloudShadeUniforms() : {}),
+      },
     };
   }
 
@@ -1692,6 +1754,7 @@ export class SurfaceScale {
       uniforms: {
         uSunDir: this.uSunDir, uSunColor: this.uSunColor,
         ...(SHADOW ? this._shadowUniforms() : {}),
+        ...(CSHADE ? this._cloudShadeUniforms() : {}),
         ...(PAINT ? this._paintUniforms() : {}),
         ...(AERIAL ? this._aerialUniforms() : {}),
         ...(MAT ? this._materialUniforms() : {}),
@@ -1855,6 +1918,10 @@ export class SurfaceScale {
         sunDir: this.uSunDir,
         sunColor: this.uSunColor,
         skyColor: { value: this.horizonColor },
+        // and the same deck. A cloud shadow that crossed the terrain but not
+        // the twelve million blades standing in it would be worse than none —
+        // §6 M3's one-field doctrine applied a third time.
+        cloudShade: CSHADE ? this._cloudShadeUniforms() : null,
       }));
     }
     for (const ring of this.meadow) this.scene.add(ring.group);
@@ -1938,6 +2005,7 @@ export class SurfaceScale {
         // writes each air colour once, and a horizon graded by yesterday's air
         // while the ground uses today's is a seam that only appears at dusk
         ...(AERIAL ? this._aerialUniforms() : {}),
+        ...(CSHADE ? this._cloudShadeUniforms() : {}),
         uRidge: { value: new THREE.Vector3(alb[0], alb[1], alb[2]) },
         // held so `_syncAerial` can walk it with the sun — see the note there
         uRidgeWarm: this._uRidgeWarm,
@@ -1945,7 +2013,7 @@ export class SurfaceScale {
         uCentre: { value: new THREE.Vector2(sp.x, sp.z) },
       },
       vertexShader: HORIZON_VERT,
-      fragmentShader: horizonFragment(AERIAL ? AERIAL_GLSL : ''),
+      fragmentShader: horizonFragment(AERIAL ? AERIAL_GLSL : '', CLOUD_SHADE_CHUNK),
       side: THREE.DoubleSide,
     });
     this.horizonMat = mat;
@@ -2135,10 +2203,90 @@ export class SurfaceScale {
     this._buildNightSky();
   }
 
+  /**
+   * The deck's own two numbers, in one place because two callers want them.
+   *
+   * `_buildClouds` builds the puffs out of them and `_cloudShadeUniforms` casts
+   * their shadow, and a base or an amount that disagreed between the two would
+   * be a shadow belonging to a cloud that is not there — the exact thing
+   * `clouds.js`'s invariant forbids. `hasDeck` is the same test `_buildClouds`
+   * returns early on, so a world with no cumulus reports coverage zero rather
+   * than needing a second code path.
+   */
+  _deckParams() {
+    const pp = this.pp;
+    return {
+      // whether this world has a cloud deck at all — the same test
+      // `_buildClouds` returns early on
+      hasDeck: !(this.atmo < 0.5 || (pp.clouds ?? 0) < 0.22 || pp.typeId > 2),
+      // The lifting condensation level. Every cloud in a field shares it —
+      // they condensed out of the same air at the same dew point — which is
+      // why a real cumulus sky looks ruled along its bases, and why two
+      // independently scattered sprite layers never could.
+      base: 620 + 900 * (1 - Math.min(pp.clouds ?? 0.4, 1)),
+      amount: Math.min(Math.max((pp.clouds ?? 0.4) * 1.35, 0.12), 0.95),
+    };
+  }
+
+  /**
+   * The uniform block the deck's shadow reads — and the deck's own, by
+   * reference.
+   *
+   * Idempotent for the same reason `_aerialUniforms()` is: the terrain, the
+   * ocean and every prop ask for it, and handing the second caller a fresh set
+   * of objects would leave the first holding the old ones to drift apart
+   * silently as the day advanced.
+   *
+   * `uCloudDrift`, `uCloudAmount` and `uCsTau` are created *here* and handed to
+   * `makeCumulus` rather than the other way round, because the shadow can be
+   * wanted on a world with no deck (coverage zero) and the deck can be built
+   * after the terrain material that reads them. One owner, and it is the one
+   * that always exists.
+   */
+  _cloudShade() {
+    if (this._cshade) return this._cshade;
+    const d = this._deckParams();
+    this._cloudField = {
+      uCloudDrift: { value: new THREE.Vector2(0, 0) },
+      // Zero on a world with no cumulus: the shadow field *is* the cumulus
+      // field, so no deck is no coverage, and one uniform carries that without
+      // a second code path or a branch in the fragment shader.
+      uCloudAmount: { value: d.hasDeck && SKY ? d.amount : 0 },
+      // clouds.js's own default and its note: below about 2 the deck goes
+      // translucent and above about 6 every edge darkens into a rind
+      uCloudThick: { value: 3.4 },
+    };
+    this._cshade = cloudShadeUniforms({
+      radiusSun: this.sys?.radiusSun ?? 1,
+      orbitAU: this.pp.a ?? 1,
+      deck: d.base,
+      sunDir: this.uSunDir,
+      drift: this._cloudField.uCloudDrift,
+      amount: this._cloudField.uCloudAmount,
+      thick: this._cloudField.uCloudThick,
+    });
+    return this._cshade;
+  }
+
+  /** just the uniforms, spread into a material */
+  _cloudShadeUniforms() { return { ...this._cloudShade().uniforms }; }
+
+  /**
+   * The deck's own three, for `makeCumulus`.
+   *
+   * Goes through `_cloudShade()` rather than reading `this._cloudField`
+   * directly, so it does not quietly depend on `_buildTerrain` having run
+   * first. It does today — the constructor calls it before `_buildSky` — and a
+   * feature that breaks when two build steps are reordered is a bug waiting for
+   * an unrelated commit.
+   */
+  _cloudFieldUniforms() { this._cloudShade(); return this._cloudField; }
+
   /** painterly cumulus, drifting the way clouds actually spend a day */
   _buildClouds() {
     const pp = this.pp;
-    if (this.atmo < 0.5 || (pp.clouds ?? 0) < 0.22 || pp.typeId > 2) return;
+    const deck = this._deckParams();
+    if (!deck.hasDeck) return;
     const r = new RNG(hash(pp.seed, 0xc1a0d5));
     if (SKY) {
       this.cumulus = makeCumulus({
@@ -2146,12 +2294,12 @@ export class SurfaceScale {
         camPos: this._uCamPos || (this._uCamPos = { value: new THREE.Vector3() }),
         seed: pp.seed, rand: () => r.next(), tier: Q.name,
         T: this.ctx.system?.temp ?? 5778,
-        // The lifting condensation level. Every cloud in a field shares it —
-        // they condensed out of the same air at the same dew point — which is
-        // why a real cumulus sky looks ruled along its bases, and why two
-        // independently scattered sprite layers never could.
-        base: 620 + 900 * (1 - Math.min(pp.clouds ?? 0.4, 1)),
-        amount: Math.min(Math.max((pp.clouds ?? 0.4) * 1.35, 0.12), 0.95),
+        base: deck.base,
+        amount: deck.amount,
+        // The same objects the ground reads, not copies of them. This is the
+        // whole of clouds.js:452's invariant in one line: there is no second
+        // field that could drift out of sync, because there is no second field.
+        fieldUniforms: CSHADE ? this._cloudFieldUniforms() : null,
         aerialGLSL: AERIAL ? AERIAL_GLSL : '',
         aerialUniforms: AERIAL ? this._aerialUniforms() : {},
       });
@@ -2323,6 +2471,7 @@ export class SurfaceScale {
         // chunk" is only true if the uniforms are shared too, and `_syncAerial`
         // writes each colour once for every material that reads it
         ...(AERIAL ? this._aerialUniforms() : {}),
+        ...(CSHADE ? this._cloudShadeUniforms() : {}),
         ...(SEA ? this._seaUniforms() : {}),
         uHorizon: { value: this.horizonColor },
         uDeep: { value: this.pp.typeId === 2 ? this.pp.colA : new THREE.Color(0.02, 0.1, 0.2) },

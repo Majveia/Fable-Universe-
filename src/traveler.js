@@ -83,8 +83,7 @@ export function addTraveler(s) {
     seed: s.pp.seed,
     sunDir: s.uSunDir,
     light: lightFor(starT, Math.max(sunElev(), 0.5)),
-    shadowGLSL: s.sunShadow ? SHADOW_GLSL : null,
-    shadowUniforms: s.sunShadow ? s.sunShadow.uniforms : null,
+    ...s.sunShadowWiring(),
   });
 
   const avatar = new THREE.Group();

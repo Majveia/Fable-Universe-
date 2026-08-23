@@ -97,6 +97,20 @@ export const FIELD_OCTAVES = { warp: 3, body: 4, detail: 3 };
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 
 /**
+ * The flag, in one place.
+ *
+ * Five modules want to know whether the deck casts, and five copies of the same
+ * `searchParams.get` string is five chances for one of them to disagree — which
+ * on this feature means the ground darkening while the grass standing in it does
+ * not. Read once, exported, and `catch` returns false in Node so this file stays
+ * importable without a browser.
+ */
+export const CSHADE_ON = (() => {
+  try { return new URL(window.location.href).searchParams.get('cshade') === '1'; }
+  catch { return false; }
+})();
+
+/**
  * This star's true angular radius seen from this orbit, in radians.
  *
  * `radiusSun` is in solar radii (`system.js` carries it on every star) and
@@ -295,46 +309,93 @@ export function cloudShadeTransfer({
 // deck itself compiles — include this and you have included the cloud.
 
 /**
- * @param {object} o
- * @param {number} o.warp   octaves of the domain-warp chain
- * @param {number} o.body   octaves of the body chain
- * @param {number} o.detail octaves of the detail chain
+ * The chunk. One module-level string, because `surface.js` assembles
+ * `TERRAIN_FRAG` at import time and cannot wait for a star to be chosen.
+ *
+ * So the octave count is a uniform rather than a literal. That is not a
+ * concession — §11 warns that adaptive quality *mid-frame* pumps visibly, and
+ * this is the other thing: written once at init from the star's angular radius
+ * and never touched again. `cfFbm` already loops to a constant bound and breaks
+ * on a parameter, so a uniform costs it nothing it was not already paying.
+ *
+ * `uCsSun` rather than `uSunDir` because half the shaders that include this
+ * already declare `uSunDir` and a redeclaration is a compile error, not a
+ * warning. It is wired to the same object, so they cannot disagree.
  */
-export function cloudShadeGLSL({ warp = 3, body = 4, detail = 3 } = {}) {
-  return /* glsl */`
+export const CLOUD_SHADE_GLSL = /* glsl */`
 ${CLOUD_FIELD_GLSL}
-uniform vec3  uSunDir;
+uniform vec3  uCsSun;      // the same object as the scale's uSunDir
 uniform float uCsDeck;     // cloud base, metres above the datum
-uniform float uCsSoft;     // penumbra, in field units — see edgeSoftness()
+uniform float uCsBlur;     // 0 a cut edge .. 1 a wash — the star's angular size
 uniform float uCsTau;      // optical depth of the deck, shared with the puffs
+uniform int   uCsOctW;     // octaves of the warp chain that survive the penumbra
+uniform int   uCsOctF;     // ... the body chain
+uniform int   uCsOctG;     // ... the detail chain
 
 // x: how much of the beam survives · y: coverage, for the ambient lift
 vec2 cloudShade(vec3 wp) {
-  float sy = uSunDir.y;
+  float sy = uCsSun.y;
   float fade = smoothstep(${SUN_FADE[0].toFixed(3)}, ${SUN_FADE[1].toFixed(3)}, sy);
   if (fade <= 0.0) return vec2(1.0, 0.0);
-  // Guarded before the divide, not after: a poisoned t would reach the noise
-  // and come back as a NaN smeared over a neighbourhood by the bloom pyramid
-  // (§11), and a firewall downstream of the divide is a firewall in the wrong
-  // place. MAX_THROW also keeps q inside the range where a float32 world
-  // coordinate still resolves metres.
+  // Guarded before the divide, not after. A poisoned t would reach the noise
+  // and come back as a NaN that the bloom pyramid smears over a whole
+  // neighbourhood (§11), and a firewall downstream of the divide is a firewall
+  // in the wrong place. The clamp also keeps q inside the range where a float32
+  // world coordinate still resolves metres.
   float t = min((uCsDeck - wp.y) / max(sy, ${SUN_FADE[0].toFixed(3)}), ${MAX_THROW.toFixed(1)});
   if (!(t > 0.0)) return vec2(1.0, 0.0);
-  vec2 q = wp.xz + t * uSunDir.xz;
-  float f = cloudFieldRaw(q, ${warp}, ${body}, ${detail});
-  float cover = clamp(smoothstep(${COVER_EDGE[0].toFixed(3)} - uCsSoft,
-                                 ${COVER_EDGE[1].toFixed(3)} + uCsSoft, f)
-                      * uCloudAmount, 0.0, 1.0) * fade;
+  vec2 q = wp.xz + t * uCsSun.xz;
+  float f = cloudFieldRaw(q, uCsOctW, uCsOctF, uCsOctG);
+  float sharp = smoothstep(${COVER_EDGE[0].toFixed(3)}, ${COVER_EDGE[1].toFixed(3)}, f);
+  // the penumbra is a low-pass, so it converges on the mean — never a wider
+  // smoothstep, which raises coverage instead of softening an edge
+  float cover = clamp(mix(sharp, 0.1655, uCsBlur), 0.0, 1.0)
+              * uCloudAmount * fade;
   return vec2(exp(-uCsTau * cover), cover);
 }
 `;
+
+/**
+ * Compose the deck into whatever `sunShadow()` the map produced.
+ *
+ * Every lit surface in the scale already asks one question — "how much of the
+ * beam reaches this point" — and a deck overhead is an answer to exactly that
+ * question, so the two compose at the definition rather than at a dozen call
+ * sites. Terrain, grass, foliage, bark, props, figures, herds and the far
+ * ridges then get the deck without one call site changing.
+ *
+ * The forward declaration is what makes the include order not matter: GLSL ES
+ * wants a symbol declared before it is used, and a prototype is a declaration.
+ *
+ * `mapGLSL` null is the `?shadow=0` build — no map, and the deck is then the
+ * only thing casting. A missing marker is shouted about rather than silently
+ * returning the string unchanged, which is `painted.js`'s rule and the same
+ * failure it was written for: `String.replace` that finds nothing compiles
+ * perfectly and quietly does nothing.
+ */
+export function composeSunShadow(mapGLSL) {
+  const wrap = /* glsl */`
+vec2 cloudShade(vec3 wp);
+float sunShadow(vec3 wp, float ndl) {
+  return ${mapGLSL ? 'sunShadowMap(wp, ndl)' : '1.0'} * cloudShade(wp).x;
+}
+`;
+  if (!mapGLSL) return wrap;
+  const marker = 'float sunShadow(vec3 wp, float ndl) {';
+  if (!mapGLSL.includes(marker)) {
+    console.error('[cloudshade] the shadow chunk has no ' + marker
+      + ' — the deck is NOT being composed into it. shadow.js has been renamed '
+      + 'under cloudshade.js; composeSunShadow needs a new marker.');
+    return mapGLSL;
+  }
+  return mapGLSL.replace(marker, 'float sunShadowMap(vec3 wp, float ndl) {') + wrap;
 }
 
 /**
- * Everything the shader above needs, derived from a star, an orbit and a deck.
+ * Everything the chunk needs, derived from a star, an orbit and a deck.
  *
- * `drift`, `amount` and `thick` are the deck's own uniform objects, passed in by
- * reference so there is exactly one of each in the scale. `deck` is the lifting
+ * `sunDir`, `drift`, `amount` and `thick` are the scale's own uniform objects,
+ * passed in by reference so there is exactly one of each. `deck` is the lifting
  * condensation level `surface.js` already computes for `makeCumulus` — every
  * cloud in the field shares it, which is why a real cumulus sky looks ruled
  * along its bases and why one scalar is enough here.
@@ -345,16 +406,19 @@ export function cloudShadeUniforms({
   const theta = angularRadius(radiusSun, orbitAU);
   const w = penumbraMetres(theta, deck);
   const oct = fieldOctaves(w);
+  const blur = blurFraction(edgeSoftness(w, oct));
   return {
-    theta, penumbra: w, octaves: oct,
-    glsl: cloudShadeGLSL(oct),
+    theta, penumbra: w, octaves: oct, blur,
     uniforms: {
-      uSunDir: sunDir,
+      uCsSun: sunDir,
       uCloudDrift: drift,
       uCloudAmount: amount,
-      uCsDeck: { value: deck },
-      uCsSoft: { value: edgeSoftness(w, oct) },
       uCsTau: thick,
+      uCsDeck: { value: deck },
+      uCsBlur: { value: blur },
+      uCsOctW: { value: oct.warp },
+      uCsOctF: { value: oct.body },
+      uCsOctG: { value: oct.detail },
     },
   };
 }

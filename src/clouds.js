@@ -761,7 +761,7 @@ export function growCumulus(rand, { grid = 9, spacing = 3050, base = 900, scale 
 export function makeCumulus({
   sunDir, camPos, seed = 0, rand, tier = 'desktop',
   T = 5778, base = 900, spacing = 3050, amount = 0.55, scale = 1,
-  aerialGLSL = '', aerialUniforms = {},
+  aerialGLSL = '', aerialUniforms = {}, fieldUniforms = null,
 } = {}) {
   const grid = CUMULUS_GRID[tier] || CUMULUS_GRID.desktop;
   const puffs = growCumulus(rand, { grid, spacing, base, scale });
@@ -807,14 +807,18 @@ export function makeCumulus({
     uPuff: { value: tex },
     uSunDir: sunDir || { value: new THREE.Vector3(0, 1, 0) },
     uCamPos: camPos || { value: new THREE.Vector3() },
-    uCloudDrift: { value: new THREE.Vector2(0, 0) },
-    uCloudAmount: { value: amount },
+    // Supplied by the caller when something else reads the same field — the
+    // ground's shadow does (`cloudshade.js`). Shared by reference, not copied:
+    // there is no second field that could drift out of sync, because there is
+    // no second field. Falls back to its own when it is the only reader.
+    uCloudDrift: fieldUniforms?.uCloudDrift || { value: new THREE.Vector2(0, 0) },
+    uCloudAmount: fieldUniforms?.uCloudAmount || { value: amount },
     uCloudLum: { value: 1 },
     // 3.4 is the optical depth of a puff seen through its middle. Below about
     // 2 the whole deck goes translucent and the ramp's bands stop reading;
     // above about 6 the powder term darkens every edge into a hard rind and
     // the silver lining disappears because nothing transmits.
-    uCloudThick: { value: 3.4 },
+    uCloudThick: fieldUniforms?.uCloudThick || { value: 3.4 },
     uCTop: v3(), uCBody: v3(), uCTerm: v3(),
     uCUnder: v3(), uCCore: v3(), uCRim: v3(),
     uCSun: v3(), uCShadow: v3(),
