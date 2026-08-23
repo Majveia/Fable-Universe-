@@ -32,7 +32,8 @@ import {
 import {
   COVER_EDGE, COVER_MEAN, CLOUD_SHADE_GLSL, DETAIL_SCALE, FIELD_LACUNARITY,
   FIELD_OCTAVES, FIELD_SCALE, MAX_THROW, R_SUN_AU, SUN_FADE, WARP_SCALE,
-  angularRadius, cloudFieldRaw, cloudShadeTransfer, composeSunShadow, deckPoint,
+  angularRadius, cloudFieldRaw, cloudShadeTransfer, cloudShaftGLSL,
+  composeSunShadow, deckPoint,
   fieldOctaves, measureCoverMean, octaveWavelength, penumbraMetres, sunFade,
 } from '../src/cloudshade.js';
 import { CLOUD_FIELD_GLSL } from '../src/cloudfield.js';
@@ -9531,6 +9532,60 @@ function suiteCloudShade() {
       if (cloudFieldRaw(x, z, {}) !== cloudFieldRaw(x, z, sunOct)) same = false;
     }
     ok('under a Sun-like star the shadow is the cloud, bit for bit', same);
+  }
+
+  // --- 8b. the shafts — the same field, marched -------------------------
+  //
+  // The claim worth checking is not that a march produces a number. It is that
+  // the shaft, the shadow on the ground and the gap in the deck are *one
+  // function*, so that a beam always lands in a lit patch and the gap that made
+  // it is overhead where you can see it. Nothing keeps those three in agreement
+  // — there is nothing to keep in agreement, and these checks say so.
+  {
+    const march = cloudShaftGLSL(8);
+    ok('the march samples the same field the ground does',
+      march.includes('cloudShadeAt(wp + V * (t * reach)'),
+      'not a second field that has to be kept in agreement with the first');
+    ok('and asks it for fewer octaves, because an integral discards the rest',
+      /cloudShadeAt\(wp \+ V \* \(t \* reach\), 1, 2, 1\)/.test(march));
+    ok('it returns without a tap when you are not looking toward the sun',
+      /if \(toward <= 0\.0\) return 1\.0;/.test(march),
+      'a shaft is in-scattered light — away from the sun there is nothing to scatter');
+    ok('the taps are dithered by §9.4\'s own ordered pattern',
+      march.includes('0.7548776662, 0.5698402909'),
+      'eight undithered taps band into slabs, which is the artefact that reads as cheap');
+    ok('and the tap count is compiled in, not a uniform',
+      /for \(int i = 0; i < 8; i\+\+\)/.test(march),
+      '§11 · quality is set once at init, never adapted mid-frame');
+    ok('zero taps emits a stub rather than a loop that runs and is discarded',
+      cloudShaftGLSL(0).includes('return 1.0;')
+      && !cloudShaftGLSL(0).includes('for (int'),
+      'which is what low and mobile get — see quality.js');
+
+    const q = readFileSync(new URL('../src/quality.js', import.meta.url), 'utf8');
+    ok('§5 · the LOD row exists before the feature does',
+      (q.match(/shaftTaps:/g) || []).length === 4,
+      'one row per tier, and the mobile rows are zero');
+    ok('and the two cheapest tiers do not march at all',
+      /name: 'low'[^}]*shaftTaps: 0/.test(q) && /name: 'mobile'[^}]*shaftTaps: 0/.test(q));
+
+    const air = readFileSync(new URL('../src/aerial.js', import.meta.url), 'utf8');
+    ok('the shaft scales the Mie term rather than adding a second effect',
+      /pow\(clamp\(vs, 0\.0, 1\.0\), 3\.4\) \* shaft/.test(air),
+      'the Mie term IS the in-scattered sunlight — the haze had been lit '
+      + 'through the deck as though the deck were not there');
+    ok('§9.3 keeps its five-argument form for the two dozen callers that use it',
+      /vec4 aerial\(vec3 col, float dist, vec3 V, vec3 sunDir, float worldY\) \{\n\s*return aerial\(/.test(air),
+      'GLSL has overloading; a signature change would have been two dozen edits');
+
+    const gr = readFileSync(new URL('../src/godrays.js', import.meta.url), 'utf8');
+    ok('the motes and the corona go out when the sun does',
+      /corona\.material\.opacity = .*\* beam;/.test(gr)
+      && /motes\.material\.opacity = .*\* beam;/.test(gr),
+      'both are beam phenomena — dust is only visible because a beam is in it');
+    ok('and they ask the CPU twin rather than a second shader',
+      gr.includes('cloudShadeAt(s.camera.position, sun,'),
+      'one evaluation a frame against seven hundred particles asking the same thing');
   }
 
   // --- 9. the composition ------------------------------------------------

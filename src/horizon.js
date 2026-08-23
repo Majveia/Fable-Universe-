@@ -516,8 +516,9 @@ export const HORIZON_VERT = /* glsl */`
 /**
  * @param {string} aerialChunk §9.3, or '' for the un-graded build
  * @param {string} cloudChunk  the deck's shadow, or '' — see cloudshade.js
+ * @param {string} airShaft    ', vW, 1.0' when §9.3 should march the air
  */
-export function horizonFragment(aerialChunk = '', cloudChunk = '') {
+export function horizonFragment(aerialChunk = '', cloudChunk = '', airShaft = '') {
   return /* glsl */`
   precision highp float;
   uniform vec3 uSunDir;
@@ -578,7 +579,7 @@ export function horizonFragment(aerialChunk = '', cloudChunk = '') {
     float dAnchor = length(vW.xz - uCentre);
     float dist = max(vTrueD + (dCam - dAnchor), 1.0);
     ${aerialChunk ? /* glsl */`
-    gl_FragColor = aerial(col, dist, normalize(uCam - vW), uSunDir, vTrueY);
+    gl_FragColor = aerial(col, dist, normalize(uCam - vW), uSunDir, vTrueY${airShaft});
     ` : /* glsl */`
     col = mix(col, uHorizon * max(dusk, 0.08), 1.0 - exp(-dist * 0.0007));
     gl_FragColor = vec4(col, 1.0);

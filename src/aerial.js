@@ -52,6 +52,7 @@
 //       rather than guessed.
 
 import { airColours, hexToLinear } from './starlight.js';
+import { SHAFTS_ON } from './cloudshade.js';
 
 // ---------------------------------------------------------------------------
 // the shape of the curve — the reference's, and not negotiable
@@ -326,7 +327,14 @@ export const AERIAL_GLSL = /* glsl */`
 
   // rgb: the composited colour. a: clarity, 1 - fog — see the note on
   // AERIAL_ALPHA_IS_CLARITY in this module for why it is stored inverted.
-  vec4 aerial(vec3 col, float dist, vec3 V, vec3 sunDir, float worldY) {
+  ${SHAFTS_ON ? 'float cloudShaft(vec3 wp, vec3 V, float dist);' : ''}
+
+  // The five-argument form every caller in the repo already uses. Overloaded
+  // rather than replaced: §9.3 is threaded into two dozen materials and a
+  // signature change would have been two dozen edits to give six surfaces a
+  // shaft. GLSL has overloading; this is what it is for.
+  vec4 aerial(vec3 col, float dist, vec3 V, vec3 sunDir, float worldY,
+              vec3 wp, float shaftOn) {
     float d0 = aerialDepth(dist);
     float d = max(d0 - uAirNear, 0.0);
 
@@ -338,7 +346,20 @@ export const AERIAL_GLSL = /* glsl */`
     // V points surface -> camera, so looking INTO the sun is vs -> +1.
     // Reversed, this term inverts and the fog goes cold toward the sun.
     float vs = -dot(V, sunDir);
-    float mie = pow(clamp(vs, 0.0, 1.0), 3.4);
+    // §M-shafts · the air the sun reaches, against the air it does not.
+    //
+    // This is the whole of the effect and it is one multiply, because the Mie
+    // term is *already* the in-scattered sunlight: it is what turns the haze
+    // warm when you look toward the sun. Scaling it by how much of that column
+    // of air the sun actually gets to is not an addition to the model, it is
+    // the correction the model was missing — the haze had been lit through the
+    // deck as though the deck were not there.
+    //
+    // So a gap in the cloud is a bright column and the cloud beside it is a
+    // dark one, and both are the same function that darkened the meadow. You
+    // can follow the beam down and stand in the lit patch at the bottom of it.
+    float shaft = ${SHAFTS_ON ? 'mix(1.0, cloudShaft(wp, V, d0), shaftOn)' : '1.0'};
+    float mie = pow(clamp(vs, 0.0, 1.0), 3.4) * shaft;
     vec3 fc = mix(uAirHaze, uAirHorizonSun, mie * 0.88);
     fc = mix(fc, uAirAnti, clamp(vs, -1.0, 0.0) * -0.32);
 
@@ -353,6 +374,10 @@ export const AERIAL_GLSL = /* glsl */`
     f = clamp(f + pool * 0.16 * (1.0 - f), 0.0, 1.0);
 
     return vec4(mix(col, fc, f), 1.0 - f);
+  }
+
+  vec4 aerial(vec3 col, float dist, vec3 V, vec3 sunDir, float worldY) {
+    return aerial(col, dist, V, sunDir, worldY, vec3(0.0), 0.0);
   }
 `;
 

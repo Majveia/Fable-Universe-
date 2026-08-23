@@ -61,7 +61,8 @@ import { PART_RADIUS, RINGS } from './meadow.js';
 import { HOVER } from './vehicle.js';
 import { SunShadow, markCaster, shadowGLSL } from './shadow.js';
 import {
-  CLOUD_SHADE_GLSL, CSHADE_ON, cloudShadeUniforms, composeSunShadow,
+  CLOUD_SHADE_GLSL, CSHADE_ON, SHAFTS_ON, cloudShadeUniforms, cloudShaftGLSL,
+  composeSunShadow, shaftUniforms,
 } from './cloudshade.js';
 import { DRAINAGE_GLSL, packDrainage, solveDrainage } from './drainage.js';
 import { Q, TIER, qArr, qInt } from './quality.js';
@@ -274,6 +275,16 @@ const SHADOW_TAPS_GLSL = shadowGLSL(qInt('shtaps', 'shadowTaps'));
  * casting — so the compose handles a null map rather than assuming one.
  */
 const CLOUD_SHADE_CHUNK = CSHADE ? CLOUD_SHADE_GLSL : '';
+/**
+ * The march, at the tier's tap count — zero on low and mobile, where zero means
+ * the loop is not compiled rather than compiled and thrown away. `?shafttaps=`
+ * overrides, which is how the A/B gets taken.
+ */
+const SHAFTS = SHAFTS_ON && qInt('shafttaps', 'shaftTaps') > 0;
+const CLOUD_SHAFT_CHUNK = SHAFTS
+  ? cloudShaftGLSL(qInt('shafttaps', 'shaftTaps')) : '';
+/** the two extra arguments §9.3's overload takes when there is air to march */
+const AIR_SHAFT = SHAFTS ? ', vW, 1.0' : '';
 const SUN_SHADOW_GLSL = CSHADE
   ? composeSunShadow(SHADOW ? SHADOW_TAPS_GLSL : null)
   : (SHADOW ? SHADOW_TAPS_GLSL : '');
@@ -592,6 +603,7 @@ const TERRAIN_FRAG = /* glsl */`
   varying vec3 vN;
   ${NOISE_GLSL}
   ${CLOUD_SHADE_CHUNK}
+  ${CLOUD_SHAFT_CHUNK}
   ${SUN_SHADOW_GLSL}
   ${WETLINE ? DRAINAGE_GLSL : ''}
   ${PAINT ? PAINT_GLSL : ''}
@@ -813,7 +825,7 @@ const TERRAIN_FRAG = /* glsl */`
     // four colours in _syncAerial keeps a midnight valley reading as depth.
     // Mixing the fog *fraction* toward zero instead would have deleted the
     // depth cue at exactly the hour the light stops carrying it.
-    gl_FragColor = aerial(lit, dist, normalize(uCam - vW), uSunDir, vW.y);
+    gl_FragColor = aerial(lit, dist, normalize(uCam - vW), uSunDir, vW.y${AIR_SHAFT});
     ` : /* glsl */`
     lit = mix(lit, uHorizon * max(dusk, 0.08), 1.0 - exp(-dist * 0.0007));
     gl_FragColor = vec4(lit, 1.0);
@@ -945,6 +957,7 @@ const OCEAN_FRAG = /* glsl */`
   varying vec2 vQ;
   ${NOISE_GLSL}
   ${CLOUD_SHADE_CHUNK}
+  ${CLOUD_SHAFT_CHUNK}
   ${SEA ? OCEAN_GLSL : ''}
   ${AERIAL ? AERIAL_GLSL : ''}
 
@@ -1027,7 +1040,7 @@ ${SEA ? /* glsl */`
     ${AERIAL ? /* glsl */`
     // The ocean plane runs to EXT*24, so without a real extinction curve its
     // far edge was the one place the old one-line fog visibly failed to close.
-    gl_FragColor = aerial(col, dist, normalize(uCam - vW), uSunDir, vW.y);
+    gl_FragColor = aerial(col, dist, normalize(uCam - vW), uSunDir, vW.y${AIR_SHAFT});
     ` : /* glsl */`
     col = mix(col, uHorizon * max(day, 0.08), 1.0 - exp(-dist * 0.0007));
     gl_FragColor = vec4(col, 1.0);
@@ -2053,7 +2066,8 @@ export class SurfaceScale {
         uCentre: { value: new THREE.Vector2(sp.x, sp.z) },
       },
       vertexShader: HORIZON_VERT,
-      fragmentShader: horizonFragment(AERIAL ? AERIAL_GLSL : '', CLOUD_SHADE_CHUNK),
+      fragmentShader: horizonFragment(AERIAL ? AERIAL_GLSL : '',
+        CLOUD_SHADE_CHUNK + CLOUD_SHAFT_CHUNK, AIR_SHAFT),
       side: THREE.DoubleSide,
     });
     this.horizonMat = mat;
@@ -2309,7 +2323,9 @@ export class SurfaceScale {
   }
 
   /** just the uniforms, spread into a material */
-  _cloudShadeUniforms() { return { ...this._cloudShade().uniforms }; }
+  _cloudShadeUniforms() {
+    return { ...this._cloudShade().uniforms, ...(SHAFTS ? shaftUniforms() : {}) };
+  }
 
   /**
    * The drainage tile — `src/drainage.js`.

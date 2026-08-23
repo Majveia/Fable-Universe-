@@ -38,8 +38,17 @@ const TIER_NAMES = ['low', 'mobile', 'desktop', 'ultra'];
  *   atmoSteps   single-scattering raymarch steps for the sky
  *   shadowRes   sun shadow map side, in texels (§9.2's drawn edge)
  *   shadowTaps  taps in the shadow sampler's cross — see below
+ *   shaftTaps   taps in the crepuscular ray march — 0 turns the march off
  *   cities      the full metropolis generator
  *   volumetrics volumetric cloud deck and god rays
+ *
+ * `shaftTaps` is the same rule again, and it is the reason the shafts could be
+ * built at all. A ray march through the cloud field is the one thing in this
+ * project that is genuinely expensive per fragment, so the tap count is a tier
+ * row before the feature exists rather than a knob added after a bench went
+ * red — §5's "add the LOD before the feature", taken literally. Low and mobile
+ * get zero, and zero means the march is not compiled, not that it runs and is
+ * discarded.
  *
  * `shadowTaps` is §5's rule being obeyed rather than quoted. Separating the
  * shadow map from `?paint=` put a five-tap sampler on the terrain, which is
@@ -97,10 +106,10 @@ const TIER_NAMES = ['low', 'mobile', 'desktop', 'ultra'];
  * The far rings are therefore where a low-tier machine gets its frames back.
  */
 export const QUALITY = [
-  { name: 'low', px: 0.85, cosmic: 44, quadSplit: 4.5, quadDepth: 14, tileRes: 25, atmoSteps: 6, shadowRes: 1024, shadowTaps: 1, cities: false, volumetrics: false, grass: [0.30, 0.28, 0.26, 0.24], wind: 160, blades: [3, 1, 1, 1], curvedRings: 0 },
-  { name: 'mobile', px: 1.00, cosmic: 56, quadSplit: 5.5, quadDepth: 16, tileRes: 29, atmoSteps: 8, shadowRes: 1536, shadowTaps: 5, cities: true, volumetrics: false, grass: [0.58, 0.55, 0.52, 0.48], wind: 224, blades: [3, 2, 1, 1], curvedRings: 0 },
-  { name: 'desktop', px: 1.12, cosmic: 68, quadSplit: 6.5, quadDepth: 18, tileRes: 33, atmoSteps: 12, shadowRes: 2048, shadowTaps: 5, cities: true, volumetrics: true, grass: [1.00, 1.00, 1.00, 1.00], wind: 288, blades: [4, 2, 1, 1], curvedRings: 1 },
-  { name: 'ultra', px: 1.32, cosmic: 86, quadSplit: 8.0, quadDepth: 20, tileRes: 41, atmoSteps: 16, shadowRes: 2560, shadowTaps: 5, cities: true, volumetrics: true, grass: [1.45, 1.38, 1.30, 1.20], wind: 352, blades: [5, 3, 2, 1], curvedRings: 2 },
+  { name: 'low', px: 0.85, cosmic: 44, quadSplit: 4.5, quadDepth: 14, tileRes: 25, atmoSteps: 6, shadowRes: 1024, shadowTaps: 1, shaftTaps: 0, cities: false, volumetrics: false, grass: [0.30, 0.28, 0.26, 0.24], wind: 160, blades: [3, 1, 1, 1], curvedRings: 0 },
+  { name: 'mobile', px: 1.00, cosmic: 56, quadSplit: 5.5, quadDepth: 16, tileRes: 29, atmoSteps: 8, shadowRes: 1536, shadowTaps: 5, shaftTaps: 0, cities: true, volumetrics: false, grass: [0.58, 0.55, 0.52, 0.48], wind: 224, blades: [3, 2, 1, 1], curvedRings: 0 },
+  { name: 'desktop', px: 1.12, cosmic: 68, quadSplit: 6.5, quadDepth: 18, tileRes: 33, atmoSteps: 12, shadowRes: 2048, shadowTaps: 5, shaftTaps: 8, cities: true, volumetrics: true, grass: [1.00, 1.00, 1.00, 1.00], wind: 288, blades: [4, 2, 1, 1], curvedRings: 1 },
+  { name: 'ultra', px: 1.32, cosmic: 86, quadSplit: 8.0, quadDepth: 20, tileRes: 41, atmoSteps: 16, shadowRes: 2560, shadowTaps: 5, shaftTaps: 12, cities: true, volumetrics: true, grass: [1.45, 1.38, 1.30, 1.20], wind: 352, blades: [5, 3, 2, 1], curvedRings: 2 },
 ];
 
 const param = (k) => {

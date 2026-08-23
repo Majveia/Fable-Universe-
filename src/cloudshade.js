@@ -105,10 +105,38 @@ const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
  * not. Read once, exported, and `catch` returns false in Node so this file stays
  * importable without a browser.
  */
-export const CSHADE_ON = (() => {
-  try { return new URL(window.location.href).searchParams.get('cshade') === '1'; }
+const flag = (k) => {
+  try { return new URL(window.location.href).searchParams.get(k) === '1'; }
   catch { return false; }
-})();
+};
+
+/**
+ * Crepuscular rays — the same field, marched through the air instead of
+ * sampled on the ground.
+ *
+ * A shaft is a cloud shadow seen edge-on. That is not a figure of speech: the
+ * dark column beside a sunbeam and the dark patch on the meadow are the same
+ * volume of shadowed air, and the gap that made both is overhead where you can
+ * look at it. So the shafts are not a second effect that has to be kept in
+ * agreement with the shadows — they are the same function evaluated in a third
+ * place, and agreement is not something anyone has to maintain.
+ */
+export const SHAFTS_ON = flag('shafts');
+
+/**
+ * The flag, in one place.
+ *
+ * Five modules want to know whether the deck casts, and five copies of the same
+ * `searchParams.get` string is five chances for one of them to disagree — which
+ * on this feature means the ground darkening while the grass standing in it does
+ * not. Read once, exported, and `catch` returns false in Node so this file stays
+ * importable without a browser.
+ *
+ * `?shafts=1` implies it, because a shaft is made of the same shadowed air the
+ * ground is standing in: shafts without the ground darkening under them would
+ * be a light that stops at the grass.
+ */
+export const CSHADE_ON = flag('cshade') || SHAFTS_ON;
 
 /**
  * This star's true angular radius seen from this orbit, in radians.
@@ -333,7 +361,13 @@ uniform int   uCsOctF;     // ... the body chain
 uniform int   uCsOctG;     // ... the detail chain
 
 // x: how much of the beam survives · y: coverage, for the ambient lift
-vec2 cloudShade(vec3 wp) {
+//
+// Octaves are a parameter as well as a uniform, because the ray march wants
+// fewer of them than the ground does and for a reason of its own: a march
+// integrates *along* the ray, so detail finer than the step is averaged away
+// before it can be seen. Paying for it would be paying to compute something the
+// integral then discards.
+vec2 cloudShadeAt(vec3 wp, int octW, int octF, int octG) {
   float sy = uCsSun.y;
   float fade = smoothstep(${SUN_FADE[0].toFixed(3)}, ${SUN_FADE[1].toFixed(3)}, sy);
   if (fade <= 0.0) return vec2(1.0, 0.0);
@@ -345,7 +379,7 @@ vec2 cloudShade(vec3 wp) {
   float t = min((uCsDeck - wp.y) / max(sy, ${SUN_FADE[0].toFixed(3)}), ${MAX_THROW.toFixed(1)});
   if (!(t > 0.0)) return vec2(1.0, 0.0);
   vec2 q = wp.xz + t * uCsSun.xz;
-  float f = cloudFieldRaw(q, uCsOctW, uCsOctF, uCsOctG);
+  float f = cloudFieldRaw(q, octW, octF, octG);
   float sharp = smoothstep(${COVER_EDGE[0].toFixed(3)}, ${COVER_EDGE[1].toFixed(3)}, f);
   // the penumbra is a low-pass, so it converges on the mean — never a wider
   // smoothstep, which raises coverage instead of softening an edge
@@ -353,7 +387,74 @@ vec2 cloudShade(vec3 wp) {
               * uCloudAmount * fade;
   return vec2(exp(-uCsTau * cover), cover);
 }
+
+vec2 cloudShade(vec3 wp) {
+  return cloudShadeAt(wp, uCsOctW, uCsOctF, uCsOctG);
+}
 `;
+
+/**
+ * The march. One extra chunk, so a build can have shadows without shafts.
+ *
+ * Four things keep this affordable, and §5 says every one of them comes before
+ * the feature rather than after a bench goes red:
+ *
+ * 1. **It is gated on looking toward the sun.** A shaft is in-scattered light,
+ *    so away from the sun there is nothing to scatter and the march returns
+ *    without a single tap. `vs` varies smoothly across the screen, so the
+ *    branch is warp-coherent — most of the frame takes it together.
+ * 2. **The tap count is a quality row** (`shaftTaps`), and on low and mobile it
+ *    is zero, which means the march is not compiled rather than compiled and
+ *    discarded.
+ * 3. **Two octaves, not nine.** See `cloudShadeAt` — the integral discards the
+ *    rest.
+ * 4. **The taps are dithered** by the same ordered pattern §9.4 puts on the
+ *    print, so eight taps read as considerably more than eight. Without it a
+ *    march this short bands into visible slabs, which is the classic artefact
+ *    and the one that reads as *cheap*.
+ *
+ * @param {number} taps compiled-in tap count; 0 emits a stub
+ */
+export function cloudShaftGLSL(taps = 8) {
+  if (taps <= 0) {
+    return /* glsl */`
+float cloudShaft(vec3 wp, vec3 V, float dist) { return 1.0; }
+`;
+  }
+  return /* glsl */`
+uniform float uShaftReach;   // metres of air worth marching
+uniform float uShaftGate;    // how far toward the sun before it is worth it
+
+vec2 cloudShadeAt(vec3 wp, int octW, int octF, int octG);
+
+// How much of the air between here and the eye the sun actually reaches.
+// V points surface -> camera, so the march walks back toward the eye.
+float cloudShaft(vec3 wp, vec3 V, float dist) {
+  float vs = -dot(V, uCsSun);
+  float toward = smoothstep(uShaftGate, 1.0, vs);
+  if (toward <= 0.0) return 1.0;
+  float reach = min(dist, uShaftReach);
+  float jit = fract(dot(gl_FragCoord.xy, vec2(0.7548776662, 0.5698402909)));
+  float sum = 0.0;
+  for (int i = 0; i < ${taps}; i++) {
+    float t = (float(i) + jit) / ${taps}.0;
+    sum += cloudShadeAt(wp + V * (t * reach), 1, 2, 1).x;
+  }
+  return mix(1.0, sum / ${taps}.0, toward);
+}
+`;
+}
+
+/** the reach and the gate — the two numbers the march is tuned by */
+export const SHAFT_REACH = 900;
+export const SHAFT_GATE = 0.28;
+
+export function shaftUniforms() {
+  return {
+    uShaftReach: { value: SHAFT_REACH },
+    uShaftGate: { value: SHAFT_GATE },
+  };
+}
 
 /**
  * Compose the deck into whatever `sunShadow()` the map produced.
@@ -510,6 +611,31 @@ export function cloudFieldRaw(qx, qz, { driftX = 0, driftZ = 0,
  * `tools/verify.js` re-measures it and fails if the field has moved under it.
  */
 export const COVER_MEAN = 0.1655;
+
+/**
+ * The whole of `cloudShade()`, on the CPU, at one point.
+ *
+ * For the callers that are not shaders. `godrays.js` wants to know whether the
+ * sun is behind a cloud *right now* so its motes and its corona can go out, and
+ * that is one evaluation a frame — about three microseconds — against the
+ * alternative of rewriting a `PointsMaterial` into a custom shader to ask the
+ * same question per particle and get the same answer.
+ *
+ * The arguments are the uniform *values*, not the uniform objects, because a
+ * caller on this side of the line is holding a Vector3 rather than a `{value}`.
+ */
+export function cloudShadeAt(P, sunDir, {
+  deck = 900, drift = { x: 0, y: 0 }, amount = 1, tau = 3.4, blur = 0,
+  octaves = FIELD_OCTAVES,
+} = {}) {
+  const q = deckPoint(P, sunDir, deck);
+  if (!q) return { beam: 1, cover: 0, ambient: 1 };
+  const f = cloudFieldRaw(q[0], q[1], {
+    driftX: drift.x, driftZ: drift.y,
+    warp: octaves.warp, body: octaves.body, detail: octaves.detail,
+  });
+  return cloudShadeTransfer({ f, blur, amount, tau, fade: sunFade(sunDir.y) });
+}
 
 /** re-measure it — the check `tools/verify.js` runs, and how the constant was got */
 export function measureCoverMean(oct = {}, n = 240, span = 24000) {
