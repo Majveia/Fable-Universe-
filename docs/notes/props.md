@@ -477,3 +477,101 @@ its cheapest, so §5-green means about 148,000 blades.
 the clause for a machine that can measure frames per second — which is the
 property §5's tier table is actually stated in, and the one thing this container
 cannot produce.
+
+---
+
+# Act 3b · the ground gets properties other than colour
+
+§8 axis 5 scored **1 and 2** — *"the ground reads as nothing"* — against a
+measured near-ground gradient of 1.07 and 1.15 out of 255. `RECKONING.md` calls
+it *"the blocking axis"* and *"more than half of every frame"*. It was not a
+tuning problem. The material was structurally incapable of texture:
+
+- `struct Ground` carried three colours, a grain scalar and the blend weights.
+  **No normal, no roughness, no occlusion.**
+- `materialPalette()` has computed a per-layer `rough` since the day it was
+  written — rock 1.0, soil 0.82, sward 0.55, rime 0.30 — and **nothing ever
+  uploaded it.** The sixth dead wiring, and the oldest.
+- `sf.ao` was the literal `1.0`, at every pixel, on every world. §9.2 *gates*
+  its ambient fill on AO, so that fill has been ungated since the model was
+  written.
+- The finest feature in any channel was **~60 cm** — 1.63 cycles/m in the
+  material, 1.4 in the terrain's bump — and `bumpF` is a *far*-field fade that
+  sits flat at 1.0 inside 60 m, so there was no near-field ramp at all.
+- The nearest tile vertices are **8.33 m apart on every tier**, so the first
+  thirty metres of every frame is about three and a half quads. Nothing under
+  8 m can come from geometry.
+
+Four changes, no new textures, no new geometry:
+
+1. **`matNormal()`** — two decorrelated triplanar octaves at 4.1 and 11.0
+   cycles/m (24 cm and 9 cm), perturbing the normal along two tangents. Not the
+   gradient of a height field, deliberately: a true gradient costs six taps for
+   the central differences and what this needs is coherence and a clean fade,
+   which two octaves give at a third of the price.
+2. **`uMatRough`** uploaded at last, scaling both the relief amplitude and the
+   cavity depth — so stone gets grain and snow does not, which is what §8 axis 5
+   means by *"every material nameable without labels"*.
+3. **`matCavity()`** — the negative half of a 2.3 cycles/m field. Only the
+   negative half: a pit holds shadow, a bump does not hold extra light, and
+   brightening the positive half is a rash of pale speckles under a low sun.
+4. **`sf.soft`** — §9.2's band-edge width, `mix(0.055, 0.17, rough)` instead of
+   the constant 0.10. A rough surface has a soft terminator; a smooth one does
+   not.
+
+All of it reaches the **default** build, not only `?paint=1`. A term that only
+the grade sees is a term nobody sees, since the grade is off.
+
+## The LOD is angular, and that took a rewrite
+
+The first version faded both octaves on the same 0→30 m ramp the colour detail
+uses, squared. That is a resolution-*independent* answer to a resolution-
+*dependent* question, and §9.5 had already settled it for the grass: an octave
+should survive exactly as long as it is bigger than a pixel.
+
+`matOctave(cyclesPerM, dist, pxr)` is that settlement, fed the same
+`pxPerRadian` the meadow's width floor gets. `tools/pixeldiff.js --suite
+material` measures what it buys, and this is the number the metric ramp could
+not express, because it is a property of the screen and not of the world:
+
+| display | 4.1 c/m octave at half strength out to |
+|---|---|
+| 420×240 headless proxy | **24 m** |
+| phone | 56 m |
+| 1080p | 107 m |
+| 1440p | **143 m** |
+
+The ramp it replaced was gone by 30 m on every one of them.
+
+## What is measured, and what is not
+
+`tools/glimpse.js`, same seed, same station, one flag apart — and `?relief=` is
+in the build precisely so this A/B is one character:
+
+| | near-ground gradient | luma |
+|---|---|---|
+| `?relief=0` (the ground as it was) | 17.63/255 | 77–249 |
+| `?relief=1` (shipped) | 18.15/255 | 76–249 |
+| `?relief=2` | 18.86/255 | 69–249 |
+| `?relief=4` | 20.44/255 | **35**–249 |
+
+**The wiring is live** — `relief=0` reproduces the pre-act statistic exactly and
+the number climbs monotonically with amplitude — which, after six dead wirings,
+is the first thing worth establishing and the only thing this instrument can
+establish.
+
+**The magnitude is not measured and cannot be here.** `glimpse` runs at 420×240,
+where the table above says the coarse octave dies at 24 m against 143 m at
+1440p — so this frame sees roughly a sixth of the reach it ships with, and its
+own header says anything resolution-dependent is systematically misrepresented.
++3% at proxy resolution is not a prediction of what a capture will show, in
+either direction.
+
+The amplitude was chosen from the tilt it implies, not from the gradient: about
+**17° on bare rock, 12° on sward, 9° on snow**. That is gravel and weathering,
+not corrugation. `?relief=` is there so a person with a GPU can disagree in one
+character.
+
+Count of wirings that existed, were exercised by a suite, and were never called
+by the renderer: **six**. The newest is the oldest — `rough`, dead since the
+file was written.

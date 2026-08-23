@@ -829,9 +829,18 @@ function suiteSunShadow() {
       && /\$\{PAINT \? PAINT_GLSL : ''\}/.test(src)
       && !/SHADOW_GLSL \+ PAINT_GLSL/.test(src),
       'one flag each, so the cheap path can sample a map it has');
+    // `nGeo`, not `nb`, since act 3b. The shadow lookup derives its depth bias
+    // from dot(N, L), and `nb` now carries a 9 cm detail normal — feeding that
+    // to the bias is acne rather than detail. The assertion moved with the code
+    // rather than being deleted, because what it is actually holding is that
+    // the cheap path samples the map at all.
     ok('and the cheap lighting path actually samples it',
-      /float sh = \$\{SHADOW \? 'sunShadow\(vW, dot\(nb, uSunDir\)\)' : '1\.0'\}/.test(src),
+      /float sh = \$\{SHADOW \? 'sunShadow\(vW, dot\(nGeo, uSunDir\)\)' : '1\.0'\}/.test(src),
       'the ground is shadowed with or without §9.2');
+    ok('§9.2 · and both paths bias the shadow off the geometric normal',
+      (src.match(/sunShadow\(vW, dot\(nGeo, uSunDir\)\)/g) || []).length >= 2
+      && !/sunShadow\(vW, dot\(nb,/.test(src),
+      'a detail normal on the depth bias is shadow acne, not texture');
   }
 
   // --- 3. the implication runs one way ------------------------------------
@@ -3213,7 +3222,77 @@ function suiteMaterial() {
       'a single projection smears on anything steep, and a smear is the most'
       + ' visible repetition a landscape has');
     ok('and it returns three stops rather than one colour',
-      /struct Ground \{ vec3 shade; vec3 mid; vec3 lit;/.test(code));
+      /struct Ground \{[\s\S]{0,200}?vec3 shade; vec3 mid; vec3 lit;/.test(code));
+
+    // --- act 3b · and the surface has properties other than colour ---------
+    //
+    // Every check here is a *wiring* check, not an arithmetic one, because
+    // `docs/notes/props.md` now records five separate defects of exactly one
+    // shape: a function that exists, that a suite exercises, and that the
+    // renderer never calls. `alphaTest` with no alphaMap, `uChunkNear` never
+    // set, `meadowWidth()` never called, a note whose edit was a no-op, and
+    // `_syncPaintLight` gated off for the only consumer it had. Asserting that
+    // `matNormal()` computes the right thing would have caught none of them.
+    ok('§M2 · the four layers carry a normal, a roughness and an occlusion',
+      /struct Ground \{[\s\S]*?vec3 N; float rough; float ao;[\s\S]*?\};/.test(code),
+      'they varied in colour alone, which is why §8 axis 5 scored 1');
+    ok('and groundAt fills all three, so nothing returns a default',
+      /g\.rough = uMatRough\[0\]/.test(code)
+      && /g\.N = matNormal\(/.test(code)
+      && /g\.ao = matCavity\(/.test(code));
+    ok('and the fine normal is scaled by the blend, not by a constant',
+      /matNormal\(P, n, dist, g\.rough\)/.test(code)
+      && /matCavity\(P, n, dist, g\.rough\)/.test(code),
+      'stone takes the full amplitude and snow takes almost none');
+    // The LOD is angular, not metric, and that distinction cost a rewrite. A
+    // metre ramp has to pick one display and is wrong on every other: a 24 cm
+    // feature at 30 m is about 12 px at 1440p and about 2 at the size a
+    // headless proxy renders. §9.5 settled this for the grass; the ground uses
+    // the same settlement and the same number.
+    ok('and the octave LOD is in pixels, like §9.5\'s width floor',
+      /float matOctave\(float cyclesPerM, float dist, float pxr\)/.test(code)
+      && /pxr \/ \(max\(dist, 0\.35\) \* max\(cyclesPerM, 1e-4\)\)/.test(code)
+      && /uniform float uMatPxr;/.test(code),
+      'a ramp in metres is a resolution-independent answer to a'
+      + ' resolution-dependent question');
+    ok('and the near-field octave is finer than anything that was there before',
+      /triNoise\([^;]*?, 11\.0\)/.test(code) && /triNoise\([^;]*?, 4\.1\)/.test(code),
+      '1.63 cycles/m was a 60 cm feature; 11.0 is 9 cm, which is arm\'s length');
+    ok('and the cavity only darkens',
+      /float pit = max\(-v, 0\.0\);/.test(code),
+      'brightening the positive half is a rash of pale speckles under a low sun');
+  }
+
+  // The other half of every one of those: the renderer has to *call* it.
+  {
+    const src = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+    ok('§M2 · the per-layer roughness is uploaded, not merely computed',
+      /uMatRough: \{ value: pal\.map\(\(m\) => m\.rough\) \}/.test(src),
+      'materialPalette() has returned `rough` since it was written and nothing'
+      + ' had ever put it in a uniform');
+    ok('§M2 · and the pixel scale is pushed outside the wind-field branch',
+      /if \(this\._matU\) this\._matU\.uMatPxr\.value = pxPerRadian;/.test(src)
+      // against `ring.setPixelScale`, not against the first `for (const ring
+      // of this.meadow)` in the file — that one is the scene-graph add in the
+      // constructor, hundreds of lines earlier, and comparing to it made the
+      // assertion true for the wrong reason.
+      && src.indexOf('this._matU.uMatPxr.value = pxPerRadian')
+         < src.indexOf('ring.setPixelScale(pxPerRadian)'),
+      'the ground has a material whether or not the world has grass');
+    ok('and the detail normal reaches the light',
+      /nb = gm\.N;/.test(src),
+      'a normal computed and not assigned is the fifth dead wiring, not the'
+      + ' first');
+    ok('and the cavity reaches §9.2, which gates its ambient fill on it',
+      /sf\.ao = \$\{MAT \? 'gm\.ao' : '1\.0'\}/.test(src)
+      && !/^\s*sf\.ao = 1\.0;$/m.test(src));
+    ok('and the cavity reaches the default build too',
+      /\$\{MAT \? '\* gm\.ao' : ''\}/.test(src),
+      '?paint= is off by default, so a term only the grade sees is a term'
+      + ' nobody sees');
+    ok('and §9.2\'s band width is a material property rather than 0.10',
+      /sf\.soft  = \$\{MAT \? 'mix\(0\.055, 0\.17, gm\.rough\)' : '0\.10'\}/.test(src),
+      'a rough surface has a soft terminator and a smooth one does not');
   }
 }
 

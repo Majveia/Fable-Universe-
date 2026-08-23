@@ -224,11 +224,60 @@ export function worldBias(pp) {
  * lattice immediately; 3.07 and 7.13 between octaves means the pattern does not
  * close on itself inside any window a walker can see.
  */
+/**
+ * The CPU twin of `matOctave()` — §2.7's rule, one milestone over.
+ *
+ * Act 3b's detail normal and cavity are gated on how many pixels a feature
+ * spans rather than on a distance in metres, which is §9.5's angular width
+ * floor applied to the ground. That gate decides whether a term reaches the
+ * frame at all, so it is exactly the kind of quantity §11 warns about: it must
+ * not be free to drift between the two halves.
+ *
+ * `tools/pixeldiff.js --suite material` holds them together. This is the same
+ * arrangement `src/terrain.js` has with the orbital height field and
+ * `src/meadow.js` has with the density law, and for the same reason — the
+ * shader is the thing that runs and the JS is the thing that can be tested.
+ *
+ * `smoothstep` is written out rather than imported so this stays a transcription
+ * of the GLSL beside it, readable against it line for line.
+ */
+export function octaveLOD(cyclesPerM, dist, pxr) {
+  const pxPerCycle = pxr / (Math.max(dist, 0.35) * Math.max(cyclesPerM, 1e-4));
+  const t = Math.min(Math.max((pxPerCycle - 1.4) / (4.0 - 1.4), 0), 1);
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * The blended roughness, given the four layer weights.
+ *
+ * A linear combination, so an exact twin rather than an approximate one — and
+ * worth having as a function because it is the number that scales both the
+ * relief and the cavity, and because `materialPalette()`'s `rough` column spent
+ * its whole life computed and unread. A twin is how that stops being possible
+ * quietly.
+ */
+export function roughFor(w, pal) {
+  return pal[0].rough * w.rock + pal[1].rough * w.soil
+       + pal[2].rough * w.sward + pal[3].rough * w.rime;
+}
+
 export const MATERIAL_GLSL = /* glsl */`
   uniform vec3 uMatShade[4];
   uniform vec3 uMatMid[4];
   uniform vec3 uMatLit[4];
   uniform float uMatGrain[4];
+  uniform float uMatRough[4];
+  // A scalar on act 3b's relief, so the amplitude can be measured rather than
+  // argued about. ?relief=0 is the ground as it was before this act, ?relief=3
+  // is the same field exaggerated — which is how you tell a term that is wired
+  // and small from a term that is not wired at all. props.md has five reasons
+  // to want that distinction available without an edit.
+  uniform float uMatDetail;
+  // Pixels per radian on the vertical axis. The same number src/flora.js is
+  // handed for §9.5's angular width floor, and here for the same reason: an
+  // octave should survive exactly as long as it is bigger than a pixel, and
+  // whether it is depends on the display, not on a distance in metres.
+  uniform float uMatPxr;
   uniform float uMatLat;      // |sin(latitude)| at the landing site
   uniform float uMatCold;     // per-world shift of the snow line
   uniform float uMatRain;     // per-world wetness
@@ -281,12 +330,102 @@ export const MATERIAL_GLSL = /* glsl */`
       + shore * 0.42 + wet * 0.30, 0.0, 1.0);
   }
 
+  // ------------------------------------------------------- relief ---------
+  //
+  // Why this exists: the four layers varied in **colour only**. §8 axis 5
+  // scored the ground 1 and 2 — *"the ground reads as nothing"* — against a
+  // measured near-ground gradient of 1.07/255, and the reason was structural
+  // rather than a matter of tuning. paint() is a lighting model, and a
+  // lighting model over a flat normal can only average what was already there.
+  //
+  // Three things were missing and all three are here now: a normal below the
+  // 8.33 m vertex spacing, the per-layer rough that materialPalette() has
+  // computed since the day it was written and nothing ever uploaded, and an
+  // ambient occlusion that was the literal constant 1.0.
+  //
+  // The frequencies are chosen against arm's length, not against the tile. The
+  // finest thing in this file was 1.63 cycles/m — a 60 cm feature — and the
+  // finest thing in the terrain's own bump was 1.4. At a 1.68 m eye height the
+  // ground three metres ahead fills a large part of the frame and 60 cm is one
+  // undulation across it. 4.1 and 11.0 cycles/m are a 24 cm and a 9 cm feature,
+  // which is gravel and grain rather than terrain.
+  //
+  // All of it is gated on near and costs nothing past 30 m, where it would be
+  // sub-pixel and would alias rather than read.
+
+  // The normal, perturbed along two tangents by two independent fields.
+  //
+  // Not the gradient of a height field, and deliberately not: a true gradient
+  // costs six taps for the central differences, and what this needs is to be
+  // coherent, band-limited and to vanish smoothly — which two decorrelated
+  // octaves are, at a third of the cost. The terrain's own bump has always
+  // worked this way; this is that idea taken from 1.4 cycles/m to 11, made
+  // triplanar so a cliff face gets relief instead of a smear, and scaled by the
+  // material so that stone and snow stop having identical texture.
+  // How much of an octave survives at this distance, in pixels rather than in
+  // metres.
+  //
+  // The first version of this faded both octaves on the same 0-to-30 m ramp the
+  // colour detail uses, squared — and that was a resolution-independent answer
+  // to a resolution-dependent question, which §9.5 already settled for the
+  // grass and this is the same settlement. A 24 cm feature at 30 m subtends
+  // about 12 pixels at 1440p and about 2 at the size a headless proxy renders;
+  // a metre ramp has to pick one of those and is wrong on every display that
+  // is not it. So the gate is the feature's own angular size: keep it while it
+  // is more than about two pixels across, fade it out by one and a half.
+  float matOctave(float cyclesPerM, float dist, float pxr) {
+    float pxPerCycle = pxr / (max(dist, 0.35) * max(cyclesPerM, 1e-4));
+    return smoothstep(1.4, 4.0, pxPerCycle);
+  }
+
+  vec3 matNormal(vec3 P, vec3 n, float dist, float rough) {
+    float lo = matOctave(4.1, dist, uMatPxr);
+    float hi = matOctave(11.0, dist, uMatPxr);
+    if (lo <= 0.004) return n;
+    // any two vectors spanning the tangent plane; the field is isotropic, so
+    // which two does not matter, only that they are stable across the surface
+    vec3 t = normalize(abs(n.y) < 0.95 ? cross(n, vec3(0.0, 1.0, 0.0))
+                                       : vec3(1.0, 0.0, 0.0));
+    vec3 b = cross(n, t);
+    float k = (0.35 + 0.65 * rough) * uMatDetail;
+    vec3 d = (t * triNoise(P + vec3(11.3, 0.0, 5.7), n, 4.1)
+            + b * triNoise(P + vec3(-7.1, 3.3, 0.0), n, 4.1)) * 0.30 * k * lo;
+    if (hi > 0.004) {
+      d += (t * triNoise(P + vec3(2.9, 0.0, 17.1), n, 11.0)
+          + b * triNoise(P + vec3(0.0, 23.7, 6.1), n, 11.0)) * 0.17 * k * hi;
+    }
+    return normalize(n + d);
+  }
+
+  // Cavity darkening. §9.2 gates its ambient fill on AO and has been handed the
+  // constant 1.0 at every pixel since the model was written, which is the same
+  // shape of defect as the four in docs/notes/props.md: the term exists, the
+  // model reads it, and nothing ever computed it.
+  //
+  // Only the *negative* half of the field darkens. A pit holds shadow; a bump
+  // does not hold extra light, it just faces the sky like everything else, and
+  // brightening on the positive half would be a lie that shows up as a rash of
+  // pale speckles under a low sun.
+  float matCavity(vec3 P, vec3 n, float dist, float rough) {
+    float g = matOctave(2.3, dist, uMatPxr);
+    if (g <= 0.004) return 1.0;
+    float v = triNoise(P + vec3(31.0, 7.0, 13.0), n, 2.3);
+    float pit = max(-v, 0.0);
+    return 1.0 - pit * 0.42 * g * (0.30 + 0.70 * rough) * uMatDetail;
+  }
+
   // The three stops for this point on the ground, blended across the four
   // layers. Returning all three rather than one colour is the whole point:
   // §9.2's ramp needs somewhere to go, and one colour gives it nowhere.
-  struct Ground { vec3 shade; vec3 mid; vec3 lit; float grain; vec4 w; };
+  //
+  // N, rough and ao are act 3b: what the surface *is* at arm's length,
+  // rather than only what colour it is.
+  struct Ground {
+    vec3 shade; vec3 mid; vec3 lit; float grain; vec4 w;
+    vec3 N; float rough; float ao;
+  };
 
-  Ground groundAt(vec3 P, vec3 n, float sea, float wet, float near) {
+  Ground groundAt(vec3 P, vec3 n, float sea, float wet, float near, float dist) {
     float slope = 1.0 - clamp(n.y, 0.0, 1.0);
     float alt = clamp(P.y / max(uMatRelief, 1.0), 0.0, 1.0);
     float d = matDetail(P, n, near);
@@ -298,7 +437,16 @@ export const MATERIAL_GLSL = /* glsl */`
     g.mid   = uMatMid[0]   * w.x + uMatMid[1]   * w.y + uMatMid[2]   * w.z + uMatMid[3]   * w.w;
     g.lit   = uMatLit[0]   * w.x + uMatLit[1]   * w.y + uMatLit[2]   * w.z + uMatLit[3]   * w.w;
     g.grain = uMatGrain[0] * w.x + uMatGrain[1] * w.y + uMatGrain[2] * w.z + uMatGrain[3] * w.w;
+    g.rough = uMatRough[0] * w.x + uMatRough[1] * w.y + uMatRough[2] * w.z + uMatRough[3] * w.w;
     g.w = w;
+
+    // The relief is the blend's, so it changes where the material changes: bare
+    // rock at 1.0 takes the full amplitude, snow at 0.30 takes almost none, and
+    // a slope that is half scree and half sward gets half. That is the whole
+    // reason rough is per-layer and not one number, and it is what §8 axis 5
+    // means by "every material nameable without labels".
+    g.N = matNormal(P, n, dist, g.rough);
+    g.ao = matCavity(P, n, dist, g.rough);
 
     // Within-material variation, on top of the between-material blend. Without
     // it a patch of pure soil is a flat colour no matter how many layers the
