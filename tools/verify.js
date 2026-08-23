@@ -9571,12 +9571,20 @@ function suiteCloudShade() {
 
     const air = readFileSync(new URL('../src/aerial.js', import.meta.url), 'utf8');
     ok('the shaft scales the Mie term rather than adding a second effect',
-      /pow\(clamp\(vs, 0\.0, 1\.0\), 3\.4\) \* shaft/.test(air),
+      /pow\(clamp\(vs, 0\.0, 1\.0\), 3\.4\) \* clamp\(shaft, 0\.0, 1\.0\)/.test(air),
       'the Mie term IS the in-scattered sunlight — the haze had been lit '
       + 'through the deck as though the deck were not there');
     ok('§9.3 keeps its five-argument form for the two dozen callers that use it',
-      /vec4 aerial\(vec3 col, float dist, vec3 V, vec3 sunDir, float worldY\) \{\n\s*return aerial\(/.test(air),
+      /vec4 aerial\(vec3 col, float dist, vec3 V, vec3 sunDir, float worldY\) \{\n\s*return aerial\(col, dist, V, sunDir, worldY, 1\.0\);/.test(air),
       'GLSL has overloading; a signature change would have been two dozen edits');
+    // The bug this replaced: §9.3 forward-declared cloudShaft() and called it,
+    // and every prop material stopped compiling, because painted.js injects
+    // §9.3 into a MeshStandardMaterial that has no reason to carry a ray march
+    // and a forward declaration with no definition is a link error.
+    ok('and never reaches across chunks for a march the host may not have',
+      !/float cloudShaft\(vec3 wp, vec3 V, float dist\);/.test(air)
+      && !/cloudShaft\(wp/.test(air),
+      'the shaft arrives as a value — whoever has the march computes it');
 
     const gr = readFileSync(new URL('../src/godrays.js', import.meta.url), 'utf8');
     ok('the motes and the corona go out when the sun does',

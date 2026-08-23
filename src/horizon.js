@@ -516,7 +516,7 @@ export const HORIZON_VERT = /* glsl */`
 /**
  * @param {string} aerialChunk §9.3, or '' for the un-graded build
  * @param {string} cloudChunk  the deck's shadow, or '' — see cloudshade.js
- * @param {string} airShaft    ', vW, 1.0' when §9.3 should march the air
+ * @param {string} airShaft    the shaft argument for §9.3's overload, or ''
  */
 export function horizonFragment(aerialChunk = '', cloudChunk = '', airShaft = '') {
   return /* glsl */`

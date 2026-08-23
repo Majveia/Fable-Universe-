@@ -327,14 +327,19 @@ export const AERIAL_GLSL = /* glsl */`
 
   // rgb: the composited colour. a: clarity, 1 - fog — see the note on
   // AERIAL_ALPHA_IS_CLARITY in this module for why it is stored inverted.
-  ${SHAFTS_ON ? 'float cloudShaft(vec3 wp, vec3 V, float dist);' : ''}
-
-  // The five-argument form every caller in the repo already uses. Overloaded
-  // rather than replaced: §9.3 is threaded into two dozen materials and a
-  // signature change would have been two dozen edits to give six surfaces a
-  // shaft. GLSL has overloading; this is what it is for.
+  // Overloaded rather than replaced: §9.3 is threaded into two dozen materials
+  // and a signature change would have been two dozen edits to give six surfaces
+  // a shaft. GLSL has overloading; this is what it is for.
+  //
+  // The shaft arrives as a *value*, not as a call into cloudshade.js. The
+  // first version forward-declared cloudShaft() here and let this chunk call
+  // it, and every prop material in the world stopped compiling: painted.js
+  // injects §9.3 into a MeshStandardMaterial that has no reason to carry a
+  // ray march, and a forward declaration with no definition is a link error
+  // rather than a missing feature. Whoever has the march computes it; whoever
+  // does not passes 1.0 and gets exactly the air they had before.
   vec4 aerial(vec3 col, float dist, vec3 V, vec3 sunDir, float worldY,
-              vec3 wp, float shaftOn) {
+              float shaft) {
     float d0 = aerialDepth(dist);
     float d = max(d0 - uAirNear, 0.0);
 
@@ -358,8 +363,7 @@ export const AERIAL_GLSL = /* glsl */`
     // So a gap in the cloud is a bright column and the cloud beside it is a
     // dark one, and both are the same function that darkened the meadow. You
     // can follow the beam down and stand in the lit patch at the bottom of it.
-    float shaft = ${SHAFTS_ON ? 'mix(1.0, cloudShaft(wp, V, d0), shaftOn)' : '1.0'};
-    float mie = pow(clamp(vs, 0.0, 1.0), 3.4) * shaft;
+    float mie = pow(clamp(vs, 0.0, 1.0), 3.4) * clamp(shaft, 0.0, 1.0);
     vec3 fc = mix(uAirHaze, uAirHorizonSun, mie * 0.88);
     fc = mix(fc, uAirAnti, clamp(vs, -1.0, 0.0) * -0.32);
 
@@ -377,7 +381,7 @@ export const AERIAL_GLSL = /* glsl */`
   }
 
   vec4 aerial(vec3 col, float dist, vec3 V, vec3 sunDir, float worldY) {
-    return aerial(col, dist, V, sunDir, worldY, vec3(0.0), 0.0);
+    return aerial(col, dist, V, sunDir, worldY, 1.0);
   }
 `;
 

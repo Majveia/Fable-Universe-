@@ -283,8 +283,13 @@ const CLOUD_SHADE_CHUNK = CSHADE ? CLOUD_SHADE_GLSL : '';
 const SHAFTS = SHAFTS_ON && qInt('shafttaps', 'shaftTaps') > 0;
 const CLOUD_SHAFT_CHUNK = SHAFTS
   ? cloudShaftGLSL(qInt('shafttaps', 'shaftTaps')) : '';
-/** the two extra arguments §9.3's overload takes when there is air to march */
-const AIR_SHAFT = SHAFTS ? ', vW, 1.0' : '';
+/**
+ * The sixth argument §9.3's overload takes when there is air to march.
+ *
+ * Computed by the caller and passed as a value, because §9.3 is injected into
+ * materials that have no march in them — see the note in `aerial.js`.
+ */
+const AIR_SHAFT = SHAFTS ? ', cloudShaft(vW, normalize(uCam - vW), dist)' : '';
 const SUN_SHADOW_GLSL = CSHADE
   ? composeSunShadow(SHADOW ? SHADOW_TAPS_GLSL : null)
   : (SHADOW ? SHADOW_TAPS_GLSL : '');
