@@ -113,16 +113,32 @@ Four channels, each a physical quantity:
   gully draining the same hillside does not
 - **silt** — with flow, against gradient; a stream drops what it carries when it
   slows
-- **wash** — high flow, low wetness: a channel the water uses and does not stay
-  in, which is a dry wash, and which is stones
+- **wash** — a channel that is *steep for this landscape*: water passes through
+  a steep channel and lingers in a flat one, so gradient is what separates a
+  scoured gully floor from a boggy bottom draining the same hillside
 
 `material.js`'s sward weight already rose with moisture, so the green follows the
 water by itself. `uWet` stopped being a scalar — after rain the entire visible
 world used to go slick at once and dry at once.
 
-**Cost, measured:** 184 ms once at build. The sampling is the cost, not the
-solve — `heightAt` is 136 ms of it and the flood plus D8 is 48. The resolution
+**Cost, measured:** 153 ms in the browser on Orir, 177–360 ms across five
+worlds in Node on a loaded machine. The sampling is the cost, not the solve —
+`heightAt` is about 136 ms of it and the flood plus D8 is 48. The resolution
 table is in the module.
+
+**Two defects the measurement found, both of which read fine.** The wetness
+index was normalised min-to-max, and `ln(a/tan β)` is long-tailed — one cell at
+the tile's outflow carries every drop on it — so a single extreme set the top of
+the range and left 0.1% to 2.4% of a tile above 0.7. A wet line one cell wide,
+or none. Clipping to the 2nd and 98th percentiles puts it at 11.7% to 30.9%
+above 0.5.
+
+And the braid never fired once. "High flow, low wetness" is self-contradictory,
+because the wetness index *rises* with flow; a fixed gradient band then fired on
+one world in four, because channel-slope medians run from 0.002 on a dry plain
+to 0.578 in upland country — a factor of nearly three hundred. Percentiles of
+this tile's own channel network, and every world now has some and none has
+many.
 
 ---
 

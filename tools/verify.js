@@ -38,7 +38,7 @@ import {
 } from '../src/cloudshade.js';
 import { CLOUD_FIELD_GLSL } from '../src/cloudfield.js';
 import {
-  DRAINAGE_GLSL, SLOPE_FLOOR, packDrainage, solveDrainage,
+  DRAINAGE_GLSL, SLOPE_FLOOR, TWI_CLIP, packDrainage, solveDrainage,
 } from '../src/drainage.js';
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
@@ -9154,19 +9154,24 @@ function suiteDrainage() {
   // draining the same hillside does not, because the water leaves.
   {
     const d = at(cone);
-    let lo = Infinity, hi = -Infinity;
-    const raw = new Float64Array(RES * RES);
-    for (let c = 0; c < RES * RES; c++) {
+    const N2 = RES * RES;
+    const raw = new Float64Array(N2);
+    for (let c = 0; c < N2; c++) {
       const a = (d.acc[c] * d.cell * d.cell) / d.cell;
       raw[c] = Math.log(a / Math.max(d.slope[c], SLOPE_FLOOR));
-      if (raw[c] < lo) lo = raw[c];
-      if (raw[c] > hi) hi = raw[c];
     }
+    // clipped to the tails, not to the extremes — recomputed here rather than
+    // read back, so this is a second derivation and not a restatement
+    const srt = Float64Array.from(raw).sort();
+    const lo = srt[Math.floor(N2 * TWI_CLIP)];
+    const hi = srt[Math.min(N2 - 1, Math.ceil(N2 * (1 - TWI_CLIP)))];
     let agree = true;
-    for (let c = 0; c < RES * RES; c++) {
-      if (Math.abs(d.wet[c] - (raw[c] - lo) / (hi - lo)) > 1e-6) agree = false;
+    for (let c = 0; c < N2; c++) {
+      const want = Math.min(Math.max((raw[c] - lo) / (hi - lo), 0), 1);
+      if (Math.abs(d.wet[c] - want) > 1e-6) agree = false;
     }
-    ok('wet is the normalised topographic wetness index', agree);
+    ok('wet is the normalised topographic wetness index', agree,
+      `clipped at the ${TWI_CLIP * 100} and ${100 - TWI_CLIP * 100} percentiles`);
 
     // the property, stated directly
     const twi = (acc, slope) => Math.log((acc * cellOf) / Math.max(slope, SLOPE_FLOOR));
@@ -9179,6 +9184,14 @@ function suiteDrainage() {
   }
 
   // --- 6 · the dry wash is the channel water does not stay in ------------
+  //
+  // Two versions of this failed silently before the one that works, and both
+  // failures were found by measuring rather than by reading. "High flow, low
+  // wetness" fired on 0.0% of every tile, because the wetness index *rises*
+  // with flow and the two conditions are near mutually exclusive. A fixed
+  // gradient band then fired on one world in four, because channel-slope
+  // medians run from 0.002 on a dry plain to 0.578 in upland country. So the
+  // property to hold is: some, on every landscape, and never all.
   {
     const d = at(valley);
     let anyWash = false, contradiction = false;
@@ -9189,6 +9202,33 @@ function suiteDrainage() {
       if (d.flow[c] === 0 && d.wash[c] > 0) contradiction = true;
     }
     ok('a wash needs a channel to be a wash', !contradiction);
+    // On real ground, not on a synthetic. A cone and a V both have a nearly
+    // constant gradient, so their channel networks have no slope distribution
+    // to take a percentile of — which makes them the wrong surface to ask
+    // "is this channel steep for this landscape". `ground.js` imports no three,
+    // which is what lets this suite generate a real one.
+    {
+      const worlds = [
+        ['a temperate lowland', { seed: 1019, noiseSeed: 4471, typeId: 1, radiusE: 1, oceanLevel: 0.10, iceCap: 2 }],
+        ['upland country', { seed: 1046, noiseSeed: 9931, typeId: 1, radiusE: 0.9, oceanLevel: 0.02, iceCap: 2 }],
+        ['a dry world', { seed: 2222, noiseSeed: 3313, typeId: 0, radiusE: 1.1, oceanLevel: -1, iceCap: 3 }],
+        ['an ice world', { seed: 4444, noiseSeed: 5150, typeId: 3, radiusE: 0.8, oceanLevel: -1, iceCap: 0.5 }],
+      ];
+      const frac = (a, th) => a.reduce((n, v) => n + (v > th ? 1 : 0), 0) / a.length;
+      for (const [name, pp] of worlds) {
+        const g = makeGround(pp, [0, 0, 1], { wind: { x: 1, y: 0 } });
+        g.lift = (g.seaLevel ?? 0) + 5 - g.heightAt(0, 0);
+        const w = solveDrainage(g.heightAt, { sea: g.seaLevel });
+        const wash = frac(w.wash, 0.25), wet = frac(w.wet, 0.5), ch = frac(w.flow, 0.02);
+        ok(`${name} has a channel network, a wet seam and a braid`,
+          ch > 0.005 && wet > 0.04 && wash > 0.0005,
+          `channel ${(ch * 100).toFixed(1)}% · wet ${(wet * 100).toFixed(1)}%`
+          + ` · wash ${(wash * 100).toFixed(2)}%`);
+        ok(`  and none of the three takes ${name.replace(/^(a|an) /, 'the ')} over`,
+          ch < 0.35 && wet < 0.55 && wash < 0.15,
+          'a braid of stones, a seam of green — not a surface');
+      }
+    }
     ok('and silt goes with the water', (() => {
       let hi = 0, lo = 0, nh = 0, nl = 0;
       for (let c = 0; c < RES * RES; c++) {

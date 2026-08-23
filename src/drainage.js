@@ -34,8 +34,16 @@
 // **B · silt** — what the water left behind. Grades with flow and against
 // slope, because a stream drops what it is carrying when it slows down.
 //
-// **A · wash** — a braid mask: high flow, low wetness. A channel the water uses
-// and does not stay in. That is a dry wash, and it is stones.
+// **A · wash** — a braid mask: a channel that is *steep*. Water passes through a
+// steep channel and lingers in a flat one, so slope is what separates a gully
+// floor of scoured stone from a boggy bottom that drains the same hillside.
+//
+// This was written as "high flow, low wetness" first and it never fired once —
+// 0.0% of every tile measured. The two conditions are near mutually exclusive
+// by construction, because the wetness index *rises* with flow: a channel is
+// exactly where the contributing area is largest, so asking for a lot of flow
+// and little wetness is asking for a cell that is and is not a channel. Slope
+// is the discriminator that was there all along.
 //
 // ---------------------------------------------------------------------------
 // Three-free, on purpose
@@ -74,6 +82,23 @@ export const CHANNEL_T = 25;
 
 /** the slope floor in `ln(a / tan β)`: flat ground is not infinitely wet */
 export const SLOPE_FLOOR = 0.006;
+
+/** how much of each tail the wetness index is clipped by before normalising */
+export const TWI_CLIP = 0.02;
+
+/**
+ * Which part of *this tile's* channel network is steep enough to scour, as a
+ * pair of percentiles of the channel cells' own gradient.
+ *
+ * Relative rather than absolute, and measured before it was chosen. A fixed
+ * band cannot work: across four worlds the channel-slope median ran from 0.002
+ * on a dry plain to 0.578 in upland country — a factor of nearly three hundred
+ * — so any constant is either every channel or none of them, and the first
+ * version of this was a constant and was none of them on three worlds out of
+ * four. A wash is a channel that is steep *for this landscape*, which is the
+ * same relative footing the wetness index is already on.
+ */
+export const WASH_Q = [0.5, 0.9];
 
 const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 
@@ -239,16 +264,32 @@ export function solveDrainage(heightAt, {
   // The wetness index, normalised across this tile rather than against an
   // absolute: `ln(a/tanβ)` has no natural zero, and what the ground needs to
   // know is which parts of *this* valley are the wet ones.
+  //
+  // **By percentile, not by extremes.** Min-to-max was the first version and it
+  // produced a seam nobody could see: `ln(a/tanβ)` is long-tailed — one cell at
+  // the tile's outflow carries every drop on it — so a single extreme sets the
+  // top of the range and compresses everything real into the bottom fifth of
+  // it. Measured across four worlds it left 0.1% to 2.4% of a tile above 0.7,
+  // which is a wet line about one cell wide on a good day and absent on a bad
+  // one. Clipping to the 2nd and 98th percentiles spends the range on the
+  // ground instead of on the outlier.
   const twi = new Float32Array(C);
-  let twiLo = Infinity, twiHi = -Infinity;
   for (let c = 0; c < C; c++) {
     const a = (acc[c] * cell * cell) / cell;          // area per unit contour
-    const t = Math.log(a / Math.max(slope[c], SLOPE_FLOOR));
-    twi[c] = t;
-    if (t < twiLo) twiLo = t;
-    if (t > twiHi) twiHi = t;
+    twi[c] = Math.log(a / Math.max(slope[c], SLOPE_FLOOR));
   }
+  const sorted = Float32Array.from(twi).sort();
+  const twiLo = sorted[Math.floor(C * TWI_CLIP)];
+  const twiHi = sorted[Math.min(C - 1, Math.ceil(C * (1 - TWI_CLIP)))];
   const twiSpan = Math.max(twiHi - twiLo, 1e-6);
+
+  // the channel network's own gradient, for WASH_Q. Falls back to the whole
+  // tile when the network is too small to have a distribution of its own.
+  const chSlope = [];
+  for (let c = 0; c < C; c++) if (acc[c] >= CHANNEL_T) chSlope.push(slope[c]);
+  const pool = (chSlope.length >= 32 ? chSlope : Array.from(slope)).sort((a, b) => a - b);
+  const washLo = pool[Math.floor(pool.length * WASH_Q[0])];
+  const washHi = pool[Math.min(pool.length - 1, Math.floor(pool.length * WASH_Q[1]))];
 
   for (let c = 0; c < C; c++) {
     flow[c] = acc[c] < CHANNEL_T ? 0
@@ -257,8 +298,9 @@ export function solveDrainage(heightAt, {
     // a stream drops what it carries when it slows: silt goes with water and
     // against gradient
     silt[c] = clamp01(Math.sqrt(flow[c]) * (1 - clamp01(slope[c] * 6)));
-    // a channel the water uses and does not stay in
-    wash[c] = clamp01(flow[c] * 1.4) * clamp01(1 - wet[c] * 1.6);
+    // a channel the water passes through rather than lingers in
+    wash[c] = clamp01(flow[c] * 1.4)
+      * clamp01((slope[c] - washLo) / Math.max(washHi - washLo, 1e-6));
   }
 
   return { res: N, ext, cell, height: E, filled: W, down, slope, acc,
