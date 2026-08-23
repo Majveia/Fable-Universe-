@@ -111,3 +111,40 @@ pixel ratio itself — 0.85 on Low resolves up, everything above resolves down.
 `src/quality.js` mirrors the shape.
 
 Port techniques and constants. Never files.
+
+---
+
+## The Long Silence — a second reference, not vendored
+
+`https://github.com/achimala/TheLongSilence` — Anshu Chimala, MIT licence.
+
+Unlike `hoshi-no-tani.html`, **no file from this project is in the tree.** It
+was read from a shallow clone and what came across is technique, re-derived
+against AEON's own physics and RNG — see `docs/plans/LONG-SILENCE.md` for the
+clause-by-clause audit of what was taken and, at greater length, what was
+refused. Its MIT notice is reproduced here because the port is a derivative of
+its ideas even where it shares none of its bytes:
+
+```
+MIT License
+
+Copyright (c) 2026 Anshu Chimala
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

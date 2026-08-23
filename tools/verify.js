@@ -104,6 +104,11 @@ import {
 } from '../src/conjure.js';
 import { LAUNCH, flyClimb, launchFor, launchState, speedOf, stepLaunch } from '../src/climb.js';
 import {
+  ENTRY, allenEggers, densityAt as airDensityAt, entryFor, entryFraction,
+  entryState, flyEntry, peakDecel, sinkOf as entrySink, speedOf as entrySpeed,
+  stepEntry, terminalVelocity as entryTerminalV,
+} from '../src/descent.js';
+import {
   F2, FLICKER_HZ, MAINS_HZ, MERCURY_LINES, PHOSPHOR, PHOSPHOR_BANDS,
   isThin, lampColour, lampExposure, lampFlicker,
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
@@ -9844,6 +9849,359 @@ function suiteTroffer() {
   }
 }
 
+
+/* ===========================================================================
+   descent — Allen–Eggers, and the way down
+
+   `climb.js` has a suite because flying a launch to find out whether it works
+   is a bad way to find out. The same argument applies harder here, because a
+   descent has a closed-form solution and so the numeric answer can be checked
+   against something that is not a snapshot of itself.
+
+   The five worlds below are chosen to span the regime: Earth as the case
+   everybody knows, Mars as a thin atmosphere, Venus as a thick one (92 bar),
+   Titan as slow and cold, Luna as no atmosphere at all.
+   ========================================================================= */
+const D_WORLDS = {
+  Earth: { massE: 1, radiusE: 1, atmo: 1 },
+  Mars: { massE: 0.107, radiusE: 0.532, atmo: 0.006 },
+  Venus: { massE: 0.815, radiusE: 0.949, atmo: 92 },
+  Titan: { massE: 0.0225, radiusE: 0.404, atmo: 1.45 },
+  Luna: { massE: 0.0123, radiusE: 0.273, atmo: 0 },
+};
+const D_CAPTURE = releaseAltitude(1400, 52);   // the same 1435 m the climb releases at
+
+function suiteDescent() {
+  console.log('\ndescent — Allen–Eggers, and §2.5 closed in the other direction');
+
+  const craft = {}, params = {};
+  for (const [n, w] of Object.entries(D_WORLDS)) {
+    craft[n] = craftFor(w);
+    params[n] = entryFor(craft[n], w);
+  }
+
+  {
+    // The entry interface is defined in scale heights, so it has to land on
+    // Earth's real one without having been told it.
+    near('the entry interface on Earth is where NASA puts it — 122 km',
+      params.Earth.interface, 122000, 0.02);
+    ok('...and it is a ratio, not a constant, so a thin world gets a low one',
+      params.Mars.interface > params.Earth.interface
+      && params.Venus.interface < params.Mars.interface,
+      `Mars ${(params.Mars.interface / 1000).toFixed(0)} km ·`
+      + ` Earth ${(params.Earth.interface / 1000).toFixed(0)} km ·`
+      + ` Venus ${(params.Venus.interface / 1000).toFixed(0)} km — Mars is higher`
+      + ' because its scale height is longer under lower gravity, which is'
+      + ' H = kT/mg read the right way round');
+  }
+
+  {
+    /* ------------------------------------------------------------------ the
+       headline result, and the reason this file is arithmetic.
+
+       `a_max = v²·sin|γ| / (2·e·H)` contains no β. A vehicle ten times denser
+       pulls the *same* peak deceleration and pulls it lower down. This is the
+       single strongest statement the closed form makes, so it gets tested by
+       varying the thing it claims not to depend on. */
+    const p = params.Earth;
+    const light = { ...p, beta: p.beta / 10 };
+    const heavy = { ...p, beta: p.beta * 10 };
+    const a0 = peakDecel(p).a, aL = peakDecel(light).a, aH = peakDecel(heavy).a;
+    ok('peak deceleration does not depend on the ballistic coefficient at all',
+      Math.abs(aL - a0) < 1e-9 && Math.abs(aH - a0) < 1e-9,
+      `β/10 → ${(aL / 9.80665).toFixed(3)} g · β → ${(a0 / 9.80665).toFixed(3)} g`
+      + ` · β×10 → ${(aH / 9.80665).toFixed(3)} g — identical to 1e-9`);
+    // ...and the altitude very much does, which is the other half of the claim
+    const hL = peakDecel(light).h, hH = peakDecel(heavy).h;
+    near('...but the altitude it happens at moves by exactly H·ln(10) per decade',
+      hL - hH, p.hScale * Math.log(100), 0.001);
+    ok('...so a light vehicle decelerates high and a dense one decelerates low',
+      hL > peakDecel(p).h && peakDecel(p).h > hH,
+      `β/10 at ${(hL / 1000).toFixed(1)} km · β at ${(peakDecel(p).h / 1000).toFixed(1)} km`
+      + ` · β×10 at ${(hH / 1000).toFixed(1)} km — this is why an entry body is`
+      + ' designed blunt: β is chosen low so the pulse lands in thin air');
+  }
+
+  {
+    // The other two signatures of the closed form.
+    const p = params.Earth;
+    near('peak deceleration is linear in sin|γ|',
+      peakDecel({ ...p, sinGamma: p.sinGamma * 2 }).a, peakDecel(p).a * 2, 1e-9);
+    near('...and the speed at the peak is v_e·e^(−½), whatever the world',
+      peakDecel(p).v / p.vEntry, Math.exp(-0.5), 1e-12);
+    near('...on Venus too — it is a property of the solution, not of Earth',
+      peakDecel(params.Venus).v / params.Venus.vEntry, Math.exp(-0.5), 1e-12);
+  }
+
+  {
+    /* ------------------------------------------------------------------ the
+       independent second derivation, which is the point of §14.
+
+       `stepEntry()` integrates the equation of motion frame by frame and knows
+       nothing about Allen–Eggers. `peakDecel()` evaluates the closed form and
+       never integrates anything. Neither is the other's baseline, so agreement
+       between them is evidence.
+
+       They are compared with γ **held**, because that is the assumption the
+       closed form is derived under. Flown free — which is what the game does —
+       gravity steepens the path and Earth's peak rises from 8.4 g to 22.7 g.
+       That difference is the size of a term the closed form drops, not an
+       error in either one, and comparing across it would be comparing two
+       different problems. */
+    for (const n of ['Earth', 'Venus', 'Mars', 'Titan']) {
+      const p = params[n], pk = peakDecel(p);
+      const r = flyEntry(craft[n], D_WORLDS[n], D_CAPTURE, 1 / 240, 14400, undefined, true);
+      const errH = Math.abs(r.peakAt - pk.h) / Math.max(pk.h, 1);
+      near(`${n}: the integrator finds the peak at the altitude the closed form predicts`,
+        r.peakAt, pk.h, 0.03);
+      // a_max is looser on the thin and the slow worlds, and predictably so:
+      // Allen–Eggers drops gravity against drag, and that is exactly the term
+      // that stops being negligible when there is very little drag.
+      const tol = (n === 'Mars' || n === 'Titan') ? 0.25 : 0.06;
+      near(`${n}: ...and the magnitude agrees to ${(tol * 100).toFixed(0)}%`,
+        r.maxDecel, pk.a, tol);
+      if (n === 'Earth') {
+        ok('...with the altitude the tighter of the two, across 92× in pressure',
+          errH < 0.02, `Earth ${(errH * 100).toFixed(2)}% — h_max = H·ln(ρ₀H/(β sin γ))`
+          + ' is reproduced by an integrator that was never given it');
+      }
+    }
+  }
+
+  {
+    /* The closed form as a *curve*, not just at its extremum — and the place it
+       stops being true, which is the more interesting half.
+
+       Above the deceleration peak, drag is the only thing doing anything and
+       Allen–Eggers is very nearly exact. Below it the vehicle has already lost
+       its orbital energy and settles onto **terminal velocity**, where drag
+       balances weight — and weight is the term the closed form dropped, so it
+       keeps predicting an exponential decay to zero. The measured divergence
+       below 40 km is not a disagreement about the answer; it is the closed
+       form being asked a question outside its own derivation. */
+    const p = params.Earth;
+    const pk = peakDecel(p);
+    let above = 0, s = entryState(p);
+    for (let i = 0; i < 400000 && s.phase !== 'down'; i++) {
+      s = stepEntry(s, p, 1 / 240, D_CAPTURE, true);
+      const ae = allenEggers(p, s.h);
+      if (s.h >= pk.h && s.h < p.interface * 0.98 && ae > 1e-6) {
+        above = Math.max(above, Math.abs(entrySpeed(s) - ae) / ae);
+      }
+    }
+    /* ...and terminal velocity is checked at the moment the ballistic phase
+       *ends*, which is the sharpest place to ask.
+
+       A band average is the wrong instrument: at 40 km the vehicle is still
+       doing kilometres a second and has not converged on anything yet, so
+       averaging over a band measures how much of it was spent converging. What
+       the physics actually claims is narrower and stronger — a ballistic
+       descent through enough air arrives at the flare *at* terminal velocity,
+       because that is the fixed point drag has been pulling it toward. */
+    const ratios = {};
+    for (const n of ['Earth', 'Venus', 'Titan']) {
+      const q = params[n];
+      let f = entryState(q), before = null;
+      for (let i = 0; i < 2000000 && f.phase !== 'down'; i++) {
+        const pre = f;
+        f = stepEntry(f, q, 1 / 240, D_CAPTURE);
+        if (f.phase === 'flare' && pre.phase !== 'flare') { before = pre; break; }
+      }
+      ratios[n] = before ? entrySpeed(before) / entryTerminalV(q, before.h) : NaN;
+    }
+    ok('the speed–altitude curve tracks the closed form from the interface to the peak',
+      above < 0.05,
+      `worst relative error ${(above * 100).toFixed(2)}% sampled every frame`
+      + ` between ${(pk.h / 1000).toFixed(0)} km and 120 km — an integrator that`
+      + ' was never given Allen–Eggers reproducing its curve, not just its extremum');
+    // ...and below the peak it is terminal velocity, which the closed form omits
+    ok('...and below the peak it settles onto terminal velocity instead, as it must',
+      Object.values(ratios).every((r) => r > 0.9 && r < 1.2),
+      `speed ÷ √(2βg/ρ) where the ballistic phase ends —`
+      + ` Venus ${ratios.Venus.toFixed(3)} · Titan ${ratios.Titan.toFixed(3)}`
+      + ` · Earth ${ratios.Earth.toFixed(3)}. Allen–Eggers drops weight against`
+      + ' drag so it decays to zero down here; the vehicle does not, and that'
+      + ' gap is the whole reason the comparison above is cut at the peak');
+  }
+
+  {
+    // Terminal velocity, against its own definition.
+    const p = params.Earth;
+    const h = 2000, rho = airDensityAt(p, h);
+    const rOverR = p.R / (p.R + h);
+    near('terminal velocity is √(2βg/ρ) evaluated at the local gravity',
+      entryTerminalV(p, h),
+      Math.sqrt((2 * p.beta * p.g0 * rOverR * rOverR) / rho), 1e-9);
+    ok('...and it is infinite in vacuum rather than a large plausible number',
+      entryTerminalV(params.Luna, 1000) === Infinity,
+      'an airless world returns Infinity, which refuses to be mistaken for a speed');
+  }
+
+  {
+    /* The latch. `stepLaunch` documents this failure and it is the same one:
+       an edge with no latch behind it re-fires every other frame, and a scale
+       handover that runs twice pops two levels of the stack. */
+    const p = params.Earth;
+    let s = entryState(p), edges = 0;
+    for (let i = 0; i < 200000 && i < 200000; i++) {
+      s = stepEntry(s, p, 1 / 240, D_CAPTURE);
+      if (s.captured) edges++;
+      if (s.phase === 'down' && i > 100) { /* keep stepping past it */ }
+      if (edges > 3) break;
+    }
+    ok('the capture edge fires exactly once, however long you keep stepping',
+      edges === 1, `${edges} edge(s) over the whole descent — the `
+      + '`taken` latch is what stops the hand-over running twice');
+  }
+
+  {
+    // Every world arrives, and arrives under control.
+    for (const [n, w] of Object.entries(D_WORLDS)) {
+      const r = flyEntry(craft[n], w, D_CAPTURE, 1 / 120);
+      ok(`${n}: the descent reaches the hand-over`, r.landed,
+        `${(r.time / 60).toFixed(1)} min · peak ${(r.maxDecel / 9.80665).toFixed(1)} g`
+        + ` · max-q ${(r.maxQ / 1000).toFixed(1)} kPa`
+        + ` · arriving at ${r.sink.toFixed(2)} m/s`);
+      ok(`${n}: ...at a sink rate and a ground speed the flare actually trimmed`,
+        r.sink <= ENTRY.touchdownSpeed * 1.5 && Number.isFinite(r.sink)
+        && r.ground < 1 && Number.isFinite(r.ground),
+        `${r.sink.toFixed(3)} m/s down and ${r.ground.toFixed(2)} m/s across,`
+        + ` against a commanded ${ENTRY.touchdownSpeed} — the vehicle arrives`
+        + ' over the site rather than through it');
+    }
+  }
+
+  {
+    /* The flown times, against the four entries anybody has actually flown.
+       This is not a tuned fit — nothing in `descent.js` has ever been shown
+       these numbers. It is the model being asked whether it is embarrassing. */
+    const flown = [['Earth', 9 * 60, 'crewed entry, interface to chutes'],
+      ['Titan', 147 * 60, 'Huygens, 2 h 27 min'],
+      ['Venus', 60 * 60, 'Venera, about an hour']];
+    for (const [n, real, who] of flown) {
+      const r = flyEntry(craft[n], D_WORLDS[n], D_CAPTURE, 1 / 120);
+      const rel = Math.abs(r.time - real) / real;
+      ok(`${n}: the descent takes about as long as the real one (${who})`,
+        rel < 0.45,
+        `model ${(r.time / 60).toFixed(1)} min · flown ${(real / 60).toFixed(0)} min`
+        + ` · ${(rel * 100).toFixed(0)}% out`);
+    }
+
+    /* Mars and Luna are deliberately **not** in that list, and saying why is
+       worth more than a passing check would be.
+
+       Both are worlds where the air cannot do the job: 6 mbar of CO₂ leaves a
+       ballistic vehicle at 695 m/s, and vacuum leaves it at orbital speed. Every
+       real lander at either destination therefore carried hardware this model
+       does not have — a parachute, which is a ballistic coefficient that changes
+       by a factor of ten halfway down. Comparing against MSL's 7 minutes would
+       be comparing against a vehicle with a different β, and it would be the
+       same error as quoting Apollo's 6.5° at an unlifted entry.
+
+       What *is* checkable is the floor. A powered descent cannot beat the time
+       it takes to remove the speed at the acceleration available, `v/a`, and it
+       should not be wildly worse than it either. */
+    for (const n of ['Mars', 'Luna']) {
+      const r = flyEntry(craft[n], D_WORLDS[n], D_CAPTURE, 1 / 120);
+      const p = params[n];
+      const floor = p.vEntry / (p.g0 + ENTRY.flareAccel);
+      ok(`${n}: the powered descent respects its own Δv-limited floor`,
+        r.landed && r.time >= floor && r.time < floor * 12,
+        `${(r.time / 60).toFixed(1)} min against a floor of`
+        + ` ${(floor / 60).toFixed(1)} min — killing ${(p.vEntry / 1000).toFixed(2)} km/s`
+        + ` at ${(p.g0 + ENTRY.flareAccel).toFixed(2)} m/s² cannot be done faster,`
+        + ' and this model has no parachute to shortcut it with');
+    }
+  }
+
+  {
+    // Airless. The flare is the only thing that can stop the vehicle, and the
+    // solver has to notice that early enough to have the altitude to do it in.
+    const r = flyEntry(craft.Luna, D_WORLDS.Luna, D_CAPTURE, 1 / 120);
+    ok('§2 · an airless world is landed on thrust alone, with no NaN anywhere',
+      r.landed && Number.isFinite(r.sink) && Number.isFinite(r.time)
+      && r.maxDecel === 0 && !r.starved,
+      `Luna: ${(r.time / 60).toFixed(1)} min, zero aerodynamic deceleration,`
+      + ` ${(r.down / 1000).toFixed(0)} km downrange, arriving at`
+      + ` ${r.sink.toFixed(2)} m/s — a long shallow braking burn, which is what`
+      + ' an airless landing is and what Apollo flew');
+  }
+
+  {
+    // Monotone, and bounded. A descent that ever gains altitude is a skip, and
+    // this model does not claim to solve one.
+    const p = params.Earth;
+    let s = entryState(p), prev = s.h, rose = 0;
+    for (let i = 0; i < 200000 && s.phase !== 'down'; i++) {
+      s = stepEntry(s, p, 1 / 240, D_CAPTURE);
+      if (s.h > prev + 1e-9) rose++;
+      prev = s.h;
+    }
+    ok('altitude falls monotonically — no skip, no bounce, no tunnelling',
+      rose === 0 && s.h >= 0, `${rose} frames of rising altitude`);
+  }
+
+  {
+    // The progress reading §2.8's grade cross-fade is going to ride on.
+    const p = params.Earth;
+    let s = entryState(p), last = -1, monotone = true, lo = 1, hi = 0;
+    for (let i = 0; i < 200000 && s.phase !== 'down'; i++) {
+      s = stepEntry(s, p, 1 / 240, D_CAPTURE);
+      const f = entryFraction(s, p);
+      if (f < last - 1e-9) monotone = false;
+      last = f; lo = Math.min(lo, f); hi = Math.max(hi, f);
+    }
+    ok('§2.8 · the entry fraction rises monotonically from 0 to 1',
+      monotone && lo >= 0 && Math.abs(hi - 1) < 1e-9,
+      `[${lo.toFixed(3)}, ${hi.toFixed(3)}] — measured in scale heights rather`
+      + ' than metres, because half the altitude is nowhere near half the descent');
+  }
+
+  {
+    // §2.3. The whole path is arithmetic on doubles with no clock in it, so
+    // two runs must be bit-identical rather than merely close.
+    const a = flyEntry(craft.Earth, D_WORLDS.Earth, D_CAPTURE, 1 / 120);
+    const b = flyEntry(craft.Earth, D_WORLDS.Earth, D_CAPTURE, 1 / 120);
+    ok('§2.3 · the same entry twice is bit-identical',
+      a.time === b.time && a.maxDecel === b.maxDecel && a.h === b.h
+      && a.down === b.down,
+      `t ${a.time} · h ${a.h} · downrange ${a.down.toFixed(0)} m — no clock, no`
+      + ' Math.random, no iteration-order dependency in the path');
+  }
+
+  {
+    // The corridor is enforced rather than documented.
+    const w = D_WORLDS.Earth;
+    const shallow = entryFor(craft.Earth, w, -50), steep = entryFor(craft.Earth, w, 900);
+    near('a shallower entry than the corridor allows is clamped to its edge',
+      shallow.gamma * 180 / Math.PI, ENTRY.gammaMinDeg, 1e-9);
+    near('...and a steeper one likewise',
+      steep.gamma * 180 / Math.PI, ENTRY.gammaMaxDeg, 1e-9);
+    ok('...and a steeper entry really does pull more g, monotonically',
+      peakDecel(entryFor(craft.Earth, w, 8)).a
+        > peakDecel(entryFor(craft.Earth, w, 3.5)).a
+        && peakDecel(entryFor(craft.Earth, w, 3.5)).a
+        > peakDecel(entryFor(craft.Earth, w, 1.5)).a,
+      `1.5° → ${(peakDecel(entryFor(craft.Earth, w, 1.5)).a / 9.80665).toFixed(1)} g ·`
+      + ` 3.5° → ${(peakDecel(entryFor(craft.Earth, w, 3.5)).a / 9.80665).toFixed(1)} g ·`
+      + ` 8° → ${(peakDecel(entryFor(craft.Earth, w, 8)).a / 9.80665).toFixed(1)} g`);
+  }
+
+  {
+    // One vehicle, two directions — the claim §1.2 of the plan makes.
+    const up = flyClimb(craft.Earth, D_WORLDS.Earth, D_CAPTURE, 1 / 120);
+    const down = flyEntry(craft.Earth, D_WORLDS.Earth, D_CAPTURE, 1 / 120);
+    ok('the climb and the entry describe the same world and the same air',
+      Math.abs(up.params.hScale - down.params.hScale) < 1e-9
+      && Math.abs(up.params.rho0 - down.params.rho0) < 1e-9
+      && Math.abs(up.params.g0 - down.params.g0) < 1e-9,
+      `scale height ${down.params.hScale.toFixed(0)} m and ρ₀`
+      + ` ${down.params.rho0.toFixed(3)} kg/m³ agree between climb.js and`
+      + ' descent.js to the last bit — a vehicle that changed shape depending'
+      + ' on which way it was pointing would be a leak, not a rounding error');
+  }
+}
+
 const suites = {
   blossom: suiteBlossom,
   cover: suiteCover,
@@ -9880,6 +10238,7 @@ const suites = {
   walk: suiteWalk, material: suiteMaterial, opening: suiteOpening,
   ocean: suiteOcean, horizon: suiteHorizon, wind: suiteWind, meadow: suiteMeadow,
   vehicle: suiteVehicle,
+  descent: suiteDescent,
 };
 
 for (const [name, fn] of Object.entries(suites)) {
