@@ -138,7 +138,29 @@ function workerSubgraph(sources) {
 
 function main() {
   const outPath = resolve(REPO, arg('out', 'docs/aeon.html'));
-  const defaults = arg('flags', 'cshade=1&wetline=1&shafts=1');
+  // `?paint=1` is in here and is default-*off* in the repo (§7.4, and
+  // RECKONING's ledger calls it the last big one). A packed page is a build
+  // someone was handed to look at, so it carries the frame the work was aimed
+  // at rather than the frame that ships — and the panel turns it off, which is
+  // the A/B the ledger has been asking for.
+  const defaults = arg('flags',
+    'cshade=1&wetline=1&shafts=1&m3=1&mat=1&sea=1&ridge=1&paint=1');
+
+  /**
+   * Places worth standing in, as deep links (§2.4).
+   *
+   * `--place "a temperate world|seed=1019&g=..&s=..&p=0"`, repeatable. The
+   * values are found by running the generator, which is the only way to find
+   * them — and they stay found, because §2.3 says the same seed is the same
+   * universe forever.
+   */
+  const places = [];
+  process.argv.forEach((a, i) => {
+    if (a !== '--place') return;
+    const v = process.argv[i + 1] || '';
+    const cut = v.indexOf('|');
+    if (cut > 0) places.push({ name: v.slice(0, cut), q: v.slice(cut + 1) });
+  });
 
   // ---- gather -----------------------------------------------------------
   const files = [...walk(resolve(REPO, 'src')), ...walk(resolve(REPO, 'vendor'))];
@@ -176,7 +198,7 @@ function main() {
 ${style}
 ${PANEL_CSS}
 ${body}
-${PANEL_HTML}
+${panelHtml(places)}
 <script type="application/json" id="aeon-src">${
   JSON.stringify(modules).replace(/</g, '\\u003c')
 }</script>
@@ -204,18 +226,39 @@ function loader(workerFiles, defaults) {
   var STORE = 'aeon-flags-v1';
 
   // ---- §7.4's flags -----------------------------------------------------
-  var q = location.search.replace(/^\\?/, '');
-  if (!q) { try { q = localStorage.getItem(STORE) || ''; } catch (e) { q = ''; } }
-  if (!q) q = ${JSON.stringify(defaults)};
-  var params = new URLSearchParams(q);
+  //
+  // The URL is the base, so §2.4's deep links keep working: seed, g, s, p and
+  // the rest arrive and are honoured. The panel's choices are then overlaid on
+  // top of it, key by key, because a host that will not let the page navigate
+  // would otherwise leave the panel doing nothing — and a toggle that silently
+  // does nothing is worse than no toggle.
+  // Defaults first, then the URL, then the panel's store — and the order is
+  // load-bearing. A deep link from the panel carries seed, g, s and p and no
+  // flags at all, so starting from the URL would have every one of these
+  // features silently off the moment you followed one. Starting from the
+  // defaults means a link is a *place*, and the flags are the build's.
+  var params = new URLSearchParams(${JSON.stringify(defaults)});
+  new URLSearchParams(location.search.replace(/^\\?/, ''))
+    .forEach(function (v, k) { params.set(k, v); });
+  try {
+    new URLSearchParams(localStorage.getItem(STORE) || '')
+      .forEach(function (v, k) { params.set(k, v); });
+  } catch (e) { /* private window */ }
+
   window.__AEON_FLAGS = params;
   window.__aeonParams = function () {
-    // the live URL first, so §2.4's deep links still win and still update
+    // The live URL wins for anything it actually carries, so §2.4's deep links
+    // still resolve and still update as you travel; the packed defaults fill in
+    // for everything it does not.
     try {
       var live = new URL(window.location.href).searchParams;
-      if ([].concat.apply([], [[...live.keys()]]).length) return live;
-    } catch (e) { /* fall through */ }
-    return window.__AEON_FLAGS;
+      return {
+        get: function (k) {
+          var v = live.get(k);
+          return v === null ? window.__AEON_FLAGS.get(k) : v;
+        },
+      };
+    } catch (e) { return window.__AEON_FLAGS; }
   };
   try { history.replaceState(null, '', '?' + params.toString()); } catch (e) { /* sandboxed */ }
 
@@ -251,6 +294,33 @@ function loader(workerFiles, defaults) {
   boot.textContent = "import 'aeon:src/main.js';";
   document.head.appendChild(boot);
 
+  // ---- if it does not come up, say why ----------------------------------
+  //
+  // The splash is a black screen with the word AEON on it, and a black screen
+  // is what a failed boot looks like too. Nothing about this page can phone
+  // home, so the only place a diagnostic can go is the page — and the one
+  // thing most likely to go wrong in an unfamiliar host is a policy refusing
+  // one of the two mechanisms this loader is built on.
+  var firstError = null;
+  window.addEventListener('error', function (e) {
+    if (!firstError) firstError = (e.message || String(e.error || e)).slice(0, 300);
+  });
+  setTimeout(function () {
+    if (document.querySelector('#app canvas')) return;
+    var sp = document.getElementById('splash');
+    if (!sp) return;
+    var p = sp.querySelector('p');
+    if (!p) return;
+    p.style.cssText = 'max-width:min(620px,84vw);text-align:center;line-height:2;'
+      + 'letter-spacing:.12em;text-transform:none;font-size:12px;'
+      + 'color:rgba(255,255,255,.55)';
+    p.textContent = firstError
+      ? 'the universe did not start — ' + firstError
+      : 'the universe did not start. This page loads its 112 modules from blob: '
+        + 'URLs behind an importmap; a content policy that refuses either will '
+        + 'stop it here, with nothing in the console but a refusal.';
+  }, 12000);
+
   // ---- the panel --------------------------------------------------------
   var panel = document.getElementById('flags');
   if (panel) {
@@ -259,10 +329,21 @@ function loader(workerFiles, defaults) {
     [].forEach.call(panel.querySelectorAll('input[type=checkbox]'), function (box) {
       box.checked = params.get(box.name) === '1';
       box.onchange = function () {
-        var next = new URLSearchParams(location.search.replace(/^\\?/, '') || q);
-        next.set(box.name, box.checked ? '1' : '0');
-        try { localStorage.setItem(STORE, next.toString()); } catch (e) { /* private */ }
-        location.search = '?' + next.toString();
+        // Only the panel's own keys go to the store. A deep link's seed and
+        // route stay the URL's business, or a toggle would pin you to whatever
+        // world you happened to be standing on when you pressed it.
+        var keep = new URLSearchParams();
+        try { keep = new URLSearchParams(localStorage.getItem(STORE) || ''); } catch (e) { /* private */ }
+        keep.set(box.name, box.checked ? '1' : '0');
+        try { localStorage.setItem(STORE, keep.toString()); } catch (e) { /* private */ }
+        // A flag decides how a shader is *assembled* (§7.4, §11 — quality is set
+        // once at init), so it cannot be toggled live. Reload, and take the URL
+        // with us where the host allows it.
+        try {
+          var next = new URLSearchParams(location.search.replace(/^\\?/, ''));
+          keep.forEach(function (v, k) { next.set(k, v); });
+          location.search = '?' + next.toString();
+        } catch (e) { location.reload(); }
       };
     });
   }
@@ -291,9 +372,14 @@ const PANEL_CSS = `<style>
     border-top:1px solid rgba(255,255,255,.14); color:rgba(255,255,255,.28); }
   #flags .sec:first-child{ margin-top:0; padding-top:0; border-top:none; }
   #flags input{ accent-color:#9ecbff; }
+  #flags .go{ color:#9ecbff; text-decoration:none; padding:1px 0;
+    border-bottom:1px solid transparent; }
+  #flags .go:hover{ border-bottom-color:#9ecbff; color:#fff; }
+  #flags .note{ max-width:240px; font-size:10px; letter-spacing:.04em;
+    line-height:1.9; text-transform:none; color:rgba(255,255,255,.4); }
 </style>`;
 
-const PANEL_HTML = `
+const panelHtml = (places) => `
 <button id="flags-toggle" title="what is switched on">&#9673;</button>
 <div id="flags">
   <div class="sec">the sky reaches the ground</div>
@@ -304,7 +390,16 @@ const PANEL_HTML = `
   <label><input type="checkbox" name="m3"> wind and grass</label>
   <label><input type="checkbox" name="mat"> ground materials</label>
   <label><input type="checkbox" name="sea"> the gerstner sea</label>
-  <label><input type="checkbox" name="paint"> the §9.2 light model</label>
+  <label><input type="checkbox" name="ridge"> far ridges as silhouette</label>
+  <label><input type="checkbox" name="paint"> the light model</label>
+${places.length ? `  <div class="sec">somewhere to stand</div>
+${places.map((pl) => `  <a class="go" href="?${pl.q}">${pl.name}</a>`).join('\n')}` : ''}
+  <div class="sec">what to look for</div>
+  <div class="note">Stand still at golden hour and wait. A shadow crosses the
+  valley as a front — it darkens the grass without draining it, and the sheen
+  in the wet hollow goes out and comes back. Look up: the gap that did it is
+  overhead. How sharp the edge is belongs to the star — under a white dwarf it
+  is cut paper.</div>
 </div>`;
 
 main();
