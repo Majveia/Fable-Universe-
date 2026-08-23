@@ -460,7 +460,7 @@ const ENTROPY = [
 const ENTROPY_ALLOWED = {
   'src/main.js': [3, 'one crypto draw picks which universe an unpinned visit lands in — everything after it is a function of that seed — plus frame pacing and the logbook timestamp §4 sanctions'],
   'src/bench.js': [4, 'the harness measures frame time; a clock is the instrument (§5)'],
-  'src/surface.js': [6, 'landing, wind and horizon solve timings, logged only — every site carries the §2.3 note in place'],
+  'src/surface.js': [8, 'landing, wind, horizon and drainage solve timings, logged only — every site carries the §2.3 note in place'],
   'src/city.js': [2, 'generation runs against a millisecond budget and stops; the clock bounds the work, it never enters the result'],
   'src/quadtree.js': [2, 'worker build time, reported to the HUD, never read back into a tile'],
   'src/input.js': [2, 'a pointer timestamp, so a tap can be told from a drag'],

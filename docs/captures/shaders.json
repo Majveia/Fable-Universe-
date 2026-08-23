@@ -1,43 +1,79 @@
 {
   "schema": "aeon-shadercheck/3",
-  "when": "2026-08-23T04:00:08.015Z",
+  "when": "2026-08-23T16:17:33.543Z",
   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
   "softwareRasterizer": true,
   "passes": [
     {
-      "flags": "",
-      "mode": "flight",
+      "flags": "m3=1&mat=1&sea=1&cshade=1",
+      "mode": "stations",
       "complete": true,
-      "shadersCompiled": 106,
+      "shadersCompiled": 192,
       "failures": 0,
       "warnings": 0,
       "scalesVisited": [
-        "blackhole",
+        "black-hole",
         "cosmic",
         "galaxy",
         "planet",
         "surface",
         "system"
       ],
-      "pageErrors": [],
+      "pageErrors": [
+        "SyntaxError: Unexpected identifier 'drain'"
+      ],
       "detail": []
     },
     {
-      "flags": "m1=1&m2=1&slab=1",
-      "mode": "flight",
+      "flags": "m3=1&mat=1&sea=1&paint=1&cshade=1",
+      "mode": "stations",
       "complete": true,
-      "shadersCompiled": 106,
+      "shadersCompiled": 0,
       "failures": 0,
       "warnings": 0,
       "scalesVisited": [
-        "blackhole",
-        "cosmic",
+        "black-hole",
+        "cosmic-web",
         "galaxy",
-        "planet",
-        "surface",
-        "system"
+        "planet-orbit",
+        "star-system",
+        "surface"
       ],
-      "pageErrors": [],
+      "pageErrors": [
+        "SyntaxError: Unexpected identifier 'drain'",
+        "SyntaxError: Unexpected identifier 'drain'",
+        "SyntaxError: Unexpected identifier 'drain'",
+        "SyntaxError: Unexpected identifier 'drain'",
+        "SyntaxError: Unexpected identifier 'drain'",
+        "SyntaxError: Unexpected identifier 'drain'",
+        "SyntaxError: Unexpected identifier 'drain'"
+      ],
+      "detail": []
+    },
+    {
+      "flags": "m3=1&cshade=1&shadow=0",
+      "mode": "stations",
+      "complete": true,
+      "shadersCompiled": 0,
+      "failures": 0,
+      "warnings": 0,
+      "scalesVisited": [
+        "black-hole",
+        "cosmic-web",
+        "galaxy",
+        "planet-orbit",
+        "star-system",
+        "surface"
+      ],
+      "pageErrors": [
+        "SyntaxError: Unexpected identifier 'drain'",
+        "SyntaxError: Unexpected identifier 'uWet'",
+        "SyntaxError: Unexpected identifier 'uWet'",
+        "SyntaxError: Unexpected identifier 'uWet'",
+        "SyntaxError: Unexpected identifier 'uWet'",
+        "SyntaxError: Unexpected identifier 'uWet'",
+        "SyntaxError: Unexpected identifier 'uWet'"
+      ],
       "detail": []
     }
   ]

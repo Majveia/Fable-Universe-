@@ -29,6 +29,17 @@ import {
 import {
   SUN_BAND, frameAt, macroHeight, scoreComposition, solveLandingSite,
 } from '../src/landing.js';
+import {
+  COVER_EDGE, COVER_MEAN, CLOUD_SHADE_GLSL, DETAIL_SCALE, FIELD_LACUNARITY,
+  FIELD_OCTAVES, FIELD_SCALE, MAX_THROW, R_SUN_AU, SUN_FADE, WARP_SCALE,
+  angularRadius, cloudFieldRaw, cloudShadeTransfer, cloudShaftGLSL,
+  composeSunShadow, deckPoint,
+  fieldOctaves, measureCoverMean, octaveWavelength, penumbraMetres, sunFade,
+} from '../src/cloudshade.js';
+import { CLOUD_FIELD_GLSL } from '../src/cloudfield.js';
+import {
+  DRAINAGE_GLSL, SLOPE_FLOOR, TWI_CLIP, packDrainage, solveDrainage,
+} from '../src/drainage.js';
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
 import {
@@ -822,12 +833,17 @@ function suiteSunShadow() {
     // The property, not the literal: the sampler is injected on the map's flag
     // and the light model on the grade's, whatever the sampler is called. It
     // was named `SHADOW_GLSL` here until §5's tap-count LOD made it a function
-    // of the tier, and a check that pinned the identifier would have failed
-    // correct code — which is the mistake this file has recorded once already.
+    // of the tier, and `cloudshade.js` then made it a *composition* — the map
+    // and the deck answering one question — so the interpolation moved to a
+    // module-level `SUN_SHADOW_GLSL` and the call to `SUN_SHADOW`. The property
+    // has not moved: one flag each, and the grade does not carry the map. A
+    // check that pinned the shape rather than the property would have failed
+    // correct code, which is the mistake this file has now recorded twice.
     ok('the shadow sampler is injected independently of `PAINT_GLSL`',
-      /\$\{SHADOW \? \w+ : ''\}/.test(src)
+      /\$\{SUN_SHADOW_GLSL\}/.test(src)
+      && /const SUN_SHADOW_GLSL = CSHADE\n\s*\? composeSunShadow\(SHADOW \?/.test(src)
       && /\$\{PAINT \? PAINT_GLSL : ''\}/.test(src)
-      && !/SHADOW_GLSL \+ PAINT_GLSL/.test(src),
+      && !/SHADOW_TAPS_GLSL \+ PAINT_GLSL/.test(src),
       'one flag each, so the cheap path can sample a map it has');
     // `nGeo`, not `nb`, since act 3b. The shadow lookup derives its depth bias
     // from dot(N, L), and `nb` now carries a 9 cm detail normal — feeding that
@@ -835,10 +851,13 @@ function suiteSunShadow() {
     // rather than being deleted, because what it is actually holding is that
     // the cheap path samples the map at all.
     ok('and the cheap lighting path actually samples it',
-      /float sh = \$\{SHADOW \? 'sunShadow\(vW, dot\(nGeo, uSunDir\)\)' : '1\.0'\}/.test(src),
-      'the ground is shadowed with or without §9.2');
+      /float sh = sunBeam;/.test(src)
+      && /const SUN_SHADOW = \(SHADOW \|\| CSHADE\)/.test(src),
+      'the ground is shadowed with or without §9.2 — and now with or without a map');
     ok('§9.2 · and both paths bias the shadow off the geometric normal',
-      (src.match(/sunShadow\(vW, dot\(nGeo, uSunDir\)\)/g) || []).length >= 2
+      /sf\.shadow = sunBeam;/.test(src)
+      && /float sunBeam = \$\{SUN_SHADOW\};/.test(src)
+      && /'sunShadow\(vW, dot\(nGeo, uSunDir\)\)' : '1\.0'/.test(src)
       && !/sunShadow\(vW, dot\(nb,/.test(src),
       'a detail normal on the depth bias is shadow acne, not texture');
   }
@@ -1113,11 +1132,25 @@ function suiteFoliage() {
     ok('and the far groves do not',
       !/markCaster\(gTrunks\)/.test(life) && !/markCaster\(gCrowns\)/.test(life),
       'a cylinder and three blobs at 260 m is not an occluder the map resolves');
-    ok('the sampler is passed only when the build has a map',
-      /shadowGLSL: s\.sunShadow \? [^:]+ : null/.test(life),
-      'a shader that samples a map nobody rendered is worse than one without');
-    ok('and at the tier\'s tap count, so a wood pays the same §5 LOD as the ground',
-      /shadowGLSL\(qInt\('shtaps', 'shadowTaps'\)\)/.test(life));
+    // Both of these used to be assertions about life.js's own wiring. They are
+    // assertions about `surface.js:sunShadowWiring()` now, because life.js and
+    // traveler.js each built the block themselves — fine while the map was the
+    // only caster, and a way to forget the deck the moment it was not. The
+    // property is unchanged and the number of places that can get it wrong went
+    // from three to one.
+    {
+      const surf = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+      const body = surf.slice(surf.indexOf('  sunShadowWiring() {'));
+      const w = body.slice(0, body.indexOf('\n  }\n'));
+      ok('the wood takes the one composed sampler rather than building its own',
+        /\.\.\.s\.sunShadowWiring\(\)/.test(life)
+        && !/shadowGLSL: s\.sunShadow/.test(life));
+      ok('the sampler is passed only when the build has a map',
+        /this\.sunShadow \? SHADOW_TAPS_GLSL : null/.test(w),
+        'a shader that samples a map nobody rendered is worse than one without');
+      ok('and at the tier\'s tap count, so a wood pays the same §5 LOD as the ground',
+        /shadowGLSL\(qInt\('shtaps', 'shadowTaps'\)\)/.test(surf));
+    }
   }
 
   // --- 8b. a clump is a shape, not a ball ---------------------------------
@@ -8995,6 +9028,659 @@ function suiteBlossom() {
     && blossomsFor({ seg: { r1: [] } }).length === 0);
 }
 
+
+
+// ---------------------------------------------------------------------------
+// suite: drainage
+//
+// The properties of a drainage solve are unusually crisp, which is the reason
+// this suite is worth more than a snapshot of one tile: water is conserved,
+// water goes downhill, and every drop leaves. Each of those is checkable
+// exactly, on synthetic surfaces whose answer is known before the solver runs.
+//
+// The one that is easy to get wrong and hard to see is the diagonal bias. D8
+// picks the steepest of eight neighbours, and a diagonal neighbour is 1.414
+// cells away; compare raw drops and every channel drifts onto the diagonals and
+// the wet map grows a herringbone. So there is a check for it, on a plane
+// tilted along +x, where the right answer is "never a diagonal".
+
+function suiteDrainage() {
+  console.log('\ndrainage — the ground remembers the water');
+
+  const RES = 64, EXT = 640;
+  const cellOf = EXT / RES;
+  const at = (fn) => solveDrainage(fn, { res: RES, ext: EXT, sea: null });
+
+  // a valley running along z, floor at x = 0, plus a gentle fall down +z
+  const valley = (x, z) => Math.abs(x) * 0.22 - z * 0.05;
+  // a plane tilted along +x only
+  const rampX = (x) => -x * 0.1;
+  // a cone, for the radial case
+  const cone = (x, z) => Math.hypot(x, z) * 0.15;
+
+  // --- 1 · water is conserved --------------------------------------------
+  {
+    const d = at(valley);
+    const C = RES * RES;
+    let minAcc = Infinity, outletSum = 0, outlets = 0;
+    for (let c = 0; c < C; c++) {
+      if (d.acc[c] < minAcc) minAcc = d.acc[c];
+      if (d.down[c] < 0) { outletSum += d.acc[c]; outlets++; }
+    }
+    ok('every cell carries at least its own rain', minAcc >= 1, `min ${minAcc}`);
+    near('and every drop leaves the tile exactly once', outletSum, C, 1e-9);
+    ok('through a boundary, not a pit', outlets > 0 && outlets < C * 0.1,
+      `${outlets} outlets of ${C} cells`);
+
+    let receiverGrows = true;
+    for (let c = 0; c < C && receiverGrows; c++) {
+      const dn = d.down[c];
+      if (dn >= 0 && d.acc[dn] < d.acc[c] + 1 - 1e-6) receiverGrows = false;
+    }
+    ok('a receiver always carries more than what drains into it', receiverGrows);
+  }
+
+  // --- 2 · water goes downhill, and never in a circle ---------------------
+  {
+    const d = at(valley);
+    const C = RES * RES;
+    let descends = true, dominates = true;
+    for (let c = 0; c < C; c++) {
+      if (d.filled[c] < d.height[c] - 1e-4) dominates = false;
+      const dn = d.down[c];
+      if (dn >= 0 && d.filled[dn] >= d.filled[c]) descends = false;
+    }
+    ok('the filled surface is never below the real one', dominates,
+      'a fill that dug a hole would route water uphill');
+    ok('and every step of the network descends it', descends);
+
+    // no cycles: walking `down` from anywhere terminates
+    let worst = 0;
+    for (let c = 0; c < C; c++) {
+      let k = 0, p = c;
+      while (d.down[p] >= 0 && k <= C) { p = d.down[p]; k++; }
+      if (k > worst) worst = k;
+    }
+    ok('and every cell reaches an outlet in finite steps', worst <= C,
+      `longest path ${worst} cells`);
+  }
+
+  // --- 3 · the diagonal bias, which is the one you cannot see -------------
+  {
+    const d = at((x) => rampX(x));
+    let diagonals = 0, cardinalPlusX = 0, n = 0;
+    for (let c = 0; c < RES * RES; c++) {
+      const dn = d.down[c];
+      if (dn < 0) continue;
+      n++;
+      const dx = (dn % RES) - (c % RES), dz = ((dn / RES) | 0) - ((c / RES) | 0);
+      if (dx !== 0 && dz !== 0) diagonals++;
+      if (dx === 1 && dz === 0) cardinalPlusX++;
+    }
+    ok('on a plane tilted along +x, no channel takes a diagonal',
+      diagonals === 0, `${diagonals} of ${n}`);
+    ok('they all take the +x neighbour', cardinalPlusX === n,
+      'gradient per distance, not per step — 1.414 is the whole check');
+  }
+
+  // --- 4 · the channel is where the valley is ----------------------------
+  {
+    const d = at(valley);
+    // the wettest column should be the valley floor, x = 0 → i = RES/2
+    let bestCol = -1, bestSum = -1;
+    for (let i = 0; i < RES; i++) {
+      let s = 0;
+      for (let j = 0; j < RES; j++) s += d.acc[j * RES + i];
+      if (s > bestSum) { bestSum = s; bestCol = i; }
+    }
+    ok('the accumulation collects in the valley floor',
+      Math.abs(bestCol - RES / 2) <= 1,
+      `column ${bestCol} of ${RES}, floor at ${RES / 2}`);
+
+    // and it grows downstream
+    const col = RES / 2 | 0;
+    let grows = true;
+    for (let j = 2; j < RES - 2; j++) {
+      if (d.acc[j * RES + col] + 1e-6 < d.acc[(j - 1) * RES + col]) grows = false;
+    }
+    ok('and grows as it goes', grows, 'a river is bigger at its mouth');
+  }
+
+  // --- 5 · the wetness index is the wetness index ------------------------
+  //
+  // `ln(a / tan β)`, against the formula computed here rather than read back
+  // out of the solver, and against the property that actually distinguishes it
+  // from flow: a flat hollow draining a hillside stays wet, and a steep gully
+  // draining the same hillside does not, because the water leaves.
+  {
+    const d = at(cone);
+    const N2 = RES * RES;
+    const raw = new Float64Array(N2);
+    for (let c = 0; c < N2; c++) {
+      const a = (d.acc[c] * d.cell * d.cell) / d.cell;
+      raw[c] = Math.log(a / Math.max(d.slope[c], SLOPE_FLOOR));
+    }
+    // clipped to the tails, not to the extremes — recomputed here rather than
+    // read back, so this is a second derivation and not a restatement
+    const srt = Float64Array.from(raw).sort();
+    const lo = srt[Math.floor(N2 * TWI_CLIP)];
+    const hi = srt[Math.min(N2 - 1, Math.ceil(N2 * (1 - TWI_CLIP)))];
+    let agree = true;
+    for (let c = 0; c < N2; c++) {
+      const want = Math.min(Math.max((raw[c] - lo) / (hi - lo), 0), 1);
+      if (Math.abs(d.wet[c] - want) > 1e-6) agree = false;
+    }
+    ok('wet is the normalised topographic wetness index', agree,
+      `clipped at the ${TWI_CLIP * 100} and ${100 - TWI_CLIP * 100} percentiles`);
+
+    // the property, stated directly
+    const twi = (acc, slope) => Math.log((acc * cellOf) / Math.max(slope, SLOPE_FLOOR));
+    ok('same contributing area, gentler slope, wetter ground',
+      twi(400, 0.02) > twi(400, 0.30),
+      'nothing derived from height alone can tell those two apart');
+    ok('same slope, more upslope, wetter ground', twi(400, 0.1) > twi(40, 0.1));
+    ok('and flat ground is not infinitely wet',
+      Number.isFinite(twi(400, 0)), `slope floors at ${SLOPE_FLOOR}`);
+  }
+
+  // --- 6 · the dry wash is the channel water does not stay in ------------
+  //
+  // Two versions of this failed silently before the one that works, and both
+  // failures were found by measuring rather than by reading. "High flow, low
+  // wetness" fired on 0.0% of every tile, because the wetness index *rises*
+  // with flow and the two conditions are near mutually exclusive. A fixed
+  // gradient band then fired on one world in four, because channel-slope
+  // medians run from 0.002 on a dry plain to 0.578 in upland country. So the
+  // property to hold is: some, on every landscape, and never all.
+  {
+    const d = at(valley);
+    let anyWash = false, contradiction = false;
+    for (let c = 0; c < RES * RES; c++) {
+      if (d.wash[c] > 0.2) anyWash = true;
+      // a braid cannot be both the wettest ground and a dry wash
+      if (d.wash[c] > 0.5 && d.wet[c] > 0.6) contradiction = true;
+      if (d.flow[c] === 0 && d.wash[c] > 0) contradiction = true;
+    }
+    ok('a wash needs a channel to be a wash', !contradiction);
+    // On real ground, not on a synthetic. A cone and a V both have a nearly
+    // constant gradient, so their channel networks have no slope distribution
+    // to take a percentile of — which makes them the wrong surface to ask
+    // "is this channel steep for this landscape". `ground.js` imports no three,
+    // which is what lets this suite generate a real one.
+    {
+      const worlds = [
+        ['a temperate lowland', { seed: 1019, noiseSeed: 4471, typeId: 1, radiusE: 1, oceanLevel: 0.10, iceCap: 2 }],
+        ['upland country', { seed: 1046, noiseSeed: 9931, typeId: 1, radiusE: 0.9, oceanLevel: 0.02, iceCap: 2 }],
+        ['a dry world', { seed: 2222, noiseSeed: 3313, typeId: 0, radiusE: 1.1, oceanLevel: -1, iceCap: 3 }],
+        ['an ice world', { seed: 4444, noiseSeed: 5150, typeId: 3, radiusE: 0.8, oceanLevel: -1, iceCap: 0.5 }],
+      ];
+      const frac = (a, th) => a.reduce((n, v) => n + (v > th ? 1 : 0), 0) / a.length;
+      for (const [name, pp] of worlds) {
+        const g = makeGround(pp, [0, 0, 1], { wind: { x: 1, y: 0 } });
+        g.lift = (g.seaLevel ?? 0) + 5 - g.heightAt(0, 0);
+        const w = solveDrainage(g.heightAt, { sea: g.seaLevel });
+        const wash = frac(w.wash, 0.25), wet = frac(w.wet, 0.5), ch = frac(w.flow, 0.02);
+        ok(`${name} has a channel network, a wet seam and a braid`,
+          ch > 0.005 && wet > 0.04 && wash > 0.0005,
+          `channel ${(ch * 100).toFixed(1)}% · wet ${(wet * 100).toFixed(1)}%`
+          + ` · wash ${(wash * 100).toFixed(2)}%`);
+        ok(`  and none of the three takes ${name.replace(/^(a|an) /, 'the ')} over`,
+          ch < 0.35 && wet < 0.55 && wash < 0.15,
+          'a braid of stones, a seam of green — not a surface');
+      }
+    }
+    ok('and silt goes with the water', (() => {
+      let hi = 0, lo = 0, nh = 0, nl = 0;
+      for (let c = 0; c < RES * RES; c++) {
+        if (d.flow[c] > 0.5) { hi += d.silt[c]; nh++; } else if (d.flow[c] === 0) { lo += d.silt[c]; nl++; }
+      }
+      return nh === 0 || (hi / nh) > (lo / Math.max(nl, 1));
+    })(), 'a stream drops what it carries when it slows');
+    ok('the tile has channels in it at all', anyWash || (() => {
+      let ch = 0;
+      for (let c = 0; c < RES * RES; c++) if (d.flow[c] > 0) ch++;
+      return ch > RES;
+    })());
+  }
+
+  // --- 7 · the pack, and the shader's half -------------------------------
+  {
+    const d = at(valley);
+    const bytes = packDrainage(d);
+    ok('four channels, one byte each', bytes.length === RES * RES * 4);
+    let worst = 0;
+    for (let c = 0; c < RES * RES; c++) {
+      worst = Math.max(worst,
+        Math.abs(bytes[c * 4] / 255 - d.flow[c]),
+        Math.abs(bytes[c * 4 + 1] / 255 - d.wet[c]),
+        Math.abs(bytes[c * 4 + 2] / 255 - d.silt[c]),
+        Math.abs(bytes[c * 4 + 3] / 255 - d.wash[c]));
+    }
+    ok('and they round-trip inside half a level', worst <= 1 / 510 + 1e-9,
+      `worst ${worst.toExponential(2)}`);
+
+    ok('the sampler is indexed in world metres, not in UV',
+      /uDrainOrigin/.test(DRAINAGE_GLSL) && /uDrainSpan/.test(DRAINAGE_GLSL),
+      'the tile is placed once and the camera walks away from it');
+    ok('and fades at the tile edge rather than cutting',
+      /smoothstep\(0\.40, 0\.499/.test(DRAINAGE_GLSL),
+      'outside it the height-and-shore moisture that was always there takes over');
+  }
+
+  // --- 8 · the moisture term takes it, in both languages ------------------
+  {
+    const relief = 90;
+    ok('a drained hollow is wetter than the shoulder above it',
+      moistureAt(120, 0, relief, 0, 0.5, 0.9) > moistureAt(120, 0, relief, 0, 0.5, 0.0) + 0.3,
+      'the two are at the same altitude, which is the whole point');
+    ok('and the term is monotone', (() => {
+      let prev = -1, mono = true;
+      for (let x = 0; x <= 1.0001; x += 0.05) {
+        const v = moistureAt(200, 0, relief, 0, 0.5, x);
+        if (v < prev - 1e-12) mono = false;
+        prev = v;
+      }
+      return mono;
+    })());
+    ok('the GLSL carries the same weight as the twin',
+      MATERIAL_GLSL.includes('+ drain * 0.46'),
+      'one number, two languages — §2.7 one milestone over');
+    ok('and the braid subtracts rather than adds',
+      MATERIAL_GLSL.includes('- drain.a * 0.34'),
+      'a dry wash is drier than the ground beside it, and it is stones');
+  }
+
+  // --- 9 · the wiring ----------------------------------------------------
+  {
+    const src = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+    ok('the solve runs after the spawn has settled the lift',
+      src.indexOf('this.spawn = this._findSpawn();')
+        < src.indexOf('...(WETLINE ? this._drainageUniforms() : {})'),
+      'the lift is what puts the landing site above the sea, and the sea is '
+      + 'what the solver drains to');
+    ok('the sheen is a field now, not a scalar',
+      /float wetHere = clamp\(uWet \+ drain\.g/.test(src),
+      'after rain the entire visible world used to go slick at once');
+    ok('and it is a specular term, so a cloud shadow can snuff it',
+      /wetHere \* \(0\.3 \+ dusk\)\n\s*\* sunBeam;/.test(src),
+      'a shadow crossing a wet seam snuffs a silver thread and relights it');
+    // and the lookup that feeds it must be outside the branch, or it compiles
+    // under one flag set and not the other — which is exactly how it was found
+    ok('the shadow lookup is hoisted out of the ?paint= branch',
+      src.indexOf('float sunBeam = ${SUN_SHADOW};')
+        < src.indexOf('${PAINT ? /* glsl */`'),
+      'the sheen is after the branch closes, so it cannot reach inside it');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// suite: cloudshade
+//
+// §7.3, and clouds.js:452's invariant — "a shadow must always belong to a cloud
+// you can point at." That sentence is the thing this suite turns into a number,
+// in check 6: the shadow evaluates fewer octaves of the field than the deck
+// does, because the sun's own angular size has already blurred the rest away,
+// and the question that makes legitimate rather than merely cheaper is whether
+// the silhouette moved further than the penumbra it was traded for.
+//
+// Nothing here is a snapshot. The angular radius goes against the small-angle
+// limit and against the Sun's measured 0.2665°; the projection goes against an
+// independent ray/plane intersection; and the blur goes against the property
+// that actually defines a low-pass — that it preserves the mean.
+
+function suiteCloudShade() {
+  console.log('\ncloud shadow — the deck reaches the ground');
+
+  // --- 1. the mirrored field constants still describe the field -----------
+  {
+    const glsl = CLOUD_FIELD_GLSL;
+    ok('FIELD_SCALE matches the chunk', glsl.includes(String(FIELD_SCALE)),
+      `${FIELD_SCALE} in "(q - uCloudDrift) * ..."`);
+    ok('FIELD_LACUNARITY matches', glsl.includes(`* ${FIELD_LACUNARITY} +`));
+    ok('WARP_SCALE matches', glsl.includes(`p * ${WARP_SCALE} +`));
+    ok('DETAIL_SCALE matches', glsl.includes(`p * ${DETAIL_SCALE} +`));
+    // matched numerically rather than textually: GLSL wants a decimal point
+    // where `String(0.30)` gives "0.3", and a check that fails on formatting
+    // teaches the next reader to weaken it
+    {
+      const m = glsl.match(/smoothstep\((-?[\d.]+), ([\d.]+), cloudFieldRaw/);
+      ok('COVER_EDGE matches the chunk',
+        !!m && Number(m[1]) === COVER_EDGE[0] && Number(m[2]) === COVER_EDGE[1],
+        m ? `[${m[1]}, ${m[2]}]` : 'no smoothstep found in cloudField()');
+    }
+    ok('cloudField() still reads the shipped octave counts',
+      glsl.includes(`cloudFieldRaw(q, ${FIELD_OCTAVES.warp}, ${FIELD_OCTAVES.body}, `
+        + `${FIELD_OCTAVES.detail})`));
+  }
+
+  // --- 2. the star's angular radius ---------------------------------------
+  {
+    // The measured value, which is the only external number in this suite:
+    // the Sun subtends 0.5330° across, so 0.2665° of radius from 1 AU.
+    near('the Sun from 1 AU, in degrees',
+      angularRadius(1, 1) * 180 / Math.PI, 0.2665, 2e-4);
+    // and the small-angle limit it must approach from below
+    for (const [R, a] of [[1, 1], [0.1, 1], [0.013, 0.1]]) {
+      const exact = angularRadius(R, a), small = R * R_SUN_AU / a;
+      ok(`small-angle limit holds at R=${R} a=${a}`,
+        exact < small && (small - exact) / small < 1e-4,
+        `atan ${exact.toExponential(4)} vs r/a ${small.toExponential(4)}`);
+    }
+    // a red giant larger than its own orbit must not produce a NaN
+    ok('a star wider than its orbit still returns a finite angle',
+      Number.isFinite(angularRadius(45, 0.05)) && angularRadius(45, 0.05) < Math.PI / 2);
+    ok('and a zero orbit does not divide by zero',
+      Number.isFinite(angularRadius(1, 0)));
+  }
+
+  // --- 3. the penumbra, against similar triangles -------------------------
+  {
+    // An extended source of angular radius θ seen from h below spreads its
+    // terminator over the chord 2·h·tanθ. Derived here the other way round —
+    // from the two rays that graze opposite limbs — so the two derivations are
+    // independent rather than the same line typed twice.
+    for (const [R, a, h] of [[1, 1, 900], [25, 1, 900], [0.013, 0.1, 620]]) {
+      const th = angularRadius(R, a);
+      const rayGap = h * Math.tan(th) - h * Math.tan(-th);   // limb to limb
+      near(`penumbra from grazing rays, R=${R} h=${h}`,
+        penumbraMetres(th, h), rayGap, 1e-9);
+    }
+    ok('a point source casts no penumbra', penumbraMetres(0, 900) === 0);
+    ok('and the penumbra grows with the deck',
+      penumbraMetres(angularRadius(1, 1), 1800)
+        > penumbraMetres(angularRadius(1, 1), 900));
+  }
+
+  // --- 4. how much of the field survives the disc -------------------------
+  {
+    const sun = fieldOctaves(penumbraMetres(angularRadius(1, 1), 900));
+    ok('a Sun-like star removes no octave — and saying so is the honest answer',
+      sun.warp === FIELD_OCTAVES.warp && sun.body === FIELD_OCTAVES.body
+        && sun.detail === FIELD_OCTAVES.detail,
+      `8.4 m of penumbra against a finest octave of ${octaveWavelength(2, DETAIL_SCALE)
+        .toFixed(0)} m`);
+    const giant = fieldOctaves(penumbraMetres(angularRadius(25, 1), 900));
+    ok('a red giant removes several', giant.body < FIELD_OCTAVES.body
+      && giant.detail < FIELD_OCTAVES.detail, JSON.stringify(giant));
+    // monotone, and never degenerate
+    let prev = 99;
+    for (let w = 0; w <= 4000; w += 37) {
+      const o = fieldOctaves(w), tot = o.warp + o.body + o.detail;
+      if (tot > prev) { ok('octave count is monotone in the penumbra', false, `at w=${w}`); break; }
+      if (o.warp < 1 || o.body < 1 || o.detail < 1) {
+        ok('no chain is ever driven to zero octaves', false, `at w=${w}`); break;
+      }
+      prev = tot;
+      if (w >= 4000 - 37) {
+        ok('octave count is monotone in the penumbra', true);
+        ok('no chain is ever driven to zero octaves', true, 'floor of 1 holds to w=4 km');
+      }
+    }
+  }
+
+  // --- 5. the blur preserves the mean -------------------------------------
+  //
+  // This is the check the first implementation would have failed, and the
+  // reason it exists. Widening the smoothstep *looks* like softening an edge
+  // and is not: the transition is centred on 0.1325 and the field's mean is 0,
+  // so a wider transition raises coverage everywhere. A low-pass converges on
+  // the local mean and leaves the mean alone, so that is the property to test.
+  {
+    near('COVER_MEAN still describes the field',
+      measureCoverMean({}, 220, 30000), COVER_MEAN, 6e-3);
+
+    const N = 160, span = 30000;
+    const meanAt = (blur) => {
+      let s = 0, n = 0;
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+          const f = cloudFieldRaw((i / N - 0.5) * span, (j / N - 0.5) * span, {});
+          s += cloudShadeTransfer({ f, blur, amount: 1, tau: 3.4 }).cover; n++;
+        }
+      }
+      return s / n;
+    };
+    const m0 = meanAt(0), m5 = meanAt(0.5), m1 = meanAt(1);
+    near('mean coverage is unchanged at half blur', m5, m0, 6e-3);
+    near('mean coverage is unchanged at full blur', m1, m0, 6e-3);
+
+    // and it really is doing something: variance must collapse
+    const varAt = (blur) => {
+      let s = 0, ss = 0, n = 0;
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+          const f = cloudFieldRaw((i / N - 0.5) * span, (j / N - 0.5) * span, {});
+          const c = cloudShadeTransfer({ f, blur, amount: 1, tau: 3.4 }).cover;
+          s += c; ss += c * c; n++;
+        }
+      }
+      return ss / n - (s / n) ** 2;
+    };
+    ok('and full blur removes the shadow rather than darkening the world',
+      varAt(1) < 1e-12 && varAt(0) > 0.01,
+      `var ${varAt(0).toFixed(4)} → ${varAt(1).toExponential(2)}`);
+  }
+
+  // --- 6. Beer's law, and the guards --------------------------------------
+  {
+    near('a clear sky passes the whole beam',
+      cloudShadeTransfer({ f: -10, amount: 1, tau: 3.4 }).beam, 1, 1e-12);
+    near('full cover passes exp(-tau)',
+      cloudShadeTransfer({ f: 10, amount: 1, tau: 3.4 }).beam, Math.exp(-3.4), 1e-9);
+    let prev = 1.0000001;
+    let mono = true;
+    for (let f = -0.4; f <= 0.6; f += 0.01) {
+      const b = cloudShadeTransfer({ f, amount: 1, tau: 3.4 }).beam;
+      if (b > prev + 1e-12) mono = false;
+      prev = b;
+    }
+    ok('the beam falls monotonically as coverage rises', mono);
+    ok('a world with no deck is not shadowed',
+      cloudShadeTransfer({ f: 10, amount: 0, tau: 3.4 }).beam === 1);
+    ok('the ambient fill rises as the beam falls',
+      cloudShadeTransfer({ f: 10, amount: 1 }).ambient > 1
+      && cloudShadeTransfer({ f: -10, amount: 1 }).ambient === 1,
+      'an overcast dome scatters more down, which is why overcast reads flat');
+  }
+
+  // --- 7. the projection, against a ray/plane intersection ----------------
+  {
+    // Independent: solve for the parameter where the ray meets the plane
+    // y = deck, rather than reusing the closed form under test.
+    const hit = (P, s, deck) => {
+      const denom = s.y;
+      const tt = (deck - P.y) / denom;
+      return [P.x + tt * s.x, P.z + tt * s.z];
+    };
+    const e = 13.5 * Math.PI / 180;
+    const s = { x: Math.cos(e) * 0.6, y: Math.sin(e), z: Math.cos(e) * 0.8 };
+    for (const P of [{ x: 0, y: 0, z: 0 }, { x: 120, y: 240, z: -80 }]) {
+      const a = deckPoint(P, s, 900), b = hit(P, s, 900);
+      near(`projection x at y=${P.y}`, a[0], b[0], 1e-9);
+      near(`projection z at y=${P.y}`, a[1], b[1], 1e-9);
+    }
+    // flat ground is a pure translation — a planar field lit by parallel rays
+    const p0 = deckPoint({ x: 0, y: 0, z: 0 }, s, 900);
+    const p1 = deckPoint({ x: 500, y: 0, z: 0 }, s, 900);
+    near('flat ground translates rather than stretching', p1[0] - p0[0], 500, 1e-9);
+    // and a hill samples nearer the sun, which is the shadow climbing it
+    const up = deckPoint({ x: 0, y: 300, z: 0 }, s, 900);
+    ok('a hilltop samples the deck nearer the sun', up[0] < p0[0],
+      `${up[0].toFixed(0)} m vs ${p0[0].toFixed(0)} m`);
+
+    ok('below the fade there is no deck shadow',
+      deckPoint({ x: 0, y: 0, z: 0 }, { x: 1, y: 0.005, z: 0 }, 900) === null);
+    ok('nor above the deck', deckPoint({ x: 0, y: 2000, z: 0 }, s, 900) === null);
+    ok('the throw is capped before it can leave float32 metres',
+      Math.abs(deckPoint({ x: 0, y: 0, z: 0 }, { x: 1, y: 0.021, z: 0 }, 900)[0])
+        <= MAX_THROW + 1);
+    near('the fade is closed at the top', sunFade(SUN_FADE[1]), 1, 1e-12);
+    near('and at the bottom', sunFade(SUN_FADE[0]), 0, 1e-12);
+  }
+
+  // --- 8. the silhouette — a shadow belongs to a cloud you can point at ---
+  //
+  // The shadow evaluates fewer octaves than the deck draws. The question is
+  // whether that moved the outline, and the honest form of the question is:
+  // where the two disagree about being inside the cloud, is there a point
+  // within one penumbra where the *deck's own* outline runs? If there is, the
+  // disagreement is inside the blur the star already imposes, and the shadow
+  // still belongs to a cloud you could point at. If it is not, the octave cut
+  // has invented a cloud, and that is a different picture.
+  {
+    const mid = (COVER_EDGE[0] + COVER_EDGE[1]) / 2;
+    for (const [name, R, a] of [['a red giant', 25, 1], ['a mid giant', 45, 3]]) {
+      const w = penumbraMetres(angularRadius(R, a), 900);
+      const oct = fieldOctaves(w);
+      const full = (x, z) => cloudFieldRaw(x, z, {});
+      const cut = (x, z) => cloudFieldRaw(x, z, oct);
+      let disagree = 0, excused = 0, n = 0;
+      const span = 20000, N = 90;
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+          const x = (i / N - 0.5) * span, z = (j / N - 0.5) * span;
+          n++;
+          if ((full(x, z) > mid) === (cut(x, z) > mid)) continue;
+          disagree++;
+          // is the deck's own edge within one penumbra of here?
+          const inside = full(x, z) > mid;
+          let near_ = false;
+          for (let k = 1; k <= 8 && !near_; k++) {
+            const r = (k / 8) * w;
+            for (let t = 0; t < 8; t++) {
+              const th = (t / 8) * Math.PI * 2;
+              if ((full(x + r * Math.cos(th), z + r * Math.sin(th)) > mid) !== inside) {
+                near_ = true; break;
+              }
+            }
+          }
+          if (near_) excused++;
+        }
+      }
+      const frac = disagree / n;
+      const held = disagree === 0 ? 1 : excused / disagree;
+      ok(`${name}: every moved pixel is inside the penumbra it was traded for`,
+        held >= 0.98,
+        `${(frac * 100).toFixed(2)}% of samples moved · ${(held * 100).toFixed(1)}%`
+        + ` within ${w.toFixed(0)} m of the deck's own edge`);
+    }
+    // and the case that must be exact
+    const sunOct = fieldOctaves(penumbraMetres(angularRadius(1, 1), 900));
+    let same = true;
+    for (let i = 0; i < 400 && same; i++) {
+      const x = (i * 137.5) % 9000 - 4500, z = (i * 311.7) % 9000 - 4500;
+      if (cloudFieldRaw(x, z, {}) !== cloudFieldRaw(x, z, sunOct)) same = false;
+    }
+    ok('under a Sun-like star the shadow is the cloud, bit for bit', same);
+  }
+
+  // --- 8b. the shafts — the same field, marched -------------------------
+  //
+  // The claim worth checking is not that a march produces a number. It is that
+  // the shaft, the shadow on the ground and the gap in the deck are *one
+  // function*, so that a beam always lands in a lit patch and the gap that made
+  // it is overhead where you can see it. Nothing keeps those three in agreement
+  // — there is nothing to keep in agreement, and these checks say so.
+  {
+    const march = cloudShaftGLSL(8);
+    ok('the march samples the same field the ground does',
+      march.includes('cloudShadeAt(wp + V * (t * reach)'),
+      'not a second field that has to be kept in agreement with the first');
+    ok('and asks it for fewer octaves, because an integral discards the rest',
+      /cloudShadeAt\(wp \+ V \* \(t \* reach\), 1, 2, 1\)/.test(march));
+    ok('it returns without a tap when you are not looking toward the sun',
+      /if \(toward <= 0\.0\) return 1\.0;/.test(march),
+      'a shaft is in-scattered light — away from the sun there is nothing to scatter');
+    ok('the taps are dithered by §9.4\'s own ordered pattern',
+      march.includes('0.7548776662, 0.5698402909'),
+      'eight undithered taps band into slabs, which is the artefact that reads as cheap');
+    ok('and the tap count is compiled in, not a uniform',
+      /for \(int i = 0; i < 8; i\+\+\)/.test(march),
+      '§11 · quality is set once at init, never adapted mid-frame');
+    ok('zero taps emits a stub rather than a loop that runs and is discarded',
+      cloudShaftGLSL(0).includes('return 1.0;')
+      && !cloudShaftGLSL(0).includes('for (int'),
+      'which is what low and mobile get — see quality.js');
+
+    const q = readFileSync(new URL('../src/quality.js', import.meta.url), 'utf8');
+    ok('§5 · the LOD row exists before the feature does',
+      (q.match(/shaftTaps:/g) || []).length === 4,
+      'one row per tier, and the mobile rows are zero');
+    ok('and the two cheapest tiers do not march at all',
+      /name: 'low'[^}]*shaftTaps: 0/.test(q) && /name: 'mobile'[^}]*shaftTaps: 0/.test(q));
+
+    const air = readFileSync(new URL('../src/aerial.js', import.meta.url), 'utf8');
+    ok('the shaft scales the Mie term rather than adding a second effect',
+      /pow\(clamp\(vs, 0\.0, 1\.0\), 3\.4\) \* clamp\(shaft, 0\.0, 1\.0\)/.test(air),
+      'the Mie term IS the in-scattered sunlight — the haze had been lit '
+      + 'through the deck as though the deck were not there');
+    ok('§9.3 keeps its five-argument form for the two dozen callers that use it',
+      /vec4 aerial\(vec3 col, float dist, vec3 V, vec3 sunDir, float worldY\) \{\n\s*return aerial\(col, dist, V, sunDir, worldY, 1\.0\);/.test(air),
+      'GLSL has overloading; a signature change would have been two dozen edits');
+    // The bug this replaced: §9.3 forward-declared cloudShaft() and called it,
+    // and every prop material stopped compiling, because painted.js injects
+    // §9.3 into a MeshStandardMaterial that has no reason to carry a ray march
+    // and a forward declaration with no definition is a link error.
+    ok('and never reaches across chunks for a march the host may not have',
+      !/float cloudShaft\(vec3 wp, vec3 V, float dist\);/.test(air)
+      && !/cloudShaft\(wp/.test(air),
+      'the shaft arrives as a value — whoever has the march computes it');
+
+    const gr = readFileSync(new URL('../src/godrays.js', import.meta.url), 'utf8');
+    ok('the motes and the corona go out when the sun does',
+      /corona\.material\.opacity = .*\* beam;/.test(gr)
+      && /motes\.material\.opacity = .*\* beam;/.test(gr),
+      'both are beam phenomena — dust is only visible because a beam is in it');
+    ok('and they ask the CPU twin rather than a second shader',
+      gr.includes('cloudBeamAt(s.camera.position, sun,'),
+      'one evaluation a frame against seven hundred particles asking the same thing');
+  }
+
+  // --- 9. the composition ------------------------------------------------
+  {
+    const map = 'float sunShadow(vec3 wp, float ndl) {\n  return 0.5;\n}\n';
+    const c = composeSunShadow(map);
+    ok('the map is renamed rather than duplicated',
+      c.includes('float sunShadowMap(vec3 wp, float ndl) {')
+      && (c.match(/float sunShadow\(vec3 wp, float ndl\) \{/g) || []).length === 1);
+    ok('and the composed answer multiplies both',
+      /sunShadowMap\(wp, ndl\) \* cloudShade\(wp\)\.x/.test(c));
+    ok('the forward declaration makes include order irrelevant',
+      c.indexOf('vec2 cloudShade(vec3 wp);') < c.indexOf('cloudShade(wp).x'));
+    const none = composeSunShadow(null);
+    ok('with no map the deck is the only caster',
+      /float sunShadow\(vec3 wp, float ndl\) \{\n  return 1\.0 \* cloudShade\(wp\)\.x;/.test(none));
+
+    // and the chunk must not redeclare a uniform its hosts already have
+    ok('the chunk does not redeclare uSunDir',
+      !/uniform\s+vec3\s+uSunDir/.test(CLOUD_SHADE_GLSL),
+      'a redeclaration is a compile error, not a warning — hence uCsSun');
+    ok('the chunk carries the field with it',
+      CLOUD_SHADE_GLSL.includes('float cloudFieldRaw('));
+    ok('and the octave counts are uniforms, so the chunk can be module-level',
+      /uniform\s+int\s+uCsOctW/.test(CLOUD_SHADE_GLSL));
+  }
+
+  // --- 10. the wiring, from the bytes on disk -----------------------------
+  {
+    const src = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+    ok('the deck rides in on the composed sunShadow, not a second call site',
+      src.includes('sunShadowWiring()')
+      && !/shadowGLSL: s\.sunShadow \?/.test(src));
+    for (const [f, what] of [
+      ['src/flora.js', 'the meadow'], ['src/horizon.js', 'the far ridges'],
+    ]) {
+      const t = readFileSync(new URL('../' + f, import.meta.url), 'utf8');
+      ok(`${what} sample the deck`, t.includes('cloudShade('), f);
+    }
+    ok('the deck and its shadow share one uniform object',
+      /fieldUniforms: CSHADE \? this\._cloudFieldUniforms\(\)/.test(src)
+      && readFileSync(new URL('../src/clouds.js', import.meta.url), 'utf8')
+        .includes('fieldUniforms?.uCloudDrift ||'),
+      'there is no second field that could drift out of sync');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // the luminous ceiling (src/troffer.js)
 //
@@ -9166,6 +9852,8 @@ const suites = {
   tree: suiteTree,
   silhouette: suiteSilhouette,
   paintUniforms: suitePaintUniforms,
+  cloudshade: suiteCloudShade,
+  drainage: suiteDrainage,
   invariants: suiteInvariants,
   vegetation: suiteVegetation,
   ecology: suiteEcology,

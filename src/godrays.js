@@ -9,6 +9,7 @@
 import * as THREE from 'three';
 import { softDotTexture } from './nebula.js';
 import { arand } from './rng.js';
+import { CSHADE_ON, cloudBeamAt } from './cloudshade.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 
@@ -51,15 +52,41 @@ export function addGodRays(s) {
       const low = Math.max(1 - Math.abs(sun.y - 0.06) * 3.2, 0);   // strongest at golden hour
       const day = Math.min(Math.max((sun.y + 0.1) * 3, 0), 1);
 
+      // Is the sun behind a cloud right now?
+      //
+      // Motes and a corona are both *beam* phenomena: dust is only visible
+      // because a sunbeam is passing through it, and a corona is the sun seen
+      // through air. When the deck covers the sun both should go out, and the
+      // moment the gap arrives they should come back — which is the difference
+      // between god rays that are a property of the weather and god rays that
+      // are a permanent decoration hanging in front of the camera.
+      //
+      // One CPU evaluation a frame, at the camera, rather than a custom shader
+      // asking the same question of seven hundred particles and getting the
+      // same answer. `cloudshade.js` carries the twin for exactly this.
+      let beam = 1;
+      if (CSHADE_ON && s._cloudShade) {
+        const cs = s._cloudShade();
+        const u = cs.uniforms;
+        beam = cloudBeamAt(s.camera.position, sun, {
+          deck: u.uCsDeck.value,
+          drift: u.uCloudDrift.value,
+          amount: u.uCloudAmount.value,
+          tau: u.uCsTau.value,
+          blur: u.uCsBlur.value,
+          octaves: cs.octaves,
+        }).beam;
+      }
+
       // the corona sits along the sun ray, far out
       corona.position.copy(s.camera.position).addScaledVector(sun, 6000);
       corona.scale.setScalar(1400);
-      corona.material.opacity = low * day * 0.26 * s.atmo;
+      corona.material.opacity = low * day * 0.26 * s.atmo * beam;
 
       // motes: brighten when you face the sun (backlit air), drift on the wind
       s.camera.getWorldDirection(fwd);
       const facing = Math.max(fwd.dot(sun), 0);
-      motes.material.opacity = (0.05 + facing * facing * 0.4) * low * day * s.atmo;
+      motes.material.opacity = (0.05 + facing * facing * 0.4) * low * day * s.atmo * beam;
       motes.position.set(s.camera.position.x, 0, s.camera.position.z);
       const P = geo.attributes.position.array;
       // dust in a shaft of light is *in* the boundary layer and near the

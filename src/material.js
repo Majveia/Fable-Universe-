@@ -83,12 +83,13 @@ export function snowLine(lat, cold = 0) {
  * some. `sea` is the height of the waterline in the same units as `h`, or
  * `null` on a dry world.
  */
-export function moistureAt(h, sea, relief, wet, rain = 0.5) {
+export function moistureAt(h, sea, relief, wet, rain = 0.5, drain = 0) {
   // near the waterline, and falling off over a quarter of the relief
   const shore = sea === null ? 0 : 1 - smoothstep(0, Math.max(relief * 0.25, 1), h - sea);
   // orographic: the high ground is drier because the air arrived wrung out
   const dry = 1 - smoothstep(0.35, 0.95, clamp01(h / Math.max(relief, 1)));
-  return clamp01((0.22 + 0.55 * rain) * (0.35 + 0.65 * dry) + shore * 0.42 + wet * 0.30);
+  return clamp01((0.22 + 0.55 * rain) * (0.35 + 0.65 * dry) + shore * 0.42
+    + wet * 0.30 + drain * 0.46);
 }
 
 /**
@@ -322,12 +323,17 @@ export const MATERIAL_GLSL = /* glsl */`
     return w / max(dot(w, vec4(1.0)), 1e-4);
   }
 
-  float matMoisture(float h, float sea, float relief, float wet) {
+  // drain is drainage.js's wetness index — the fourth reason ground is
+  // wet, and the only one of the four that knows where water actually goes.
+  // The other three are all functions of height, so between them they cannot
+  // tell a hollow from the shoulder above it at the same altitude, which is
+  // exactly the pair a valley is made of.
+  float matMoisture(float h, float sea, float relief, float wet, float drain) {
     float shore = sea < -1e8 ? 0.0
       : 1.0 - smoothstep(0.0, max(relief * 0.25, 1.0), h - sea);
     float dry = 1.0 - smoothstep(0.35, 0.95, clamp(h / max(relief, 1.0), 0.0, 1.0));
     return clamp((0.22 + 0.55 * uMatRain) * (0.35 + 0.65 * dry)
-      + shore * 0.42 + wet * 0.30, 0.0, 1.0);
+      + shore * 0.42 + wet * 0.30 + drain * 0.46, 0.0, 1.0);
   }
 
   // ------------------------------------------------------- relief ---------
@@ -425,12 +431,23 @@ export const MATERIAL_GLSL = /* glsl */`
     vec3 N; float rough; float ao;
   };
 
-  Ground groundAt(vec3 P, vec3 n, float sea, float wet, float near, float dist) {
+  Ground groundAt(vec3 P, vec3 n, float sea, float wet, float near, float dist,
+                  vec4 drain) {
     float slope = 1.0 - clamp(n.y, 0.0, 1.0);
     float alt = clamp(P.y / max(uMatRelief, 1.0), 0.0, 1.0);
     float d = matDetail(P, n, near);
-    float moist = clamp(matMoisture(P.y, sea, uMatRelief, wet) + d * 0.20, 0.0, 1.0);
+    // The wetness index carries the moisture; the braid works the other way.
+    // A dry wash is a channel the water uses and does not stay in, so it is
+    // *drier* than the ground beside it and it is stones — which the blend
+    // already knows how to draw, because rock is one of its four layers and
+    // moisture is what selects against it.
+    float moist = clamp(matMoisture(P.y, sea, uMatRelief, wet, drain.g)
+      - drain.a * 0.34 + d * 0.20, 0.0, 1.0);
     vec4 w = matWeights(slope, alt, moist, d);
+    // silt is fine, pale and flat: it lifts the soil layer against rock and
+    // takes the grain down with it
+    w.y += drain.b * 0.55;
+    w.x *= 1.0 - drain.b * 0.42;
 
     Ground g;
     g.shade = uMatShade[0] * w.x + uMatShade[1] * w.y + uMatShade[2] * w.z + uMatShade[3] * w.w;

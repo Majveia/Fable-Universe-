@@ -174,10 +174,10 @@ export function addLife(s) {
     wind: uWind,
     gust: uGust,
     swayTime: uSwayTime,
-    // the tier's tap count, same as the ground's: a wood can fill a lot of
-    // screen, so it pays the same §5 LOD the terrain does
-    shadowGLSL: s.sunShadow ? shadowGLSL(qInt('shtaps', 'shadowTaps')) : null,
-    shadowUniforms: s.sunShadow ? s.sunShadow.uniforms : null,
+    // The tier's tap count, same as the ground's — a wood can fill a lot of
+    // screen, so it pays the same §5 LOD the terrain does — and the deck
+    // overhead, composed into the same `sunShadow()`.
+    ...s.sunShadowWiring(),
   };
   const barkMat = barkMaterial({
     ...lightArgs,

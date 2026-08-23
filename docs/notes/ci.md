@@ -203,6 +203,38 @@ of the message.
 
 ---
 
+## The packer's two hard stops, and how they were made to go red
+
+`tools/pack.js` is a distribution step rather than a build step (§2.2 is
+untouched — see the section below), but it carries two checks that behave like
+gates, and both were watched failing before they were trusted.
+
+**The worker subgraph.** An importmap does not reach inside a worker, so
+`tilebuild.js` and everything it imports are resolved by hand. The check asserts
+that subgraph is exactly `[terrain.js]`, and refuses rather than widening if it
+is not. Made to go red by adding an import to `tilebuild.js`; it named the file
+it had not been told about.
+
+**Import shapes the rewrite cannot reach.** A side-effect-only `import './x.js'`
+has no `from`, so the specifier rewrite steps over it and the browser then tries
+to resolve `./x.js` against a `blob:` URL, which has no path. That fails *at the
+moment that module is first imported* — which for a surface-scale module is
+several minutes and a scale transition after load, and looks nothing like a
+packaging fault. Made to go red by appending `import './rng.js';` to
+`src/night.js`:
+
+```
+Error: tools/pack.js cannot rewrite these, and a packed build would fail at the
+moment each module is first imported rather than at load:
+  src/night.js: a side-effect-only import
+```
+
+The repo contains no import of that shape today. That is exactly why the check
+exists: the first one added will be added by someone who has never read this
+file.
+
+---
+
 ## §2.2 is not violated by any of this
 
 > "Zero dependencies... `python3 -m http.server 8080` must remain sufficient,

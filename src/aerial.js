@@ -52,6 +52,7 @@
 //       rather than guessed.
 
 import { airColours, hexToLinear } from './starlight.js';
+import { SHAFTS_ON } from './cloudshade.js';
 
 // ---------------------------------------------------------------------------
 // the shape of the curve — the reference's, and not negotiable
@@ -326,7 +327,19 @@ export const AERIAL_GLSL = /* glsl */`
 
   // rgb: the composited colour. a: clarity, 1 - fog — see the note on
   // AERIAL_ALPHA_IS_CLARITY in this module for why it is stored inverted.
-  vec4 aerial(vec3 col, float dist, vec3 V, vec3 sunDir, float worldY) {
+  // Overloaded rather than replaced: §9.3 is threaded into two dozen materials
+  // and a signature change would have been two dozen edits to give six surfaces
+  // a shaft. GLSL has overloading; this is what it is for.
+  //
+  // The shaft arrives as a *value*, not as a call into cloudshade.js. The
+  // first version forward-declared cloudShaft() here and let this chunk call
+  // it, and every prop material in the world stopped compiling: painted.js
+  // injects §9.3 into a MeshStandardMaterial that has no reason to carry a
+  // ray march, and a forward declaration with no definition is a link error
+  // rather than a missing feature. Whoever has the march computes it; whoever
+  // does not passes 1.0 and gets exactly the air they had before.
+  vec4 aerial(vec3 col, float dist, vec3 V, vec3 sunDir, float worldY,
+              float shaft) {
     float d0 = aerialDepth(dist);
     float d = max(d0 - uAirNear, 0.0);
 
@@ -338,7 +351,19 @@ export const AERIAL_GLSL = /* glsl */`
     // V points surface -> camera, so looking INTO the sun is vs -> +1.
     // Reversed, this term inverts and the fog goes cold toward the sun.
     float vs = -dot(V, sunDir);
-    float mie = pow(clamp(vs, 0.0, 1.0), 3.4);
+    // §M-shafts · the air the sun reaches, against the air it does not.
+    //
+    // This is the whole of the effect and it is one multiply, because the Mie
+    // term is *already* the in-scattered sunlight: it is what turns the haze
+    // warm when you look toward the sun. Scaling it by how much of that column
+    // of air the sun actually gets to is not an addition to the model, it is
+    // the correction the model was missing — the haze had been lit through the
+    // deck as though the deck were not there.
+    //
+    // So a gap in the cloud is a bright column and the cloud beside it is a
+    // dark one, and both are the same function that darkened the meadow. You
+    // can follow the beam down and stand in the lit patch at the bottom of it.
+    float mie = pow(clamp(vs, 0.0, 1.0), 3.4) * clamp(shaft, 0.0, 1.0);
     vec3 fc = mix(uAirHaze, uAirHorizonSun, mie * 0.88);
     fc = mix(fc, uAirAnti, clamp(vs, -1.0, 0.0) * -0.32);
 
@@ -353,6 +378,10 @@ export const AERIAL_GLSL = /* glsl */`
     f = clamp(f + pool * 0.16 * (1.0 - f), 0.0, 1.0);
 
     return vec4(mix(col, fc, f), 1.0 - f);
+  }
+
+  vec4 aerial(vec3 col, float dist, vec3 V, vec3 sunDir, float worldY) {
+    return aerial(col, dist, V, sunDir, worldY, 1.0);
   }
 `;
 
