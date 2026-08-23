@@ -9,7 +9,7 @@
 import * as THREE from 'three';
 import { softDotTexture } from './nebula.js';
 import { arand } from './rng.js';
-import { CSHADE_ON, cloudShadeAt } from './cloudshade.js';
+import { CSHADE_ON, cloudBeamAt } from './cloudshade.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 
@@ -68,7 +68,7 @@ export function addGodRays(s) {
       if (CSHADE_ON && s._cloudShade) {
         const cs = s._cloudShade();
         const u = cs.uniforms;
-        beam = cloudShadeAt(s.camera.position, sun, {
+        beam = cloudBeamAt(s.camera.position, sun, {
           deck: u.uCsDeck.value,
           drift: u.uCloudDrift.value,
           amount: u.uCloudAmount.value,

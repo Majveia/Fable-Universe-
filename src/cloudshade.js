@@ -524,10 +524,6 @@ export function cloudShadeUniforms({
   };
 }
 
-/** the compile-time stub: no deck, full beam, no lift */
-export const CLOUD_SHADE_STUB = /* glsl */`
-vec2 cloudShade(vec3 wp) { return vec2(1.0, 0.0); }
-`;
 
 // ---------------------------------------------------------------------------
 // the field, computed the way a GPU computes it
@@ -624,7 +620,7 @@ export const COVER_MEAN = 0.1655;
  * The arguments are the uniform *values*, not the uniform objects, because a
  * caller on this side of the line is holding a Vector3 rather than a `{value}`.
  */
-export function cloudShadeAt(P, sunDir, {
+export function cloudBeamAt(P, sunDir, {
   deck = 900, drift = { x: 0, y: 0 }, amount = 1, tau = 3.4, blur = 0,
   octaves = FIELD_OCTAVES,
 } = {}) {

@@ -9592,7 +9592,7 @@ function suiteCloudShade() {
       && /motes\.material\.opacity = .*\* beam;/.test(gr),
       'both are beam phenomena — dust is only visible because a beam is in it');
     ok('and they ask the CPU twin rather than a second shader',
-      gr.includes('cloudShadeAt(s.camera.position, sun,'),
+      gr.includes('cloudBeamAt(s.camera.position, sun,'),
       'one evaluation a frame against seven hundred particles asking the same thing');
   }
 
