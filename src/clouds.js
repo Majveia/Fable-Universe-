@@ -8,6 +8,7 @@
 // Fly toward where you look. There is no bottom you would ever reach.
 
 import * as THREE from 'three';
+import { CLOUD_FIELD_GLSL as FIELD_CHUNK } from './cloudfield.js';
 import { RNG, arand, hash } from './rng.js';
 import { NOISE_GLSL } from './planet.js';
 import { nebulaTexture, softDotTexture } from './nebula.js';
@@ -456,46 +457,14 @@ function smooth01(e0, e1, x) {
 // that identity explicit and it is the right invariant: a shadow must always
 // belong to a cloud you can point at.
 
-export const CLOUD_FIELD_GLSL = /* glsl */`
-uniform vec2 uCloudDrift;    // metres, from the shared wind field
-uniform float uCloudAmount;  // 0 clear .. 1 overcast
-
-vec2 cfHash2(vec2 p) {
-  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
-  p3 += dot(p3, p3.yzx + 33.33);
-  return fract((p3.xx + p3.yz) * p3.zy) * 2.0 - 1.0;
-}
-float cfNoise(vec2 p) {
-  vec2 i = floor(p), f = fract(p);
-  vec2 u = f * f * (3.0 - 2.0 * f);
-  return 1.4 * mix(
-    mix(dot(cfHash2(i), f), dot(cfHash2(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0)), u.x),
-    mix(dot(cfHash2(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0)),
-        dot(cfHash2(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0)), u.x), u.y);
-}
-float cfFbm(vec2 p, int oct) {
-  float v = 0.0, a = 0.5;
-  for (int i = 0; i < 4; i++) {
-    if (i >= oct) break;
-    v += a * cfNoise(p); p = p * 2.07 + 11.3; a *= 0.5;
-  }
-  return v;
-}
-// Evaluated per *vertex*, four times per puff — not per fragment. That is the
-// whole reason it can afford a domain warp.
-float cloudField(vec2 q) {
-  vec2 p = (q - uCloudDrift) * 0.00071;
-  vec2 w = vec2(cfFbm(p * 1.55 + vec2(11.3, 4.7), 3), cfFbm(p * 1.55 + vec2(37.1, 19.2), 3));
-  float f = cfFbm(p + w * 0.62, 4);
-  float g = cfFbm(p * 3.7 + w * 1.1, 3);
-  f = f * 0.78 + g * 0.22;
-  return clamp(smoothstep(-0.035, 0.30, f) * uCloudAmount, 0.0, 1.0);
-}
-`;
+// Lives in `cloudfield.js` now, and re-exported here so every caller and
+// every check that names it keeps working. It moved because `cloudshade.js`
+// needs it and must not import three — see that file, and `cloudfield.js`.
+export { CLOUD_FIELD_GLSL } from './cloudfield.js';
 
 const CUMULUS_VERT = /* glsl */`
 precision highp float;
-${CLOUD_FIELD_GLSL}
+${FIELD_CHUNK}
 attribute vec2 corner;
 attribute vec3 pdata;    // radius, per-puff seed, height fraction
 attribute vec2 fcen;     // the formation's centre, for the coverage lookup
