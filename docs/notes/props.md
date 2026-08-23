@@ -575,3 +575,71 @@ character.
 Count of wirings that existed, were exercised by a suite, and were never called
 by the renderer: **six**. The newest is the oldest — `rough`, dead since the
 file was written.
+
+---
+
+# Act 4 · the unanchored polyhedron was a sky-whale
+
+§8 axis 8 scored **2 in both blind frames**, for one object and the same
+sentence twice: *"the dark polyhedron at centre-top has no shadow, no ground
+contact and no scale reference."* Neither review could say what it was. A still
+shows a silhouette; it does not show a scene graph.
+
+`tools/floaters.js` asks the scene instead. It walks every mesh at surface
+scale, aggregates to the assembly each belongs to, finds the terrain under the
+footprint and reports whatever is clear of it. On the world those captures are
+actually of — seed 20250601, `g=443188473&s=2309765500&p=0`, from
+`RECK-default/manifest.json`, **not** the hex string in `blind/key.json`, which
+is the A/B shuffle salt and not a seed:
+
+```
+assembly       parts geometry      gap    dist    size    ang  casts
+InstancedMesh      1 Buffer      50.0m    327m 1584.4m 277.9°  NO
+                   8 instances · MeshStandardMaterial · y 206 to 572 · ground 156.0 m
+```
+
+Eight instances, two to five hundred metres up, spanning the world.
+`src/megafauna.js`, `buildWhales`, `N = 8`, `alt = r.float(180, 420)`.
+
+## Three things were wrong and the review named the least fixable one
+
+**It was outside the light model.** A plain `MeshStandardMaterial` is lit by
+`surface.js`'s directional and ambient lights and nothing else — no half-Lambert
+wrap, no hue-shifted shade, and no backlight rim. What the frame showed was the
+whale's *underside*, which the sun does not reach, so it rendered flat
+near-black against a pale sky. §8 axis 2 asks whether any surface receives no
+light information at all; §M2's gate calls an achromatic-dark surface a failure
+in those words. §9.2 calls the rim *"the connective tissue of the whole image"*,
+and a hundred-metre body backlit at golden hour is the case that term exists
+for. Fixed: the whales go through `paintedStandard()` with the terrain's own
+light and shadow map, `rim: 1.0`, `trans: 0.45`.
+
+**Ground contact is not the fix, and the physics says so.** A body 250 m up
+under a 13.5° sun casts about **1.7 km downsun** — outside `shadow.js`'s 480 m
+map and nowhere near the whale. Drawing a shadow beneath it would be a lie about
+where the sun is, and §8 axis 8 scores a contradiction of the physics as
+*dishonest* rather than as contact. So it stays uncast, and `verify.js` asserts
+that nothing later "fixes" it by adding one.
+
+**Scale comes from form.** A shape with a lit back, a rim along its edge and a
+shaded belly reads as a large solid body; a flat black cutout reads as an
+artefact at an unknowable distance. §9.2 supplies all three.
+
+## And it found the next thing, which is bigger
+
+**No prop lit by §9.2 gets §9.3's aerial perspective.** `painted.js` injects at
+`#include <dithering_fragment>` — the last chunk in the chain, chosen so that
+alpha test, alpha map and fog have already run — and then writes
+`gl_FragColor.rgb = paint(sf)`, which overwrites the fog it was careful to run
+after. There is also no `scene.fog` at surface scale, so three's chunk had
+nothing to apply either way.
+
+The consequence: every boulder, plant, tree, settlement and whale sits at its
+true distance in depth and at zero distance in colour. §8 axis 3 wants three
+separable depth planes and axis 6 wants the hue families to sort by distance;
+this puts the whole prop layer in one plane. It is the seventh instance of this
+file's pattern — an injection point chosen for a reason, and the reason undone
+two lines later — and it is not Act 4's to fix.
+
+Count of wirings that existed, were exercised, and never reached the frame:
+**seven**.

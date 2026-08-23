@@ -3286,6 +3286,33 @@ function suiteMaterial() {
     ok('and the cavity reaches §9.2, which gates its ambient fill on it',
       /sf\.ao = \$\{MAT \? 'gm\.ao' : '1\.0'\}/.test(src)
       && !/^\s*sf\.ao = 1\.0;$/m.test(src));
+    // --- act 4 · what floats is lit like everything else --------------------
+    //
+    // §8 axis 8 scored 2 in both blind frames for one object, and
+    // `tools/floaters.js` named it: eight sky-whale instances on a plain
+    // MeshStandardMaterial, 200-570 m up. The frame showed their undersides,
+    // which the sun does not reach, so they rendered flat near-black — §M2's
+    // gate calls an achromatic-dark surface a failure in those words.
+    {
+      const mf = readFileSync(new URL('../src/megafauna.js', import.meta.url), 'utf8');
+      ok('§8.8 · the sky-whales light through §9.2 rather than through PBR',
+        /paintedStandard\(/.test(mf) && /import \{ paintedStandard, stopsFrom \} from '\.\/painted\.js'/.test(mf),
+        'a hundred-metre body backlit at golden hour is what §9.2\'s rim term'
+        + ' exists for');
+      ok('and they take the terrain\'s own light and shadow map',
+        /const wiring = s\.paintWiring\(\);/.test(mf),
+        'a whale and the valley under it cannot disagree about where the sun is');
+      ok('and the rim and the transmission are turned up, not defaulted',
+        /rim: 1\.0,/.test(mf) && /trans: 0\.45,/.test(mf),
+        'the belly is the surface receiving no light information, and'
+        + ' subsurface is what stops it going achromatic');
+      ok('§8.8 · and nothing draws them a ground shadow',
+        !/markCaster\(whales\)/.test(mf),
+        'a body 250 m up under a 13.5° sun casts about 1.7 km downsun, outside'
+        + ' shadow.js\'s 480 m map — a shadow under it would be a lie about'
+        + ' where the sun is, which axis 8 scores as dishonest, not as contact');
+    }
+
     ok('and the cavity reaches the default build too',
       /\$\{MAT \? '\* gm\.ao' : ''\}/.test(src),
       '?paint= is off by default, so a term only the grade sees is a term'

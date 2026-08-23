@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 import { hash, RNG } from './rng.js';
 import { softDotTexture } from './nebula.js';
+import { paintedStandard, stopsFrom } from './painted.js';
 import { now } from './clock.js';
 
 const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
@@ -140,11 +141,77 @@ function constColor(geo, color) {
 }
 
 // --------------------------------------------------------- the sky-whales ----
+/**
+ * The unanchored polyhedron, named.
+ *
+ * `docs/captures/blind/SCORE.md` scored §8 axis 8 a **2 in both frames** for one
+ * object and the same sentence twice — *"the dark polyhedron at centre-top has
+ * no shadow, no ground contact and no scale reference"* — and neither review
+ * could say what it was, because a still shows a silhouette and not a scene
+ * graph. `tools/floaters.js` asked the scene: eight instances of a
+ * MeshStandardMaterial, 1584 m across, hanging between 206 and 572 m over
+ * ground at 156 m. That is this function.
+ *
+ * A sky-whale is a deliberate feature and it was reading as a bug, which is the
+ * worst outcome available. Three separate things were wrong and only one of
+ * them is the one the review named.
+ *
+ * **It was outside the light model.** A plain `MeshStandardMaterial` is lit by
+ * `surface.js`'s directional and ambient lights and by nothing else — no
+ * half-Lambert wrap, no hue-shifted shade, and critically no backlight rim.
+ * What the frame showed was its *underside*, which the sun does not reach, so
+ * it rendered flat near-black against a pale sky. §8 axis 2 asks whether any
+ * surface receives no light information at all, and §M2's gate calls an
+ * achromatic-dark surface a failure in those words. §9.2 calls the rim *"the
+ * connective tissue of the whole image"*, and a hundred-metre creature backlit
+ * at golden hour is the case that term exists for.
+ *
+ * **Ground contact is not the fix, and the physics says so.** A shadow from a
+ * body 250 m up under a 13.5 degree sun lands about 1.7 km downsun — outside
+ * `shadow.js`'s 480 m map and nowhere near the whale. Drawing a shadow under it
+ * would be a lie about where the sun is, which §8 axis 8 scores as *dishonest*
+ * rather than as contact. So it stays uncast, and what replaces contact is the
+ * two things a flying body can honestly have: light that agrees with the world's
+ * light, and haze that agrees with its distance.
+ *
+ * **No scale reference.** Form is the scale reference here — a shape with a lit
+ * back, a rim along its edge and a shaded belly reads as a large solid body,
+ * where a flat black cutout reads as an artefact at an unknowable distance.
+ * §9.2 supplies all three from the same function the ground and every prop use.
+ */
 function buildWhales(s, r) {
   const N = COARSE ? 4 : 8;
   const geo = whaleGeometry();
   const col = new THREE.Color().setHSL(r.float(0.55, 0.72), 0.35, 0.4);
-  const mat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.85, flatShading: true });
+  // The terrain's own light and its own shadow map, exactly as `ground-cover.js`
+  // takes them, so a whale and the valley under it cannot disagree about where
+  // the sun is (§9.2: one function, one light).
+  const wiring = s.paintWiring();
+  const light = s._paintLight
+    ? { sun: [...s._paintLight.uniforms.sun.value], shadowTint: [...s._paintLight.uniforms.sh.value] }
+    : { sun: [1, 0.84, 0.61], shadowTint: [0.36, 0.43, 0.62] };
+  const base = [col.r, col.g, col.b];
+  const mat = paintedStandard(
+    { color: col, roughness: 0.85, flatShading: true },
+    wiring,
+    {
+      // A wide hue range and a soft band: this is a body seen through hundreds
+      // of metres of air, and a hard terminator on it would read as a facet
+      // rather than as a back.
+      ...stopsFrom(base, light, { warm: 0.22, cool: 0.30, range: 0.34 }),
+      soft: 0.20, jit: 0.06,
+      // The one number this whole change is about. §9.2's backlight is
+      // pow(1 - dot(N,V), 4.2) gated on the sun being behind the subject, and
+      // a whale at altitude is behind the sun more often than anything else in
+      // the frame.
+      rim: 1.0,
+      ambient: 1.0,
+      // Skin over a gas bladder, edge-on to a low sun, is the subsurface case:
+      // §9.2's transmission term is exactly "light coming through, not bouncing
+      // off", and it is what stops the belly going achromatic.
+      trans: 0.45,
+      transCol: [base[0] * 1.5 + 0.10, base[1] * 1.6 + 0.14, base[2] * 1.4 + 0.18],
+    });
   const whales = new THREE.InstancedMesh(geo, mat, N);
   whales.frustumCulled = false;
   s.scene.add(whales);

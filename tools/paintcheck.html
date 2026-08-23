@@ -53,6 +53,23 @@ const results = [];
   scene.add(mesh); results.push('mineral instanced');
 }
 {
+  // Act 4's sky-whale: instanced, flat-shaded, opaque, with both the rim and
+  // the transmission turned up. Its own case rather than a variant of the
+  // mineral, because §8 axis 8 lost two points to this material rendering as a
+  // flat black polyhedron and the whole fix is that it now compiles as §9.2.
+  // A `paintcheck` that did not include it would go green on a build where the
+  // whales had silently fallen back to PBR — which is the shape of defect this
+  // tool was written for.
+  const m = paintedStandard({ flatShading: true }, shadowWiring,
+    { ...stopsFrom([0.30, 0.44, 0.52], light, { warm: 0.22, cool: 0.30, range: 0.34 }),
+      soft: 0.20, jit: 0.06, rim: 1.0, trans: 0.45, transCol: [0.55, 0.85, 0.90] });
+  const g = new THREE.SphereGeometry(1, 10, 8); g.scale(3.2, 1.0, 1.2);
+  const mesh = new THREE.InstancedMesh(g, m, 2);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 2; i++) { d.position.set(i * 2 - 1, 1.2, -1); d.updateMatrix(); mesh.setMatrixAt(i, d.matrix); }
+  scene.add(mesh); results.push('sky-whale instanced + rim + transmission');
+}
+{
   const m = paintedStandard(
     { alphaMap: cardMask('bent', 20250601), alphaTest: 0.42, side: THREE.DoubleSide },
     wiring, { ...stopsFrom([0.30, 0.42, 0.24], light), trans: 0.85, transCol: [0.6, 0.9, 0.3], rim: 0.95 });
