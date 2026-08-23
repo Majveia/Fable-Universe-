@@ -36,6 +36,9 @@ import {
   fieldOctaves, measureCoverMean, octaveWavelength, penumbraMetres, sunFade,
 } from '../src/cloudshade.js';
 import { CLOUD_FIELD_GLSL } from '../src/cloudfield.js';
+import {
+  DRAINAGE_GLSL, SLOPE_FLOOR, packDrainage, solveDrainage,
+} from '../src/drainage.js';
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
 import {
@@ -847,11 +850,12 @@ function suiteSunShadow() {
     // rather than being deleted, because what it is actually holding is that
     // the cheap path samples the map at all.
     ok('and the cheap lighting path actually samples it',
-      /float sh = \$\{SUN_SHADOW\};/.test(src)
+      /float sh = sunBeam;/.test(src)
       && /const SUN_SHADOW = \(SHADOW \|\| CSHADE\)/.test(src),
       'the ground is shadowed with or without §9.2 — and now with or without a map');
     ok('§9.2 · and both paths bias the shadow off the geometric normal',
-      /sf\.shadow = \$\{SUN_SHADOW\};/.test(src)
+      /sf\.shadow = sunBeam;/.test(src)
+      && /float sunBeam = \$\{SUN_SHADOW\};/.test(src)
       && /'sunShadow\(vW, dot\(nGeo, uSunDir\)\)' : '1\.0'/.test(src)
       && !/sunShadow\(vW, dot\(nb,/.test(src),
       'a detail normal on the depth bias is shadow acne, not texture');
@@ -9024,6 +9028,250 @@ function suiteBlossom() {
 }
 
 
+
+// ---------------------------------------------------------------------------
+// suite: drainage
+//
+// The properties of a drainage solve are unusually crisp, which is the reason
+// this suite is worth more than a snapshot of one tile: water is conserved,
+// water goes downhill, and every drop leaves. Each of those is checkable
+// exactly, on synthetic surfaces whose answer is known before the solver runs.
+//
+// The one that is easy to get wrong and hard to see is the diagonal bias. D8
+// picks the steepest of eight neighbours, and a diagonal neighbour is 1.414
+// cells away; compare raw drops and every channel drifts onto the diagonals and
+// the wet map grows a herringbone. So there is a check for it, on a plane
+// tilted along +x, where the right answer is "never a diagonal".
+
+function suiteDrainage() {
+  console.log('\ndrainage — the ground remembers the water');
+
+  const RES = 64, EXT = 640;
+  const cellOf = EXT / RES;
+  const at = (fn) => solveDrainage(fn, { res: RES, ext: EXT, sea: null });
+
+  // a valley running along z, floor at x = 0, plus a gentle fall down +z
+  const valley = (x, z) => Math.abs(x) * 0.22 - z * 0.05;
+  // a plane tilted along +x only
+  const rampX = (x) => -x * 0.1;
+  // a cone, for the radial case
+  const cone = (x, z) => Math.hypot(x, z) * 0.15;
+
+  // --- 1 · water is conserved --------------------------------------------
+  {
+    const d = at(valley);
+    const C = RES * RES;
+    let minAcc = Infinity, outletSum = 0, outlets = 0;
+    for (let c = 0; c < C; c++) {
+      if (d.acc[c] < minAcc) minAcc = d.acc[c];
+      if (d.down[c] < 0) { outletSum += d.acc[c]; outlets++; }
+    }
+    ok('every cell carries at least its own rain', minAcc >= 1, `min ${minAcc}`);
+    near('and every drop leaves the tile exactly once', outletSum, C, 1e-9);
+    ok('through a boundary, not a pit', outlets > 0 && outlets < C * 0.1,
+      `${outlets} outlets of ${C} cells`);
+
+    let receiverGrows = true;
+    for (let c = 0; c < C && receiverGrows; c++) {
+      const dn = d.down[c];
+      if (dn >= 0 && d.acc[dn] < d.acc[c] + 1 - 1e-6) receiverGrows = false;
+    }
+    ok('a receiver always carries more than what drains into it', receiverGrows);
+  }
+
+  // --- 2 · water goes downhill, and never in a circle ---------------------
+  {
+    const d = at(valley);
+    const C = RES * RES;
+    let descends = true, dominates = true;
+    for (let c = 0; c < C; c++) {
+      if (d.filled[c] < d.height[c] - 1e-4) dominates = false;
+      const dn = d.down[c];
+      if (dn >= 0 && d.filled[dn] >= d.filled[c]) descends = false;
+    }
+    ok('the filled surface is never below the real one', dominates,
+      'a fill that dug a hole would route water uphill');
+    ok('and every step of the network descends it', descends);
+
+    // no cycles: walking `down` from anywhere terminates
+    let worst = 0;
+    for (let c = 0; c < C; c++) {
+      let k = 0, p = c;
+      while (d.down[p] >= 0 && k <= C) { p = d.down[p]; k++; }
+      if (k > worst) worst = k;
+    }
+    ok('and every cell reaches an outlet in finite steps', worst <= C,
+      `longest path ${worst} cells`);
+  }
+
+  // --- 3 · the diagonal bias, which is the one you cannot see -------------
+  {
+    const d = at((x) => rampX(x));
+    let diagonals = 0, cardinalPlusX = 0, n = 0;
+    for (let c = 0; c < RES * RES; c++) {
+      const dn = d.down[c];
+      if (dn < 0) continue;
+      n++;
+      const dx = (dn % RES) - (c % RES), dz = ((dn / RES) | 0) - ((c / RES) | 0);
+      if (dx !== 0 && dz !== 0) diagonals++;
+      if (dx === 1 && dz === 0) cardinalPlusX++;
+    }
+    ok('on a plane tilted along +x, no channel takes a diagonal',
+      diagonals === 0, `${diagonals} of ${n}`);
+    ok('they all take the +x neighbour', cardinalPlusX === n,
+      'gradient per distance, not per step — 1.414 is the whole check');
+  }
+
+  // --- 4 · the channel is where the valley is ----------------------------
+  {
+    const d = at(valley);
+    // the wettest column should be the valley floor, x = 0 → i = RES/2
+    let bestCol = -1, bestSum = -1;
+    for (let i = 0; i < RES; i++) {
+      let s = 0;
+      for (let j = 0; j < RES; j++) s += d.acc[j * RES + i];
+      if (s > bestSum) { bestSum = s; bestCol = i; }
+    }
+    ok('the accumulation collects in the valley floor',
+      Math.abs(bestCol - RES / 2) <= 1,
+      `column ${bestCol} of ${RES}, floor at ${RES / 2}`);
+
+    // and it grows downstream
+    const col = RES / 2 | 0;
+    let grows = true;
+    for (let j = 2; j < RES - 2; j++) {
+      if (d.acc[j * RES + col] + 1e-6 < d.acc[(j - 1) * RES + col]) grows = false;
+    }
+    ok('and grows as it goes', grows, 'a river is bigger at its mouth');
+  }
+
+  // --- 5 · the wetness index is the wetness index ------------------------
+  //
+  // `ln(a / tan β)`, against the formula computed here rather than read back
+  // out of the solver, and against the property that actually distinguishes it
+  // from flow: a flat hollow draining a hillside stays wet, and a steep gully
+  // draining the same hillside does not, because the water leaves.
+  {
+    const d = at(cone);
+    let lo = Infinity, hi = -Infinity;
+    const raw = new Float64Array(RES * RES);
+    for (let c = 0; c < RES * RES; c++) {
+      const a = (d.acc[c] * d.cell * d.cell) / d.cell;
+      raw[c] = Math.log(a / Math.max(d.slope[c], SLOPE_FLOOR));
+      if (raw[c] < lo) lo = raw[c];
+      if (raw[c] > hi) hi = raw[c];
+    }
+    let agree = true;
+    for (let c = 0; c < RES * RES; c++) {
+      if (Math.abs(d.wet[c] - (raw[c] - lo) / (hi - lo)) > 1e-6) agree = false;
+    }
+    ok('wet is the normalised topographic wetness index', agree);
+
+    // the property, stated directly
+    const twi = (acc, slope) => Math.log((acc * cellOf) / Math.max(slope, SLOPE_FLOOR));
+    ok('same contributing area, gentler slope, wetter ground',
+      twi(400, 0.02) > twi(400, 0.30),
+      'nothing derived from height alone can tell those two apart');
+    ok('same slope, more upslope, wetter ground', twi(400, 0.1) > twi(40, 0.1));
+    ok('and flat ground is not infinitely wet',
+      Number.isFinite(twi(400, 0)), `slope floors at ${SLOPE_FLOOR}`);
+  }
+
+  // --- 6 · the dry wash is the channel water does not stay in ------------
+  {
+    const d = at(valley);
+    let anyWash = false, contradiction = false;
+    for (let c = 0; c < RES * RES; c++) {
+      if (d.wash[c] > 0.2) anyWash = true;
+      // a braid cannot be both the wettest ground and a dry wash
+      if (d.wash[c] > 0.5 && d.wet[c] > 0.6) contradiction = true;
+      if (d.flow[c] === 0 && d.wash[c] > 0) contradiction = true;
+    }
+    ok('a wash needs a channel to be a wash', !contradiction);
+    ok('and silt goes with the water', (() => {
+      let hi = 0, lo = 0, nh = 0, nl = 0;
+      for (let c = 0; c < RES * RES; c++) {
+        if (d.flow[c] > 0.5) { hi += d.silt[c]; nh++; } else if (d.flow[c] === 0) { lo += d.silt[c]; nl++; }
+      }
+      return nh === 0 || (hi / nh) > (lo / Math.max(nl, 1));
+    })(), 'a stream drops what it carries when it slows');
+    ok('the tile has channels in it at all', anyWash || (() => {
+      let ch = 0;
+      for (let c = 0; c < RES * RES; c++) if (d.flow[c] > 0) ch++;
+      return ch > RES;
+    })());
+  }
+
+  // --- 7 · the pack, and the shader's half -------------------------------
+  {
+    const d = at(valley);
+    const bytes = packDrainage(d);
+    ok('four channels, one byte each', bytes.length === RES * RES * 4);
+    let worst = 0;
+    for (let c = 0; c < RES * RES; c++) {
+      worst = Math.max(worst,
+        Math.abs(bytes[c * 4] / 255 - d.flow[c]),
+        Math.abs(bytes[c * 4 + 1] / 255 - d.wet[c]),
+        Math.abs(bytes[c * 4 + 2] / 255 - d.silt[c]),
+        Math.abs(bytes[c * 4 + 3] / 255 - d.wash[c]));
+    }
+    ok('and they round-trip inside half a level', worst <= 1 / 510 + 1e-9,
+      `worst ${worst.toExponential(2)}`);
+
+    ok('the sampler is indexed in world metres, not in UV',
+      /uDrainOrigin/.test(DRAINAGE_GLSL) && /uDrainSpan/.test(DRAINAGE_GLSL),
+      'the tile is placed once and the camera walks away from it');
+    ok('and fades at the tile edge rather than cutting',
+      /smoothstep\(0\.40, 0\.499/.test(DRAINAGE_GLSL),
+      'outside it the height-and-shore moisture that was always there takes over');
+  }
+
+  // --- 8 · the moisture term takes it, in both languages ------------------
+  {
+    const relief = 90;
+    ok('a drained hollow is wetter than the shoulder above it',
+      moistureAt(120, 0, relief, 0, 0.5, 0.9) > moistureAt(120, 0, relief, 0, 0.5, 0.0) + 0.3,
+      'the two are at the same altitude, which is the whole point');
+    ok('and the term is monotone', (() => {
+      let prev = -1, mono = true;
+      for (let x = 0; x <= 1.0001; x += 0.05) {
+        const v = moistureAt(200, 0, relief, 0, 0.5, x);
+        if (v < prev - 1e-12) mono = false;
+        prev = v;
+      }
+      return mono;
+    })());
+    ok('the GLSL carries the same weight as the twin',
+      MATERIAL_GLSL.includes('+ drain * 0.46'),
+      'one number, two languages — §2.7 one milestone over');
+    ok('and the braid subtracts rather than adds',
+      MATERIAL_GLSL.includes('- drain.a * 0.34'),
+      'a dry wash is drier than the ground beside it, and it is stones');
+  }
+
+  // --- 9 · the wiring ----------------------------------------------------
+  {
+    const src = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+    ok('the solve runs after the spawn has settled the lift',
+      src.indexOf('this.spawn = this._findSpawn();')
+        < src.indexOf('...(WETLINE ? this._drainageUniforms() : {})'),
+      'the lift is what puts the landing site above the sea, and the sea is '
+      + 'what the solver drains to');
+    ok('the sheen is a field now, not a scalar',
+      /float wetHere = clamp\(uWet \+ drain\.g/.test(src),
+      'after rain the entire visible world used to go slick at once');
+    ok('and it is a specular term, so a cloud shadow can snuff it',
+      /wetHere \* \(0\.3 \+ dusk\)\n\s*\* sunBeam;/.test(src),
+      'a shadow crossing a wet seam snuffs a silver thread and relights it');
+    // and the lookup that feeds it must be outside the branch, or it compiles
+    // under one flag set and not the other — which is exactly how it was found
+    ok('the shadow lookup is hoisted out of the ?paint= branch',
+      src.indexOf('float sunBeam = ${SUN_SHADOW};')
+        < src.indexOf('${PAINT ? /* glsl */`'),
+      'the sheen is after the branch closes, so it cannot reach inside it');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // suite: cloudshade
 //
@@ -9502,6 +9750,7 @@ const suites = {
   silhouette: suiteSilhouette,
   paintUniforms: suitePaintUniforms,
   cloudshade: suiteCloudShade,
+  drainage: suiteDrainage,
   invariants: suiteInvariants,
   vegetation: suiteVegetation,
   ecology: suiteEcology,

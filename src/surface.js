@@ -63,6 +63,7 @@ import { SunShadow, markCaster, shadowGLSL } from './shadow.js';
 import {
   CLOUD_SHADE_GLSL, CSHADE_ON, cloudShadeUniforms, composeSunShadow,
 } from './cloudshade.js';
+import { DRAINAGE_GLSL, packDrainage, solveDrainage } from './drainage.js';
 import { Q, TIER, qArr, qInt } from './quality.js';
 
 const PARAM = (k) => {
@@ -231,6 +232,20 @@ const SHADOW = PAINT || PARAM('shadow') !== '0';
  * Default-off per §7.4 — the flip is its own commit, with the §5 cost stated.
  */
 const CSHADE = CSHADE_ON;
+
+/**
+ * The ground remembers the water — `src/drainage.js`.
+ *
+ * `matMoisture()` knows height, shore and one global rain scalar, and all three
+ * are functions of altitude, so between them they cannot tell a hollow from the
+ * shoulder above it. `?wetline=1` runs `hydrology.js`'s own solver on the
+ * landing tile and hands the blend the fourth reason ground is wet: where the
+ * water goes.
+ *
+ * Default-off per §7.4, and it costs 184 ms once at build — see `drainage.js`
+ * for the measurement and the resolution it bought.
+ */
+const WETLINE = PARAM('wetline') === '1';
 
 /**
  * The sampler, at this tier's tap count — §5's LOD, arriving before the feature
@@ -578,6 +593,7 @@ const TERRAIN_FRAG = /* glsl */`
   ${NOISE_GLSL}
   ${CLOUD_SHADE_CHUNK}
   ${SUN_SHADOW_GLSL}
+  ${WETLINE ? DRAINAGE_GLSL : ''}
   ${PAINT ? PAINT_GLSL : ''}
   ${AERIAL ? AERIAL_GLSL : ''}
   ${MAT ? MATERIAL_GLSL : ''}
@@ -617,7 +633,8 @@ const TERRAIN_FRAG = /* glsl */`
     // octaves are sub-pixel, and every instruction on them buys nothing.
     float camDist = length(vW - uCam);
     float near = 1.0 - smoothstep(6.0, 30.0, camDist);
-    Ground gm = groundAt(vW, nb, uSea, uWet, near, camDist);
+    ${WETLINE ? 'vec4 drain = drainAt(vW);' : 'vec4 drain = vec4(0.0);'}
+    Ground gm = groundAt(vW, nb, uSea, uWet, near, camDist, drain);
     vec3 col = gm.mid;
     // Act 3b · the ground gets a normal below the vertex spacing.
     //
@@ -664,6 +681,12 @@ const TERRAIN_FRAG = /* glsl */`
     col *= mix(1.0, 0.66, uWet);
 
     float dusk = smoothstep(-0.12, 0.12, uSunDir.y);
+    // One lookup, hoisted out of the branch, because three things want it: the
+    // light model's shadow stop, the cheap path's key, and the wet sheen below
+    // — which is *after* the branch closes, so reaching into the branch for
+    // the cheap path's sh there compiled under ?paint=0 and not at all under ?paint=1.
+    float sunBeam = ${SUN_SHADOW};
+
     ${PAINT ? /* glsl */`
     // §9.2 · every lit surface goes through one function.
     //
@@ -699,7 +722,7 @@ const TERRAIN_FRAG = /* glsl */`
     // the painterly wobble: the band edge is drawn, not computed, and it is
     // keyed in metres so it keeps its shape at every distance
     sf.jit   = (fbm3(vec3(vW.xz * 0.09, uSeed)) * 0.5) * 0.055;
-    sf.shadow = ${SUN_SHADOW};
+    sf.shadow = sunBeam;
     sf.trans = 0.0; sf.transCol = vec3(0.0);
     sf.rim = 0.55;
     // Was the literal 1.0 at every pixel, on every world, since the model was
@@ -717,7 +740,7 @@ const TERRAIN_FRAG = /* glsl */`
     // the ground under a ridge, a tower or a walker is dark here as well as
     // under ?paint=1 — which is most of what §8 axis 8 is asking for when it
     // scores an object with no ground contact.
-    float sh = ${SUN_SHADOW};
+    float sh = sunBeam;
     // §9.2's rule holds even without §9.2: **shadows change hue, they do not go
     // black.** Two terms carry it, and neither needs the grade's uniforms. The
     // key keeps 18% of itself in full shadow, because a shadowed surface is
@@ -736,11 +759,27 @@ const TERRAIN_FRAG = /* glsl */`
     ${SHADOW_DEBUG ? (PARAM('shdebug') === '2' ? 'lit = shadowProbe(vW);' : 'lit = vec3(sh);') : ''}
     `}
 
-    // wet earth holds a broad sheen of the sky and the sun
-    if (uWet > 0.02) {
+    // Wet earth holds a broad sheen of the sky and the sun — and now it holds
+    // it *where the water is*.
+    //
+    // uWet was a scalar: after rain the entire visible world went slick at
+    // once and dried at once, which is the one thing a real landscape never
+    // does. The rain still says how much; the drainage says where. The seam
+    // down the hollow keeps its sheen long after the shoulder has dried, which
+    // is what makes it read as a place water collects rather than as a green
+    // stripe someone painted.
+    //
+    // It is also what makes Act I's cloud shadow worth watching: this term is
+    // pure specular, so it dies the instant the beam leaves it. A shadow
+    // crossing a wet seam snuffs a silver thread and relights it a moment
+    // later, and neither feature does that alone.
+    float wetHere = clamp(uWet + drain.g * 0.55 + drain.r * 0.30, 0.0, 1.0)
+                  * (1.0 - drain.a * 0.7);
+    if (wetHere > 0.02) {
       vec3 view = normalize(uCam - vW);
       float wetSpec = pow(max(dot(reflect(-uSunDir, nb), view), 0.0), 24.0);
-      lit += (uSunColor * wetSpec * 0.5 + uHorizon * 0.12) * uWet * (0.3 + dusk);
+      lit += (uSunColor * wetSpec * 0.5 + uHorizon * 0.12) * wetHere * (0.3 + dusk)
+           * sunBeam;
     }
 
     // sand and snow catch the sun in tiny mirrors
@@ -1755,6 +1794,7 @@ export class SurfaceScale {
         uSunDir: this.uSunDir, uSunColor: this.uSunColor,
         ...(SHADOW ? this._shadowUniforms() : {}),
         ...(CSHADE ? this._cloudShadeUniforms() : {}),
+        ...(WETLINE ? this._drainageUniforms() : {}),
         ...(PAINT ? this._paintUniforms() : {}),
         ...(AERIAL ? this._aerialUniforms() : {}),
         ...(MAT ? this._materialUniforms() : {}),
@@ -2270,6 +2310,51 @@ export class SurfaceScale {
 
   /** just the uniforms, spread into a material */
   _cloudShadeUniforms() { return { ...this._cloudShade().uniforms }; }
+
+  /**
+   * The drainage tile — `src/drainage.js`.
+   *
+   * Solved *after* `_findSpawn()` has settled `ground.lift`, because the lift is
+   * what puts the landing site above the sea and the sea is what the solver
+   * drains to. D8 itself is differential and would not notice a constant
+   * offset; the "does this cell collect rather than flow" test would, and would
+   * be wrong on every waterlocked world.
+   *
+   * `NearestFilter` would show the 8.75 m grid as terraces. Linear is right and
+   * is also the *reason* the grid can be that coarse: the shader adds metre-
+   * scale noise on top of a smoothly interpolated valley-scale field, which is
+   * the same division of labour §M2 makes between analytic noise and detail.
+   */
+  _drainage() {
+    if (this._drain) return this._drain;
+    // §2.3 · a build timing, logged and never read into a generation path. The
+    // ratchet in `tools/invariants.js` is told about it by name rather than
+    // waived, which is the difference between an allowance and a hole.
+    const t0 = performance.now();
+    const d = solveDrainage(this._heightFn, { ext: EXT, sea: this.seaLevel });
+    const tex = new THREE.DataTexture(packDrainage(d), d.res, d.res, THREE.RGBAFormat);
+    tex.minFilter = tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.needsUpdate = true;
+    let ch = 0;
+    for (let i = 0; i < d.flow.length; i++) if (d.flow[i] > 0.02) ch++;
+    console.info(`[wetline] drainage · ${d.res}² at ${d.cell.toFixed(1)} m · `
+      + `${(ch / d.flow.length * 100).toFixed(1)}% of the tile is channel · `
+      + `${(performance.now() - t0).toFixed(0)} ms`);
+    this._drain = {
+      solve: d,
+      uniforms: {
+        uDrainTex: { value: tex },
+        uDrainOrigin: { value: new THREE.Vector2(-EXT / 2, -EXT / 2) },
+        uDrainSpan: { value: EXT },
+        uDrainAmt: { value: 1 },
+      },
+    };
+    return this._drain;
+  }
+
+  /** just the uniforms */
+  _drainageUniforms() { return { ...this._drainage().uniforms }; }
 
   /**
    * The deck's own three, for `makeCumulus`.
