@@ -458,6 +458,23 @@ const M3 = PARAM('m3') !== '0';
 const AIRMAT = PARAM('airmat') === '1';
 
 /**
+ * `?propair=0` — §9.3 on the props §9.2 lights.
+ *
+ * Not the same switch as `?airmat=`, and the difference is the whole reason
+ * this one is default-on where that one is default-off. `AIRMAT` turns on a
+ * *traversal*: `_dressAerial()` walks the scene once every thirty frames and
+ * injects into every material three.js owns, deciding what is sky by measuring
+ * bounding spheres. That is a broad, heuristic change over forty-six materials
+ * nobody in this repo wrote, and it is right for it to be opt-in.
+ *
+ * This is narrow. It reaches exactly the materials `src/painted.js` builds —
+ * ours, all of them at surface scale, all of them already carrying the world
+ * position and the sun the air needs. There is no heuristic and nothing to get
+ * wrong about what is sky, because none of them are.
+ */
+const PROPAIR = PARAM('propair') !== '0';
+
+/**
  * The aurora curtain — src/curtain.js. Default-off (§7.4).
  *
  * `?sun=<degrees>` puts the sun at a chosen elevation and holds it there, which
@@ -1214,6 +1231,17 @@ export class SurfaceScale {
       sun: this.uSunDir,
       shadow: this.sunShadow ? { ...this.sunShadow.uniforms } : null,
       shadowGLSL: this.sunShadow ? SHADOW_TAPS_GLSL : null,
+      // §9.3, from the same uniform block the terrain and the ocean read, so a
+      // boulder and the ground behind it cannot disagree about how far away the
+      // horizon is. `painted.js` has the note on why the air is applied there
+      // rather than through `applyAerial()`: `paint()` is the last thing that
+      // writes colour, so anything computed before it was being overwritten.
+      //
+      // `?propair=0` turns it off, which is how the A/B gets taken — and the
+      // frame it restores is the one every capture in this repo was shot with.
+      air: AERIAL && PROPAIR
+        ? { glsl: AERIAL_GLSL, uniforms: { ...this._aerialUniforms(), uCam: this.uCam } }
+        : null,
     };
   }
 

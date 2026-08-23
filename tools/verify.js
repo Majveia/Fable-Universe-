@@ -3286,6 +3286,44 @@ function suiteMaterial() {
     ok('and the cavity reaches §9.2, which gates its ambient fill on it',
       /sf\.ao = \$\{MAT \? 'gm\.ao' : '1\.0'\}/.test(src)
       && !/^\s*sf\.ao = 1\.0;$/m.test(src));
+    // --- §9.3 on the props §9.2 lights --------------------------------------
+    //
+    // The ordering defect, and the reason it is a wiring check rather than an
+    // arithmetic one. `src/aerial.js` injects at `#include <opaque_fragment>`,
+    // deliberately, because that is before three's tonemapping and the air
+    // scatters linear light. `src/painted.js` injects at
+    // `#include <dithering_fragment>`, deliberately, because that is after
+    // alpha test and alpha map. Run both on one material and paint() overwrites
+    // the fog. Nothing failed; every prop just sat at zero distance in colour.
+    {
+      const pj = readFileSync(new URL('../src/painted.js', import.meta.url), 'utf8');
+      const sj = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+      ok('§9.3 · the air runs after paint(), not before it',
+        pj.indexOf('gl_FragColor.rgb = paint(sf);')
+          < pj.indexOf('aerialOut = aerial(gl_FragColor.rgb, airDist'),
+        'paint() is the last thing that writes colour, so anything computed'
+        + ' before it is overwritten');
+      ok('and it is the shared AERIAL_GLSL, not a second fog',
+        /\$\{air \? `uniform vec3 uCam;\\n\$\{air\.glsl\}` : ''\}/.test(pj)
+        && /air: AERIAL && PROPAIR/.test(sj)
+        && /glsl: AERIAL_GLSL, uniforms: \{ \.\.\.this\._aerialUniforms\(\), uCam: this\.uCam \}/.test(sj),
+        'a prop and the ground behind it cannot disagree about how far away the'
+        + ' horizon is');
+      ok('and a painted material marks itself so applyAerial() leaves it alone',
+        /\(mat\.userData \|\|= \{\}\)\.aerial = veil \? 'paint-veil' : 'paint';/.test(pj)
+        && /if \(material\.userData\?\.aerial\) return material;/
+          .test(readFileSync(new URL('../src/aerial.js', import.meta.url), 'utf8')),
+        'dressed twice is worse than dressed once');
+      ok('and a veil keeps its coverage',
+        /\$\{veil \? 'gl_FragColor\.rgb = aerialOut\.rgb;' : 'gl_FragColor = aerialOut;'\}/.test(pj),
+        'clarity written over a lantern\'s alpha makes it opaque');
+      ok('and the two programs do not share a cache key',
+        /painted-v1\$\{air \? \(veil \? '\+air-veil' : '\+air'\) : ''\}/.test(pj),
+        'three hashes programs by material configuration and cannot see an'
+        + ' onBeforeCompile — identical materials, one fogged and one not, would'
+        + ' otherwise race for one program');
+    }
+
     // --- act 4 · what floats is lit like everything else --------------------
     //
     // §8 axis 8 scored 2 in both blind frames for one object, and

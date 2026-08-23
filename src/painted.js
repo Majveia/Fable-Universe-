@@ -134,6 +134,47 @@ export function paintedStandard(params, wiring, look = {}) {
   } = look;
 
   const mat = new THREE.MeshStandardMaterial({ roughness: 1, ...params });
+
+  /**
+   * §9.3, and why it has to be *here* rather than in `applyAerial()`.
+   *
+   * `src/aerial.js` already has a general injector, and it already does the
+   * right thing for every material three owns: it injects at
+   * `#include <opaque_fragment>`, which is where `gl_FragColor` first exists and
+   * is before three's tonemapping and colour-space chunks, because the air
+   * scatters linear light.
+   *
+   * This file injects at `#include <dithering_fragment>`, which is the *last*
+   * chunk in the chain — chosen so that alpha test, alpha map and fog have all
+   * run before the colour is replaced. Run both on one material and the order is
+   * opaque_fragment, aerial, ..., dithering_fragment, paint — so `paint()`
+   * overwrote the fog that `applyAerial()` had been careful to compute early.
+   * Every boulder, plant, tree, settlement and sky-whale sat at its true
+   * distance in depth and at zero distance in colour. `docs/notes/props.md`
+   * records it as the seventh wiring of that shape: an injection point chosen
+   * for a reason, and the reason undone two lines later.
+   *
+   * The fix is ordering, not a second fog. `paint()` is the last thing that
+   * writes colour, so the air goes immediately after it, in the same block, out
+   * of the same `AERIAL_GLSL` the terrain and the ocean use, off the same
+   * uniform block — so a prop and the ground behind it cannot disagree about how
+   * far away the horizon is. A material that gets the air here marks itself
+   * `userData.aerial`, which is exactly the flag `applyAerial()` already checks
+   * to stay idempotent, so the general injector leaves it alone.
+   *
+   * Still linear at that point, which is what makes this legal: under §M2 the
+   * scene renders into a HalfFloat composer target with
+   * `renderer.toneMapping = NoToneMapping`, so `tonemapping_fragment` and
+   * `colorspace_fragment` are both no-ops and the value `paint()` writes is the
+   * same linear radiance `aerial()` expects.
+   */
+  const air = wiring.air || null;
+  // Additive and transparent surfaces keep their coverage: alpha there already
+  // carries how much of the pixel the glow covers, and §9.3's clarity written
+  // over it makes a lantern opaque. `_dressAerial()` makes the same call for
+  // the materials it dresses, by the same test.
+  const veil = !!(mat.transparent || mat.blending === THREE.AdditiveBlending);
+  if (air) (mat.userData ||= {}).aerial = veil ? 'paint-veil' : 'paint';
   const v3 = (c) => ({ value: new THREE.Vector3(c[0], c[1], c[2]) });
 
   const own = {
@@ -197,7 +238,7 @@ export function paintedStandard(params, wiring, look = {}) {
       uPaintAmbGnd: P.uPaintAmbGnd,
       uPaintShadowTint: P.uPaintShadowTint,
       uPaintExposure: P.uPaintExposure,
-    }, wiring.shadow || {}, own);
+    }, wiring.shadow || {}, own, air ? air.uniforms : {});
 
     shader.fragmentShader = shader.fragmentShader
       .replace('void main() {', `
@@ -208,6 +249,7 @@ export function paintedStandard(params, wiring, look = {}) {
         uniform vec3 uPaintTransCol; uniform vec3 uPaintSunW;
         uniform float uPaintSoft; uniform float uPaintJit; uniform float uPaintRim;
         uniform float uPaintAO; uniform float uPaintAmb; uniform float uPaintTrans;
+        ${air ? `uniform vec3 uCam;\n${air.glsl}` : ''}
         void main() {
       `)
       // Last chunk in the chain, so everything three wanted to do — alpha test,
@@ -236,11 +278,28 @@ export function paintedStandard(params, wiring, look = {}) {
           sf.trans = uPaintTrans; sf.transCol = uPaintTransCol;
           sf.rim = uPaintRim; sf.ao = uPaintAO; sf.ambient = uPaintAmb;
           gl_FragColor.rgb = paint(sf);
+          ${air ? `
+          // World space, because that is what the air is measured in — and the
+          // same vPaintW the shadow lookup uses, so a prop's haze and its
+          // shadow cannot be computed about two different points.
+          vec3 airToCam = uCam - vPaintW;
+          float airDist = length(airToCam);
+          vec4 aerialOut = aerial(gl_FragColor.rgb, airDist,
+            airDist > 1e-5 ? airToCam / airDist : vec3(0.0, 1.0, 0.0),
+            normalize(uPaintSunW), vPaintW.y);
+          ${veil ? 'gl_FragColor.rgb = aerialOut.rgb;' : 'gl_FragColor = aerialOut;'}
+          ` : ''}
         }
         #include <dithering_fragment>
       `);
   };
-  // two materials that compile to different programs must not share a cache key
-  mat.customProgramCacheKey = () => 'painted-v1';
+  // Two materials that compile to different programs must not share a cache
+  // key. three appends this to its own parameter hash, so it only has to
+  // separate what three cannot see — and whether §9.3 was injected is exactly
+  // that: two props identical in every material property, one fogged and one
+  // not, would otherwise be handed the same program and which one won would
+  // depend on render order.
+  const key = `painted-v1${air ? (veil ? '+air-veil' : '+air') : ''}`;
+  mat.customProgramCacheKey = () => key;
   return mat;
 }

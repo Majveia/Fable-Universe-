@@ -643,3 +643,66 @@ two lines later — and it is not Act 4's to fix.
 
 Count of wirings that existed, were exercised, and never reached the frame:
 **seven**.
+
+---
+
+# §9.3 on the props — the ordering fix, and four probes that could not see it
+
+The seventh entry above named the defect: `painted.js` injects at
+`#include <dithering_fragment>` — the last chunk, chosen so alpha test, alpha
+map and fog have all run — and then writes `gl_FragColor.rgb = paint(sf)`,
+overwriting the fog that `applyAerial()` had been careful to compute early.
+`src/aerial.js` injects at `#include <opaque_fragment>`, also deliberately,
+because that is before three's tonemapping and the air scatters linear light.
+Both injection points are right. Run both on one material and the second one
+wins.
+
+**The fix is ordering, not a second fog.** `paint()` is the last thing that
+writes colour, so the air goes immediately after it in the same block, out of
+the same `AERIAL_GLSL`, off the same uniform block `paintWiring()` already
+carries — so a boulder and the ground behind it cannot disagree about how far
+away the horizon is. A material that takes the air here sets
+`userData.aerial`, which is the flag `applyAerial()` already checks, so the
+general injector leaves it alone. `?propair=0` restores the old frame.
+
+It is legal at that point because under §M2 the scene renders into a HalfFloat
+composer target with `renderer.toneMapping = NoToneMapping`, so
+`tonemapping_fragment` and `colorspace_fragment` are both no-ops and the value
+`paint()` writes is the same linear radiance `aerial()` expects.
+
+## The part worth writing down
+
+Four separate probes could not distinguish a working injection from a dead one.
+
+| probe | reading | what it actually proved |
+|---|---|---|
+| `alphaudit --extra propair=0` vs default | **byte-identical**, every bin to 3 dp | nothing — its 20 bins are coarser than the change |
+| painted materials in the live scene | `painted-v1+air`, `userData.aerial = 'paint'` | the material was built with the air |
+| the compiled `shaderSource` | `aerial()` defined, called, alpha written, in 3 programs | the *shader* has it |
+| mean alpha over the pixels props cover | **1.0 with the flag on and 1.0 with it off** | looks exactly like a dead wiring |
+
+The fifth probe forced the shared air short — `uAirNear = 0`, `uAirFar = 25` —
+and prop alpha went from exactly 1.0 to **mean 0.796, min 0.364**. Live, and
+responsive to the uniforms. With `?propair=0`, `paintWiring().air` is `null` and
+the block is absent from the source.
+
+So why was alpha exactly 1.0 on a working build? Because on that world
+`aerialParams()` returns **`near = 372.7 m`, `far = 9051.8 m`** — clear air —
+and every painted prop lives within `REACH = 420 m` of spawn. Inside `uAirNear`
+the fog fraction is exactly zero by construction. **Alpha 1.0 was the correct
+answer**, and a correct answer that is identical to the broken one is the
+hardest case this file has recorded: not a wiring that does nothing, but a
+wiring whose output is indistinguishable from doing nothing on the world you
+happen to be standing on.
+
+The general lesson, and it applies to the six entries above: *a null result is
+only evidence when the instrument is known to be able to show a positive one.*
+Forcing the input to an extreme is how you find that out, and it costs one run.
+
+**Where this will show and where it will not.** It bites on hazy worlds — high
+`atmo` pulls `far` down toward a few hundred metres — and on anything further
+out than `uAirNear`: the sky-whales at 200–570 m, settlements, far trees, the
+horizon band's props. On a clear temperate world with everything inside 420 m it
+is very nearly a no-op, which is the physics being honest rather than the fix
+being weak. Unverified by eye, as always: `?propair=0` makes the A/B one
+character on a machine with a GPU.
