@@ -172,6 +172,31 @@ function main() {
   const modules = {};
   for (const [f, src] of sources) modules[f] = rewrite(src, f);
 
+  // Anything the rewrite did not reach. Three shapes cannot survive in a
+  // correctly rewritten module, and each is a specifier the browser would try
+  // to resolve against a blob: URL — which has no path, so it fails at the
+  // moment that module is first imported and not before. On the surface scale
+  // that could be several minutes and one scale transition after load, which
+  // is the worst possible time to find out.
+  //
+  // `import './x.js'` for its side effects is the one this repo does not
+  // currently contain and the one most likely to be added without anyone
+  // thinking about this file.
+  const missed = [];
+  for (const [f, src] of Object.entries(modules)) {
+    for (const [re, what] of [
+      [/^[ \t]*import\s+['"][^'"]+['"]/m, 'a side-effect-only import'],
+      [/\bfrom\s*['"]\.\.?\//, 'an unrewritten relative specifier'],
+      [/\bfrom\s*['"]three(\/|['"])/, 'an unrewritten bare three specifier'],
+      [/\bimport\s*\(\s*[^'")]/, 'a computed dynamic import'],
+    ]) if (re.test(src)) missed.push(`${f}: ${what}`);
+  }
+  if (missed.length) {
+    throw new Error('tools/pack.js cannot rewrite these, and a packed build '
+      + 'would fail at the moment each module is first imported rather than at '
+      + 'load:\n  ' + missed.join('\n  '));
+  }
+
   // The worker entry reads the URL the loader stashed. `new URL(x,
   // import.meta.url)` inside a blob module resolves against a blob URL, which
   // has no path — so this is not an optimisation, it is the only form that
