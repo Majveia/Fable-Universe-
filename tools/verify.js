@@ -109,6 +109,10 @@ import {
   stepEntry, terminalVelocity as entryTerminalV,
 } from '../src/descent.js';
 import {
+  CREW, crewState, easeInOut, gait, look, pathHits, seatPath, sit, stand,
+  stationInReach, stepCrew, straightPath, transitionFraction,
+} from '../src/pilot.js';
+import {
   F2, FLICKER_HZ, MAINS_HZ, MERCURY_LINES, PHOSPHOR, PHOSPHOR_BANDS,
   isThin, lampColour, lampExposure, lampFlicker,
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
@@ -10202,6 +10206,326 @@ function suiteDescent() {
   }
 }
 
+
+/* ===========================================================================
+   pilot — walking a deck, and the three metres into the seat
+   ========================================================================= */
+
+/* A pilot's seat, in cabin metres. The eye sits at 1.16 when seated; the
+   backrest therefore tops out around the shoulders at 1.32 and is a hand's
+   width thick just behind the occupant. Nothing in `pilot.js` is told these
+   numbers — they are the obstacle it is asked to miss. */
+const SEAT_EYE = [0, 1.16, -5.28];
+const BACKREST = [-0.28, 0.28, 0.55, 1.32, -5.20, -5.06];
+const P_CABIN = {
+  // [halfWidth, z0, z1] — a cockpit that opens into a corridor
+  volumes: [[1.05, -7.6, -3.4], [0.72, -3.4, 0.6], [1.30, 0.6, 7.2]],
+  blockers: [[-1.05, -0.55, -6.4, -5.9]],   // the console, across the nose
+};
+const P_STATION = {
+  id: 'helm', pos: [0, 0, -4.9], radius: 0.62,
+  seatEye: SEAT_EYE, seatYaw: 0,
+};
+
+function suitePilot() {
+  console.log('\npilot — the deck, and the seat §2.5 says you cannot cut to');
+
+  {
+    /* ------------------------------------------------------------------ the
+       reason this file exists. A straight line from standing to the seat eye
+       runs through the backrest and the camera flies through it — a cut of one
+       or two frames, and §2.5 has no size threshold in it.
+
+       Tested from four approaches, because a path that clears from dead-astern
+       and not from the left is a path that works on the one walk somebody
+       happened to try. */
+    const approaches = [['centred', [0, CREW.eye, -4.35]],
+      ['from the left', [-0.34, CREW.eye, -4.35]],
+      ['from the right', [0.34, CREW.eye, -4.35]],
+      ['from further back', [0.20, CREW.eye, -3.60]]];
+    let worstBow = 0, bestLine = 1;
+    for (const [, from] of approaches) {
+      worstBow = Math.max(worstBow, pathHits(from, SEAT_EYE, BACKREST, seatPath));
+      bestLine = Math.min(bestLine, pathHits(from, SEAT_EYE, BACKREST, straightPath));
+    }
+    ok('§2.5 · the eye never passes through the backrest, from any approach',
+      worstBow === 0,
+      `${(worstBow * 100).toFixed(1)}% of frames inside the seat shell across`
+      + ' four approach directions');
+    ok('...and the straight line it replaced does, which is why the bow is there',
+      bestLine > 0.08,
+      `the lerp spends ${(bestLine * 100).toFixed(1)}% of the move inside the`
+      + ' backrest even on its best approach — this is the defect, measured');
+    // the mechanism, not just the outcome: it goes around and over
+    let maxX = 0, minY = 9;
+    const q = [0, 0, 0];
+    for (let i = 0; i <= 64; i++) {
+      seatPath([0.34, CREW.eye, -4.35], SEAT_EYE, easeInOut(i / 64), q);
+      maxX = Math.max(maxX, Math.abs(q[0]));
+      if (q[2] > BACKREST[4] && q[2] < BACKREST[5]) minY = Math.min(minY, q[1]);
+    }
+    ok('...and it clears by going around and over, not by going faster',
+      maxX > 0.28 && (minY > BACKREST[3] || minY === 9),
+      `swings to |x| = ${maxX.toFixed(2)} m, wider than the ${BACKREST[1]} m`
+      + ' seat half-width, and crosses the backrest depth above its top edge');
+  }
+
+  {
+    // The side is signed by the approach. A fixed side is right half the time.
+    const l = seatPath([-0.34, CREW.eye, -4.35], SEAT_EYE, 0.3, [0, 0, 0]);
+    const r = seatPath([0.34, CREW.eye, -4.35], SEAT_EYE, 0.3, [0, 0, 0]);
+    ok('the bow swings out to whichever side you walked up on',
+      l[0] < 0 && r[0] > 0,
+      `left approach bows to x = ${l[0].toFixed(2)}, right to ${r[0].toFixed(2)}`
+      + ' — a fixed side reads as the camera taking a detour half the time');
+    // and a dead-on approach still picks a side rather than dividing by zero
+    const c = seatPath([0, CREW.eye, -4.35], SEAT_EYE, 0.3, [0, 0, 0]);
+    ok('...and a dead-on approach picks one rather than producing NaN',
+      Number.isFinite(c[0]) && Math.abs(c[0]) > 0.05,
+      `x = ${c[0].toFixed(3)} with no side to prefer`);
+  }
+
+  {
+    // Endpoints. A path that clears the furniture and misses the chair is worse
+    // than the bug it fixed.
+    const from = [0.34, CREW.eye, -4.35];
+    const a = seatPath(from, SEAT_EYE, 0, [0, 0, 0]);
+    const b = seatPath(from, SEAT_EYE, 1, [0, 0, 0]);
+    ok('the path starts at the eye and ends exactly in the seat',
+      Math.hypot(a[0] - from[0], a[1] - from[1], a[2] - from[2]) < 1e-12
+      && Math.hypot(b[0] - SEAT_EYE[0], b[1] - SEAT_EYE[1], b[2] - SEAT_EYE[2]) < 1e-12,
+      'both endpoints exact — a Bézier interpolates its first and last control'
+      + ' points, and this asserts the ones passed are those');
+  }
+
+  {
+    // The sit as a state machine: it completes, it cannot be re-entered, and
+    // it cannot be steered while it runs.
+    let s = crewState([0.3, 0, -4.35], 0.4);
+    s = sit(s, P_STATION);
+    ok('sitting down enters a transition that owns the camera',
+      s.mode === 'moving' && s.target === 'seated', `mode ${s.mode}`);
+    const again = sit(s, P_STATION);
+    ok('...and a held key cannot re-enter it', again.t === s.t && again === s
+      || (again.mode === s.mode && again.t === s.t),
+      'sit() is a no-op unless standing, so the transition cannot restart');
+    // look() refuses input mid-move, so there is no way to end up half-seated
+    const steered = look(s, 400, 0);
+    ok('...and the camera cannot be fought while it moves',
+      steered.yaw === s.yaw, 'look() returns the state unchanged while moving');
+
+    let frames = 0;
+    while (s.mode === 'moving' && frames < 600) { s = stepCrew(s, P_CABIN, {}, 1 / 60); frames++; }
+    ok('...and it completes, in about the time it says it will',
+      s.mode === 'seated' && Math.abs(frames / 60 - CREW.sitTime) < 0.05,
+      `${(frames / 60).toFixed(3)} s against a declared ${CREW.sitTime} s`);
+    ok('...arriving exactly at the seat eye',
+      Math.hypot(s.eye[0] - SEAT_EYE[0], s.eye[1] - SEAT_EYE[1],
+        s.eye[2] - SEAT_EYE[2]) < 1e-9,
+      `eye at [${s.eye.map((v) => v.toFixed(3)).join(', ')}]`);
+  }
+
+  {
+    /* The seated look arc, and the clause that makes it portable.
+       Clamping in world yaw works only for a seat that happens to face zero —
+       the kind of bug that survives every test written on the ship it was
+       written for. So it is tested on a seat installed at 2.4 rad. */
+    const skew = { ...P_STATION, seatYaw: 2.4 };
+    let s = crewState([0, 0, -4.35], 2.4);
+    s = sit(s, skew);
+    for (let i = 0; i < 600 && s.mode === 'moving'; i++) s = stepCrew(s, P_CABIN, {}, 1 / 60);
+    let hard = s;
+    for (let i = 0; i < 50; i++) hard = look(hard, 900, 0);   // wrench it left
+    const off = Math.abs(((hard.yaw - 2.4 + Math.PI) % (Math.PI * 2)) - Math.PI);
+    ok('a seated head cannot turn to look through its own headrest',
+      off <= CREW.seatYaw + 1e-9,
+      `${off.toFixed(3)} rad off the seat heading against a limit of`
+      + ` ${CREW.seatYaw} — and the seat is installed at 2.4 rad, so the clamp`
+      + ' is relative to the chair rather than to world zero');
+    let down = s;
+    for (let i = 0; i < 50; i++) down = look(down, 0, 900);
+    ok('...and the same for pitch', down.pitch >= CREW.seatPitchDown - 1e-9,
+      `${down.pitch.toFixed(3)} rad against ${CREW.seatPitchDown}`);
+  }
+
+  {
+    // Standing up retraces the curve, so it clears the backrest too.
+    let s = crewState([0.3, 0, -4.35]);
+    s = sit(s, P_STATION);
+    for (let i = 0; i < 600 && s.mode === 'moving'; i++) s = stepCrew(s, P_CABIN, {}, 1 / 60);
+    s = stand(s);
+    ok('standing up re-enters the transition rather than teleporting',
+      s.mode === 'moving' && s.target === 'walk', `mode ${s.mode}`);
+    let worst = 0;
+    for (let i = 0; i < 600 && s.mode === 'moving'; i++) {
+      s = stepCrew(s, P_CABIN, {}, 1 / 60);
+      const e = s.eye;
+      if (e[0] > BACKREST[0] && e[0] < BACKREST[1] && e[1] > BACKREST[2]
+        && e[1] < BACKREST[3] && e[2] > BACKREST[4] && e[2] < BACKREST[5]) worst++;
+    }
+    ok('...and gets out of the chair without going through it either',
+      s.mode === 'walk' && worst === 0,
+      `${worst} frames inside the backrest on the way out — the same curve run`
+      + ' backwards, so it cannot be right in one direction and wrong in the other');
+  }
+
+  {
+    // Collision. Not a physics engine — a corridor and some boxes — but it has
+    // to slide rather than stick, and it must never leave the hull.
+    let s = crewState([0, 0, 0]);
+    let escaped = 0;
+    for (let i = 0; i < 1800; i++) {
+      // walk hard into the port bulkhead at 40° for thirty seconds
+      s = stepCrew(s, P_CABIN, { fwd: 0.77, strafe: -0.64, run: true }, 1 / 60);
+      const hw = P_CABIN.volumes.find((v) => s.pos[2] >= v[1] && s.pos[2] <= v[2]);
+      if (hw && Math.abs(s.pos[0]) > hw[0] - CREW.radius + 1e-6) escaped++;
+    }
+    ok('walking into a bulkhead slides along it and never leaves the hull',
+      escaped === 0,
+      `${escaped} frames outside the walkable half-width over 30 s of pushing`
+      + ' into a wall at 40° — the axes resolve separately, which is what makes'
+      + ' a wall slide instead of stick');
+    ok('...and the corridor is narrower than the ends, and holds',
+      Math.abs(s.pos[0]) <= 1.30, `ended at x = ${s.pos[0].toFixed(3)}`);
+  }
+
+  {
+    // The blocker in front of the console.
+    let s = crewState([-0.8, 0, -5.0]);
+    let inside = 0;
+    for (let i = 0; i < 900; i++) {
+      s = stepCrew(s, P_CABIN, { fwd: 1 }, 1 / 60);
+      const b = P_CABIN.blockers[0];
+      if (s.pos[0] > b[0] && s.pos[0] < b[1] && s.pos[2] > b[2] && s.pos[2] < b[3]) inside++;
+    }
+    ok('the console cannot be walked into', inside === 0,
+      `${inside} frames inside the blocker over 15 s of walking at it`);
+  }
+
+  {
+    // Diagonal normalisation. Two keys must not be 1.41× one key.
+    const start = crewState().pos;
+    let a = crewState(), b = crewState();
+    for (let i = 0; i < 300; i++) {
+      a = stepCrew(a, null, { fwd: 1 }, 1 / 60);
+      b = stepCrew(b, null, { fwd: 1, strafe: 1 }, 1 / 60);
+    }
+    const moved = (s) => Math.hypot(s.pos[0] - start[0], s.pos[2] - start[2]);
+    near('holding two keys is not 1.41× walking speed', moved(b), moved(a), 0.01);
+  }
+
+  {
+    // Station reach: near enough, and faced.
+    const st = [{ id: 'helm', pos: [0, 0, -4.9], radius: 0.62 },
+      { id: 'nav', pos: [0, 0, 2.0], radius: 0.62 }];
+    const near_ = crewState([0, 0, -4.4], 0);          // facing −z, toward helm
+    ok('a station you are standing at and facing is in reach',
+      stationInReach(near_, st)?.id === 'helm', 'helm found');
+    const away = crewState([0, 0, -4.4], Math.PI);     // same spot, turned round
+    ok('...and is not, with your back to it',
+      stationInReach(away, st) === null,
+      'turning away drops the prompt — distance alone would keep it lit');
+    const far = crewState([0, 0, -1.0], 0);
+    ok('...and neither is one across the cabin',
+      stationInReach(far, st) === null, 'out of radius + reach');
+    // seated, nothing is in reach, so a second press cannot re-trigger a sit
+    let seated = sit(crewState([0, 0, -4.4]), P_STATION);
+    ok('...and nothing is in reach while seated or moving',
+      stationInReach(seated, st) === null, `mode ${seated.mode}`);
+  }
+
+  {
+    /* §M4's single gait clock. One phase drives the bob and anything that has
+       to land on the same foot; two clocks drift apart over exactly the length
+       of time nobody watches for. Advanced by distance, so slowing down
+       lengthens the stride rather than speeding up the legs. */
+    const from0 = crewState().pos;
+    let slow = crewState(), fast = crewState();
+    for (let i = 0; i < 600; i++) {
+      slow = stepCrew(slow, null, { fwd: 0.5 }, 1 / 60);
+      fast = stepCrew(fast, null, { fwd: 1 }, 1 / 60);
+    }
+    const dSlow = Math.hypot(slow.pos[0] - from0[0], slow.pos[2] - from0[2]);
+    const dFast = Math.hypot(fast.pos[0] - from0[0], fast.pos[2] - from0[2]);
+    near('the gait clock advances with distance, not with time',
+      gait(slow) / dSlow, gait(fast) / dFast, 0.02);
+    ok('...and standing still does not advance it at all',
+      gait(stepCrew(crewState(), null, {}, 1 / 60)) === 0,
+      'a stationary crew member does not take steps');
+  }
+
+  {
+    // §9.8. Reduced motion halves the bob and shortens the move — and never
+    // disables either, because stillness would be a lie about a vehicle.
+    let full = crewState(), red = crewState();
+    for (let i = 0; i < 240; i++) {
+      full = stepCrew(full, null, { fwd: 1 }, 1 / 60, 1);
+      red = stepCrew(red, null, { fwd: 1 }, 1 / 60, 0.35);
+    }
+    const bobFull = Math.abs(full.eye[1] - CREW.eye);
+    const bobRed = Math.abs(red.eye[1] - CREW.eye);
+    ok('§9.8 · reduced motion damps the head bob without stopping it',
+      bobRed < bobFull && bobRed > 0,
+      `${(bobRed * 1000).toFixed(1)} mm against ${(bobFull * 1000).toFixed(1)} mm`
+      + ' — halved, not switched off');
+    // ...and the sit is quicker but still a move
+    let q = sit(crewState([0.3, 0, -4.35]), P_STATION);
+    let n = 0;
+    while (q.mode === 'moving' && n < 600) { q = stepCrew(q, P_CABIN, {}, 1 / 60, 0.35); n++; }
+    ok('...and the sit shortens rather than snapping',
+      q.mode === 'seated' && n > 6 && n / 60 < CREW.sitTime,
+      `${(n / 60).toFixed(3)} s against ${CREW.sitTime} s at full motion`);
+  }
+
+  {
+    // §2.3, and the frame-rate independence that makes a capture reproducible.
+    const runAt = (dt, steps) => {
+      let s = crewState([0.2, 0, -4.35], 0.3);
+      for (let i = 0; i < steps; i++) s = stepCrew(s, P_CABIN, { fwd: 1, strafe: 0.4 }, dt);
+      return s;
+    };
+    const a = runAt(1 / 60, 120), b = runAt(1 / 60, 120);
+    ok('§2.3 · the same walk twice is bit-identical',
+      a.pos[0] === b.pos[0] && a.pos[2] === b.pos[2] && a.bob === b.bob,
+      `x ${a.pos[0]} · z ${a.pos[2]} — no clock and no Math.random in the path`);
+    const c = runAt(1 / 240, 480);
+    ok('...and a quarter timestep lands within a centimetre of the same place',
+      Math.hypot(a.pos[0] - c.pos[0], a.pos[2] - c.pos[2]) < 0.01,
+      `${(Math.hypot(a.pos[0] - c.pos[0], a.pos[2] - c.pos[2]) * 1000).toFixed(1)} mm`
+      + ' apart over two seconds — the velocity smoothing is a rate, so the'
+      + ' walk does not depend on the frame rate it was flown at');
+  }
+
+  {
+    // A silly timestep must not throw the crew through the hull.
+    let s = crewState([0, 0, 0]);
+    s = stepCrew(s, P_CABIN, { fwd: 1, run: true }, 8);
+    ok('a stalled frame does not teleport anybody through a bulkhead',
+      Number.isFinite(s.pos[0]) && Number.isFinite(s.pos[2])
+      && s.pos[2] >= P_CABIN.volumes[0][1],
+      `dt clamped to 0.25 s · z = ${s.pos[2].toFixed(2)}`);
+    ok('...and a zero or negative one changes nothing',
+      stepCrew(s, P_CABIN, { fwd: 1 }, 0).pos[2] === s.pos[2]
+      && stepCrew(s, P_CABIN, { fwd: 1 }, -1).pos[2] === s.pos[2],
+      'a paused tab and a clock that went backwards are the same thing here');
+  }
+
+  {
+    // The transition fraction, for anything that wants to react to the sit.
+    let s = sit(crewState([0.3, 0, -4.35]), P_STATION);
+    let last = -1, monotone = true;
+    while (s.mode === 'moving') {
+      s = stepCrew(s, P_CABIN, {}, 1 / 120);
+      const f = transitionFraction(s);
+      if (s.mode === 'moving' && f < last - 1e-9) monotone = false;
+      last = f;
+    }
+    ok('the sit reports a monotone 0→1 fraction, and 0 when nothing is happening',
+      monotone && transitionFraction(s) === 0 && transitionFraction(crewState()) === 0,
+      'so audio, the HUD and the cabin lights can all ride one number');
+  }
+}
+
 const suites = {
   blossom: suiteBlossom,
   cover: suiteCover,
@@ -10239,6 +10563,7 @@ const suites = {
   ocean: suiteOcean, horizon: suiteHorizon, wind: suiteWind, meadow: suiteMeadow,
   vehicle: suiteVehicle,
   descent: suiteDescent,
+  pilot: suitePilot,
 };
 
 for (const [name, fn] of Object.entries(suites)) {
