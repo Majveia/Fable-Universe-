@@ -36,6 +36,8 @@ Here is the sum, as of M5.
 | ~~**The critic has never run**~~ | 8 | **Act A closed** — scored blind on an RTX 3060, all-flags **3.00** vs default **2.43**. §8's gate still FAILS (needs ≥4/≥4.5) |
 | **The ground has no material** | 8 · 6 M3 | **NEW, and now the blocking axis.** Near-ground gradient 1.07/255; featureless at 5× magnification. Materials scored 1 and 2 |
 | **`planet-orbit` never reaches true black** | 2.8 | **NEW.** rgb(13,7,0), 0.0% of the frame at #000, both flag sets. `star-system` is correct, so it is specific to the planet scale |
+| **§9 names one art reference; the code now has an axis between two** | 9 · 3 | **NEW, and it is a debt in the constitution rather than in the code.** `src/register.js` makes hoshi-no-tani and sakura-realm the two ends of one axis chosen by `visibilityFor()`, and §9 still reads as though there is one north star. `docs/plans/SAKURA.md` §10 states the exact edit. **It needs a human**, per §7.2 — an agent rewriting the clause it is being judged against is the one edit no agent should make |
+| **The register and the aperture have never been captured** | 8 · 16.1 | **NEW.** `registerFor()` and `apertureFor()` are proved arithmetically — 1000/1000 offline, R=1 bit-identical to the shipped print — and **not one frame has been rendered through either**. Twelve of `PHOTOGRAPHIC`'s fourteen knobs are transcriptions of intent that only a blind §8 score can settle |
 
 A visitor who opens the page gets the print, aerial perspective, a body, a
 camera and a mobile layer. They do not get the light model, the materials, the

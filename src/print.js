@@ -292,8 +292,16 @@ export const PRINT_SHADER = {
       // layer sits deepest and is most of what survives the return trip — which
       // is why the tint is a red-weighted vec3 rather than a saturation boost.
       // One mix on a vec3 already fetched; nothing is sampled twice.
+      // Both scaled by uPaint, and the gain as much as the tint. §2.8 has to
+      // hold in the *shader*, not in a policy: registerForScale() happens to
+      // return the painted end in vacuum today, so an ungated gain would have
+      // been correct by agreement rather than by construction — and the next
+      // caller to set a register on a vacuum scale would have brightened the
+      // deep field by 55% with nothing anywhere saying it could not. Gated, a
+      // vacuum frame is invariant to the register no matter who sets it.
       vec3 halo = mix(vec3(1.0), vec3(1.10, 0.98, 0.90), uBloomReg.y * uPaint);
-      c += max(bl, vec3(0.0)) * uBloomAmt * uBloomReg.x * halo;
+      float bloomX = mix(1.0, uBloomReg.x, uPaint);
+      c += max(bl, vec3(0.0)) * uBloomAmt * bloomX * halo;
 
       c = grade(c, uPaint);
 

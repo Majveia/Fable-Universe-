@@ -10133,6 +10133,30 @@ function suiteRegister() {
       (src.match(/uniforms\.uShoulder\.value =/g) ?? []).length === 1
       && /export function setRegister\(/.test(src));
 
+    // §2.8 must hold in the shader rather than in a policy. Every knob's
+    // effect has to vanish at uPaint = 0, or a vacuum frame is invariant to the
+    // register only by the agreement of whoever last wrote `registerForScale`.
+    // The bloom gain was the one that was not, and it would have brightened the
+    // deep field 55% with nothing anywhere saying it could not.
+    {
+      const stmts = frag.split(';');
+      const ungated = [];
+      for (const u of ['uShoulder', 'uPush.x', 'uPush.y', 'uSBend', 'uSatX',
+        'uWash.x', 'uWash.y', 'uWash.z', 'uTooth.x', 'uTooth.y',
+        'uVig.x', 'uVig.y', 'uBloomReg.x', 'uBloomReg.y']) {
+        // the statement that *consumes* the knob, ignoring the declaration
+        const use = stmts.filter((t) => t.includes(u) && !/^\s*uniform\b/.test(t.trim()));
+        // gated directly, or feeding a local that is itself gated
+        const gated = use.some((t) => /\bu?[Pp]aint\b/.test(t))
+          || use.some((t) => /vigCol|float wet\b/.test(t));
+        if (!gated && use.length) ungated.push(u);
+      }
+      ok('§2.8 · every knob vanishes at uPaint = 0, in the shader and not in a policy',
+        ungated.length === 0,
+        ungated.length ? `ungated: ${ungated.join(', ')}`
+          : '14 knobs, all gated — a vacuum frame is invariant to the register by construction');
+    }
+
     ok('§9.4 · the literals the knobs replaced are gone from the shader',
       !/0\.42 \* fog/.test(frag) && !/0\.16 \* paint/.test(frag)
       && !/0\.09 \+ 0\.17 \* wet/.test(frag) && !/0\.85 \* paint/.test(frag),
