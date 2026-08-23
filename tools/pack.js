@@ -393,7 +393,7 @@ const panelHtml = (places) => `
   <label><input type="checkbox" name="ridge"> far ridges as silhouette</label>
   <label><input type="checkbox" name="paint"> the light model</label>
 ${places.length ? `  <div class="sec">somewhere to stand</div>
-${places.map((pl) => `  <a class="go" href="?${pl.q}">${pl.name}</a>`).join('\n')}` : ''}
+${places.map((pl) => `  <a class="go" href="?${pl.q.replace(/&/g, '&amp;')}">${pl.name}</a>`).join('\n')}` : ''}
   <div class="sec">what to look for</div>
   <div class="note">Stand still at golden hour and wait. A shadow crosses the
   valley as a front — it darkens the grass without draining it, and the sheen
