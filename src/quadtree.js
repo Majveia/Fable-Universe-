@@ -84,7 +84,25 @@ export class QuadtreePlanet {
     this.workers = [];
     this.idle = [];
     for (let w = 0; w < n; w++) {
-      const wk = new Worker(new URL('./tilebuild.js', import.meta.url), { type: 'module' });
+      // `new Worker` can refuse rather than fail: a sandboxed host, a content
+      // policy, an out-of-memory. The async `onerror` below catches a worker
+      // that dies mid-job and this catches one that never started, which is a
+      // different failure and used to take the whole scale with it.
+      //
+      // An empty pool is already a state this class handles — the dispatch
+      // loop breaks on `!this.idle.length` — so the degraded build is the six
+      // root faces and no subdivision, which is a planet you can still see and
+      // still leave. That is a much better answer than a scale that throws.
+      let wk;
+      try {
+        wk = new Worker(new URL('./tilebuild.js', import.meta.url), { type: 'module' });
+      } catch (err) {
+        if (w === 0) {
+          console.warn('AEON tile workers unavailable — the globe will not '
+            + 'subdivide past its six root faces:', err && err.message);
+        }
+        break;
+      }
       wk.onmessage = (e) => {
         // the job went to an *idle* worker, so this round trip is the build
         // plus the postMessage, with no queue wait folded in — which is what
