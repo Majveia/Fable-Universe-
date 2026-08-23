@@ -112,6 +112,7 @@ import {
   CREW, crewState, easeInOut, gait, look, pathHits, seatPath, sit, stand,
   stationInReach, stepCrew, straightPath, transitionFraction,
 } from '../src/pilot.js';
+import { CABIN, cabinFor } from '../src/deck.js';
 import {
   F2, FLICKER_HZ, MAINS_HZ, MERCURY_LINES, PHOSPHOR, PHOSPHOR_BANDS,
   isThin, lampColour, lampExposure, lampFlicker,
@@ -10526,6 +10527,256 @@ function suitePilot() {
   }
 }
 
+
+/* ===========================================================================
+   deck — the plan `cabin.js` draws and `pilot.js` walks
+
+   The point of this suite is not that the numbers are pretty. It is that there
+   is exactly **one** set of them: the collision, the bulkheads and the
+   furniture all read the same object, so a wall cannot end up drawn somewhere
+   the crew can walk through. That is only checkable because the spec is pure —
+   `cabin.js` imports three and node cannot load it.
+   ========================================================================= */
+const D_CRAFT = {
+  Earth: craftFor({ massE: 1, radiusE: 1, atmo: 1 }),
+  Luna: craftFor({ massE: 0.0123, radiusE: 0.273, atmo: 0 }),
+  Venus: craftFor({ massE: 0.815, radiusE: 0.949, atmo: 92 }),
+  Big: craftFor({ massE: 2.4, radiusE: 1.3, atmo: 1.6 }),
+};
+
+function suiteDeck() {
+  console.log('\ndeck — one plan, read by the collision and by the bulkhead');
+
+  const specs = {};
+  for (const [n, c] of Object.entries(D_CRAFT)) specs[n] = cabinFor(c, 42);
+
+  {
+    // The layout the header diagram draws, on every world rather than on the
+    // one it was written for. This inverted on small vehicles when each section
+    // carried its own minimum width, and the shell tapered the wrong way.
+    let ordered = true, walkable = true, narrowest = 9;
+    for (const s of Object.values(specs)) {
+      const [ck, co, hb] = s.sections.map((x) => x.half);
+      if (!(hb > ck && ck > co)) ordered = false;
+      if (co - CREW.radius < 0.15) walkable = false;
+      narrowest = Math.min(narrowest, co - CREW.radius);
+    }
+    ok('habitat wider than cockpit wider than corridor, on every vehicle',
+      ordered, Object.entries(specs).map(([n, s]) =>
+        `${n} ${s.sections.map((x) => x.half.toFixed(2)).join('/')}`).join(' · '));
+    ok('...and the corridor is always wide enough to walk down',
+      walkable,
+      `narrowest shoulder clearance ${narrowest.toFixed(2)} m — the floor goes`
+      + ' on the base width so the proportions survive it, rather than on each'
+      + ' section, which is what let a cockpit minimum exceed a habitat');
+  }
+
+  {
+    // The contract `pilot.js` reads. Adjacency matters: a gap between two
+    // volumes is a place the crew falls out of the ship.
+    for (const [n, s] of Object.entries(specs)) {
+      let contiguous = true, matches = true;
+      for (let i = 0; i < s.volumes.length; i++) {
+        const v = s.volumes[i], sec = s.sections[i];
+        if (v[0] !== sec.half || v[1] !== sec.z0 || v[2] !== sec.z1) matches = false;
+        if (i > 0 && Math.abs(v[1] - s.volumes[i - 1][2]) > 1e-12) contiguous = false;
+      }
+      ok(`${n}: the walkable volumes are the drawn sections, and they touch`,
+        matches && contiguous,
+        `${s.volumes.length} volumes from ${s.zNose.toFixed(2)} to`
+        + ` ${s.zTail.toFixed(2)} m with no gap — one array, so the collision`
+        + ' and the geometry cannot disagree about where a bulkhead is');
+    }
+  }
+
+  {
+    // Every blocker has to be inside the hull. A blocker sticking out of the
+    // ship is furniture nobody can reach, and reads as an invisible wall.
+    for (const [n, s] of Object.entries(specs)) {
+      let outside = 0;
+      for (const b of s.blockers) {
+        for (const [x, z] of [[b[0], b[2]], [b[1], b[3]], [b[0], b[3]], [b[1], b[2]]]) {
+          const v = s.volumes.find((q) => z >= q[1] - 1e-9 && z <= q[2] + 1e-9);
+          if (!v || Math.abs(x) > v[0] + 1e-9) outside++;
+        }
+      }
+      ok(`${n}: no blocker sticks out through the hull`, outside === 0,
+        `${s.blockers.length} blockers, ${outside} corners outside the section`
+        + ' they sit in');
+    }
+  }
+
+  {
+    /* The join to `pilot.js`. The backrest the bowed seat path exists to miss
+       is declared *here*, because the geometry owns where the furniture is —
+       and the path has to clear the one the ship actually has, not the one the
+       pilot suite made up. This is the check that would catch somebody moving
+       a seat 20 cm and quietly reinstating the bug. */
+    for (const [n, s] of Object.entries(specs)) {
+      const st = s.stations.find((q) => q.id === 'helm');
+      const stood = [0.3, CREW.eye, st.pos[2] + 0.25];
+      const bowed = pathHits(stood, st.seatEye, s.seat.backrest, seatPath);
+      const line = pathHits(stood, st.seatEye, s.seat.backrest, straightPath);
+      ok(`${n}: the seat path clears this ship's actual backrest`,
+        bowed === 0 && line > 0,
+        `bowed ${(bowed * 100).toFixed(1)}% · straight`
+        + ` ${(line * 100).toFixed(1)}% — the straight line still fails, so the`
+        + ' comparison is to the defect rather than to a number somebody picked');
+    }
+  }
+
+  {
+    /* ------------------------------------------------------------------ the
+       check that was missing, and the bug it would have caught.
+
+       Every blocker was tested for sticking out through the hull, and none did.
+       What nothing tested was the space left *behind* one: the nav table was
+       0.46 m of half-width in a 1.04 m hull, leaving 0.58 m for a crew member
+       0.60 m across. The habitat was sealed off from the cockpit and the ship
+       could not be flown from inside itself — with 1058 green checks.
+
+       No pure test of either number would have found it, because each is fine
+       on its own; the defect is the relationship. So this walks the crew from
+       the aft end to the helm with `pilot.js`'s real collision and asserts it
+       arrives, which is the property that was actually wanted all along. */
+    for (const [n, s] of Object.entries(specs)) {
+      const hab = s.sections[2];
+      const helm = s.stations.find((q) => q.id === 'helm');
+      let crew = crewState(s.spawn, 0);
+      const tbl = s.blockers[1] ?? [0, 0, hab.z1 + 9, hab.z1 + 9];
+      let reached = false;
+      for (let i = 0; i < 4000 && !reached; i++) {
+        /* Proportional steering toward the centre line, swinging out only
+           while abreast of the table and only to the side already favoured.
+           The first version went wide and never came back, which walked the
+           crew into the corridor mouth from outside it and failed a cabin that
+           was fine — a test steering badly is not a geometry defect, and
+           telling the two apart is the whole reason this walks rather than
+           doing arithmetic. */
+        const near = crew.pos[2] > tbl[2] - 0.42 && crew.pos[2] < tbl[3] + 0.42;
+        // steer to the side the table is *not* on
+        const side = -(s.tableSide ?? 1);
+        // ...and never aim at a point outside the section you are standing in.
+        // The avoidance band used to reach 0.75 m past the table, which on a
+        // short habitat overlaps the corridor mouth: the crew was held hard
+        // right against a 0.58 m corridor and stalled at the threshold with
+        // the geometry perfectly fine.
+        const sec = s.volumes.find((q) => crew.pos[2] >= q[1] && crew.pos[2] <= q[2])
+          ?? s.volumes[0];
+        const lim = Math.max(sec[0] - CREW.radius - 0.04, 0);
+        const wantX = Math.max(-lim, Math.min(lim,
+          near ? side * (Math.abs(side > 0 ? tbl[0] : tbl[1]) + CREW.radius + 0.08) : 0));
+        crew = stepCrew(crew, s, {
+          fwd: 1,
+          strafe: Math.max(-1, Math.min(1, (wantX - crew.pos[0]) * 3)),
+        }, 1 / 60);
+        if (stationInReach(crew, s.stations)?.id === 'helm') reached = true;
+      }
+      ok(`${n}: the crew can actually walk from the habitat to the helm`,
+        reached,
+        `ended at [${crew.pos[0].toFixed(2)}, ${crew.pos[2].toFixed(2)}]`
+        + ' — walked with the real collision rather than reasoned about, which'
+        + ' is the only thing that would have caught either sealing bug');
+    }
+    // ...and the arithmetic behind it, stated directly
+    for (const [n, s] of Object.entries(specs)) {
+      if (!s.blockers[1]) {
+        ok(`${n}: too short for a nav table, and does without one`, true,
+          'an empty corner is a better answer than a sealed room');
+        continue;
+      }
+      const b = s.blockers[1];
+      // the walkway is whatever the table does not take out of the beam
+      const walk = s.tableSide < 0 ? s.sections[2].half - b[1]
+        : b[0] + s.sections[2].half;
+      ok(`${n}: the walkway past the nav table fits a person`,
+        walk > CREW.radius * 2 + 0.1,
+        `${walk.toFixed(2)} m of clear beam against a ${(CREW.radius * 2).toFixed(2)} m`
+        + ' shoulder width — the table stands against a bulkhead, so this is'
+        + ' most of the ship rather than a two-centimetre window beside it');
+    }
+    // ...and nobody spawns inside the furniture, which is how Luna sealed itself
+    for (const [n, s] of Object.entries(specs)) {
+      const inside = s.blockers.some((b) => s.spawn[0] > b[0] - CREW.radius
+        && s.spawn[0] < b[1] + CREW.radius && s.spawn[2] > b[2] - CREW.radius
+        && s.spawn[2] < b[3] + CREW.radius);
+      const v = s.volumes.find((q) => s.spawn[2] >= q[1] && s.spawn[2] <= q[2]);
+      ok(`${n}: the spawn point is on clear deck`,
+        !inside && !!v && Math.abs(s.spawn[0]) < v[0] - CREW.radius,
+        `[${s.spawn[0].toFixed(2)}, ${s.spawn[2].toFixed(2)}] — the spec owns`
+        + ' where you stand, so it cannot be somewhere the furniture is');
+    }
+  }
+
+  {
+    // Stations must be standable — inside the hull and not inside a blocker,
+    // or the prompt appears somewhere you cannot get to.
+    for (const [n, s] of Object.entries(specs)) {
+      let bad = 0;
+      for (const st of s.stations) {
+        const v = s.volumes.find((q) => st.pos[2] >= q[1] && st.pos[2] <= q[2]);
+        if (!v || Math.abs(st.pos[0]) > v[0] - CREW.radius) bad++;
+        for (const b of s.blockers) {
+          if (st.pos[0] > b[0] && st.pos[0] < b[1]
+            && st.pos[2] > b[2] && st.pos[2] < b[3]) bad++;
+        }
+      }
+      ok(`${n}: you can stand where every station says you can`, bad === 0,
+        `${s.stations.length} stations, ${bad} unreachable`);
+    }
+  }
+
+  {
+    // ...and having stood there, the station is actually in reach — which is
+    // `pilot.js`'s test, run against `deck.js`'s numbers.
+    const s = specs.Earth;
+    const helm = s.stations.find((q) => q.id === 'helm');
+    const crew = crewState([helm.pos[0], 0, helm.pos[2] + 0.35], 0);
+    ok('standing at the helm, the helm is what is in reach',
+      stationInReach(crew, s.stations)?.id === 'helm',
+      'the reach radius and the station spacing agree, so the two consoles do'
+      + ' not fight over the prompt');
+  }
+
+  {
+    // The cabin follows the vehicle rather than a hash.
+    const small = cabinFor(D_CRAFT.Luna, 42), big = cabinFor(D_CRAFT.Big, 42);
+    ok('a bigger vehicle gets a bigger cabin',
+      big.length > small.length && big.sections[2].half > small.sections[2].half,
+      `${small.length.toFixed(2)} m → ${big.length.toFixed(2)} m —`
+      + ' derived from craftFor(), not rolled, for the reason craft.js gives'
+      + ' about the craft itself');
+    // ...and the seed moves the dressing and nothing structural
+    const a = cabinFor(D_CRAFT.Earth, 1), b = cabinFor(D_CRAFT.Earth, 2);
+    ok('...and the seed moves the dressing without moving a bulkhead',
+      a.length === b.length && a.zNose === b.zNose
+      && a.volumes.every((v, i) => v.every((x, j) => x === b.volumes[i][j])),
+      'same ship, different lockers — so two worlds that happen to demand the'
+      + ' same Δv are not the same room inside');
+  }
+
+  {
+    // §2.3.
+    const a = cabinFor(D_CRAFT.Earth, 7), b = cabinFor(D_CRAFT.Earth, 7);
+    ok('§2.3 · the same craft and seed give a bit-identical cabin',
+      JSON.stringify(a) === JSON.stringify(b),
+      'entropy from rng.js only, and none of it reaches a dimension');
+  }
+
+  {
+    // Degenerate input must not produce a room with negative walls.
+    const junk = cabinFor({}, 0);
+    const nan = cabinFor({ height: NaN, diameter: Infinity }, 0);
+    ok('a missing or poisoned craft still yields a standable cabin',
+      junk.length > 0 && junk.sections.every((x) => x.half > CREW.radius)
+      && nan.length > 0 && nan.sections.every((x) => Number.isFinite(x.half)
+        && x.half > CREW.radius),
+      `{} → ${junk.length.toFixed(2)} m · NaN/Infinity →`
+      + ` ${nan.length.toFixed(2)} m — clamped rather than trusted, because a`
+      + ' cabin is the one room you cannot be allowed to fall out of');
+  }
+}
+
 const suites = {
   blossom: suiteBlossom,
   cover: suiteCover,
@@ -10564,6 +10815,7 @@ const suites = {
   vehicle: suiteVehicle,
   descent: suiteDescent,
   pilot: suitePilot,
+  deck: suiteDeck,
 };
 
 for (const [name, fn] of Object.entries(suites)) {

@@ -36,10 +36,12 @@ Here is the sum, as of M5.
 | ~~**The critic has never run**~~ | 8 | **Act A closed** — scored blind on an RTX 3060, all-flags **3.00** vs default **2.43**. §8's gate still FAILS (needs ≥4/≥4.5) |
 | **The ground has no material** | 8 · 6 M3 | **NEW, and now the blocking axis.** Near-ground gradient 1.07/255; featureless at 5× magnification. Materials scored 1 and 2 |
 | **`planet-orbit` never reaches true black** | 2.8 | **NEW.** rgb(13,7,0), 0.0% of the frame at #000, both flag sets. `star-system` is correct, so it is specific to the planet scale |
+| The cabin, the seat and the piloted descent are off | 2.4 · 2.5 | **NEW, and honestly declared.** `?cab=1`. `docs/plans/LONG-SILENCE.md` §8 says what flipping it would take: a §5 number measured with the meadow on, and a scored capture. Neither exists yet |
 
 A visitor who opens the page gets the print, aerial perspective, a body, a
 camera and a mobile layer. They do not get the light model, the materials, the
-sea, the far ridges, the wind, the grass, the craft, or the composition. **The
+sea, the far ridges, the wind, the grass, the craft, the composition, or —
+as of `descent.js` — the ship they could have flown down in. **The
 project's entire visual thesis is unshipped**, and each flag has a good reason
 that is true individually and indefensible in aggregate.
 
