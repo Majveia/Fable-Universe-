@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { cardMask, paintedStandard, stopsFrom } from '/src/painted.js';
 import { shadowGLSL } from '/src/shadow.js';
+import { AERIAL_GLSL } from '/src/aerial.js';
 const fails = [];
 const P = WebGL2RenderingContext.prototype;
 const cs = P.compileShader, lp = P.linkProgram;
@@ -44,6 +45,23 @@ const shadowWiring = {
   shadowGLSL: shadowGLSL(5),
 };
 const light = { sun: [1, 0.84, 0.61], shadowTint: [0.36, 0.43, 0.62] };
+// §9.3's block, exactly as `surface.js` hands it over — the real AERIAL_GLSL
+// through the page's import map, never a copy, and every uniform it declares.
+// An unprovided uniform is silently 0, and uAirFar is a divisor.
+const airWiring = {
+  ...shadowWiring,
+  air: {
+    glsl: AERIAL_GLSL,
+    uniforms: {
+      uCam: { value: new THREE.Vector3(0, 1.68, 4) },
+      uAirHaze: v3(0.66, 0.74, 0.78), uAirMist: v3(0.84, 0.87, 0.83),
+      uAirHorizonSun: v3(0.98, 0.89, 0.68), uAirAnti: v3(0.78, 0.83, 0.84),
+      uAirNear: { value: 70 }, uAirFar: { value: 1700 },
+      uAirHazeH: { value: 260 }, uAirMistAmt: { value: 1 },
+      uAirMistBase: { value: 0 },
+    },
+  },
+};
 const results = [];
 {
   const m = paintedStandard({ flatShading: true }, wiring, { ...stopsFrom([0.42, 0.40, 0.38], light), rim: 0.3 });
@@ -51,6 +69,48 @@ const results = [];
   const d = new THREE.Object3D();
   for (let i = 0; i < 3; i++) { d.position.set(i - 1, 0, 0); d.updateMatrix(); mesh.setMatrixAt(i, d.matrix); }
   scene.add(mesh); results.push('mineral instanced');
+}
+{
+  // §9.3 on a §9.2 prop — the ordering fix. `paint()` is the last thing that
+  // writes colour, so the air runs immediately after it, in the same block;
+  // computing it earlier (which is what `applyAerial()` does, correctly, for
+  // every material three owns) meant `paint()` overwrote it. This case exists
+  // because the failure was invisible: the material compiled, the props
+  // rendered, and every one of them sat at zero distance in colour.
+  const m = paintedStandard({ flatShading: true }, airWiring,
+    { ...stopsFrom([0.42, 0.40, 0.38], light), rim: 0.3 });
+  const mesh = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.5, 0), m, 3);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 3; i++) { d.position.set(i - 1, 0, 2.2); d.updateMatrix(); mesh.setMatrixAt(i, d.matrix); }
+  scene.add(mesh); results.push('mineral + §9.3 aerial');
+}
+{
+  // The veil path: a transparent material keeps its coverage, so only the
+  // colour goes through the air. A different program and a different cache key,
+  // which is the pair three cannot tell apart on its own.
+  const m = paintedStandard(
+    { transparent: true, opacity: 0.6, depthWrite: false }, airWiring,
+    { ...stopsFrom([0.55, 0.62, 0.70], light), rim: 0.8 });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 1), m);
+  mesh.position.set(0, 1.4, 1.5);
+  scene.add(mesh); results.push('veil + §9.3 aerial (coverage kept)');
+}
+{
+  // Act 4's sky-whale: instanced, flat-shaded, opaque, with both the rim and
+  // the transmission turned up. Its own case rather than a variant of the
+  // mineral, because §8 axis 8 lost two points to this material rendering as a
+  // flat black polyhedron and the whole fix is that it now compiles as §9.2.
+  // A `paintcheck` that did not include it would go green on a build where the
+  // whales had silently fallen back to PBR — which is the shape of defect this
+  // tool was written for.
+  const m = paintedStandard({ flatShading: true }, shadowWiring,
+    { ...stopsFrom([0.30, 0.44, 0.52], light, { warm: 0.22, cool: 0.30, range: 0.34 }),
+      soft: 0.20, jit: 0.06, rim: 1.0, trans: 0.45, transCol: [0.55, 0.85, 0.90] });
+  const g = new THREE.SphereGeometry(1, 10, 8); g.scale(3.2, 1.0, 1.2);
+  const mesh = new THREE.InstancedMesh(g, m, 2);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 2; i++) { d.position.set(i * 2 - 1, 1.2, -1); d.updateMatrix(); mesh.setMatrixAt(i, d.matrix); }
+  scene.add(mesh); results.push('sky-whale instanced + rim + transmission');
 }
 {
   const m = paintedStandard(

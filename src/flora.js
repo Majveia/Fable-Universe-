@@ -615,7 +615,7 @@ const _sphere = new THREE.Sphere();
  */
 export class GrassRing {
   constructor(ring, windField, opts = {}) {
-    const { seed = 1, seg = 4, density = 1, palette = null } = opts;
+    const { seed = 1, seg = 4, density = 1, palette = null, curved: wantCurved = null } = opts;
     this.ring = ring;
     this.spec = RINGS[ring];
     this.wf = windField;
@@ -639,7 +639,17 @@ export class GrassRing {
     // and it only resolves where a blade is more than two or three pixels wide.
     // The quality row's segment count is already that judgement — a ring drawn
     // at one segment is a ring whose blades are marks, not leaves.
-    const curved = seg >= 3;
+    // §9.5's curved cross-section is a **tier** decision, not a consequence of
+    // the segment count. It was `seg >= 3`, which quietly coupled two knobs
+    // that trade different things: `seg` buys the bend along a blade's length,
+    // `curved` buys shading across its width, and only the second one goes
+    // sub-pixel with distance. The coupling cost the low row 5,368,656
+    // triangles a frame — 40% of the whole surface frame — on the grass inside
+    // 26 metres. `quality.js`'s `curvedRings` column has the measurement.
+    //
+    // The old rule stays as the fallback for a caller that does not say, so a
+    // suite constructing a ring directly still gets what it always got.
+    const curved = wantCurved === null ? seg >= 3 : !!wantCurved;
     const shared = {
       position: null,
       side: null,

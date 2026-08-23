@@ -95,6 +95,12 @@ await page.addInitScript(() => {
     ['meadow wind field', /uWindTime[\s\S]*fullscreen|FS_QUAD/],
     ['terrain tile', /uHeightTex[\s\S]*aerial|vW\b/],
     ['painted prop (painted.js)', /uPaintShade|vPaintW/],
+    // `life.js` — trees, canopies, blossom. The largest non-meadow line in the
+    // frame turned out to be here and reported only as `instanced prop`, which
+    // is a census naming the wrong thing precisely where it matters most.
+    ['life · bark / branch (life.js)', /aSeg|aBranch|aLean|barkMat/],
+    ['life · canopy / leaf (life.js)', /aLeaf|aCanopy|uCanopy|leafMass/],
+    ['life · blossom / petal (life.js)', /uFlutter|uPetal|uOpen/],
     ['instanced prop', /instanceMatrix/],
     ['sky / dome', /uSunDir[\s\S]*horizon|skyColour|uZenith/],
     ['post / fullscreen', /gl_Position = vec4\(\s*position\.xy/],
@@ -142,7 +148,18 @@ await page.addInitScript(() => {
         let tag = '?';
         for (const [name, re] of TAGS) if (re.test(v)) { tag = name; break; }
         e = { tag, calls: 0, instances: 0, elements: 0, tris: 0, modes: {},
-          excerpt: tag === '?' ? v.slice(0, 160).replace(/\s+/g, ' ') : '' };
+          // An excerpt for anything that landed in a generic bucket too, not
+          // only for `?`. A 608,800-triangle row reading `instanced prop` is
+          // the census failing at the one job it has.
+          // …with three's boilerplate cut off first. The first attempt at this
+          // printed 200 characters of `#version 300 es` and precision
+          // qualifiers, which is the same preamble on every program in the
+          // build and identifies none of them.
+          excerpt: (tag === '?' || tag === 'instanced prop')
+            ? v.replace(/^[\s\S]*?precision\s+highp\s+sampler\w+\s*;/, '')
+              .replace(/#define\s+\S+\s+\S*/g, '')
+              .replace(/\bprecision\s+\w+\s+\w+\s*;/g, '')
+              .replace(/\s+/g, ' ').trim().slice(0, 220) : '' };
         stats.set(cur, e);
       }
       e.calls++; e.instances += instances; e.elements += instances * count;
@@ -254,7 +271,7 @@ for (const r of rows) {
   console.log(`  ${r.tag.padEnd(30)} ${String(r.calls).padStart(6)}`
     + ` ${r.instances.toLocaleString().padStart(11)} ${n0(r.tris).padStart(12)}`
     + (Object.keys(r.modes).some((m) => m !== '4') ? `  (modes ${Object.keys(r.modes).join(',')})` : ''));
-  if (r.excerpt) console.log(`      ${r.excerpt}`);
+  if (r.excerpt && r.tris > 50000) console.log(`      ${r.excerpt}`);
 }
 console.log(`  ${'—'.repeat(30)} ${'—'.repeat(6)} ${'—'.repeat(11)} ${'—'.repeat(12)}`);
 console.log(`  ${'total'.padEnd(30)} ${String(tc).padStart(6)} ${ti.toLocaleString().padStart(11)} ${n0(tt).padStart(12)}`);

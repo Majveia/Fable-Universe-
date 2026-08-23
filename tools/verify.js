@@ -829,9 +829,18 @@ function suiteSunShadow() {
       && /\$\{PAINT \? PAINT_GLSL : ''\}/.test(src)
       && !/SHADOW_GLSL \+ PAINT_GLSL/.test(src),
       'one flag each, so the cheap path can sample a map it has');
+    // `nGeo`, not `nb`, since act 3b. The shadow lookup derives its depth bias
+    // from dot(N, L), and `nb` now carries a 9 cm detail normal — feeding that
+    // to the bias is acne rather than detail. The assertion moved with the code
+    // rather than being deleted, because what it is actually holding is that
+    // the cheap path samples the map at all.
     ok('and the cheap lighting path actually samples it',
-      /float sh = \$\{SHADOW \? 'sunShadow\(vW, dot\(nb, uSunDir\)\)' : '1\.0'\}/.test(src),
+      /float sh = \$\{SHADOW \? 'sunShadow\(vW, dot\(nGeo, uSunDir\)\)' : '1\.0'\}/.test(src),
       'the ground is shadowed with or without §9.2');
+    ok('§9.2 · and both paths bias the shadow off the geometric normal',
+      (src.match(/sunShadow\(vW, dot\(nGeo, uSunDir\)\)/g) || []).length >= 2
+      && !/sunShadow\(vW, dot\(nb,/.test(src),
+      'a detail normal on the depth bias is shadow acne, not texture');
   }
 
   // --- 3. the implication runs one way ------------------------------------
@@ -3213,7 +3222,142 @@ function suiteMaterial() {
       'a single projection smears on anything steep, and a smear is the most'
       + ' visible repetition a landscape has');
     ok('and it returns three stops rather than one colour',
-      /struct Ground \{ vec3 shade; vec3 mid; vec3 lit;/.test(code));
+      /struct Ground \{[\s\S]{0,200}?vec3 shade; vec3 mid; vec3 lit;/.test(code));
+
+    // --- act 3b · and the surface has properties other than colour ---------
+    //
+    // Every check here is a *wiring* check, not an arithmetic one, because
+    // `docs/notes/props.md` now records five separate defects of exactly one
+    // shape: a function that exists, that a suite exercises, and that the
+    // renderer never calls. `alphaTest` with no alphaMap, `uChunkNear` never
+    // set, `meadowWidth()` never called, a note whose edit was a no-op, and
+    // `_syncPaintLight` gated off for the only consumer it had. Asserting that
+    // `matNormal()` computes the right thing would have caught none of them.
+    ok('§M2 · the four layers carry a normal, a roughness and an occlusion',
+      /struct Ground \{[\s\S]*?vec3 N; float rough; float ao;[\s\S]*?\};/.test(code),
+      'they varied in colour alone, which is why §8 axis 5 scored 1');
+    ok('and groundAt fills all three, so nothing returns a default',
+      /g\.rough = uMatRough\[0\]/.test(code)
+      && /g\.N = matNormal\(/.test(code)
+      && /g\.ao = matCavity\(/.test(code));
+    ok('and the fine normal is scaled by the blend, not by a constant',
+      /matNormal\(P, n, dist, g\.rough\)/.test(code)
+      && /matCavity\(P, n, dist, g\.rough\)/.test(code),
+      'stone takes the full amplitude and snow takes almost none');
+    // The LOD is angular, not metric, and that distinction cost a rewrite. A
+    // metre ramp has to pick one display and is wrong on every other: a 24 cm
+    // feature at 30 m is about 12 px at 1440p and about 2 at the size a
+    // headless proxy renders. §9.5 settled this for the grass; the ground uses
+    // the same settlement and the same number.
+    ok('and the octave LOD is in pixels, like §9.5\'s width floor',
+      /float matOctave\(float cyclesPerM, float dist, float pxr\)/.test(code)
+      && /pxr \/ \(max\(dist, 0\.35\) \* max\(cyclesPerM, 1e-4\)\)/.test(code)
+      && /uniform float uMatPxr;/.test(code),
+      'a ramp in metres is a resolution-independent answer to a'
+      + ' resolution-dependent question');
+    ok('and the near-field octave is finer than anything that was there before',
+      /triNoise\([^;]*?, 11\.0\)/.test(code) && /triNoise\([^;]*?, 4\.1\)/.test(code),
+      '1.63 cycles/m was a 60 cm feature; 11.0 is 9 cm, which is arm\'s length');
+    ok('and the cavity only darkens',
+      /float pit = max\(-v, 0\.0\);/.test(code),
+      'brightening the positive half is a rash of pale speckles under a low sun');
+  }
+
+  // The other half of every one of those: the renderer has to *call* it.
+  {
+    const src = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+    ok('§M2 · the per-layer roughness is uploaded, not merely computed',
+      /uMatRough: \{ value: pal\.map\(\(m\) => m\.rough\) \}/.test(src),
+      'materialPalette() has returned `rough` since it was written and nothing'
+      + ' had ever put it in a uniform');
+    ok('§M2 · and the pixel scale is pushed outside the wind-field branch',
+      /if \(this\._matU\) this\._matU\.uMatPxr\.value = pxPerRadian;/.test(src)
+      // against `ring.setPixelScale`, not against the first `for (const ring
+      // of this.meadow)` in the file — that one is the scene-graph add in the
+      // constructor, hundreds of lines earlier, and comparing to it made the
+      // assertion true for the wrong reason.
+      && src.indexOf('this._matU.uMatPxr.value = pxPerRadian')
+         < src.indexOf('ring.setPixelScale(pxPerRadian)'),
+      'the ground has a material whether or not the world has grass');
+    ok('and the detail normal reaches the light',
+      /nb = gm\.N;/.test(src),
+      'a normal computed and not assigned is the fifth dead wiring, not the'
+      + ' first');
+    ok('and the cavity reaches §9.2, which gates its ambient fill on it',
+      /sf\.ao = \$\{MAT \? 'gm\.ao' : '1\.0'\}/.test(src)
+      && !/^\s*sf\.ao = 1\.0;$/m.test(src));
+    // --- §9.3 on the props §9.2 lights --------------------------------------
+    //
+    // The ordering defect, and the reason it is a wiring check rather than an
+    // arithmetic one. `src/aerial.js` injects at `#include <opaque_fragment>`,
+    // deliberately, because that is before three's tonemapping and the air
+    // scatters linear light. `src/painted.js` injects at
+    // `#include <dithering_fragment>`, deliberately, because that is after
+    // alpha test and alpha map. Run both on one material and paint() overwrites
+    // the fog. Nothing failed; every prop just sat at zero distance in colour.
+    {
+      const pj = readFileSync(new URL('../src/painted.js', import.meta.url), 'utf8');
+      const sj = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+      ok('§9.3 · the air runs after paint(), not before it',
+        pj.indexOf('gl_FragColor.rgb = paint(sf);')
+          < pj.indexOf('aerialOut = aerial(gl_FragColor.rgb, airDist'),
+        'paint() is the last thing that writes colour, so anything computed'
+        + ' before it is overwritten');
+      ok('and it is the shared AERIAL_GLSL, not a second fog',
+        /\$\{air \? `uniform vec3 uCam;\\n\$\{air\.glsl\}` : ''\}/.test(pj)
+        && /air: AERIAL && PROPAIR/.test(sj)
+        && /glsl: AERIAL_GLSL, uniforms: \{ \.\.\.this\._aerialUniforms\(\), uCam: this\.uCam \}/.test(sj),
+        'a prop and the ground behind it cannot disagree about how far away the'
+        + ' horizon is');
+      ok('and a painted material marks itself so applyAerial() leaves it alone',
+        /\(mat\.userData \|\|= \{\}\)\.aerial = veil \? 'paint-veil' : 'paint';/.test(pj)
+        && /if \(material\.userData\?\.aerial\) return material;/
+          .test(readFileSync(new URL('../src/aerial.js', import.meta.url), 'utf8')),
+        'dressed twice is worse than dressed once');
+      ok('and a veil keeps its coverage',
+        /\$\{veil \? 'gl_FragColor\.rgb = aerialOut\.rgb;' : 'gl_FragColor = aerialOut;'\}/.test(pj),
+        'clarity written over a lantern\'s alpha makes it opaque');
+      ok('and the two programs do not share a cache key',
+        /painted-v1\$\{air \? \(veil \? '\+air-veil' : '\+air'\) : ''\}/.test(pj),
+        'three hashes programs by material configuration and cannot see an'
+        + ' onBeforeCompile — identical materials, one fogged and one not, would'
+        + ' otherwise race for one program');
+    }
+
+    // --- act 4 · what floats is lit like everything else --------------------
+    //
+    // §8 axis 8 scored 2 in both blind frames for one object, and
+    // `tools/floaters.js` named it: eight sky-whale instances on a plain
+    // MeshStandardMaterial, 200-570 m up. The frame showed their undersides,
+    // which the sun does not reach, so they rendered flat near-black — §M2's
+    // gate calls an achromatic-dark surface a failure in those words.
+    {
+      const mf = readFileSync(new URL('../src/megafauna.js', import.meta.url), 'utf8');
+      ok('§8.8 · the sky-whales light through §9.2 rather than through PBR',
+        /paintedStandard\(/.test(mf) && /import \{ paintedStandard, stopsFrom \} from '\.\/painted\.js'/.test(mf),
+        'a hundred-metre body backlit at golden hour is what §9.2\'s rim term'
+        + ' exists for');
+      ok('and they take the terrain\'s own light and shadow map',
+        /const wiring = s\.paintWiring\(\);/.test(mf),
+        'a whale and the valley under it cannot disagree about where the sun is');
+      ok('and the rim and the transmission are turned up, not defaulted',
+        /rim: 1\.0,/.test(mf) && /trans: 0\.45,/.test(mf),
+        'the belly is the surface receiving no light information, and'
+        + ' subsurface is what stops it going achromatic');
+      ok('§8.8 · and nothing draws them a ground shadow',
+        !/markCaster\(whales\)/.test(mf),
+        'a body 250 m up under a 13.5° sun casts about 1.7 km downsun, outside'
+        + ' shadow.js\'s 480 m map — a shadow under it would be a lie about'
+        + ' where the sun is, which axis 8 scores as dishonest, not as contact');
+    }
+
+    ok('and the cavity reaches the default build too',
+      /\$\{MAT \? '\* gm\.ao' : ''\}/.test(src),
+      '?paint= is off by default, so a term only the grade sees is a term'
+      + ' nobody sees');
+    ok('and §9.2\'s band width is a material property rather than 0.10',
+      /sf\.soft  = \$\{MAT \? 'mix\(0\.055, 0\.17, gm\.rough\)' : '0\.10'\}/.test(src),
+      'a rough surface has a soft terminator and a smooth one does not');
   }
 }
 

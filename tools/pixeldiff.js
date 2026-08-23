@@ -1,6 +1,6 @@
 // The GLSL↔JS parity gate for §2.7 (CLAUDE.md §7.3).
 //
-//   node tools/pixeldiff.js [--suite terrain|meadow|fragility] [--cases 10000] [--int]
+//   node tools/pixeldiff.js [--suite terrain|meadow|material|fragility] [--cases 10000] [--int]
 //
 // §2.7 specifies this test in numbers — *"a numeric parity test over 10^4
 // samples (max abs error < 1e-4 of planet radius)"* — and it had never been run,
@@ -37,6 +37,10 @@
 
 import { fbm as cpuFbm, planetHeight, ridged as cpuRidged, snoise as cpuSnoise } from '../src/terrain.js';
 import { RINGS, density, keepProbability, ringB } from '../src/meadow.js';
+// act 3b's two twins. `src/material.js` imports nothing from three, which is
+// what makes this possible at all — the same property `src/meadow.js` has and
+// for the same reason.
+import { octaveLOD, roughFor } from '../src/material.js';
 import { arg, launch, playwright, REPO, serve } from './lib.js';
 
 // ---------------------------------------------------------------------------
@@ -735,6 +739,225 @@ ${glsl}
   return { results, renderer: gl.getParameter(dbg ? dbg.UNMASKED_RENDERER_WEBGL : gl.RENDERER) };
 };
 
+// ---------------------------------------------------------------------------
+// the material suite — act 3b's LOD gate and layer roughness, GLSL against JS
+//
+// §2.7 is about the height field, and this is the same rule one milestone over:
+// a quantity computed twice in two languages will drift, and the only question
+// is whether anything notices.
+//
+// Two quantities, and they were picked for what they *decide* rather than for
+// being convenient. `matOctave()` decides whether the near-field detail normal
+// reaches the frame at all, which §11 flags as the dangerous kind — a term that
+// reaches a *branch* rather than a colour. The roughness blend decides how much
+// relief each material takes, and `materialPalette()`'s `rough` column spent its
+// entire life computed and never uploaded, which is precisely what a twin makes
+// hard to do quietly.
+//
+// What this suite deliberately does NOT check: `matNormal()` and `matCavity()`
+// themselves. They are three and four calls into triplanar simplex, and a CPU
+// port of that would be a second implementation of the noise this repo already
+// has one of — a new drift surface, invented to test an old one. The gate and
+// the blend are the parts that decide, and they are the parts twinned.
+const MATERIAL_RUN = ({ glsl, noise, ds, count, W, pxrs, roughs, weights }) => {
+  const H = Math.ceil(count / W);
+  const cv = document.createElement('canvas');
+  const gl = cv.getContext('webgl2', { antialias: false });
+  if (!gl) return { error: 'no webgl2' };
+  if (!gl.getExtension('EXT_color_buffer_float')) return { error: 'no EXT_color_buffer_float' };
+
+  const compile = (type, src) => {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+    return sh;
+  };
+  const VS = `#version 300 es
+    void main() {
+      vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+      gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+    }`;
+
+  // MATERIAL_GLSL whole, read through the page's own import map, exactly as
+  // surface.js receives it. It declares every uniform it needs including
+  // uMatPxr and uMatRough, so nothing here re-types a line of it — a copy would
+  // pass this test forever and prove nothing about the shader anyone runs.
+  const FS = `#version 300 es
+    precision highp float;
+    precision highp sampler2D;
+    uniform sampler2D uD;
+    uniform vec4 uW;          // the four layer weights, already normalised
+    out vec4 oColor;
+// MATERIAL_GLSL's triplanar sampler calls snoise, which surface.js supplies
+// from src/planet.js. Both are read through the page's import map, in the same
+// order the renderer concatenates them — a fixture that inlined its own noise
+// would be testing a shader nobody runs.
+${noise}
+${glsl}
+    void main() {
+      ivec2 t = ivec2(gl_FragCoord.xy);
+      float d = texelFetch(uD, t, 0).r;
+      float rough = uMatRough[0] * uW.x + uMatRough[1] * uW.y
+                  + uMatRough[2] * uW.z + uMatRough[3] * uW.w;
+      oColor = vec4(matOctave(4.1, d, uMatPxr),
+                    matOctave(11.0, d, uMatPxr),
+                    matOctave(2.3, d, uMatPxr),
+                    rough);
+    }`;
+
+  let prog;
+  try {
+    prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return { error: 'link: ' + gl.getProgramInfoLog(prog) };
+  } catch (e) { return { error: 'compile: ' + e.message }; }
+  gl.useProgram(prog);
+
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  const rgba = new Float32Array(W * H * 4);
+  for (let i = 0; i < count; i++) rgba[i * 4] = ds[i];
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, rgba);
+  gl.uniform1i(gl.getUniformLocation(prog, 'uD'), 0);
+  gl.uniform1fv(gl.getUniformLocation(prog, 'uMatRough'), new Float32Array(roughs));
+
+  const out = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, out);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, null);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, out, 0);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+    return { error: 'incomplete framebuffer' };
+  }
+  gl.viewport(0, 0, W, H);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+
+  const results = [];
+  const buf = new Float32Array(W * H * 4);
+  for (let i = 0; i < pxrs.length; i++) {
+    gl.uniform1f(gl.getUniformLocation(prog, 'uMatPxr'), pxrs[i]);
+    const w = weights[i];
+    gl.uniform4f(gl.getUniformLocation(prog, 'uW'), w[0], w[1], w[2], w[3]);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.FLOAT, buf);
+    results.push(Array.from(buf.subarray(0, count * 4)));
+  }
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  return { results, renderer: gl.getParameter(dbg ? dbg.UNMASKED_RENDERER_WEBGL : gl.RENDERER) };
+};
+
+async function materialSuite(n) {
+  const count = Math.max(n, 10000);
+
+  const site = await serve();
+  const pw = await playwright();
+  const browser = await launch(pw);
+  const page = await browser.newPage();
+  await page.goto(`${site.origin}/index.html`, { waitUntil: 'load' });
+  await page.addScriptTag({ type: 'module', content:
+    `import { MATERIAL_GLSL, materialPalette } from '${site.origin}/src/material.js';
+     import { NOISE_GLSL } from '${site.origin}/src/planet.js';
+     window.__mat = MATERIAL_GLSL;
+     window.__noise = NOISE_GLSL;
+     window.__matMod = { materialPalette };` });
+  await page.waitForFunction('window.__mat', null, { timeout: 60000 });
+  const glsl = await page.evaluate(() => window.__mat);
+  const noise = await page.evaluate(() => window.__noise);
+  console.log(`  chunk: MATERIAL_GLSL · ${glsl.length} chars`
+    + (glsl.includes('matOctave') ? '' : ' · NO matOctave — the LOD gate is gone'));
+
+  // Log-spaced: the gate is a reciprocal in distance, so a linear sweep would
+  // put nine tenths of its samples where the answer is already 0.
+  const D_MIN = 0.1, D_MAX = 4000;
+  const ds = new Float32Array(count);
+  for (let i = 0; i < count; i++) ds[i] = D_MIN * Math.pow(D_MAX / D_MIN, i / (count - 1));
+
+  // Four displays spanning what this project actually renders on: the headless
+  // proxy at 420x240, a phone, 1080p and 1440p, all at FOV 52.
+  const pxrs = [264, 620, 1190, 1586];
+  // Four blends: bare rock, deep soil, sward, and a snowline mix — so the
+  // roughness column is read at all four indices rather than at whichever one
+  // happens to dominate a temperate world.
+  const weights = [
+    [1, 0, 0, 0],
+    [0.12, 0.88, 0, 0],
+    [0.08, 0.22, 0.70, 0],
+    [0.30, 0.05, 0.10, 0.55],
+  ];
+
+  const cpu = await page.evaluate(() => {
+    // the real palette's roughness column, not four numbers typed here — if
+    // materialPalette() stops returning `rough` this suite has to fail
+    const light = { sun: [1, 0.84, 0.61], shadowTint: [0.36, 0.43, 0.62] };
+    const pal = window.__matMod.materialPalette(
+      { seed: 700181046, colA: { r: 0.34, g: 0.27, b: 0.20 },
+        colB: { r: 0.42, g: 0.40, b: 0.38 }, colC: { r: 0.30, g: 0.42, b: 0.24 } },
+      light);
+    return { roughs: pal.map((m) => m.rough), names: pal.map((m) => m.name) };
+  });
+
+  const out = await page.evaluate(MATERIAL_RUN, {
+    glsl, noise, ds: Array.from(ds), count, W: 512, pxrs, roughs: cpu.roughs, weights,
+  });
+  await browser.close();
+  await site.close();
+
+  if (out.error) { console.error('pixeldiff material · ' + out.error); return 1; }
+
+  console.log('\npixeldiff · §M2 act 3b · the octave gate and the layer roughness');
+  console.log('  driver: ' + out.renderer);
+  console.log('  roughness column, from materialPalette(): '
+    + cpu.names.map((nm, i) => `${nm} ${cpu.roughs[i]}`).join(' · '));
+  const TOL = 1e-5;
+  console.log(`  ${count} samples x ${pxrs.length} displays · gate: max |Δ| < ${TOL.toExponential(0)}`
+    + ' on quantities in [0,1]');
+
+  let failed = 0;
+  for (let i = 0; i < pxrs.length; i++) {
+    const got = out.results[i];
+    const w = weights[i];
+    const wo = { rock: w[0], soil: w[1], sward: w[2], rime: w[3] };
+    const pal = cpu.roughs.map((r) => ({ rough: r }));
+    let maxG = 0, atG = 0, maxR = 0, live = 0;
+    for (let k = 0; k < count; k++) {
+      const d = ds[k];
+      for (const [j, f] of [[0, 4.1], [1, 11.0], [2, 2.3]]) {
+        const dg = Math.abs(got[k * 4 + j] - octaveLOD(f, d, pxrs[i]));
+        if (dg > maxG) { maxG = dg; atG = d; }
+      }
+      if (got[k * 4] > 0.001) live++;
+      maxR = Math.max(maxR, Math.abs(got[k * 4 + 3] - roughFor(wo, pal)));
+    }
+    // The reach of the coarse octave at this display — the number the metric
+    // ramp this replaced could not express, because it is a property of the
+    // screen and not of the world.
+    let reach = 0;
+    for (let k = count - 1; k >= 0; k--) if (got[k * 4] > 0.5) { reach = ds[k]; break; }
+    const bad = maxG > TOL || maxR > TOL;
+    if (bad) failed++;
+    console.log(`  ${bad ? 'FAIL' : ' ok '}  pxr ${String(pxrs[i]).padStart(5)}`
+      + ` · gate max |Δ| ${maxG.toExponential(2)} at ${atG.toFixed(1)} m`
+      + ` · rough |Δ| ${maxR.toExponential(2)}`
+      + ` · 4.1 c/m half-strength out to ${reach.toFixed(0)} m`);
+  }
+
+  if (failed) {
+    console.error(`\npixeldiff material · ${failed} of ${pxrs.length} displays drifted`);
+    return 1;
+  }
+  console.log('\nact 3b parity holds · the LOD gate and the roughness blend agree to float');
+  return 0;
+}
+
 async function meadowSuite(n) {
   const count = Math.max(n, 10000);
 
@@ -833,12 +1056,16 @@ async function main() {
   const n = Number(arg('cases', 10000));
   if (suite === 'fragility') process.exit(await fragilitySuite(n));
   if (suite === 'meadow') process.exit(await meadowSuite(n));
+  if (suite === 'material') process.exit(await materialSuite(n));
   if (suite === 'all') {
-    // both parity suites, and the exit code is the worse of the two — a green
-    // height field does not excuse a drifted density law
+    // every parity suite, and the exit code is the worst of them — a green
+    // height field does not excuse a drifted density law, and neither excuses
+    // a detail normal that reaches the frame at one distance on the GPU and
+    // another in the JS that is supposed to describe it
     const a = await terrainSuite(n, true);
     const b = await meadowSuite(n);
-    process.exit(a || b);
+    const c = await materialSuite(n);
+    process.exit(a || b || c);
   }
   // `exact` defaults to --int; `all` pins it true, because that is the path
   // §2.7 is closed on (§28.6) and the one src/wind.js and src/flora.js sample.

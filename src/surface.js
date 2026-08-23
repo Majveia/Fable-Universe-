@@ -458,6 +458,23 @@ const M3 = PARAM('m3') !== '0';
 const AIRMAT = PARAM('airmat') === '1';
 
 /**
+ * `?propair=0` — §9.3 on the props §9.2 lights.
+ *
+ * Not the same switch as `?airmat=`, and the difference is the whole reason
+ * this one is default-on where that one is default-off. `AIRMAT` turns on a
+ * *traversal*: `_dressAerial()` walks the scene once every thirty frames and
+ * injects into every material three.js owns, deciding what is sky by measuring
+ * bounding spheres. That is a broad, heuristic change over forty-six materials
+ * nobody in this repo wrote, and it is right for it to be opt-in.
+ *
+ * This is narrow. It reaches exactly the materials `src/painted.js` builds —
+ * ours, all of them at surface scale, all of them already carrying the world
+ * position and the sun the air needs. There is no heuristic and nothing to get
+ * wrong about what is sky, because none of them are.
+ */
+const PROPAIR = PARAM('propair') !== '0';
+
+/**
  * The aurora curtain — src/curtain.js. Default-off (§7.4).
  *
  * `?sun=<degrees>` puts the sun at a chosen elevation and holds it there, which
@@ -476,6 +493,21 @@ const SUN_AT = PARAM('sun') === null ? null : Number(PARAM('sun'));
 const STORM_AT = PARAM('storm') === null ? null : Number(PARAM('storm'));
 
 const WINDVIEW = PARAM('windview') === '1';
+
+/**
+ * `?relief=<x>` scales act 3b's near-field detail normal and cavity.
+ *
+ * A capture control, and before that a diagnostic. `docs/notes/props.md`
+ * records five defects of one shape — a term that exists, that a suite
+ * exercises, and that the renderer never calls — and the cheapest way to tell
+ * "wired and subtle" from "not wired" is to turn the amplitude up and see
+ * whether the frame moves. 0 restores the ground exactly as it was before this
+ * act, which also makes the A/B one character long.
+ */
+const RELIEF = (() => {
+  const v = parseFloat(PARAM('relief'));
+  return Number.isFinite(v) && v >= 0 ? v : 1;
+})();
 
 const EXT = 1400;            // terrain extent, ~metres
 const RES = 180;             // heightfield resolution
@@ -539,6 +571,11 @@ const TERRAIN_FRAG = /* glsl */`
     nb.xz += vec2(snoise(vec3(vW.xz * 1.4, uSeed + 11.0)),
                   snoise(vec3(vW.xz * 1.4 + 6.0, uSeed + 13.0))) * 0.1 * bumpF;
     nb = normalize(nb);
+    // The geometric-plus-coarse normal, kept aside before act 3b's fine detail
+    // replaces nb. The shadow lookup derives its depth bias from dot(N, L),
+    // and a 9 cm wobble on that is acne rather than detail — so the shadow asks
+    // this one and the light asks the detailed one.
+    vec3 nGeo = nb;
 
     ${MAT ? /* glsl */`
     // §M2 act 4 · four layers, one blend law, triplanar so nothing smears.
@@ -547,9 +584,24 @@ const TERRAIN_FRAG = /* glsl */`
     // "generated detail arrays inside 30 m" and this is that budget spent as a
     // coherent branch instead of a texture upload — past 30 m the finest two
     // octaves are sub-pixel, and every instruction on them buys nothing.
-    float near = 1.0 - smoothstep(6.0, 30.0, length(vW - uCam));
-    Ground gm = groundAt(vW, nb, uSea, uWet, near);
+    float camDist = length(vW - uCam);
+    float near = 1.0 - smoothstep(6.0, 30.0, camDist);
+    Ground gm = groundAt(vW, nb, uSea, uWet, near, camDist);
     vec3 col = gm.mid;
+    // Act 3b · the ground gets a normal below the vertex spacing.
+    //
+    // The nearest tile vertices are 8.33 m apart on every tier, so the first
+    // thirty metres of every frame — the half §8 scored 1 on materials — is
+    // about three and a half quads. Nothing under 8 m can come from geometry,
+    // and until this line nothing under 60 cm came from anywhere: the two bump
+    // octaves above stop at 1.4 cycles/m and go *flat* inside 60 m, because
+    // bumpF is a far-field fade with no near-field ramp behind it.
+    //
+    // groundAt now returns the fine normal, scaled by the blend's own
+    // roughness, and it is the one the light is computed from. The coarse
+    // normal stays for the shadow lookup: a 9 cm wobble on the ndl a depth bias
+    // is derived from is acne, not detail.
+    nb = gm.N;
     float shore = 1.0 - smoothstep(uSea + 1.2, uSea + 7.0, vW.y);
     // The glitter below wants to know where snow is. It used to ask a
     // hand-rolled snow line; the rime weight is the same question answered by
@@ -608,14 +660,22 @@ const TERRAIN_FRAG = /* glsl */`
     sf.mid   = col;
     sf.lit   = mix(col * 1.22, uPaintSun * dot(col, vec3(0.42)), 0.20);
     `}
-    sf.soft  = 0.10;
+    // §9.2's band-edge width, and it is a *material* property. A rough surface
+    // scatters, so its terminator is soft; a smooth one holds a hard edge. It
+    // was the constant 0.10 for every material on every world, which is one
+    // more way the four layers were the same surface in four colours.
+    sf.soft  = ${MAT ? 'mix(0.055, 0.17, gm.rough)' : '0.10'};
     // the painterly wobble: the band edge is drawn, not computed, and it is
     // keyed in metres so it keeps its shape at every distance
     sf.jit   = (fbm3(vec3(vW.xz * 0.09, uSeed)) * 0.5) * 0.055;
-    sf.shadow = sunShadow(vW, dot(nb, uSunDir));
+    sf.shadow = sunShadow(vW, dot(nGeo, uSunDir));
     sf.trans = 0.0; sf.transCol = vec3(0.0);
     sf.rim = 0.55;
-    sf.ao = 1.0;
+    // Was the literal 1.0 at every pixel, on every world, since the model was
+    // written — and §9.2's ambient fill is *gated* on it, so the fill has been
+    // ungated this whole time. matCavity() supplies it now: the negative half
+    // of the relief field, scaled by the material's own roughness.
+    sf.ao = ${MAT ? 'gm.ao' : '1.0'};
     sf.ambient = 1.0;
     vec3 lit = paint(sf) * mix(0.35, 1.0, dusk);
     ${SHADOW_DEBUG ? (PARAM('shdebug') === '2' ? 'lit = shadowProbe(vW);' : 'lit = vec3(sf.shadow);') : ''}
@@ -626,7 +686,7 @@ const TERRAIN_FRAG = /* glsl */`
     // the ground under a ridge, a tower or a walker is dark here as well as
     // under ?paint=1 — which is most of what §8 axis 8 is asking for when it
     // scores an object with no ground contact.
-    float sh = ${SHADOW ? 'sunShadow(vW, dot(nb, uSunDir))' : '1.0'};
+    float sh = ${SHADOW ? 'sunShadow(vW, dot(nGeo, uSunDir))' : '1.0'};
     // §9.2's rule holds even without §9.2: **shadows change hue, they do not go
     // black.** Two terms carry it, and neither needs the grade's uniforms. The
     // key keeps 18% of itself in full shadow, because a shadowed surface is
@@ -635,8 +695,12 @@ const TERRAIN_FRAG = /* glsl */`
     // toward the horizon rather than draining toward grey, and §M2's gate
     // clause about an achromatic-dark surface is met by construction.
     vec3 key  = uSunColor * diff * diff * 1.35 * mix(0.18, 1.0, sh);
-    vec3 fill = vec3(0.012, 0.014, 0.02) + uHorizon * 0.26 * dusk
-              + uHorizon * 0.10 * (1.0 - sh);
+    vec3 fill = (vec3(0.012, 0.014, 0.02) + uHorizon * 0.26 * dusk
+              + uHorizon * 0.10 * (1.0 - sh))
+    // The cheap path takes the cavity too. It is the default build — the one a
+    // visitor actually lands in — so a term that only reached the frame under
+    // ?paint=1 would be a material improvement nobody sees.
+              ${MAT ? '* gm.ao' : ''};
     vec3 lit = col * (key + fill);
     ${SHADOW_DEBUG ? (PARAM('shdebug') === '2' ? 'lit = shadowProbe(vW);' : 'lit = vec3(sh);') : ''}
     `}
@@ -1167,6 +1231,17 @@ export class SurfaceScale {
       sun: this.uSunDir,
       shadow: this.sunShadow ? { ...this.sunShadow.uniforms } : null,
       shadowGLSL: this.sunShadow ? SHADOW_TAPS_GLSL : null,
+      // §9.3, from the same uniform block the terrain and the ocean read, so a
+      // boulder and the ground behind it cannot disagree about how far away the
+      // horizon is. `painted.js` has the note on why the air is applied there
+      // rather than through `applyAerial()`: `paint()` is the last thing that
+      // writes colour, so anything computed before it was being overwritten.
+      //
+      // `?propair=0` turns it off, which is how the A/B gets taken — and the
+      // frame it restores is the one every capture in this repo was shot with.
+      air: AERIAL && PROPAIR
+        ? { glsl: AERIAL_GLSL, uniforms: { ...this._aerialUniforms(), uCam: this.uCam } }
+        : null,
     };
   }
 
@@ -1373,6 +1448,20 @@ export class SurfaceScale {
       uMatMid: { value: pal.map((m) => v3(m.mid)) },
       uMatLit: { value: pal.map((m) => v3(m.lit)) },
       uMatGrain: { value: pal.map((m) => m.grain) },
+      // The per-layer roughness. `materialPalette()` has computed it since the
+      // day it was written — 1.0 for rock, 0.82 soil, 0.55 sward, 0.30 rime —
+      // and nothing had ever uploaded it, so the four materials differed in
+      // colour and in nothing else. It is act 3b's smallest change and the one
+      // that makes the other two per-material rather than global: it scales the
+      // detail normal's amplitude and the cavity's depth, so stone gets grain
+      // and snow does not.
+      uMatRough: { value: pal.map((m) => m.rough) },
+      uMatDetail: { value: RELIEF },
+      // Frame-constant, and pushed every frame beside the meadow's copy of the
+      // same number — see _syncMaterialLOD. A vertex or fragment shader can
+      // read the projection matrix but has no way to know how many pixels tall
+      // the target is, which is the other half of the conversion.
+      uMatPxr: { value: 900 },
       uMatLat: { value: lat },
       uMatCold: { value: bias.cold },
       uMatRain: { value: bias.rain },
@@ -1740,6 +1829,11 @@ export class SurfaceScale {
 
     const grassMul = qArr('grass', 'grass');
     const segs = qArr('blades', 'blades');
+    // How many near rings get §9.5's curved cross-section. `?curved=` overrides
+    // it like every other knob in that table, so the trade can be seen on one
+    // machine without editing the row — which is the whole point, because what
+    // it costs is measurable here and what it buys is not.
+    const curvedRings = qInt('curved', 'curvedRings');
     // §9.1 · one base colour, and grassPalette() derives the ramp from it. The
     // nine greens are the world's, not the reference's.
     const palette = { base: [this.pp.colC.r, this.pp.colC.g, this.pp.colC.b] };
@@ -1752,6 +1846,7 @@ export class SurfaceScale {
       this.meadow.push(new GrassRing(r, this.windField, {
         seed: hash(this.pp.seed, 0x9ea6 + r),
         seg: segs[r],
+        curved: r < curvedRings,
         density: grassMul[r],
         palette,
         // the *same* uniform objects the sky and terrain hold, so the grass
@@ -1769,7 +1864,8 @@ export class SurfaceScale {
     const chunks = this.meadow.reduce((a, m) => a + m.chunks.length, 0);
     console.info(`[§M3] meadow · wind ${this.windSys.base.toFixed(2)} m/s at 10 m · `
       + `force ${this.windSys.force.toFixed(3)} of Earth · ${this.meadow.length} rings · `
-      + `${chunks} chunks · seg ${segs.join('/')} · density ${grassMul.join('/')} · `
+      + `${chunks} chunks · seg ${segs.join('/')} · curved ${curvedRings} · `
+      + `density ${grassMul.join('/')} · `
       + `${this.windField.size}² field · ${(performance.now() - t0) | 0} ms`);
   }
 
@@ -3079,6 +3175,25 @@ export class SurfaceScale {
       this.sunShadow.update(this.app.renderer, this.scene, this.camera,
         this.uSunDir.value, (x, z) => this.heightAt(x, z));
     }
+    // Pixels per radian on the vertical axis, computed once and used twice.
+    //
+    // A shader can read `projectionMatrix` but has no way to know how many
+    // pixels tall the drawing buffer is, and that is the other half of the
+    // conversion — so both consumers are handed it from here, where the FOV and
+    // the buffer are in reach. §9.5's angular width floor wants it for the
+    // grass; act 3b's octave gates want it for the ground, and for the same
+    // reason: an octave should survive exactly as long as it is bigger than a
+    // pixel.
+    //
+    // Deliberately outside the wind-field branch. Everything below it belongs
+    // to M3, and the ground has a material whether or not the world has grass —
+    // computing it in there would have left the terrain reading a build-time
+    // placeholder on any world without a meadow, which is the shape of defect
+    // this file has now recorded five times.
+    const _px = this.app.renderer.getDrawingBufferSize(_bufSize);
+    const pxPerRadian = _px.y / (this.camera.fov * Math.PI / 180);
+    if (this._matU) this._matU.uMatPxr.value = pxPerRadian;
+
     if (this.windField) {
       // the reference's interleave: one auxiliary pass a frame rather than all
       // of them every frame, since the eye cannot follow a gust at 60 Hz any
@@ -3138,8 +3253,6 @@ export class SurfaceScale {
       // buffer are in reach, and pushed. Frame-constant and identical for every
       // chunk, which is why it can be a uniform at all (see the note in
       // flora.js's constructor about the two that could not).
-      const px = this.app.renderer.getDrawingBufferSize(_bufSize);
-      const pxPerRadian = px.y / (this.camera.fov * Math.PI / 180);
       for (const ring of this.meadow) {
         ring.setPixelScale(pxPerRadian);
         ring.update(this.body.x, this.body.z, this.body.y, this.uTime.value,

@@ -411,3 +411,298 @@ flag to move for the defect to exist at all, which is the least testable shape
 this class of bug comes in.
 
 Count is five. Every one is a wiring, not a formula.
+
+---
+
+# What §5 costs, measured — and where cutting stops being free
+
+`RECKONING.md` Act C has been open since M5: *"§5's budgets measured with the
+grass off… Still open."* Closed, and red. One frame, seed 700181046, the low
+row, real density, `tools/drawcensus.js`:
+
+| | calls | instances | triangles |
+|---|---|---|---|
+| meadow | 164 | 3,511,140 blades | 11,496,160 |
+| everything else | 84 | | 1,902,503 |
+| **frame** | **248** | | **13,398,663** |
+| §5 | 900 | | **2,200,000** |
+
+Draw calls green with room to spare. Triangles 6.1× over, on the cheapest tier.
+
+## The one cut that was free
+
+Ring 0 — the grass inside 26 metres — was spending **5,368,656 triangles, two
+fifths of the entire frame**, because `flora.js` inferred §9.5's curved
+cross-section as `seg >= 3`. Twelve triangles a blade against six, on the two
+rows least able to pay, chosen by nobody. `curvedRings` is a quality column now.
+
+    before   frame 13,398,663   6.1x over
+    after    frame 10,714,335   4.9x over
+
+2,684,328 triangles, and **not one blade fewer** — 3,511,140 before and after.
+That is the whole of what can be cut without an eye on the result.
+
+## Where it stops
+
+The next four candidates each trade something a still would show, and this
+container cannot see a still:
+
+- **Rings 2 and 3** — 2,301,230 blades, 4,602,460 triangles, 43% of what is
+  left. The obvious cut, and the plan proposed it. But their width floors are
+  `wpx` 2.75 and 4.00, so those blades are **held at three to four pixels wide
+  by construction** — they are marks, not sub-pixel noise, and holding them
+  there is exactly the fix that landed two commits ago to stop the horizon
+  reading as a green plane. Deleting them undoes Act 1 on the strength of a
+  number that says nothing about how it looks. Needs a capture.
+- **The low row's density.** 3,511,140 blades where §M3's gate asks 800,000 —
+  though the gate is a *floor*, and stated for desktop, so low is not 4.4× over
+  spec so much as unexamined. Thinning it toward the gate is the largest
+  remaining lever and it makes the near field barer, which is the precise defect
+  this whole plan exists to fix. Needs a capture.
+- **Ground cover has no distance LOD** — `coverDensity()` thins by count and
+  every survivor is full detail, so a dodecahedron boulder at 400 m still costs
+  36 triangles. Real, and worth about 112,000 triangles: 1% of the frame.
+- **`life.js`'s bark.** The largest non-meadow line, 608,800 triangles over two
+  draws sharing one material — about 39,300 branch segments at 10 triangles and
+  10,800 far trunks at 20. Lean already; nothing obvious to take.
+
+## The number that decides the milestone
+
+It is not the meadow's. **Delete the meadow entirely and the frame still spends
+1,902,503 triangles — 86% of the whole cap, on the cheapest tier, before a
+single blade.** That leaves 297,497 for grass, and a blade is two triangles at
+its cheapest, so §5-green means about 148,000 blades.
+
+§5 and §M3 cannot both hold as written. Ruled: cut what is indefensible, leave
+the clause for a machine that can measure frames per second — which is the
+property §5's tier table is actually stated in, and the one thing this container
+cannot produce.
+
+---
+
+# Act 3b · the ground gets properties other than colour
+
+§8 axis 5 scored **1 and 2** — *"the ground reads as nothing"* — against a
+measured near-ground gradient of 1.07 and 1.15 out of 255. `RECKONING.md` calls
+it *"the blocking axis"* and *"more than half of every frame"*. It was not a
+tuning problem. The material was structurally incapable of texture:
+
+- `struct Ground` carried three colours, a grain scalar and the blend weights.
+  **No normal, no roughness, no occlusion.**
+- `materialPalette()` has computed a per-layer `rough` since the day it was
+  written — rock 1.0, soil 0.82, sward 0.55, rime 0.30 — and **nothing ever
+  uploaded it.** The sixth dead wiring, and the oldest.
+- `sf.ao` was the literal `1.0`, at every pixel, on every world. §9.2 *gates*
+  its ambient fill on AO, so that fill has been ungated since the model was
+  written.
+- The finest feature in any channel was **~60 cm** — 1.63 cycles/m in the
+  material, 1.4 in the terrain's bump — and `bumpF` is a *far*-field fade that
+  sits flat at 1.0 inside 60 m, so there was no near-field ramp at all.
+- The nearest tile vertices are **8.33 m apart on every tier**, so the first
+  thirty metres of every frame is about three and a half quads. Nothing under
+  8 m can come from geometry.
+
+Four changes, no new textures, no new geometry:
+
+1. **`matNormal()`** — two decorrelated triplanar octaves at 4.1 and 11.0
+   cycles/m (24 cm and 9 cm), perturbing the normal along two tangents. Not the
+   gradient of a height field, deliberately: a true gradient costs six taps for
+   the central differences and what this needs is coherence and a clean fade,
+   which two octaves give at a third of the price.
+2. **`uMatRough`** uploaded at last, scaling both the relief amplitude and the
+   cavity depth — so stone gets grain and snow does not, which is what §8 axis 5
+   means by *"every material nameable without labels"*.
+3. **`matCavity()`** — the negative half of a 2.3 cycles/m field. Only the
+   negative half: a pit holds shadow, a bump does not hold extra light, and
+   brightening the positive half is a rash of pale speckles under a low sun.
+4. **`sf.soft`** — §9.2's band-edge width, `mix(0.055, 0.17, rough)` instead of
+   the constant 0.10. A rough surface has a soft terminator; a smooth one does
+   not.
+
+All of it reaches the **default** build, not only `?paint=1`. A term that only
+the grade sees is a term nobody sees, since the grade is off.
+
+## The LOD is angular, and that took a rewrite
+
+The first version faded both octaves on the same 0→30 m ramp the colour detail
+uses, squared. That is a resolution-*independent* answer to a resolution-
+*dependent* question, and §9.5 had already settled it for the grass: an octave
+should survive exactly as long as it is bigger than a pixel.
+
+`matOctave(cyclesPerM, dist, pxr)` is that settlement, fed the same
+`pxPerRadian` the meadow's width floor gets. `tools/pixeldiff.js --suite
+material` measures what it buys, and this is the number the metric ramp could
+not express, because it is a property of the screen and not of the world:
+
+| display | 4.1 c/m octave at half strength out to |
+|---|---|
+| 420×240 headless proxy | **24 m** |
+| phone | 56 m |
+| 1080p | 107 m |
+| 1440p | **143 m** |
+
+The ramp it replaced was gone by 30 m on every one of them.
+
+## What is measured, and what is not
+
+`tools/glimpse.js`, same seed, same station, one flag apart — and `?relief=` is
+in the build precisely so this A/B is one character:
+
+| | near-ground gradient | luma |
+|---|---|---|
+| `?relief=0` (the ground as it was) | 17.63/255 | 77–249 |
+| `?relief=1` (shipped) | 18.15/255 | 76–249 |
+| `?relief=2` | 18.86/255 | 69–249 |
+| `?relief=4` | 20.44/255 | **35**–249 |
+
+**The wiring is live** — `relief=0` reproduces the pre-act statistic exactly and
+the number climbs monotonically with amplitude — which, after six dead wirings,
+is the first thing worth establishing and the only thing this instrument can
+establish.
+
+**The magnitude is not measured and cannot be here.** `glimpse` runs at 420×240,
+where the table above says the coarse octave dies at 24 m against 143 m at
+1440p — so this frame sees roughly a sixth of the reach it ships with, and its
+own header says anything resolution-dependent is systematically misrepresented.
++3% at proxy resolution is not a prediction of what a capture will show, in
+either direction.
+
+The amplitude was chosen from the tilt it implies, not from the gradient: about
+**17° on bare rock, 12° on sward, 9° on snow**. That is gravel and weathering,
+not corrugation. `?relief=` is there so a person with a GPU can disagree in one
+character.
+
+Count of wirings that existed, were exercised by a suite, and were never called
+by the renderer: **six**. The newest is the oldest — `rough`, dead since the
+file was written.
+
+---
+
+# Act 4 · the unanchored polyhedron was a sky-whale
+
+§8 axis 8 scored **2 in both blind frames**, for one object and the same
+sentence twice: *"the dark polyhedron at centre-top has no shadow, no ground
+contact and no scale reference."* Neither review could say what it was. A still
+shows a silhouette; it does not show a scene graph.
+
+`tools/floaters.js` asks the scene instead. It walks every mesh at surface
+scale, aggregates to the assembly each belongs to, finds the terrain under the
+footprint and reports whatever is clear of it. On the world those captures are
+actually of — seed 20250601, `g=443188473&s=2309765500&p=0`, from
+`RECK-default/manifest.json`, **not** the hex string in `blind/key.json`, which
+is the A/B shuffle salt and not a seed:
+
+```
+assembly       parts geometry      gap    dist    size    ang  casts
+InstancedMesh      1 Buffer      50.0m    327m 1584.4m 277.9°  NO
+                   8 instances · MeshStandardMaterial · y 206 to 572 · ground 156.0 m
+```
+
+Eight instances, two to five hundred metres up, spanning the world.
+`src/megafauna.js`, `buildWhales`, `N = 8`, `alt = r.float(180, 420)`.
+
+## Three things were wrong and the review named the least fixable one
+
+**It was outside the light model.** A plain `MeshStandardMaterial` is lit by
+`surface.js`'s directional and ambient lights and nothing else — no half-Lambert
+wrap, no hue-shifted shade, and no backlight rim. What the frame showed was the
+whale's *underside*, which the sun does not reach, so it rendered flat
+near-black against a pale sky. §8 axis 2 asks whether any surface receives no
+light information at all; §M2's gate calls an achromatic-dark surface a failure
+in those words. §9.2 calls the rim *"the connective tissue of the whole image"*,
+and a hundred-metre body backlit at golden hour is the case that term exists
+for. Fixed: the whales go through `paintedStandard()` with the terrain's own
+light and shadow map, `rim: 1.0`, `trans: 0.45`.
+
+**Ground contact is not the fix, and the physics says so.** A body 250 m up
+under a 13.5° sun casts about **1.7 km downsun** — outside `shadow.js`'s 480 m
+map and nowhere near the whale. Drawing a shadow beneath it would be a lie about
+where the sun is, and §8 axis 8 scores a contradiction of the physics as
+*dishonest* rather than as contact. So it stays uncast, and `verify.js` asserts
+that nothing later "fixes" it by adding one.
+
+**Scale comes from form.** A shape with a lit back, a rim along its edge and a
+shaded belly reads as a large solid body; a flat black cutout reads as an
+artefact at an unknowable distance. §9.2 supplies all three.
+
+## And it found the next thing, which is bigger
+
+**No prop lit by §9.2 gets §9.3's aerial perspective.** `painted.js` injects at
+`#include <dithering_fragment>` — the last chunk in the chain, chosen so that
+alpha test, alpha map and fog have already run — and then writes
+`gl_FragColor.rgb = paint(sf)`, which overwrites the fog it was careful to run
+after. There is also no `scene.fog` at surface scale, so three's chunk had
+nothing to apply either way.
+
+The consequence: every boulder, plant, tree, settlement and whale sits at its
+true distance in depth and at zero distance in colour. §8 axis 3 wants three
+separable depth planes and axis 6 wants the hue families to sort by distance;
+this puts the whole prop layer in one plane. It is the seventh instance of this
+file's pattern — an injection point chosen for a reason, and the reason undone
+two lines later — and it is not Act 4's to fix.
+
+Count of wirings that existed, were exercised, and never reached the frame:
+**seven**.
+
+---
+
+# §9.3 on the props — the ordering fix, and four probes that could not see it
+
+The seventh entry above named the defect: `painted.js` injects at
+`#include <dithering_fragment>` — the last chunk, chosen so alpha test, alpha
+map and fog have all run — and then writes `gl_FragColor.rgb = paint(sf)`,
+overwriting the fog that `applyAerial()` had been careful to compute early.
+`src/aerial.js` injects at `#include <opaque_fragment>`, also deliberately,
+because that is before three's tonemapping and the air scatters linear light.
+Both injection points are right. Run both on one material and the second one
+wins.
+
+**The fix is ordering, not a second fog.** `paint()` is the last thing that
+writes colour, so the air goes immediately after it in the same block, out of
+the same `AERIAL_GLSL`, off the same uniform block `paintWiring()` already
+carries — so a boulder and the ground behind it cannot disagree about how far
+away the horizon is. A material that takes the air here sets
+`userData.aerial`, which is the flag `applyAerial()` already checks, so the
+general injector leaves it alone. `?propair=0` restores the old frame.
+
+It is legal at that point because under §M2 the scene renders into a HalfFloat
+composer target with `renderer.toneMapping = NoToneMapping`, so
+`tonemapping_fragment` and `colorspace_fragment` are both no-ops and the value
+`paint()` writes is the same linear radiance `aerial()` expects.
+
+## The part worth writing down
+
+Four separate probes could not distinguish a working injection from a dead one.
+
+| probe | reading | what it actually proved |
+|---|---|---|
+| `alphaudit --extra propair=0` vs default | **byte-identical**, every bin to 3 dp | nothing — its 20 bins are coarser than the change |
+| painted materials in the live scene | `painted-v1+air`, `userData.aerial = 'paint'` | the material was built with the air |
+| the compiled `shaderSource` | `aerial()` defined, called, alpha written, in 3 programs | the *shader* has it |
+| mean alpha over the pixels props cover | **1.0 with the flag on and 1.0 with it off** | looks exactly like a dead wiring |
+
+The fifth probe forced the shared air short — `uAirNear = 0`, `uAirFar = 25` —
+and prop alpha went from exactly 1.0 to **mean 0.796, min 0.364**. Live, and
+responsive to the uniforms. With `?propair=0`, `paintWiring().air` is `null` and
+the block is absent from the source.
+
+So why was alpha exactly 1.0 on a working build? Because on that world
+`aerialParams()` returns **`near = 372.7 m`, `far = 9051.8 m`** — clear air —
+and every painted prop lives within `REACH = 420 m` of spawn. Inside `uAirNear`
+the fog fraction is exactly zero by construction. **Alpha 1.0 was the correct
+answer**, and a correct answer that is identical to the broken one is the
+hardest case this file has recorded: not a wiring that does nothing, but a
+wiring whose output is indistinguishable from doing nothing on the world you
+happen to be standing on.
+
+The general lesson, and it applies to the six entries above: *a null result is
+only evidence when the instrument is known to be able to show a positive one.*
+Forcing the input to an extreme is how you find that out, and it costs one run.
+
+**Where this will show and where it will not.** It bites on hazy worlds — high
+`atmo` pulls `far` down toward a few hundred metres — and on anything further
+out than `uAirNear`: the sky-whales at 200–570 m, settlements, far trees, the
+horizon band's props. On a clear temperate world with everything inside 420 m it
+is very nearly a no-op, which is the physics being honest rather than the fix
+being weak. Unverified by eye, as always: `?propair=0` makes the A/B one
+character on a machine with a GPU.

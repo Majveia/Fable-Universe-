@@ -1,56 +1,43 @@
 {
   "schema": "aeon-shadercheck/3",
-  "when": "2026-08-10T11:25:59.758Z",
+  "when": "2026-08-23T04:00:08.015Z",
   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
   "softwareRasterizer": true,
   "passes": [
     {
       "flags": "",
-      "mode": "stations",
+      "mode": "flight",
       "complete": true,
-      "shadersCompiled": 64,
+      "shadersCompiled": 106,
       "failures": 0,
       "warnings": 0,
       "scalesVisited": [
-        "black-hole",
+        "blackhole",
         "cosmic",
         "galaxy",
-        "planet-orbit",
-        "star-system",
-        "surface"
+        "planet",
+        "surface",
+        "system"
       ],
-      "pageErrors": [
-        "SyntaxError: Unexpected identifier 'jit'",
-        "SyntaxError: Unexpected identifier 'jit'",
-        "SyntaxError: Unexpected identifier 'jit'",
-        "SyntaxError: Unexpected identifier 'jit'"
-      ],
+      "pageErrors": [],
       "detail": []
     },
     {
       "flags": "m1=1&m2=1&slab=1",
-      "mode": "stations",
+      "mode": "flight",
       "complete": true,
-      "shadersCompiled": 0,
+      "shadersCompiled": 106,
       "failures": 0,
       "warnings": 0,
       "scalesVisited": [
-        "black-hole",
-        "cosmic-web",
+        "blackhole",
+        "cosmic",
         "galaxy",
-        "planet-orbit",
-        "star-system",
-        "surface"
+        "planet",
+        "surface",
+        "system"
       ],
-      "pageErrors": [
-        "SyntaxError: Unexpected identifier 'jit'",
-        "SyntaxError: Unexpected identifier 'jit'",
-        "SyntaxError: Unexpected identifier 'jit'",
-        "SyntaxError: Unexpected identifier 'jit'",
-        "SyntaxError: Unexpected identifier 'jit'",
-        "SyntaxError: Unexpected identifier 'jit'",
-        "SyntaxError: Unexpected identifier 'jit'"
-      ],
+      "pageErrors": [],
       "detail": []
     }
   ]

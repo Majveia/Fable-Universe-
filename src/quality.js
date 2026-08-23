@@ -60,6 +60,28 @@ const TIER_NAMES = ['low', 'mobile', 'desktop', 'ultra'];
  *   wind        the wind render target's side, in texels
  *   blades      per-ring blade segment counts — the *only* thing a ring
  *               boundary changes (§9.5), so this is the tessellation dial
+ *   curvedRings how many near rings get §9.5's curved cross-section
+ *
+ * `curvedRings` is the largest single line in the surface frame, and it was not
+ * a column at all — `flora.js` inferred it as `seg >= 3`, so a tier that wanted
+ * three segments got the curved cross-section whether it could afford it or
+ * not. Measured, one frame, seed 700181046, the low row: ring 0 spent
+ * **5,368,656 triangles — 40% of the entire frame — on the 447,388 blades
+ * inside 26 metres**, because curved is three vertices a row rather than two
+ * and four triangles a segment rather than two. Twelve triangles a blade
+ * against six.
+ *
+ * §9.5 is explicit that across-blade detail is a tier decision: *"once a blade
+ * is two or three pixels wide, everything varying across its width is sub-pixel
+ * and should be dropped by tier."* Ring 0's own width floor is `wpx = 1.70`, so
+ * at the ring's far edge a blade is held at 1.70 px by construction and a
+ * rolled-leaf cross-section is being drawn into less than two pixels. It does
+ * resolve in the nearest few metres — at 5 m a blade is about 9 px — which is
+ * why desktop keeps one ring of it and ultra keeps two.
+ *
+ * Low and mobile get the ribbon. That is not the cross-section being wrong, it
+ * is §5's rule applied to it: *any change that costs frames must pay for them*,
+ * and the two rows least able to pay were the ones paying most.
  *
  * `grass` is per-ring rather than a single number because the rings do not
  * scale together, and the direction is the opposite of the obvious guess. On
@@ -75,10 +97,10 @@ const TIER_NAMES = ['low', 'mobile', 'desktop', 'ultra'];
  * The far rings are therefore where a low-tier machine gets its frames back.
  */
 export const QUALITY = [
-  { name: 'low', px: 0.85, cosmic: 44, quadSplit: 4.5, quadDepth: 14, tileRes: 25, atmoSteps: 6, shadowRes: 1024, shadowTaps: 1, cities: false, volumetrics: false, grass: [0.30, 0.28, 0.26, 0.24], wind: 160, blades: [3, 1, 1, 1] },
-  { name: 'mobile', px: 1.00, cosmic: 56, quadSplit: 5.5, quadDepth: 16, tileRes: 29, atmoSteps: 8, shadowRes: 1536, shadowTaps: 5, cities: true, volumetrics: false, grass: [0.58, 0.55, 0.52, 0.48], wind: 224, blades: [3, 2, 1, 1] },
-  { name: 'desktop', px: 1.12, cosmic: 68, quadSplit: 6.5, quadDepth: 18, tileRes: 33, atmoSteps: 12, shadowRes: 2048, shadowTaps: 5, cities: true, volumetrics: true, grass: [1.00, 1.00, 1.00, 1.00], wind: 288, blades: [4, 2, 1, 1] },
-  { name: 'ultra', px: 1.32, cosmic: 86, quadSplit: 8.0, quadDepth: 20, tileRes: 41, atmoSteps: 16, shadowRes: 2560, shadowTaps: 5, cities: true, volumetrics: true, grass: [1.45, 1.38, 1.30, 1.20], wind: 352, blades: [5, 3, 2, 1] },
+  { name: 'low', px: 0.85, cosmic: 44, quadSplit: 4.5, quadDepth: 14, tileRes: 25, atmoSteps: 6, shadowRes: 1024, shadowTaps: 1, cities: false, volumetrics: false, grass: [0.30, 0.28, 0.26, 0.24], wind: 160, blades: [3, 1, 1, 1], curvedRings: 0 },
+  { name: 'mobile', px: 1.00, cosmic: 56, quadSplit: 5.5, quadDepth: 16, tileRes: 29, atmoSteps: 8, shadowRes: 1536, shadowTaps: 5, cities: true, volumetrics: false, grass: [0.58, 0.55, 0.52, 0.48], wind: 224, blades: [3, 2, 1, 1], curvedRings: 0 },
+  { name: 'desktop', px: 1.12, cosmic: 68, quadSplit: 6.5, quadDepth: 18, tileRes: 33, atmoSteps: 12, shadowRes: 2048, shadowTaps: 5, cities: true, volumetrics: true, grass: [1.00, 1.00, 1.00, 1.00], wind: 288, blades: [4, 2, 1, 1], curvedRings: 1 },
+  { name: 'ultra', px: 1.32, cosmic: 86, quadSplit: 8.0, quadDepth: 20, tileRes: 41, atmoSteps: 16, shadowRes: 2560, shadowTaps: 5, cities: true, volumetrics: true, grass: [1.45, 1.38, 1.30, 1.20], wind: 352, blades: [5, 3, 2, 1], curvedRings: 2 },
 ];
 
 const param = (k) => {
