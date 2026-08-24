@@ -111,3 +111,26 @@ pixel ratio itself — 0.85 on Low resolves up, everything above resolves down.
 `src/quality.js` mirrors the shape.
 
 Port techniques and constants. Never files.
+
+---
+
+# The other references
+
+`hoshi-no-tani.html` is the north star and §9 defers to it outright. Two others
+sit beside it, each answering a domain it does not cover. Neither has §9's last
+word; both are evidence.
+
+| | covers | provenance |
+|---|---|---|
+| `sakura-realm/` | weather, trees, plants, terrain — the nature systems | `sakura-realm/README.md` |
+| `the-long-silence/` | **vacuum** — hulls, stations, baked worlds from orbit, the surfacing of built things | `the-long-silence/README.md` |
+
+`the-long-silence/` is the newest and the least like AEON: it is a game, with a
+game loop §4 forbids, built on a bundler §2.2 forbids, and — despite its own
+README's claim — it ships assets §2.1 forbids. Its provenance record says
+exactly which two modules load them and why the tree keeps them anyway.
+
+What it is *for* is the half of the frame §9 never had to describe. Four of §9's
+eight subsections assume air. Everything AEON has ever put in vacuum was
+surfaced by three's stock `MeshStandardMaterial` — which `painted.js` was
+written to get rid of everywhere else, and which §11 lists as a trap by name.
