@@ -1,0 +1,52 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/":"/vendor/addons/"}}</script>
+</head><body><div id="out">running</div>
+<script type="module">
+/* Both ring builders, called as the app calls them, counted.
+   `PlanetScale` is a large class that needs a live app to construct, but
+   `_buildRing` and `_buildRingPlated` reach exactly five things through `this`
+   — the dock's two radii, the star's temperature, the sun direction and the
+   group they attach to. So they are called against a stub carrying those five,
+   which measures the shipped functions rather than a copy of them. */
+import * as THREE from 'three';
+const mod = await import('/src/planetscale.js');
+const Cls = mod.PlanetScale || mod.default
+  || Object.values(mod).find((v) => typeof v === 'function' && v.prototype && v.prototype._buildRing);
+
+const count = (g) => {
+  let meshes = 0, verts = 0;
+  const mats = new Set();
+  g.traverse((o) => {
+    if (!o.isMesh) return;
+    meshes++;
+    mats.add(o.material.uuid);
+    verts += o.geometry.attributes.position.count;
+  });
+  return { meshes, materials: mats.size, verts };
+};
+
+const dock = { ringR: 0.16 * 0.4, tubeR: 0.03 * 0.4 };
+const out = {};
+const fails = [];
+for (const [name, fn] of [['stock', '_buildRing'], ['plated', '_buildRingPlated']]) {
+  const g = new THREE.Group();
+  const stub = {
+    ctx: { system: { temp: 5778 } },
+    uSunDir: { value: new THREE.Vector3(0.31, 0.23, 0.92).normalize() },
+    planetGroup: new THREE.Group(),
+  };
+  try {
+    if (fn === '_buildRing') {
+      // the stock path builds into its own group and stores it; call it and
+      // read what it attached
+      Cls.prototype._buildRing.call(stub, dock);
+      out[name] = count(stub._ring);
+    } else {
+      Cls.prototype._buildRingPlated.call(stub, dock, g);
+      out[name] = count(stub._ring);
+    }
+  } catch (e) { fails.push(`${name}: ${e && e.message ? e.message : e}`); }
+}
+window.__result = { out, fails, haveClass: !!Cls };
+document.getElementById('out').textContent = 'done';
+</script></body></html>

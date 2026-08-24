@@ -26,6 +26,30 @@ import { addSettlement } from './settlement.js';
 import { addWonders } from './strange.js';
 import { buildScatterLUTs } from './scatterlut.js';
 import { addOrbitals } from './orbital.js';
+import { paintedStandard, stopsFrom } from './painted.js';
+import { lightFor } from './paint.js';
+import { GREEBLE, greebleDetail, slab, place, weld } from './greeble.js';
+
+/**
+ * What a planet-scale unit is, in metres.
+ *
+ * Nothing in this file ever said. The scale was set once, implicitly, by the
+ * one line that had to be in real units to work — the eye height on the ring
+ * deck — and every other number here has been consistent with it by luck
+ * rather than by construction. Naming it is the precondition for §M0's shader
+ * gate to mean anything about a surface: a plate seam authored at 26 mm and a
+ * chamfer floored at 70 mm are both nonsense until a unit exists.
+ *
+ * The two below are the only place it is stated, and `_walkInside()` reads
+ * EYE_U from here rather than repeating 0.0007, so they cannot drift apart.
+ * The cross-check: the deck walk speed is 0.0016 units/s, which is 3.9 m/s —
+ * a brisk walk — and the habitat ring comes out 97 to 194 m in radius, which
+ * is a habitat ring.
+ */
+const EYE_M = 1.7;
+const EYE_U = 0.0007;
+const U2M = EYE_M / EYE_U;         // about 2429 m to the unit
+
 import { solveWatershed } from './hydrology.js';
 import { CityField } from './city.js';
 import { addAurora } from './aurora.js';
@@ -1237,11 +1261,14 @@ export class PlanetScale {
   }
 
   // ---------------------------------------------------- the ring deck ----
+
   /** the interior: a walkable catwalk ring inside the habitat torus. The
    *  hull culls itself from within (backfaces), so the whole sky — the
    *  planet, the stars, the traffic — wheels past as the station spins. */
   _buildRing(dock) {
     const g = new THREE.Group();
+    if (GREEBLE) { this._buildRingPlated(dock, g); return; }
+
     const R0 = dock.ringR, tube = dock.tubeR;
     const rf = R0 + tube * 0.55;             // spinward is down: the floor
     const N = 44;
@@ -1280,6 +1307,134 @@ export class PlanetScale {
       rail.rotation.y = Math.PI / 2;           // into the ring's YZ plane
       g.add(rail);
     }
+    this.planetGroup.add(g);
+    this._ring = g;
+  }
+
+
+  /**
+   * The same ring, built out of `greeble.js` — §7.4, behind `?greeble=1`.
+   *
+   * Two things change, and they are one thing.
+   *
+   * **Sixty-eight draws become two.** The old builder added forty-four deck
+   * plates, eleven ribs, eleven lamps and two handrails to a group as separate
+   * meshes across three materials. `place()` bakes each part's transform into
+   * its vertices and `weld()` concatenates them, so the whole plated structure
+   * is one draw and the lamps — which must stay emissive and must not be
+   * plated — are the second.
+   *
+   * **And it acquires a material.** Those are not two improvements that
+   * happened to land together: the plate law reads `position` in the merged
+   * object's own space, so a seam runs across a part boundary rather than
+   * restarting at it, and that is only true *because* the parts merged. §8's
+   * blind run scored materials 1 and 2 on a frame whose largest object was
+   * this one.
+   *
+   * Modelled in metres and mounted at 1/U2M, which is the reference's own
+   * convention and the only way the kit's absolute numbers — a 70 mm chamfer
+   * floor, a 26 mm seam gap, a 0.85 m occupancy cell — mean anything.
+   */
+  _buildRingPlated(dock, g) {
+    // metres, throughout this function
+    const R0 = dock.ringR * U2M, tube = dock.tubeR * U2M;
+    const rf = R0 + tube * 0.55;             // spinward is down: the floor
+    const N = 44;
+    const parts = [];
+    const X = new THREE.Vector3(1, 0, 0);
+    const m4 = new THREE.Matrix4();
+    const _e = new THREE.Euler();
+
+    const put = (geo, rho, q, r) => {
+      const p = rho.clone().multiplyScalar(r);
+      _e.setFromQuaternion(q);
+      parts.push(place(geo, { pos: [p.x, p.y, p.z], rot: [_e.x, _e.y, _e.z] }));
+    };
+
+    const lamps = [];
+    const deckW = tube * 1.15, deckT = tube * 0.06, pitch = (2 * Math.PI * rf / N) * 1.06;
+    for (let i = 0; i < N; i++) {
+      const th = (i / N) * Math.PI * 2;
+      const rho = new THREE.Vector3(0, Math.sin(th), -Math.cos(th));
+      const q = new THREE.Quaternion().setFromRotationMatrix(
+        m4.makeBasis(X, rho, new THREE.Vector3(0, Math.cos(th), Math.sin(th))));
+      // A deck plate is a plate: bevelled, so the key finds its edge. The old
+      // one was a BoxGeometry, and a knife edge against a black sky is the one
+      // thing that leaves no line at all.
+      put(slab(deckW, pitch, deckT, Math.min(0.14, deckT * 0.4)), rho,
+        new THREE.Quaternion().multiplyQuaternions(q,
+          new THREE.Quaternion().setFromAxisAngle(X, Math.PI / 2)), rf);
+      if (i % 4 === 0) {
+        put(new THREE.TorusGeometry(tube * 0.96, tube * 0.035, 6, 28), rho, q, R0);   // structure, for parallax
+        lamps.push({ rho: rho.clone(), q: q.clone(), r: R0 - tube * 0.5 });           // the ceiling
+      }
+    }
+    // handrails: two continuous rings at waist height
+    for (const sx of [-0.42, 0.42]) {
+      const rail = new THREE.TorusGeometry(rf - tube * 0.1, tube * 0.012, 5, 96);
+      parts.push(place(rail, { pos: [tube * sx, 0, 0], rot: [0, Math.PI / 2, 0] }));
+    }
+
+    /* §9.2 in vacuum, and the hemisphere is the interesting part.
+       `paint()` rotates hue between a sky ambient and a ground ambient. Out
+       here the "ground" is the planet below — real bounce, and the brightest
+       thing in the sky — and the "sky" is the void, which delivers almost
+       nothing. §2.8 says vacuum renders to true black and this is what that
+       means for the fill: the additive term all but vanishes and the hue
+       rotation comes almost entirely off the planet. No air, so no §9.3, and
+       no shadow map, so `sunShadow()` falls back to its lit default. */
+    const T = this.ctx.system?.temp ?? 5778;
+    const L = lightFor(T, 12);
+    const v3 = (c) => ({ value: new THREE.Vector3(c[0], c[1], c[2]) });
+    const wiring = {
+      paint: {
+        uPaintSun: v3(L.sun),
+        uPaintAmbSky: v3([0.010, 0.014, 0.020]),          // the void, teal-black
+        uPaintAmbGnd: v3([L.sun[0] * 0.24, L.sun[1] * 0.26, L.sun[2] * 0.30]),
+        uPaintShadowTint: v3(L.shadowTint),
+        uPaintExposure: { value: 1 },
+      },
+      sun: this.uSunDir,
+    };
+
+    const base = [0.29, 0.32, 0.36];
+    const mat = paintedStandard(
+      { color: new THREE.Color(base[0], base[1], base[2]), roughness: 1 },
+      wiring,
+      {
+        ...stopsFrom(base, { sun: L.sun, shadowTint: L.shadowTint },
+          { warm: 0.10, cool: 0.16, range: 0.26 }),   // a mineral barely shifts
+        soft: 0.09,
+        /* §9.2 calls the backlight "the connective tissue of the whole image",
+           and the reference reached the same term from the other end: a hull
+           backlit against a starfield "collapses to a flat black cut-out no
+           matter how bright the star is." Both are describing this number.
+           There is nothing else in frame out here to fill a shade side. */
+        rim: 1.15,
+        ambient: 1.0,
+        u2m: 1,                    // parts are modelled in metres
+        bumpScale: 1 / U2M,        // and mounted at that, so relief converts here
+        detail: greebleDetail({
+          plate: 2.4,              // deck plate, near the reference's hull gauge
+          frame: true,             // a habitat ring is built on frames, and has hatches
+          soot: 0.30,              // no drive aft of it; this is handling, not exhaust
+          bleach: 0.55,
+          glare: 0.62,
+          pit: 1.0,                // it has been in vacuum for as long as it has existed
+        }),
+      });
+
+    weld(parts, mat, g);
+    const lampMat = new THREE.MeshBasicMaterial({ color: 0xcfdce8 });
+    const lampParts = lamps.map(({ rho, q, r }) => {
+      const p = rho.clone().multiplyScalar(r);
+      const e = new THREE.Euler().setFromQuaternion(q);
+      return place(new THREE.BoxGeometry(tube * 0.12, tube * 0.02, tube * 0.12),
+        { pos: [p.x, p.y, p.z], rot: [e.x, e.y, e.z] });
+    });
+    weld(lampParts, lampMat, g, { bake: false });
+
+    g.scale.setScalar(1 / U2M);
     this.planetGroup.add(g);
     this._ring = g;
   }
@@ -1329,7 +1484,7 @@ export class PlanetScale {
     const tau = _a2.set(0, Math.cos(I.theta), Math.sin(I.theta)).applyQuaternion(st.quaternion);
     const ex = _a3.set(1, 0, 0).applyQuaternion(st.quaternion);
     this.camPos.copy(st.position)
-      .addScaledVector(rho, rf - 0.0007)       // eyes 1.7 m over the deck
+      .addScaledVector(rho, rf - EYE_U)        // eyes EYE_M over the deck
       .addScaledVector(ex, I.lat);
     // spin gravity: down is outward, up is toward the hub
     const upI = _up.copy(rho).negate();
