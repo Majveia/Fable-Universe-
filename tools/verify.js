@@ -134,6 +134,10 @@ import {
   maxSpeed, reachChords, wantedDepth,
 } from '../src/vehicle.js';
 import { FACES, surfaceRadius, uvToDir } from '../src/tilebuild.js';
+import {
+  LINK_GRID, PILOT, Pilot, decodeCraft, encodeCraft, governedSpeed,
+  speedLimit, stoppingDistance,
+} from '../src/pilot.js';
 
 let failures = 0;
 let checks = 0;
@@ -9844,6 +9848,175 @@ function suiteTroffer() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// suite: pilot — §4's "travel", §2.4, §11
+//
+// The governor is one line of algebra, so checking the algebra against itself
+// would prove nothing. §7.3 asks for an independent second derivation, and the
+// honest one here is a **simulation**: fly the craft at a world, integrate it
+// forward at small steps with nothing but the governor deciding its speed, and
+// see where it actually stops. If the bound is right the craft comes to rest at
+// the standoff. If it is a curve that happens to look right, it does not.
+//
+// That is the same shape of check as the vehicle suite's — re-walk the thing,
+// count what happens — and it is the one that would have caught the arbitrary
+// falloff this file exists instead of.
+
+function suitePilot() {
+  console.log('\npilot — the stopping bound, flown rather than asserted');
+
+  const R = 40;                       // a world, in system units
+  const stop = R * PILOT.standoff;
+
+  // --- the bound is the inverse of the stopping distance ------------------
+  // Two expressions of one relation. Agreement is the evidence; either alone
+  // is a restatement.
+  let worst = 0;
+  for (let i = 1; i <= 400; i++) {
+    const d = stop + (i / 400) * 4000;
+    const v = speedLimit(d, R);
+    if (v >= PILOT.vMax - 1e-9) continue;       // capped, not bound
+    const need = stoppingDistance(v);
+    worst = Math.max(worst, Math.abs(need - (d - stop)) / Math.max(d - stop, 1e-9));
+  }
+  ok('speedLimit and stoppingDistance are inverse to 1e-12',
+    worst < 1e-12, `worst relative ${worst.toExponential(2)}`);
+
+  // --- flown ---------------------------------------------------------------
+  // Straight at the centre from far away, riding the bound, integrated at 1 ms.
+  // No control law: the craft simply goes as fast as it is allowed to.
+  const fly = (d0, dt) => {
+    let d = d0, t = 0;
+    for (let i = 0; i < 4e6 && d > stop + 1e-6; i++) {
+      const v = speedLimit(d, R);
+      if (v <= 0) break;
+      d -= v * dt;
+      t += dt;
+    }
+    return { d, t };
+  };
+  const a = fly(3000, 1e-3);
+  ok('a craft riding the bound comes to rest at the standoff, not through it',
+    a.d >= stop - 1e-3 && a.d <= stop + 0.5,
+    `stopped at ${a.d.toFixed(4)} against a standoff of ${stop.toFixed(4)}`);
+
+  // Halving the step must not move the answer — an arrival that depends on the
+  // frame rate is the pop-in §6 M5 forbids, one scale up.
+  const b = fly(3000, 5e-4);
+  near('and the arrival is step-independent', b.d, a.d, 0.5);
+
+  // --- it never asks for more room than it has -----------------------------
+  // The property that actually matters, checked over the whole approach rather
+  // than at its end: at every point, what the craft can still stop in fits in
+  // what is left.
+  let ok2 = true, worstOver = 0;
+  for (let d = stop; d <= 6000; d += 0.5) {
+    const room = stoppingDistance(speedLimit(d, R)) - (d - stop);
+    if (room > 1e-9) { ok2 = false; worstOver = Math.max(worstOver, room); }
+  }
+  ok('at no point on the approach does it need more room than remains',
+    ok2, ok2 ? '' : `over by ${worstOver.toExponential(2)} units`);
+
+  // --- the minimum is over all bodies, not the nearest ---------------------
+  // The bug this replaced: a star is a hundred times a planet's radius, so at
+  // equal range its bound is far tighter. Nearest-by-distance would fly you
+  // through a sun to reach a world just past it.
+  //
+  // The fixture has to be built with care, and getting it wrong the first time
+  // is instructive: a *small* body that is nearer almost always binds anyway,
+  // because its standoff is tiny and the bound only cares about the room left.
+  // The case that separates the two rules is a small body that is nearer but
+  // not close — then the star, further away, still binds because you must stop
+  // clear of six hundred units of it.
+  const bodies = [
+    { x: 0, y: 0, z: 0, radius: 600 },          // the star
+    { x: 0, y: 0, z: 700, radius: 2 },          // a moonlet just off its limb
+  ];
+  const at = { x: 0, y: 0, z: 900 };            // 200 from the moonlet, 900 from the star
+  const nearestOnly = speedLimit(200, 2);       // what nearest-by-distance would allow
+  const both = governedSpeed(at, bodies);
+  ok('the governor takes the minimum over every body, not the nearest one',
+    both < nearestOnly - 1,
+    `bound ${both.toFixed(1)} (the star, 900 away) beats ${nearestOnly.toFixed(1)} `
+    + '(the moonlet, 200 away and nearer)');
+
+  // --- no NaN reaches the frame -------------------------------------------
+  // sqrt of a negative is how one bad number becomes a whole missing scene
+  // graph. Inside the standoff the answer is zero, not imaginary.
+  ok('inside the standoff the bound is zero, never NaN',
+    speedLimit(R, R) === 0 && speedLimit(0, R) === 0 && Number.isFinite(speedLimit(-5, R)),
+    '');
+  ok('and a zero-radius body does not poison it',
+    Number.isFinite(speedLimit(100, 0)) && speedLimit(100, 0) > 0, '');
+
+  // --- the drive lags, and settles ----------------------------------------
+  const p = new Pilot();
+  const far = { x: 0, y: 0, z: 12000 };
+  for (let i = 0; i < 600; i++) p.step(1 / 60, { throttle: 1, pos: far, bodies: [] });
+  near('full throttle settles at vMax', p.speed, PILOT.vMax, 1);
+  ok('and it took time to get there — a drive is not a switch',
+    (() => {
+      const q = new Pilot();
+      q.step(1 / 60, { throttle: 1, pos: far, bodies: [] });
+      return q.speed < PILOT.vMax * 0.02;
+    })(), '');
+
+  // Braking is a fact about the governor, not about a falling number: closing
+  // the throttle in open space must NOT read as braking.
+  const q = new Pilot();
+  for (let i = 0; i < 600; i++) q.step(1 / 60, { throttle: 1, pos: far, bodies: [] });
+  q.step(1 / 60, { throttle: -1, pos: far, bodies: [] });
+  ok('closing the throttle in open space does not read as braking', !q.braking, '');
+  const r2 = new Pilot();
+  for (let i = 0; i < 600; i++) {
+    r2.step(1 / 60, { throttle: 1, pos: { x: 0, y: 0, z: 90 }, bodies: [{ x: 0, y: 0, z: 0, radius: 40 }] });
+  }
+  ok('and holding it open against the governor does', r2.braking,
+    `limit ${r2.limit.toFixed(1)} under a demand of ${PILOT.vMax}`);
+
+  // --- §2.4 · the deep link round-trips exactly ---------------------------
+  // §11's boundary: this value reaches a *place*, so it must not ride a last
+  // bit. Encode and decode are inverse on the grid, not merely close.
+  let worstPos = 0, worstDir = 0;
+  const rng = (n) => ((Math.sin(n * 12.9898) * 43758.5453) % 1 + 1) % 1;
+  for (let i = 0; i < 2000; i++) {
+    const pos = {
+      x: (rng(i + 1) - 0.5) * 26000,
+      y: (rng(i + 101) - 0.5) * 26000,
+      z: (rng(i + 201) - 0.5) * 26000,
+    };
+    const az = (rng(i + 301) - 0.5) * 2 * Math.PI;
+    const el = (rng(i + 401) - 0.5) * Math.PI * 0.98;
+    const ce = Math.cos(el);
+    const dir = { x: Math.sin(az) * ce, y: Math.sin(el), z: Math.cos(az) * ce };
+    const back = decodeCraft(encodeCraft(pos, dir));
+    if (!back) { worstPos = Infinity; break; }
+    worstPos = Math.max(worstPos,
+      Math.abs(back.pos.x - pos.x), Math.abs(back.pos.y - pos.y), Math.abs(back.pos.z - pos.z));
+    worstDir = Math.max(worstDir,
+      Math.abs(back.dir.x - dir.x), Math.abs(back.dir.y - dir.y), Math.abs(back.dir.z - dir.z));
+  }
+  ok('a craft position round-trips through the link within half a grid step',
+    worstPos <= LINK_GRID * 0.5 + 1e-12,
+    `worst ${worstPos.toExponential(2)} against a grid of ${LINK_GRID.toExponential(2)}`);
+  ok('and the heading within a quarter of a milliradian',
+    worstDir < 2.5e-4, `worst ${worstDir.toExponential(2)}`);
+
+  // Encoding twice must give the same string — otherwise two people sharing
+  // the same place get two URLs, which is §2.4 failing quietly.
+  const pos = { x: 1234.5678, y: -91.2, z: 4001.9 };
+  const dir = { x: 0.6, y: 0.1, z: Math.sqrt(1 - 0.36 - 0.01) };
+  const once = encodeCraft(pos, dir);
+  ok('encoding is idempotent through a round trip',
+    encodeCraft(decodeCraft(once).pos, decodeCraft(once).dir) === once, once);
+
+  // A malformed link is refused outright rather than partly honoured.
+  ok('a malformed link is refused, not half-parsed',
+    decodeCraft('1,2,3') === null && decodeCraft('') === null
+    && decodeCraft('a,b,c,d,e') === null && decodeCraft(null) === null, '');
+}
+
 const suites = {
   blossom: suiteBlossom,
   cover: suiteCover,
@@ -9879,7 +10052,7 @@ const suites = {
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
   walk: suiteWalk, material: suiteMaterial, opening: suiteOpening,
   ocean: suiteOcean, horizon: suiteHorizon, wind: suiteWind, meadow: suiteMeadow,
-  vehicle: suiteVehicle,
+  vehicle: suiteVehicle, pilot: suitePilot,
 };
 
 for (const [name, fn] of Object.entries(suites)) {
