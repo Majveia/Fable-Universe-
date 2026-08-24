@@ -39,6 +39,7 @@ on:
       - 'vendor/**'
       - 'tools/shadercheck.js'
       - 'tools/glslcheck.js'
+      - 'tools/cabincost.js'
       - 'tools/boot.js'
       - 'tools/lib.js'
       - '.github/workflows/shaders.yml'
@@ -78,6 +79,25 @@ jobs:
       # is no reason to spend forty minutes finding out again.
       - name: compile every exported shader pair
         run: node tools/glslcheck.js
+
+      # Seconds, and it covers a hole the station walk cannot reach.
+      #
+      # `shadercheck.js --stations` walks the six scales by deep link, so it
+      # only ever compiles shaders belonging to a scale that route visits. The
+      # cabin is behind `?cab=1` and is not on the route at any flag set, which
+      # means `src/cabin.js`'s injected plate-seam GLSL — assembled by
+      # `onBeforeCompile`, and therefore existing nowhere in the source — had
+      # no gate at all.
+      #
+      # `cabincost.js` renders three cabins and fails on any console error,
+      # which is the signal that matters here: three does not *throw* on a
+      # shader that fails to compile, it logs and carries on with a broken
+      # program. It reports the §5 submission counts on the way past.
+      #
+      # It runs before the forty-minute walk for the same reason `glslcheck`
+      # does — when it fails there is no reason to spend the forty minutes.
+      - name: compile the cabin's shaders, which the station walk cannot reach
+        run: node tools/cabincost.js
 
       # The `--all` tier: every world kind and the awkward states — night,
       # storm, a settlement, a moon, both ocean temperatures, a gas giant's

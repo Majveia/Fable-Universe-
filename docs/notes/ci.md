@@ -233,6 +233,43 @@ The repo contains no import of that shape today. That is exactly why the check
 exists: the first one added will be added by someone who has never read this
 file.
 
+## The cabin's shader, and the gate that had nowhere to fail
+
+`src/cabin.js` builds its plate seams by injecting GLSL into three's standard
+shader through `onBeforeCompile`. §M0 is explicit that shaders are checked as
+passed to `gl.shaderSource` rather than as they read in source, and this is
+exactly why: the string that gets compiled does not exist anywhere in the file.
+
+The awkward part is that nothing was checking it. `tools/shadercheck.js` walks
+the scales the app actually builds, and the cabin is behind `?cab=1` — so a
+default-off scale's shaders are outside its reach by construction.
+`tools/cabincheck.js` steps the scale but never draws it, and a program is not
+compiled until something renders. `tools/cabincost.js` does render, three times,
+and was watching the wrong signal: **three does not throw on a shader that fails
+to compile.** It logs `THREE.WebGLProgram: Shader Error` through `console.error`
+and carries on with a broken program, so a `pageerror` listener watches for the
+one symptom this defect does not produce.
+
+`cabincost.js` now fails on any console error, which makes it the post-assembly
+shader check for this scale as well as its cost report — and it runs in
+`shaders.yml`, before the forty-minute station walk, because a gate nobody runs
+is not a gate either. It costs seconds: three cabins rendered, three frames.
+
+Made to go red by deleting one argument from a call in the injected fragment —
+`plateSeam(vCabinPos, uGauge)` against a three-parameter function:
+
+```
+parse · 134/134 modules parse            ← still green, it is valid JavaScript
+§M0 · every shader the cabin submits, compiled → 9 ERROR(S)     exit 1
+```
+
+`parse.js` staying green through that is the whole point rather than a
+shortcoming: the defect is well-formed JavaScript inside a template literal and
+only becomes a shader at runtime. This is the same class as the backtick that
+ends a template early, and it turned up in `cabincost.js` itself while this was
+being written — a comment in the injected string contained backticks and closed
+the literal.
+
 ---
 
 ## §2.2 is not violated by any of this

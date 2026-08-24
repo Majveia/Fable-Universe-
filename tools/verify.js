@@ -113,6 +113,16 @@ import {
 } from '../src/conjure.js';
 import { LAUNCH, flyClimb, launchFor, launchState, speedOf, stepLaunch } from '../src/climb.js';
 import {
+  ENTRY, allenEggers, densityAt as airDensityAt, entryFor, entryFraction,
+  entryState, flyEntry, peakDecel, sinkOf as entrySink, speedOf as entrySpeed,
+  stepEntry, terminalVelocity as entryTerminalV,
+} from '../src/descent.js';
+import {
+  CREW, crewState, easeInOut, gait, look, pathHits, seatPath, sit, stand,
+  stationInReach, stepCrew, straightPath, transitionFraction,
+} from '../src/pilot.js';
+import { CABIN, cabinFor } from '../src/deck.js';
+import {
   F2, FLICKER_HZ, MAINS_HZ, MERCURY_LINES, PHOSPHOR, PHOSPHOR_BANDS,
   isThin, lampColour, lampExposure, lampFlicker,
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
@@ -9919,6 +9929,928 @@ function suiteTroffer() {
 }
 
 
+/* ===========================================================================
+   descent — Allen–Eggers, and the way down
+
+   `climb.js` has a suite because flying a launch to find out whether it works
+   is a bad way to find out. The same argument applies harder here, because a
+   descent has a closed-form solution and so the numeric answer can be checked
+   against something that is not a snapshot of itself.
+
+   The five worlds below are chosen to span the regime: Earth as the case
+   everybody knows, Mars as a thin atmosphere, Venus as a thick one (92 bar),
+   Titan as slow and cold, Luna as no atmosphere at all.
+   ========================================================================= */
+const D_WORLDS = {
+  Earth: { massE: 1, radiusE: 1, atmo: 1 },
+  Mars: { massE: 0.107, radiusE: 0.532, atmo: 0.006 },
+  Venus: { massE: 0.815, radiusE: 0.949, atmo: 92 },
+  Titan: { massE: 0.0225, radiusE: 0.404, atmo: 1.45 },
+  Luna: { massE: 0.0123, radiusE: 0.273, atmo: 0 },
+};
+const D_CAPTURE = releaseAltitude(1400, 52);   // the same 1435 m the climb releases at
+
+function suiteDescent() {
+  console.log('\ndescent — Allen–Eggers, and §2.5 closed in the other direction');
+
+  const craft = {}, params = {};
+  for (const [n, w] of Object.entries(D_WORLDS)) {
+    craft[n] = craftFor(w);
+    params[n] = entryFor(craft[n], w);
+  }
+
+  {
+    // The entry interface is defined in scale heights, so it has to land on
+    // Earth's real one without having been told it.
+    near('the entry interface on Earth is where NASA puts it — 122 km',
+      params.Earth.interface, 122000, 0.02);
+    ok('...and it is a ratio, not a constant, so a thin world gets a low one',
+      params.Mars.interface > params.Earth.interface
+      && params.Venus.interface < params.Mars.interface,
+      `Mars ${(params.Mars.interface / 1000).toFixed(0)} km ·`
+      + ` Earth ${(params.Earth.interface / 1000).toFixed(0)} km ·`
+      + ` Venus ${(params.Venus.interface / 1000).toFixed(0)} km — Mars is higher`
+      + ' because its scale height is longer under lower gravity, which is'
+      + ' H = kT/mg read the right way round');
+  }
+
+  {
+    /* ------------------------------------------------------------------ the
+       headline result, and the reason this file is arithmetic.
+
+       `a_max = v²·sin|γ| / (2·e·H)` contains no β. A vehicle ten times denser
+       pulls the *same* peak deceleration and pulls it lower down. This is the
+       single strongest statement the closed form makes, so it gets tested by
+       varying the thing it claims not to depend on. */
+    const p = params.Earth;
+    const light = { ...p, beta: p.beta / 10 };
+    const heavy = { ...p, beta: p.beta * 10 };
+    const a0 = peakDecel(p).a, aL = peakDecel(light).a, aH = peakDecel(heavy).a;
+    ok('peak deceleration does not depend on the ballistic coefficient at all',
+      Math.abs(aL - a0) < 1e-9 && Math.abs(aH - a0) < 1e-9,
+      `β/10 → ${(aL / 9.80665).toFixed(3)} g · β → ${(a0 / 9.80665).toFixed(3)} g`
+      + ` · β×10 → ${(aH / 9.80665).toFixed(3)} g — identical to 1e-9`);
+    // ...and the altitude very much does, which is the other half of the claim
+    const hL = peakDecel(light).h, hH = peakDecel(heavy).h;
+    near('...but the altitude it happens at moves by exactly H·ln(10) per decade',
+      hL - hH, p.hScale * Math.log(100), 0.001);
+    ok('...so a light vehicle decelerates high and a dense one decelerates low',
+      hL > peakDecel(p).h && peakDecel(p).h > hH,
+      `β/10 at ${(hL / 1000).toFixed(1)} km · β at ${(peakDecel(p).h / 1000).toFixed(1)} km`
+      + ` · β×10 at ${(hH / 1000).toFixed(1)} km — this is why an entry body is`
+      + ' designed blunt: β is chosen low so the pulse lands in thin air');
+  }
+
+  {
+    // The other two signatures of the closed form.
+    const p = params.Earth;
+    near('peak deceleration is linear in sin|γ|',
+      peakDecel({ ...p, sinGamma: p.sinGamma * 2 }).a, peakDecel(p).a * 2, 1e-9);
+    near('...and the speed at the peak is v_e·e^(−½), whatever the world',
+      peakDecel(p).v / p.vEntry, Math.exp(-0.5), 1e-12);
+    near('...on Venus too — it is a property of the solution, not of Earth',
+      peakDecel(params.Venus).v / params.Venus.vEntry, Math.exp(-0.5), 1e-12);
+  }
+
+  {
+    /* ------------------------------------------------------------------ the
+       independent second derivation, which is the point of §14.
+
+       `stepEntry()` integrates the equation of motion frame by frame and knows
+       nothing about Allen–Eggers. `peakDecel()` evaluates the closed form and
+       never integrates anything. Neither is the other's baseline, so agreement
+       between them is evidence.
+
+       They are compared with γ **held**, because that is the assumption the
+       closed form is derived under. Flown free — which is what the game does —
+       gravity steepens the path and Earth's peak rises from 8.4 g to 22.7 g.
+       That difference is the size of a term the closed form drops, not an
+       error in either one, and comparing across it would be comparing two
+       different problems. */
+    for (const n of ['Earth', 'Venus', 'Mars', 'Titan']) {
+      const p = params[n], pk = peakDecel(p);
+      const r = flyEntry(craft[n], D_WORLDS[n], D_CAPTURE, 1 / 240, 14400, undefined, true);
+      const errH = Math.abs(r.peakAt - pk.h) / Math.max(pk.h, 1);
+      near(`${n}: the integrator finds the peak at the altitude the closed form predicts`,
+        r.peakAt, pk.h, 0.03);
+      // a_max is looser on the thin and the slow worlds, and predictably so:
+      // Allen–Eggers drops gravity against drag, and that is exactly the term
+      // that stops being negligible when there is very little drag.
+      const tol = (n === 'Mars' || n === 'Titan') ? 0.25 : 0.06;
+      near(`${n}: ...and the magnitude agrees to ${(tol * 100).toFixed(0)}%`,
+        r.maxDecel, pk.a, tol);
+      if (n === 'Earth') {
+        ok('...with the altitude the tighter of the two, across 92× in pressure',
+          errH < 0.02, `Earth ${(errH * 100).toFixed(2)}% — h_max = H·ln(ρ₀H/(β sin γ))`
+          + ' is reproduced by an integrator that was never given it');
+      }
+    }
+  }
+
+  {
+    /* The closed form as a *curve*, not just at its extremum — and the place it
+       stops being true, which is the more interesting half.
+
+       Above the deceleration peak, drag is the only thing doing anything and
+       Allen–Eggers is very nearly exact. Below it the vehicle has already lost
+       its orbital energy and settles onto **terminal velocity**, where drag
+       balances weight — and weight is the term the closed form dropped, so it
+       keeps predicting an exponential decay to zero. The measured divergence
+       below 40 km is not a disagreement about the answer; it is the closed
+       form being asked a question outside its own derivation. */
+    const p = params.Earth;
+    const pk = peakDecel(p);
+    let above = 0, s = entryState(p);
+    for (let i = 0; i < 400000 && s.phase !== 'down'; i++) {
+      s = stepEntry(s, p, 1 / 240, D_CAPTURE, true);
+      const ae = allenEggers(p, s.h);
+      if (s.h >= pk.h && s.h < p.interface * 0.98 && ae > 1e-6) {
+        above = Math.max(above, Math.abs(entrySpeed(s) - ae) / ae);
+      }
+    }
+    /* ...and terminal velocity is checked at the moment the ballistic phase
+       *ends*, which is the sharpest place to ask.
+
+       A band average is the wrong instrument: at 40 km the vehicle is still
+       doing kilometres a second and has not converged on anything yet, so
+       averaging over a band measures how much of it was spent converging. What
+       the physics actually claims is narrower and stronger — a ballistic
+       descent through enough air arrives at the flare *at* terminal velocity,
+       because that is the fixed point drag has been pulling it toward. */
+    const ratios = {};
+    for (const n of ['Earth', 'Venus', 'Titan']) {
+      const q = params[n];
+      let f = entryState(q), before = null;
+      for (let i = 0; i < 2000000 && f.phase !== 'down'; i++) {
+        const pre = f;
+        f = stepEntry(f, q, 1 / 240, D_CAPTURE);
+        if (f.phase === 'flare' && pre.phase !== 'flare') { before = pre; break; }
+      }
+      ratios[n] = before ? entrySpeed(before) / entryTerminalV(q, before.h) : NaN;
+    }
+    ok('the speed–altitude curve tracks the closed form from the interface to the peak',
+      above < 0.05,
+      `worst relative error ${(above * 100).toFixed(2)}% sampled every frame`
+      + ` between ${(pk.h / 1000).toFixed(0)} km and 120 km — an integrator that`
+      + ' was never given Allen–Eggers reproducing its curve, not just its extremum');
+    // ...and below the peak it is terminal velocity, which the closed form omits
+    ok('...and below the peak it settles onto terminal velocity instead, as it must',
+      Object.values(ratios).every((r) => r > 0.9 && r < 1.2),
+      `speed ÷ √(2βg/ρ) where the ballistic phase ends —`
+      + ` Venus ${ratios.Venus.toFixed(3)} · Titan ${ratios.Titan.toFixed(3)}`
+      + ` · Earth ${ratios.Earth.toFixed(3)}. Allen–Eggers drops weight against`
+      + ' drag so it decays to zero down here; the vehicle does not, and that'
+      + ' gap is the whole reason the comparison above is cut at the peak');
+  }
+
+  {
+    // Terminal velocity, against its own definition.
+    const p = params.Earth;
+    const h = 2000, rho = airDensityAt(p, h);
+    const rOverR = p.R / (p.R + h);
+    near('terminal velocity is √(2βg/ρ) evaluated at the local gravity',
+      entryTerminalV(p, h),
+      Math.sqrt((2 * p.beta * p.g0 * rOverR * rOverR) / rho), 1e-9);
+    ok('...and it is infinite in vacuum rather than a large plausible number',
+      entryTerminalV(params.Luna, 1000) === Infinity,
+      'an airless world returns Infinity, which refuses to be mistaken for a speed');
+  }
+
+  {
+    /* The latch. `stepLaunch` documents this failure and it is the same one:
+       an edge with no latch behind it re-fires every other frame, and a scale
+       handover that runs twice pops two levels of the stack. */
+    const p = params.Earth;
+    let s = entryState(p), edges = 0;
+    for (let i = 0; i < 200000 && i < 200000; i++) {
+      s = stepEntry(s, p, 1 / 240, D_CAPTURE);
+      if (s.captured) edges++;
+      if (s.phase === 'down' && i > 100) { /* keep stepping past it */ }
+      if (edges > 3) break;
+    }
+    ok('the capture edge fires exactly once, however long you keep stepping',
+      edges === 1, `${edges} edge(s) over the whole descent — the `
+      + '`taken` latch is what stops the hand-over running twice');
+  }
+
+  {
+    // Every world arrives, and arrives under control.
+    for (const [n, w] of Object.entries(D_WORLDS)) {
+      const r = flyEntry(craft[n], w, D_CAPTURE, 1 / 120);
+      ok(`${n}: the descent reaches the hand-over`, r.landed,
+        `${(r.time / 60).toFixed(1)} min · peak ${(r.maxDecel / 9.80665).toFixed(1)} g`
+        + ` · max-q ${(r.maxQ / 1000).toFixed(1)} kPa`
+        + ` · arriving at ${r.sink.toFixed(2)} m/s`);
+      ok(`${n}: ...at a sink rate and a ground speed the flare actually trimmed`,
+        r.sink <= ENTRY.touchdownSpeed * 1.5 && Number.isFinite(r.sink)
+        && r.ground < 1 && Number.isFinite(r.ground),
+        `${r.sink.toFixed(3)} m/s down and ${r.ground.toFixed(2)} m/s across,`
+        + ` against a commanded ${ENTRY.touchdownSpeed} — the vehicle arrives`
+        + ' over the site rather than through it');
+    }
+  }
+
+  {
+    /* The flown times, against the four entries anybody has actually flown.
+       This is not a tuned fit — nothing in `descent.js` has ever been shown
+       these numbers. It is the model being asked whether it is embarrassing. */
+    const flown = [['Earth', 9 * 60, 'crewed entry, interface to chutes'],
+      ['Titan', 147 * 60, 'Huygens, 2 h 27 min'],
+      ['Venus', 60 * 60, 'Venera, about an hour']];
+    for (const [n, real, who] of flown) {
+      const r = flyEntry(craft[n], D_WORLDS[n], D_CAPTURE, 1 / 120);
+      const rel = Math.abs(r.time - real) / real;
+      ok(`${n}: the descent takes about as long as the real one (${who})`,
+        rel < 0.45,
+        `model ${(r.time / 60).toFixed(1)} min · flown ${(real / 60).toFixed(0)} min`
+        + ` · ${(rel * 100).toFixed(0)}% out`);
+    }
+
+    /* Mars and Luna are deliberately **not** in that list, and saying why is
+       worth more than a passing check would be.
+
+       Both are worlds where the air cannot do the job: 6 mbar of CO₂ leaves a
+       ballistic vehicle at 695 m/s, and vacuum leaves it at orbital speed. Every
+       real lander at either destination therefore carried hardware this model
+       does not have — a parachute, which is a ballistic coefficient that changes
+       by a factor of ten halfway down. Comparing against MSL's 7 minutes would
+       be comparing against a vehicle with a different β, and it would be the
+       same error as quoting Apollo's 6.5° at an unlifted entry.
+
+       What *is* checkable is the floor. A powered descent cannot beat the time
+       it takes to remove the speed at the acceleration available, `v/a`, and it
+       should not be wildly worse than it either. */
+    for (const n of ['Mars', 'Luna']) {
+      const r = flyEntry(craft[n], D_WORLDS[n], D_CAPTURE, 1 / 120);
+      const p = params[n];
+      const floor = p.vEntry / (p.g0 + ENTRY.flareAccel);
+      ok(`${n}: the powered descent respects its own Δv-limited floor`,
+        r.landed && r.time >= floor && r.time < floor * 12,
+        `${(r.time / 60).toFixed(1)} min against a floor of`
+        + ` ${(floor / 60).toFixed(1)} min — killing ${(p.vEntry / 1000).toFixed(2)} km/s`
+        + ` at ${(p.g0 + ENTRY.flareAccel).toFixed(2)} m/s² cannot be done faster,`
+        + ' and this model has no parachute to shortcut it with');
+    }
+  }
+
+  {
+    // Airless. The flare is the only thing that can stop the vehicle, and the
+    // solver has to notice that early enough to have the altitude to do it in.
+    const r = flyEntry(craft.Luna, D_WORLDS.Luna, D_CAPTURE, 1 / 120);
+    ok('§2 · an airless world is landed on thrust alone, with no NaN anywhere',
+      r.landed && Number.isFinite(r.sink) && Number.isFinite(r.time)
+      && r.maxDecel === 0 && !r.starved,
+      `Luna: ${(r.time / 60).toFixed(1)} min, zero aerodynamic deceleration,`
+      + ` ${(r.down / 1000).toFixed(0)} km downrange, arriving at`
+      + ` ${r.sink.toFixed(2)} m/s — a long shallow braking burn, which is what`
+      + ' an airless landing is and what Apollo flew');
+  }
+
+  {
+    // Monotone, and bounded. A descent that ever gains altitude is a skip, and
+    // this model does not claim to solve one.
+    const p = params.Earth;
+    let s = entryState(p), prev = s.h, rose = 0;
+    for (let i = 0; i < 200000 && s.phase !== 'down'; i++) {
+      s = stepEntry(s, p, 1 / 240, D_CAPTURE);
+      if (s.h > prev + 1e-9) rose++;
+      prev = s.h;
+    }
+    ok('altitude falls monotonically — no skip, no bounce, no tunnelling',
+      rose === 0 && s.h >= 0, `${rose} frames of rising altitude`);
+  }
+
+  {
+    // The progress reading §2.8's grade cross-fade is going to ride on.
+    const p = params.Earth;
+    let s = entryState(p), last = -1, monotone = true, lo = 1, hi = 0;
+    for (let i = 0; i < 200000 && s.phase !== 'down'; i++) {
+      s = stepEntry(s, p, 1 / 240, D_CAPTURE);
+      const f = entryFraction(s, p);
+      if (f < last - 1e-9) monotone = false;
+      last = f; lo = Math.min(lo, f); hi = Math.max(hi, f);
+    }
+    ok('§2.8 · the entry fraction rises monotonically from 0 to 1',
+      monotone && lo >= 0 && Math.abs(hi - 1) < 1e-9,
+      `[${lo.toFixed(3)}, ${hi.toFixed(3)}] — measured in scale heights rather`
+      + ' than metres, because half the altitude is nowhere near half the descent');
+  }
+
+  {
+    // §2.3. The whole path is arithmetic on doubles with no clock in it, so
+    // two runs must be bit-identical rather than merely close.
+    const a = flyEntry(craft.Earth, D_WORLDS.Earth, D_CAPTURE, 1 / 120);
+    const b = flyEntry(craft.Earth, D_WORLDS.Earth, D_CAPTURE, 1 / 120);
+    ok('§2.3 · the same entry twice is bit-identical',
+      a.time === b.time && a.maxDecel === b.maxDecel && a.h === b.h
+      && a.down === b.down,
+      `t ${a.time} · h ${a.h} · downrange ${a.down.toFixed(0)} m — no clock, no`
+      + ' Math.random, no iteration-order dependency in the path');
+  }
+
+  {
+    // The corridor is enforced rather than documented.
+    const w = D_WORLDS.Earth;
+    const shallow = entryFor(craft.Earth, w, -50), steep = entryFor(craft.Earth, w, 900);
+    near('a shallower entry than the corridor allows is clamped to its edge',
+      shallow.gamma * 180 / Math.PI, ENTRY.gammaMinDeg, 1e-9);
+    near('...and a steeper one likewise',
+      steep.gamma * 180 / Math.PI, ENTRY.gammaMaxDeg, 1e-9);
+    ok('...and a steeper entry really does pull more g, monotonically',
+      peakDecel(entryFor(craft.Earth, w, 8)).a
+        > peakDecel(entryFor(craft.Earth, w, 3.5)).a
+        && peakDecel(entryFor(craft.Earth, w, 3.5)).a
+        > peakDecel(entryFor(craft.Earth, w, 1.5)).a,
+      `1.5° → ${(peakDecel(entryFor(craft.Earth, w, 1.5)).a / 9.80665).toFixed(1)} g ·`
+      + ` 3.5° → ${(peakDecel(entryFor(craft.Earth, w, 3.5)).a / 9.80665).toFixed(1)} g ·`
+      + ` 8° → ${(peakDecel(entryFor(craft.Earth, w, 8)).a / 9.80665).toFixed(1)} g`);
+  }
+
+  {
+    // One vehicle, two directions — the claim §1.2 of the plan makes.
+    const up = flyClimb(craft.Earth, D_WORLDS.Earth, D_CAPTURE, 1 / 120);
+    const down = flyEntry(craft.Earth, D_WORLDS.Earth, D_CAPTURE, 1 / 120);
+    ok('the climb and the entry describe the same world and the same air',
+      Math.abs(up.params.hScale - down.params.hScale) < 1e-9
+      && Math.abs(up.params.rho0 - down.params.rho0) < 1e-9
+      && Math.abs(up.params.g0 - down.params.g0) < 1e-9,
+      `scale height ${down.params.hScale.toFixed(0)} m and ρ₀`
+      + ` ${down.params.rho0.toFixed(3)} kg/m³ agree between climb.js and`
+      + ' descent.js to the last bit — a vehicle that changed shape depending'
+      + ' on which way it was pointing would be a leak, not a rounding error');
+  }
+}
+
+
+/* ===========================================================================
+   pilot — walking a deck, and the three metres into the seat
+   ========================================================================= */
+
+/* A pilot's seat, in cabin metres. The eye sits at 1.16 when seated; the
+   backrest therefore tops out around the shoulders at 1.32 and is a hand's
+   width thick just behind the occupant. Nothing in `pilot.js` is told these
+   numbers — they are the obstacle it is asked to miss. */
+const SEAT_EYE = [0, 1.16, -5.28];
+const BACKREST = [-0.28, 0.28, 0.55, 1.32, -5.20, -5.06];
+const P_CABIN = {
+  // [halfWidth, z0, z1] — a cockpit that opens into a corridor
+  volumes: [[1.05, -7.6, -3.4], [0.72, -3.4, 0.6], [1.30, 0.6, 7.2]],
+  blockers: [[-1.05, -0.55, -6.4, -5.9]],   // the console, across the nose
+};
+const P_STATION = {
+  id: 'helm', pos: [0, 0, -4.9], radius: 0.62,
+  seatEye: SEAT_EYE, seatYaw: 0,
+};
+
+function suitePilot() {
+  console.log('\npilot — the deck, and the seat §2.5 says you cannot cut to');
+
+  {
+    /* ------------------------------------------------------------------ the
+       reason this file exists. A straight line from standing to the seat eye
+       runs through the backrest and the camera flies through it — a cut of one
+       or two frames, and §2.5 has no size threshold in it.
+
+       Tested from four approaches, because a path that clears from dead-astern
+       and not from the left is a path that works on the one walk somebody
+       happened to try. */
+    const approaches = [['centred', [0, CREW.eye, -4.35]],
+      ['from the left', [-0.34, CREW.eye, -4.35]],
+      ['from the right', [0.34, CREW.eye, -4.35]],
+      ['from further back', [0.20, CREW.eye, -3.60]]];
+    let worstBow = 0, bestLine = 1;
+    for (const [, from] of approaches) {
+      worstBow = Math.max(worstBow, pathHits(from, SEAT_EYE, BACKREST, seatPath));
+      bestLine = Math.min(bestLine, pathHits(from, SEAT_EYE, BACKREST, straightPath));
+    }
+    ok('§2.5 · the eye never passes through the backrest, from any approach',
+      worstBow === 0,
+      `${(worstBow * 100).toFixed(1)}% of frames inside the seat shell across`
+      + ' four approach directions');
+    ok('...and the straight line it replaced does, which is why the bow is there',
+      bestLine > 0.08,
+      `the lerp spends ${(bestLine * 100).toFixed(1)}% of the move inside the`
+      + ' backrest even on its best approach — this is the defect, measured');
+    // the mechanism, not just the outcome: it goes around and over
+    let maxX = 0, minY = 9;
+    const q = [0, 0, 0];
+    for (let i = 0; i <= 64; i++) {
+      seatPath([0.34, CREW.eye, -4.35], SEAT_EYE, easeInOut(i / 64), q);
+      maxX = Math.max(maxX, Math.abs(q[0]));
+      if (q[2] > BACKREST[4] && q[2] < BACKREST[5]) minY = Math.min(minY, q[1]);
+    }
+    ok('...and it clears by going around and over, not by going faster',
+      maxX > 0.28 && (minY > BACKREST[3] || minY === 9),
+      `swings to |x| = ${maxX.toFixed(2)} m, wider than the ${BACKREST[1]} m`
+      + ' seat half-width, and crosses the backrest depth above its top edge');
+  }
+
+  {
+    // The side is signed by the approach. A fixed side is right half the time.
+    const l = seatPath([-0.34, CREW.eye, -4.35], SEAT_EYE, 0.3, [0, 0, 0]);
+    const r = seatPath([0.34, CREW.eye, -4.35], SEAT_EYE, 0.3, [0, 0, 0]);
+    ok('the bow swings out to whichever side you walked up on',
+      l[0] < 0 && r[0] > 0,
+      `left approach bows to x = ${l[0].toFixed(2)}, right to ${r[0].toFixed(2)}`
+      + ' — a fixed side reads as the camera taking a detour half the time');
+    // and a dead-on approach still picks a side rather than dividing by zero
+    const c = seatPath([0, CREW.eye, -4.35], SEAT_EYE, 0.3, [0, 0, 0]);
+    ok('...and a dead-on approach picks one rather than producing NaN',
+      Number.isFinite(c[0]) && Math.abs(c[0]) > 0.05,
+      `x = ${c[0].toFixed(3)} with no side to prefer`);
+  }
+
+  {
+    // Endpoints. A path that clears the furniture and misses the chair is worse
+    // than the bug it fixed.
+    const from = [0.34, CREW.eye, -4.35];
+    const a = seatPath(from, SEAT_EYE, 0, [0, 0, 0]);
+    const b = seatPath(from, SEAT_EYE, 1, [0, 0, 0]);
+    ok('the path starts at the eye and ends exactly in the seat',
+      Math.hypot(a[0] - from[0], a[1] - from[1], a[2] - from[2]) < 1e-12
+      && Math.hypot(b[0] - SEAT_EYE[0], b[1] - SEAT_EYE[1], b[2] - SEAT_EYE[2]) < 1e-12,
+      'both endpoints exact — a Bézier interpolates its first and last control'
+      + ' points, and this asserts the ones passed are those');
+  }
+
+  {
+    // The sit as a state machine: it completes, it cannot be re-entered, and
+    // it cannot be steered while it runs.
+    let s = crewState([0.3, 0, -4.35], 0.4);
+    s = sit(s, P_STATION);
+    ok('sitting down enters a transition that owns the camera',
+      s.mode === 'moving' && s.target === 'seated', `mode ${s.mode}`);
+    const again = sit(s, P_STATION);
+    ok('...and a held key cannot re-enter it', again.t === s.t && again === s
+      || (again.mode === s.mode && again.t === s.t),
+      'sit() is a no-op unless standing, so the transition cannot restart');
+    // look() refuses input mid-move, so there is no way to end up half-seated
+    const steered = look(s, 400, 0);
+    ok('...and the camera cannot be fought while it moves',
+      steered.yaw === s.yaw, 'look() returns the state unchanged while moving');
+
+    let frames = 0;
+    while (s.mode === 'moving' && frames < 600) { s = stepCrew(s, P_CABIN, {}, 1 / 60); frames++; }
+    ok('...and it completes, in about the time it says it will',
+      s.mode === 'seated' && Math.abs(frames / 60 - CREW.sitTime) < 0.05,
+      `${(frames / 60).toFixed(3)} s against a declared ${CREW.sitTime} s`);
+    ok('...arriving exactly at the seat eye',
+      Math.hypot(s.eye[0] - SEAT_EYE[0], s.eye[1] - SEAT_EYE[1],
+        s.eye[2] - SEAT_EYE[2]) < 1e-9,
+      `eye at [${s.eye.map((v) => v.toFixed(3)).join(', ')}]`);
+  }
+
+  {
+    /* The seated look arc, and the clause that makes it portable.
+       Clamping in world yaw works only for a seat that happens to face zero —
+       the kind of bug that survives every test written on the ship it was
+       written for. So it is tested on a seat installed at 2.4 rad. */
+    const skew = { ...P_STATION, seatYaw: 2.4 };
+    let s = crewState([0, 0, -4.35], 2.4);
+    s = sit(s, skew);
+    for (let i = 0; i < 600 && s.mode === 'moving'; i++) s = stepCrew(s, P_CABIN, {}, 1 / 60);
+    let hard = s;
+    for (let i = 0; i < 50; i++) hard = look(hard, 900, 0);   // wrench it left
+    const off = Math.abs(((hard.yaw - 2.4 + Math.PI) % (Math.PI * 2)) - Math.PI);
+    ok('a seated head cannot turn to look through its own headrest',
+      off <= CREW.seatYaw + 1e-9,
+      `${off.toFixed(3)} rad off the seat heading against a limit of`
+      + ` ${CREW.seatYaw} — and the seat is installed at 2.4 rad, so the clamp`
+      + ' is relative to the chair rather than to world zero');
+    let down = s;
+    for (let i = 0; i < 50; i++) down = look(down, 0, 900);
+    ok('...and the same for pitch', down.pitch >= CREW.seatPitchDown - 1e-9,
+      `${down.pitch.toFixed(3)} rad against ${CREW.seatPitchDown}`);
+  }
+
+  {
+    // Standing up retraces the curve, so it clears the backrest too.
+    let s = crewState([0.3, 0, -4.35]);
+    s = sit(s, P_STATION);
+    for (let i = 0; i < 600 && s.mode === 'moving'; i++) s = stepCrew(s, P_CABIN, {}, 1 / 60);
+    s = stand(s);
+    ok('standing up re-enters the transition rather than teleporting',
+      s.mode === 'moving' && s.target === 'walk', `mode ${s.mode}`);
+    let worst = 0;
+    for (let i = 0; i < 600 && s.mode === 'moving'; i++) {
+      s = stepCrew(s, P_CABIN, {}, 1 / 60);
+      const e = s.eye;
+      if (e[0] > BACKREST[0] && e[0] < BACKREST[1] && e[1] > BACKREST[2]
+        && e[1] < BACKREST[3] && e[2] > BACKREST[4] && e[2] < BACKREST[5]) worst++;
+    }
+    ok('...and gets out of the chair without going through it either',
+      s.mode === 'walk' && worst === 0,
+      `${worst} frames inside the backrest on the way out — the same curve run`
+      + ' backwards, so it cannot be right in one direction and wrong in the other');
+  }
+
+  {
+    // Collision. Not a physics engine — a corridor and some boxes — but it has
+    // to slide rather than stick, and it must never leave the hull.
+    let s = crewState([0, 0, 0]);
+    let escaped = 0;
+    for (let i = 0; i < 1800; i++) {
+      // walk hard into the port bulkhead at 40° for thirty seconds
+      s = stepCrew(s, P_CABIN, { fwd: 0.77, strafe: -0.64, run: true }, 1 / 60);
+      const hw = P_CABIN.volumes.find((v) => s.pos[2] >= v[1] && s.pos[2] <= v[2]);
+      if (hw && Math.abs(s.pos[0]) > hw[0] - CREW.radius + 1e-6) escaped++;
+    }
+    ok('walking into a bulkhead slides along it and never leaves the hull',
+      escaped === 0,
+      `${escaped} frames outside the walkable half-width over 30 s of pushing`
+      + ' into a wall at 40° — the axes resolve separately, which is what makes'
+      + ' a wall slide instead of stick');
+    ok('...and the corridor is narrower than the ends, and holds',
+      Math.abs(s.pos[0]) <= 1.30, `ended at x = ${s.pos[0].toFixed(3)}`);
+  }
+
+  {
+    // The blocker in front of the console.
+    let s = crewState([-0.8, 0, -5.0]);
+    let inside = 0;
+    for (let i = 0; i < 900; i++) {
+      s = stepCrew(s, P_CABIN, { fwd: 1 }, 1 / 60);
+      const b = P_CABIN.blockers[0];
+      if (s.pos[0] > b[0] && s.pos[0] < b[1] && s.pos[2] > b[2] && s.pos[2] < b[3]) inside++;
+    }
+    ok('the console cannot be walked into', inside === 0,
+      `${inside} frames inside the blocker over 15 s of walking at it`);
+  }
+
+  {
+    // Diagonal normalisation. Two keys must not be 1.41× one key.
+    const start = crewState().pos;
+    let a = crewState(), b = crewState();
+    for (let i = 0; i < 300; i++) {
+      a = stepCrew(a, null, { fwd: 1 }, 1 / 60);
+      b = stepCrew(b, null, { fwd: 1, strafe: 1 }, 1 / 60);
+    }
+    const moved = (s) => Math.hypot(s.pos[0] - start[0], s.pos[2] - start[2]);
+    near('holding two keys is not 1.41× walking speed', moved(b), moved(a), 0.01);
+  }
+
+  {
+    // Station reach: near enough, and faced.
+    const st = [{ id: 'helm', pos: [0, 0, -4.9], radius: 0.62 },
+      { id: 'nav', pos: [0, 0, 2.0], radius: 0.62 }];
+    const near_ = crewState([0, 0, -4.4], 0);          // facing −z, toward helm
+    ok('a station you are standing at and facing is in reach',
+      stationInReach(near_, st)?.id === 'helm', 'helm found');
+    const away = crewState([0, 0, -4.4], Math.PI);     // same spot, turned round
+    ok('...and is not, with your back to it',
+      stationInReach(away, st) === null,
+      'turning away drops the prompt — distance alone would keep it lit');
+    const far = crewState([0, 0, -1.0], 0);
+    ok('...and neither is one across the cabin',
+      stationInReach(far, st) === null, 'out of radius + reach');
+    // seated, nothing is in reach, so a second press cannot re-trigger a sit
+    let seated = sit(crewState([0, 0, -4.4]), P_STATION);
+    ok('...and nothing is in reach while seated or moving',
+      stationInReach(seated, st) === null, `mode ${seated.mode}`);
+  }
+
+  {
+    /* §M4's single gait clock. One phase drives the bob and anything that has
+       to land on the same foot; two clocks drift apart over exactly the length
+       of time nobody watches for. Advanced by distance, so slowing down
+       lengthens the stride rather than speeding up the legs. */
+    const from0 = crewState().pos;
+    let slow = crewState(), fast = crewState();
+    for (let i = 0; i < 600; i++) {
+      slow = stepCrew(slow, null, { fwd: 0.5 }, 1 / 60);
+      fast = stepCrew(fast, null, { fwd: 1 }, 1 / 60);
+    }
+    const dSlow = Math.hypot(slow.pos[0] - from0[0], slow.pos[2] - from0[2]);
+    const dFast = Math.hypot(fast.pos[0] - from0[0], fast.pos[2] - from0[2]);
+    near('the gait clock advances with distance, not with time',
+      gait(slow) / dSlow, gait(fast) / dFast, 0.02);
+    ok('...and standing still does not advance it at all',
+      gait(stepCrew(crewState(), null, {}, 1 / 60)) === 0,
+      'a stationary crew member does not take steps');
+  }
+
+  {
+    // §9.8. Reduced motion halves the bob and shortens the move — and never
+    // disables either, because stillness would be a lie about a vehicle.
+    let full = crewState(), red = crewState();
+    for (let i = 0; i < 240; i++) {
+      full = stepCrew(full, null, { fwd: 1 }, 1 / 60, 1);
+      red = stepCrew(red, null, { fwd: 1 }, 1 / 60, 0.35);
+    }
+    const bobFull = Math.abs(full.eye[1] - CREW.eye);
+    const bobRed = Math.abs(red.eye[1] - CREW.eye);
+    ok('§9.8 · reduced motion damps the head bob without stopping it',
+      bobRed < bobFull && bobRed > 0,
+      `${(bobRed * 1000).toFixed(1)} mm against ${(bobFull * 1000).toFixed(1)} mm`
+      + ' — halved, not switched off');
+    // ...and the sit is quicker but still a move
+    let q = sit(crewState([0.3, 0, -4.35]), P_STATION);
+    let n = 0;
+    while (q.mode === 'moving' && n < 600) { q = stepCrew(q, P_CABIN, {}, 1 / 60, 0.35); n++; }
+    ok('...and the sit shortens rather than snapping',
+      q.mode === 'seated' && n > 6 && n / 60 < CREW.sitTime,
+      `${(n / 60).toFixed(3)} s against ${CREW.sitTime} s at full motion`);
+  }
+
+  {
+    // §2.3, and the frame-rate independence that makes a capture reproducible.
+    const runAt = (dt, steps) => {
+      let s = crewState([0.2, 0, -4.35], 0.3);
+      for (let i = 0; i < steps; i++) s = stepCrew(s, P_CABIN, { fwd: 1, strafe: 0.4 }, dt);
+      return s;
+    };
+    const a = runAt(1 / 60, 120), b = runAt(1 / 60, 120);
+    ok('§2.3 · the same walk twice is bit-identical',
+      a.pos[0] === b.pos[0] && a.pos[2] === b.pos[2] && a.bob === b.bob,
+      `x ${a.pos[0]} · z ${a.pos[2]} — no clock and no Math.random in the path`);
+    const c = runAt(1 / 240, 480);
+    ok('...and a quarter timestep lands within a centimetre of the same place',
+      Math.hypot(a.pos[0] - c.pos[0], a.pos[2] - c.pos[2]) < 0.01,
+      `${(Math.hypot(a.pos[0] - c.pos[0], a.pos[2] - c.pos[2]) * 1000).toFixed(1)} mm`
+      + ' apart over two seconds — the velocity smoothing is a rate, so the'
+      + ' walk does not depend on the frame rate it was flown at');
+  }
+
+  {
+    // A silly timestep must not throw the crew through the hull.
+    let s = crewState([0, 0, 0]);
+    s = stepCrew(s, P_CABIN, { fwd: 1, run: true }, 8);
+    ok('a stalled frame does not teleport anybody through a bulkhead',
+      Number.isFinite(s.pos[0]) && Number.isFinite(s.pos[2])
+      && s.pos[2] >= P_CABIN.volumes[0][1],
+      `dt clamped to 0.25 s · z = ${s.pos[2].toFixed(2)}`);
+    ok('...and a zero or negative one changes nothing',
+      stepCrew(s, P_CABIN, { fwd: 1 }, 0).pos[2] === s.pos[2]
+      && stepCrew(s, P_CABIN, { fwd: 1 }, -1).pos[2] === s.pos[2],
+      'a paused tab and a clock that went backwards are the same thing here');
+  }
+
+  {
+    // The transition fraction, for anything that wants to react to the sit.
+    let s = sit(crewState([0.3, 0, -4.35]), P_STATION);
+    let last = -1, monotone = true;
+    while (s.mode === 'moving') {
+      s = stepCrew(s, P_CABIN, {}, 1 / 120);
+      const f = transitionFraction(s);
+      if (s.mode === 'moving' && f < last - 1e-9) monotone = false;
+      last = f;
+    }
+    ok('the sit reports a monotone 0→1 fraction, and 0 when nothing is happening',
+      monotone && transitionFraction(s) === 0 && transitionFraction(crewState()) === 0,
+      'so audio, the HUD and the cabin lights can all ride one number');
+  }
+}
+
+
+/* ===========================================================================
+   deck — the plan `cabin.js` draws and `pilot.js` walks
+
+   The point of this suite is not that the numbers are pretty. It is that there
+   is exactly **one** set of them: the collision, the bulkheads and the
+   furniture all read the same object, so a wall cannot end up drawn somewhere
+   the crew can walk through. That is only checkable because the spec is pure —
+   `cabin.js` imports three and node cannot load it.
+   ========================================================================= */
+const D_CRAFT = {
+  Earth: craftFor({ massE: 1, radiusE: 1, atmo: 1 }),
+  Luna: craftFor({ massE: 0.0123, radiusE: 0.273, atmo: 0 }),
+  Venus: craftFor({ massE: 0.815, radiusE: 0.949, atmo: 92 }),
+  Big: craftFor({ massE: 2.4, radiusE: 1.3, atmo: 1.6 }),
+};
+
+function suiteDeck() {
+  console.log('\ndeck — one plan, read by the collision and by the bulkhead');
+
+  const specs = {};
+  for (const [n, c] of Object.entries(D_CRAFT)) specs[n] = cabinFor(c, 42);
+
+  {
+    // The layout the header diagram draws, on every world rather than on the
+    // one it was written for. This inverted on small vehicles when each section
+    // carried its own minimum width, and the shell tapered the wrong way.
+    let ordered = true, walkable = true, narrowest = 9;
+    for (const s of Object.values(specs)) {
+      const [ck, co, hb] = s.sections.map((x) => x.half);
+      if (!(hb > ck && ck > co)) ordered = false;
+      if (co - CREW.radius < 0.15) walkable = false;
+      narrowest = Math.min(narrowest, co - CREW.radius);
+    }
+    ok('habitat wider than cockpit wider than corridor, on every vehicle',
+      ordered, Object.entries(specs).map(([n, s]) =>
+        `${n} ${s.sections.map((x) => x.half.toFixed(2)).join('/')}`).join(' · '));
+    ok('...and the corridor is always wide enough to walk down',
+      walkable,
+      `narrowest shoulder clearance ${narrowest.toFixed(2)} m — the floor goes`
+      + ' on the base width so the proportions survive it, rather than on each'
+      + ' section, which is what let a cockpit minimum exceed a habitat');
+  }
+
+  {
+    // The contract `pilot.js` reads. Adjacency matters: a gap between two
+    // volumes is a place the crew falls out of the ship.
+    for (const [n, s] of Object.entries(specs)) {
+      let contiguous = true, matches = true;
+      for (let i = 0; i < s.volumes.length; i++) {
+        const v = s.volumes[i], sec = s.sections[i];
+        if (v[0] !== sec.half || v[1] !== sec.z0 || v[2] !== sec.z1) matches = false;
+        if (i > 0 && Math.abs(v[1] - s.volumes[i - 1][2]) > 1e-12) contiguous = false;
+      }
+      ok(`${n}: the walkable volumes are the drawn sections, and they touch`,
+        matches && contiguous,
+        `${s.volumes.length} volumes from ${s.zNose.toFixed(2)} to`
+        + ` ${s.zTail.toFixed(2)} m with no gap — one array, so the collision`
+        + ' and the geometry cannot disagree about where a bulkhead is');
+    }
+  }
+
+  {
+    // Every blocker has to be inside the hull. A blocker sticking out of the
+    // ship is furniture nobody can reach, and reads as an invisible wall.
+    for (const [n, s] of Object.entries(specs)) {
+      let outside = 0;
+      for (const b of s.blockers) {
+        for (const [x, z] of [[b[0], b[2]], [b[1], b[3]], [b[0], b[3]], [b[1], b[2]]]) {
+          const v = s.volumes.find((q) => z >= q[1] - 1e-9 && z <= q[2] + 1e-9);
+          if (!v || Math.abs(x) > v[0] + 1e-9) outside++;
+        }
+      }
+      ok(`${n}: no blocker sticks out through the hull`, outside === 0,
+        `${s.blockers.length} blockers, ${outside} corners outside the section`
+        + ' they sit in');
+    }
+  }
+
+  {
+    /* The join to `pilot.js`. The backrest the bowed seat path exists to miss
+       is declared *here*, because the geometry owns where the furniture is —
+       and the path has to clear the one the ship actually has, not the one the
+       pilot suite made up. This is the check that would catch somebody moving
+       a seat 20 cm and quietly reinstating the bug. */
+    for (const [n, s] of Object.entries(specs)) {
+      const st = s.stations.find((q) => q.id === 'helm');
+      const stood = [0.3, CREW.eye, st.pos[2] + 0.25];
+      const bowed = pathHits(stood, st.seatEye, s.seat.backrest, seatPath);
+      const line = pathHits(stood, st.seatEye, s.seat.backrest, straightPath);
+      ok(`${n}: the seat path clears this ship's actual backrest`,
+        bowed === 0 && line > 0,
+        `bowed ${(bowed * 100).toFixed(1)}% · straight`
+        + ` ${(line * 100).toFixed(1)}% — the straight line still fails, so the`
+        + ' comparison is to the defect rather than to a number somebody picked');
+    }
+  }
+
+  {
+    /* ------------------------------------------------------------------ the
+       check that was missing, and the bug it would have caught.
+
+       Every blocker was tested for sticking out through the hull, and none did.
+       What nothing tested was the space left *behind* one: the nav table was
+       0.46 m of half-width in a 1.04 m hull, leaving 0.58 m for a crew member
+       0.60 m across. The habitat was sealed off from the cockpit and the ship
+       could not be flown from inside itself — with 1058 green checks.
+
+       No pure test of either number would have found it, because each is fine
+       on its own; the defect is the relationship. So this walks the crew from
+       the aft end to the helm with `pilot.js`'s real collision and asserts it
+       arrives, which is the property that was actually wanted all along. */
+    for (const [n, s] of Object.entries(specs)) {
+      const hab = s.sections[2];
+      const helm = s.stations.find((q) => q.id === 'helm');
+      let crew = crewState(s.spawn, 0);
+      const tbl = s.blockers[1] ?? [0, 0, hab.z1 + 9, hab.z1 + 9];
+      let reached = false;
+      for (let i = 0; i < 4000 && !reached; i++) {
+        /* Proportional steering toward the centre line, swinging out only
+           while abreast of the table and only to the side already favoured.
+           The first version went wide and never came back, which walked the
+           crew into the corridor mouth from outside it and failed a cabin that
+           was fine — a test steering badly is not a geometry defect, and
+           telling the two apart is the whole reason this walks rather than
+           doing arithmetic. */
+        const near = crew.pos[2] > tbl[2] - 0.42 && crew.pos[2] < tbl[3] + 0.42;
+        // steer to the side the table is *not* on
+        const side = -(s.tableSide ?? 1);
+        // ...and never aim at a point outside the section you are standing in.
+        // The avoidance band used to reach 0.75 m past the table, which on a
+        // short habitat overlaps the corridor mouth: the crew was held hard
+        // right against a 0.58 m corridor and stalled at the threshold with
+        // the geometry perfectly fine.
+        const sec = s.volumes.find((q) => crew.pos[2] >= q[1] && crew.pos[2] <= q[2])
+          ?? s.volumes[0];
+        const lim = Math.max(sec[0] - CREW.radius - 0.04, 0);
+        const wantX = Math.max(-lim, Math.min(lim,
+          near ? side * (Math.abs(side > 0 ? tbl[0] : tbl[1]) + CREW.radius + 0.08) : 0));
+        crew = stepCrew(crew, s, {
+          fwd: 1,
+          strafe: Math.max(-1, Math.min(1, (wantX - crew.pos[0]) * 3)),
+        }, 1 / 60);
+        if (stationInReach(crew, s.stations)?.id === 'helm') reached = true;
+      }
+      ok(`${n}: the crew can actually walk from the habitat to the helm`,
+        reached,
+        `ended at [${crew.pos[0].toFixed(2)}, ${crew.pos[2].toFixed(2)}]`
+        + ' — walked with the real collision rather than reasoned about, which'
+        + ' is the only thing that would have caught either sealing bug');
+    }
+    // ...and the arithmetic behind it, stated directly
+    for (const [n, s] of Object.entries(specs)) {
+      if (!s.blockers[1]) {
+        ok(`${n}: too short for a nav table, and does without one`, true,
+          'an empty corner is a better answer than a sealed room');
+        continue;
+      }
+      const b = s.blockers[1];
+      // the walkway is whatever the table does not take out of the beam
+      const walk = s.tableSide < 0 ? s.sections[2].half - b[1]
+        : b[0] + s.sections[2].half;
+      ok(`${n}: the walkway past the nav table fits a person`,
+        walk > CREW.radius * 2 + 0.1,
+        `${walk.toFixed(2)} m of clear beam against a ${(CREW.radius * 2).toFixed(2)} m`
+        + ' shoulder width — the table stands against a bulkhead, so this is'
+        + ' most of the ship rather than a two-centimetre window beside it');
+    }
+    // ...and nobody spawns inside the furniture, which is how Luna sealed itself
+    for (const [n, s] of Object.entries(specs)) {
+      const inside = s.blockers.some((b) => s.spawn[0] > b[0] - CREW.radius
+        && s.spawn[0] < b[1] + CREW.radius && s.spawn[2] > b[2] - CREW.radius
+        && s.spawn[2] < b[3] + CREW.radius);
+      const v = s.volumes.find((q) => s.spawn[2] >= q[1] && s.spawn[2] <= q[2]);
+      ok(`${n}: the spawn point is on clear deck`,
+        !inside && !!v && Math.abs(s.spawn[0]) < v[0] - CREW.radius,
+        `[${s.spawn[0].toFixed(2)}, ${s.spawn[2].toFixed(2)}] — the spec owns`
+        + ' where you stand, so it cannot be somewhere the furniture is');
+    }
+  }
+
+  {
+    // Stations must be standable — inside the hull and not inside a blocker,
+    // or the prompt appears somewhere you cannot get to.
+    for (const [n, s] of Object.entries(specs)) {
+      let bad = 0;
+      for (const st of s.stations) {
+        const v = s.volumes.find((q) => st.pos[2] >= q[1] && st.pos[2] <= q[2]);
+        if (!v || Math.abs(st.pos[0]) > v[0] - CREW.radius) bad++;
+        for (const b of s.blockers) {
+          if (st.pos[0] > b[0] && st.pos[0] < b[1]
+            && st.pos[2] > b[2] && st.pos[2] < b[3]) bad++;
+        }
+      }
+      ok(`${n}: you can stand where every station says you can`, bad === 0,
+        `${s.stations.length} stations, ${bad} unreachable`);
+    }
+  }
+
+  {
+    // ...and having stood there, the station is actually in reach — which is
+    // `pilot.js`'s test, run against `deck.js`'s numbers.
+    const s = specs.Earth;
+    const helm = s.stations.find((q) => q.id === 'helm');
+    const crew = crewState([helm.pos[0], 0, helm.pos[2] + 0.35], 0);
+    ok('standing at the helm, the helm is what is in reach',
+      stationInReach(crew, s.stations)?.id === 'helm',
+      'the reach radius and the station spacing agree, so the two consoles do'
+      + ' not fight over the prompt');
+  }
+
+  {
+    // The cabin follows the vehicle rather than a hash.
+    const small = cabinFor(D_CRAFT.Luna, 42), big = cabinFor(D_CRAFT.Big, 42);
+    ok('a bigger vehicle gets a bigger cabin',
+      big.length > small.length && big.sections[2].half > small.sections[2].half,
+      `${small.length.toFixed(2)} m → ${big.length.toFixed(2)} m —`
+      + ' derived from craftFor(), not rolled, for the reason craft.js gives'
+      + ' about the craft itself');
+    // ...and the seed moves the dressing and nothing structural
+    const a = cabinFor(D_CRAFT.Earth, 1), b = cabinFor(D_CRAFT.Earth, 2);
+    ok('...and the seed moves the dressing without moving a bulkhead',
+      a.length === b.length && a.zNose === b.zNose
+      && a.volumes.every((v, i) => v.every((x, j) => x === b.volumes[i][j])),
+      'same ship, different lockers — so two worlds that happen to demand the'
+      + ' same Δv are not the same room inside');
+  }
+
+  {
+    // §2.3.
+    const a = cabinFor(D_CRAFT.Earth, 7), b = cabinFor(D_CRAFT.Earth, 7);
+    ok('§2.3 · the same craft and seed give a bit-identical cabin',
+      JSON.stringify(a) === JSON.stringify(b),
+      'entropy from rng.js only, and none of it reaches a dimension');
+  }
+
+  {
+    // Degenerate input must not produce a room with negative walls.
+    const junk = cabinFor({}, 0);
+    const nan = cabinFor({ height: NaN, diameter: Infinity }, 0);
+    ok('a missing or poisoned craft still yields a standable cabin',
+      junk.length > 0 && junk.sections.every((x) => x.half > CREW.radius)
+      && nan.length > 0 && nan.sections.every((x) => Number.isFinite(x.half)
+        && x.half > CREW.radius),
+      `{} → ${junk.length.toFixed(2)} m · NaN/Infinity →`
+      + ` ${nan.length.toFixed(2)} m — clamped rather than trusted, because a`
+      + ' cabin is the one room you cannot be allowed to fall out of');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // suite: register
 //
@@ -10347,6 +11279,9 @@ const suites = {
   walk: suiteWalk, material: suiteMaterial, opening: suiteOpening,
   ocean: suiteOcean, horizon: suiteHorizon, wind: suiteWind, meadow: suiteMeadow,
   vehicle: suiteVehicle,
+  descent: suiteDescent,
+  pilot: suitePilot,
+  deck: suiteDeck,
 };
 
 for (const [name, fn] of Object.entries(suites)) {
