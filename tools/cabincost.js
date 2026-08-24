@@ -27,8 +27,20 @@ const { origin, close } = await serve();
 const browser = await launch(pw);
 const page = await browser.newPage({ viewport: { width: 2560, height: 1440 } });
 
+/* Console errors count, not just thrown ones — and this is the clause that
+   makes this tool a §M0 shader check for the cabin as well as a cost report.
+
+   three does not throw on a shader that fails to compile; it logs
+   "THREE.WebGLProgram: Shader Error" through console.error and carries on with
+   a broken program. So a `pageerror` listener alone watches for the one
+   symptom this particular defect does not produce. Since this file is the only
+   thing in the repo that actually *renders* a cabin — `cabincheck.js` steps the
+   scale but never draws it — a compile failure in `plated()`'s injected GLSL
+   had nowhere else to surface. §M0 is explicit that shaders are checked
+   post-assembly, and template-interpolated GLSL only exists post-assembly. */
 const errors = [];
-page.on('pageerror', (e) => errors.push(e.message));
+page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 
 try {
   await page.goto(`${origin}/?seed=${SEED}&cab=1&dt=16`, { timeout: 120000 });
@@ -120,7 +132,14 @@ try {
   console.log('\n  §5 · ≤ 12 ms CPU, and the fps rows: NOT MEASURED. This container'
     + '\n       rasterises in software and §14 says CI never gates §5. A'
     + '\n       millisecond from SwiftShader is not a budget, so none is quoted.');
-  if (errors.length) console.log(`\n  ${errors.length} page error(s): ${errors.join(' · ')}`);
+  console.log('\n  §M0 · every shader the cabin submits, compiled → '
+    + (errors.length ? `${errors.length} ERROR(S)` : 'clean')
+    + '\n       (three logs a failed compile rather than throwing, so this'
+    + '\n        watches the console; the cabin was rendered three times above)');
+  if (errors.length) {
+    console.log(`\n  ${errors.join('\n  ')}`);
+    process.exitCode = 1;
+  }
 } finally {
   await browser.close();
   await close();
