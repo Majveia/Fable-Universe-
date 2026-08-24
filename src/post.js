@@ -11,7 +11,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { BloomChain } from './bloom.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { PRINT_SHADER } from './print.js';
+import { PRINT_SHADER, setRegister } from './print.js';
 
 const GradeShader = {
   uniforms: {
@@ -92,6 +92,31 @@ const M2 = PARAM('m2') !== '0';
  */
 const BLOOM_LEVELS = Number(PARAM('blevels') ?? 4);
 
+/**
+ * `?reg=<0..1>` — pin the print's register instead of letting the air choose.
+ *
+ * `?reg=1` is the painted print on every world, which is what shipped before
+ * `src/register.js` existed and is therefore the control frame every A/B needs.
+ * `?reg=0` is the photographic end everywhere, air or no air. Anything between
+ * is the axis, and it is continuous.
+ *
+ * Not a §7.4 feature flag — the feature is on. This is the escape hatch §2.4
+ * requires so a URL saved against the old look still resolves to it.
+ */
+const REGISTER_PIN = (() => {
+  const raw = PARAM('reg');
+  if (raw === null) return null;
+  const v = Number(raw);
+  return Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : null;
+})();
+
+/**
+ * `?ae=0` — pin the exposure at 1, which is what every frame of this project
+ * rendered at before `src/exposure.js` existed. Same escape-hatch shape as
+ * `?reg=`, and the same reason: §2.4's saved URLs.
+ */
+const AE = PARAM('ae') !== '0';
+
 // §M1 adopts the reference's ordered dither, ±0.5/255, *after* sRGB — because
 // a smooth gradient must never band, and the cosmic web is the worst banding
 // case in the project.
@@ -157,6 +182,9 @@ export class Post {
     this.composer.addPass(this.renderPass);
 
     const ditherOff = PARAM('dither') === '0';
+
+    /** what the register was set to last, so the HUD does not have to guess */
+    this._reg = 1;
 
     if (M2) {
       // Order changes under M2, and the change is the point. The bloom no
@@ -236,6 +264,40 @@ export class Post {
    *  and the descent interpolates — one number, cross-fading by construction. */
   setPaint(v) {
     if (this.printPass) this.printPass.uniforms.uPaint.value = v;
+  }
+
+  /**
+   * Which print — `src/register.js`, `docs/plans/SAKURA.md`.
+   *
+   * The orthogonal axis to `setPaint`. That one says *how much* print a place
+   * gets and is a fact about the medium; this says *which* print, and is a fact
+   * about the air. A world can be fully inside an atmosphere (`uPaint = 1`) and
+   * still print photographic, which is precisely the case the ask was about.
+   *
+   * `?reg=` pins it — see `REGISTER_PIN`. The pin is checked here rather than
+   * at the call site so that every caller, present and future, is pinned by one
+   * branch instead of each remembering to look.
+   */
+  setRegister(r) {
+    if (!this.printPass) return;
+    this._reg = REGISTER_PIN !== null ? REGISTER_PIN : r;
+    setRegister(this.printPass.uniforms, this._reg);
+  }
+
+  /** what the frame was actually printed with — for the HUD and for `gate.js` */
+  get register() { return this._reg ?? 1; }
+
+  /**
+   * The exposure, from `src/exposure.js`, already adapted.
+   *
+   * A setter rather than a computation, because the adaptation has to integrate
+   * against the *scale's* dt and only the scale knows when it started — see
+   * `Adaptation.prime()`, and §2.5 on arriving somewhere already exposed for it.
+   */
+  setExposure(v) {
+    if (this.printPass) {
+      this.printPass.uniforms.uExposure.value = AE ? v : 1;
+    }
   }
 
   setSize(w, h) {

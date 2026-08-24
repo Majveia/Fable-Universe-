@@ -11,6 +11,7 @@ import { RNG, arand, hash } from './rng.js';
 import { NOISE_GLSL, makeSurfaceMaterial, makeRingMaterial, makeAtmosphereMaterial } from './planet.js';
 import { softDotTexture } from './nebula.js';
 import { addLife, isBiosphere } from './life.js';
+import { perpetualBloom } from './blossom.js';
 import { addCivilization } from './civilization.js';
 import { addTraveler } from './traveler.js';
 import { CONJURE_TIME, Conjuration } from './conjure.js';
@@ -66,6 +67,8 @@ import {
 } from './cloudshade.js';
 import { DRAINAGE_GLSL, packDrainage, solveDrainage } from './drainage.js';
 import { Q, TIER, qArr, qInt } from './quality.js';
+import { registerFor, registerName } from './register.js';
+import { Adaptation, apertureFor } from './exposure.js';
 
 const PARAM = (k) => {
   try { return new URL(window.location.href).searchParams.get(k); }
@@ -3262,6 +3265,65 @@ export class SurfaceScale {
     }
   }
 
+  // ---------------------------------------------------- print & aperture ----
+
+  /**
+   * Which print this world gets — `src/register.js`, `docs/plans/SAKURA.md`.
+   *
+   * The register reads `visibilityFor()`, the **same** call `_aerialUniforms()`
+   * makes for the fog. That is the whole reason it is a call and not a stored
+   * number: the print and the air must not be able to hold two opinions about
+   * the weather, which is §2.7's rule about the height field wearing a
+   * different hat one system over.
+   *
+   * On a temperate world `visibilityFor()` returns about 6 km and this returns
+   * **0.238** — three-quarters photographic, and neither number was chosen to
+   * make that happen. An airless world sees forever and prints a clean
+   * photograph; a warm wet one silts up toward paper.
+   *
+   * The weather moves it live, and that is the point of the whole axis rather
+   * than a side effect: `this.uWet` is how much rain is on the ground right
+   * now, and rain in the air is what visibility *is*. So the frame walks from
+   * photograph toward watercolour over the same seconds the squall takes to
+   * cross, and dries back after. Nobody chose a look; the world did, out of a
+   * variable it already had to compute for the fog.
+   */
+  printRegister() {
+    // §11 · a register decided by the last bit of a transcendental would be a
+    // visible pop, so the wet term is quantised to 64 steps before it reaches
+    // a quantity the frame reads. Same reasoning as a blade count.
+    const wet = Math.round(Math.min(Math.max(this.uWet.value ?? 0, 0), 1) * 64) / 64;
+    // Rain multiplies the aerosol load. 3.4× at full wet puts a temperate
+    // world's 6 km into the top of WMO mist, which is what standing in one
+    // actually looks like.
+    return registerFor(visibilityFor(this.pp, this.atmo), 1 + 2.4 * wet);
+  }
+
+  /**
+   * The aperture — `src/exposure.js`.
+   *
+   * `uSunDir.value.y` is the sine of the star's elevation and is already
+   * computed every frame for the light, so the exposure costs one `asin` and
+   * one `pow` on the main thread and reads nothing the frame did not already
+   * have.
+   *
+   * `prime()` on the first call rather than adapting up from an arbitrary
+   * start: §2.5 says no cuts, and arriving on a night world to watch eleven
+   * seconds of iris hunt for the ground is a cut with extra steps. The first
+   * frame of a place is exposed for that place; every frame after it adapts.
+   */
+  printExposure(dt) {
+    const sinE = Math.min(Math.max(this.uSunDir.value.y, -1), 1);
+    const target = apertureFor({
+      lum: this.ctx.system?.lum ?? 1,
+      au: this.pp?.au ?? 1,
+      elevDeg: (Math.asin(sinE) * 180) / Math.PI,
+      albedo: this.pp?.albedo ?? 0.18,
+    });
+    this._aperture ||= new Adaptation();
+    return this._aperture.primed ? this._aperture.step(dt, target) : this._aperture.prime(target);
+  }
+
   // ------------------------------------------------------------- loop ----
   update(dt) {
     if (this.playing) this.sunPhase += this.dayRate * dt * this.speed;
@@ -3768,8 +3830,19 @@ export class SurfaceScale {
       ['biosphere', this.life ? 'flora + fauna' : '—'],
       // §8 axis 8: if the canopy is in flower the readout must say so, because
       // the flower is a claim about where this world is in its own orbit
-      ...(this.life?.openness > 0.02 ? [['season', this.life.openness > 0.75
-        ? 'full bloom' : this.life.openness > 0.35 ? 'in flower' : 'first blossom']] : []),
+      ...(this.life?.openness > 0.02 ? [['season', (this.life.openness > 0.75
+        ? 'full bloom' : this.life.openness > 0.35 ? 'in flower' : 'first blossom')
+        // §8 axis 8 again, one level down: on a world with no axial tilt and a
+        // round orbit there is no annual cue to flower against, so there is no
+        // spring — and a HUD that said "full bloom" without saying that would
+        // be asserting a season this world does not have. The tilt is two rows
+        // up in the same panel; this is what it means.
+        + (perpetualBloom(pp) ? ' · no season, always' : '')]] : []),
+      // Which print this world is being rendered in, and it is not a setting —
+      // it is a readout of the air. `docs/plans/SAKURA.md`: hoshi-no-tani and
+      // sakura-realm are photographs of different air, and this says which one
+      // you are standing in. It moves while you watch when the weather does.
+      ['print', registerName(this.printRegister())],
       ...(pp.res?.line ? [['mood', pp.res.line]] : []),
       ['craters', this.impacts.length ? String(this.impacts.length) : '—'],
       ['surface gravity', g.toFixed(2) + ' g'],
