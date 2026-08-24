@@ -171,6 +171,54 @@ try {
 
   pass = await step('disposing the cabin frees its geometry',
     async () => page.evaluate('(window.__cs.dispose(), "disposed")')) && pass;
+
+  /* ---------------------------------------------------------------- §2.4
+     The schema, driven the way a person holding a link drives it: a cold load
+     of a URL naming the helm.
+
+     This is the half that is easy to leave untested — the *write* side is a
+     one-line getter and passes trivially, while the *read* side lives in
+     `_restore`'s chain and only runs on a real `?g=&s=&pl=` prefix. CLAUDE.md
+     is explicit that a URL people may already be holding must never come to
+     mean somewhere else later, and an untested restore is exactly how that
+     happens. So the route is resolved the way `capture.js` resolves it, and
+     both spellings are loaded cold. */
+  const route = await page.evaluate(`(async () => {
+    const { hash } = await import('/src/rng.js');
+    const { galaxyParams } = await import('/src/galaxy.js');
+    const { systemParams } = await import('/src/system.js');
+    const g = hash(${SEED}, 0xbe0) >>> 0;
+    const gp = galaxyParams(g);
+    for (let i = 0; i < 4096; i++) {
+      const s = hash(gp.seed, i, 0x57a9) >>> 0;
+      const sp = systemParams(s);
+      const rocky = sp.planets.findIndex(p => p.typeId <= 4);
+      if (rocky >= 0) return { g, s, rocky };
+    }
+    return null;
+  })()`);
+
+  for (const [cab, want, label] of [['1', 'walk', 'standing'], ['2', 'seated', 'at the helm']]) {
+    pass = await step(`§2.4 · a cold \`?cab=${cab}\` link resolves ${label}`, async () => {
+      if (!route) return false;
+      await page.goto(`${origin}/?seed=${SEED}&g=${route.g}&s=${route.s}`
+        + `&pl=${route.rocky}&quad=1&cab=${cab}&dt=16`, { timeout: TIMEOUT });
+      await page.waitForFunction('window.AEON && window.AEON.stack.length > 0',
+        { timeout: TIMEOUT });
+      const r = await page.evaluate(`(() => {
+        const s = window.AEON.active();
+        return s.kind === 'cabin'
+          ? s.kind + ' · crew ' + s.crew.mode + ' · link ?cab=' + s.deepLink
+          : 'active scale is ' + s.kind;
+      })()`);
+      return r.includes('cabin') && r.includes(want) ? r : false;
+    }) && pass;
+  }
+
+  pass = await step('§2.4 · ...and the URL it writes back is the one it was given',
+    async () => page.evaluate(
+      'new URL(location.href).searchParams.get("cab") === "2" ? location.search : false'))
+    && pass;
 } catch (e) {
   console.log(`  FAIL harness: ${e.message}`);
   pass = false;

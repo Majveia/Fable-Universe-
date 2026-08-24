@@ -36,7 +36,7 @@ Here is the sum, as of M5.
 | ~~**The critic has never run**~~ | 8 | **Act A closed** — scored blind on an RTX 3060, all-flags **3.00** vs default **2.43**. §8's gate still FAILS (needs ≥4/≥4.5) |
 | **The ground has no material** | 8 · 6 M3 | **NEW, and now the blocking axis.** Near-ground gradient 1.07/255; featureless at 5× magnification. Materials scored 1 and 2 |
 | **`planet-orbit` never reaches true black** | 2.8 | **NEW.** rgb(13,7,0), 0.0% of the frame at #000, both flag sets. `star-system` is correct, so it is specific to the planet scale |
-| The cabin, the seat and the piloted descent are off | 2.4 · 2.5 | **NEW, and honestly declared.** `?cab=1`. `docs/plans/LONG-SILENCE.md` §8 says what flipping it would take: a §5 number measured with the meadow on, and a scored capture. Neither exists yet |
+| The cabin, the seat and the piloted descent are off | 2.4 · 2.5 | **NEW, and honestly declared.** `?cab=1`. Half of §5 is now measured (`tools/cabincost.js`: **6 draw calls, 3.2 k triangles, no textures** — 0.7% and 0.15% of budget). Flipping it still needs a frame-time number from real silicon and a scored capture; see `docs/plans/LONG-SILENCE.md` §§9–10 |
 
 A visitor who opens the page gets the print, aerial perspective, a body, a
 camera and a mobile layer. They do not get the light model, the materials, the

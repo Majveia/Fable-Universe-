@@ -198,15 +198,43 @@ orbit ──E──▶ stand in the cabin ──E──▶ sit at the helm ─�
 No fade anywhere in it. The sit is the cubic; the descent is Allen–Eggers
 integrating; the arrival is the same edge-and-latch `climb.js` uses going up.
 
-**Still open, and stated rather than buried:**
+## 9 · §5, measured
+
+§16 rule 2 says to state a feature's cost before proposing it, so
+`tools/cabincost.js` does. It counts what is **submitted** — the same reasoning
+`drawcensus.js` runs on, and the reason it is trustworthy here: a submission
+count is a property of the scene graph and is identical on every rasteriser.
+
+| world | deck | draw calls | triangles | own textures |
+|---|---|---|---|---|
+| Luna | 4.85 m | 6 | 3,258 | 0 |
+| Earth | 6.40 m | 6 | 3,246 | 0 |
+| Big | 7.09 m | 6 | 3,270 | 0 |
+
+- **≤ 900 draw calls → 6.** 0.7% of the budget. This is the bake-then-weld
+  ordering doing its job: the shell, the deck, every fitting, the canopy and
+  the world outside are five meshes and a light rig.
+- **≤ 2.2 M triangles → 3,246.** 0.15%.
+- **§2.1 → the cabin's own materials sample no texture at all.** The plate
+  seams, the weathering and the rim are analytic, so there is nothing to
+  generate and nothing to ship.
+
+**What is deliberately not quoted:** §5's ≤ 12 ms CPU row and every fps row.
+This container rasterises in software and §14 is explicit that CI never gates
+§5. A millisecond measured on SwiftShader is a number about SwiftShader wearing
+the costume of a budget, and `docs/plans/RECKONING.md` exists because that kind
+of number was once accepted.
+
+## 10 · Still open, and stated rather than buried
 
 - **`?cab=1` is default-off** (§7.4). Flipping it is a separate commit and is
-  not proposed here — see RECKONING's ledger, which now carries it.
-- **§5 is unmeasured for this scale.** The cabin draws instead of the orbital
-  scene rather than on top of it, and the descent adds no geometry — but "ought
-  to be cheap" is not a number, and §16 rule 2 forbids quoting one that does not
-  exist. It needs `drawcensus.js` and a bench run with the meadow on.
-- **No capture has been scored.** `boot.js` proves the chain runs; it says
-  nothing about how it looks, and §8's rubric has not been pointed at it.
+  not proposed here — see RECKONING's ledger, which carries it. What flipping
+  it would now take is: a frame-time number from real silicon, and a scored
+  capture. The draw-call and triangle halves of §5 are answered above.
+- **No capture has been scored.** `cabincheck.js` proves the chain *runs*;
+  it says nothing about how it *looks*, and §8's rubric has not been pointed at
+  it. Every claim in this file is about behaviour, not about a frame.
 - The canopy is a darkened plane, not a windscreen with a plasma sheath. The
   entry fraction is wired to it, so the hook exists and the shader does not.
+- The nav station is reachable and sittable and does nothing when you get
+  there. It is a seat, not a feature.
