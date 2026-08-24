@@ -24,7 +24,7 @@ import {
   makeSurfaceMaterial, makeCloudMaterial, makeAtmosphereMaterial,
   makeRingMaterial, blackbodyRGB, NOISE_GLSL,
 } from './planet.js';
-import { vegetationHSL } from './meadow.js';
+import { exoticHSL, vegetationHSL } from './meadow.js';
 import { planck, spectrumToXYZ, xyzToLinearSRGB, toGamut } from './starlight.js';
 
 const AU_DRAW = 46;      // display units at 1 AU
@@ -205,6 +205,28 @@ export function systemParams(starSeed) {
     // palette per species
     const hue = pr.next();
     let colA, colB, colC, atmoColor, oceanLevel = -1, clouds = 0, iceCap = 2.0, ringColor;
+    /**
+     * What grows here, and it is only ever what grows here.
+     *
+     * `colC` is the world's third surface colour and it means a different
+     * thing per type: vegetation on a terrestrial world, **water** on an ocean
+     * one, ice on an ice one. Every consumer that meant "the green" read it
+     * anyway — the meadow, `material.js`'s sward layer, `ground-cover.js` —
+     * so every ocean world in the universe grew a lawn out of its own sea:
+     * base #5a9eba, root #2854a3, tip #a1d7ff. Cobalt-blue grass, on a world
+     * `isBiosphere()` says is alive.
+     *
+     * That was not a design decision. It was one colour doing two jobs, and
+     * nothing anywhere said which job it was doing. So the green gets its own
+     * name, `colC` keeps its per-type meaning, and the two can never be
+     * confused again.
+     *
+     * `null` on a world that grows nothing, which is an answer rather than a
+     * fallback — the same shape `isBiosphere()` and `precipFor()` already use.
+     */
+    let vegetation = null;
+    /** §3's weirdness budget, for whatever *stands in* the grass — see meadow.js */
+    let exotic = null;
     switch (type) {
       case 'terrestrial':
         colA = new THREE.Color().setHSL(0.09 + hue * 0.05, 0.45, 0.32);   // soil
@@ -231,13 +253,23 @@ export function systemParams(starSeed) {
         // move its ocean level, its clouds and its ice caps along with the
         // grass. One number, two readings, no perturbation (§2.3).
         const veg = vegetationHSL(hue, inhabited);
-        colC = new THREE.Color().setHSL(veg.h, veg.s, veg.l);
+        vegetation = new THREE.Color().setHSL(veg.h, veg.s, veg.l);
+        exotic = exoticHSL(hue, inhabited);
+        colC = vegetation.clone();
         atmoColor = new THREE.Color(0.28, 0.5, 1.0);
         oceanLevel = pr.float(-0.05, 0.16); clouds = pr.float(0.45, 0.75); iceCap = pr.float(0.72, 0.92);
         break;
       case 'ocean':
         colA = new THREE.Color(0.02, 0.09, 0.28); colB = new THREE.Color(0.5, 0.52, 0.5);
+        // the water, which is what `colC` means on this world
         colC = new THREE.Color(0.1, 0.35, 0.5);
+        // and the islands, which is what grows on it. An ocean world passes
+        // `isBiosphere()`, so it has a meadow, and the meadow stands on land.
+        {
+          const veg = vegetationHSL(hue, inhabited);
+          vegetation = new THREE.Color().setHSL(veg.h, veg.s, veg.l);
+          exotic = exoticHSL(hue, inhabited);
+        }
         atmoColor = new THREE.Color(0.25, 0.55, 1.0);
         oceanLevel = pr.float(0.3, 0.5); clouds = pr.float(0.5, 0.85); iceCap = pr.float(0.8, 0.95);
         break;
@@ -295,7 +327,7 @@ export function systemParams(starSeed) {
       tilt: Math.abs(pr.gauss()) * 0.3,
       Teq,
       noiseSeed: pr.float(0, 100),
-      colA, colB, colC, atmoColor, oceanLevel, clouds, iceCap,
+      colA, colB, colC, vegetation, exotic, atmoColor, oceanLevel, clouds, iceCap,
       hasRings: (type === 'gas giant' && pr.chance(0.45)) || (type === 'ice giant' && pr.chance(0.25)),
       ringColor,
       moons: type.includes('giant') ? pr.int(1, 4) : (pr.chance(0.3) ? 1 : 0),

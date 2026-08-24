@@ -151,7 +151,9 @@ export function materialPalette(pp, light) {
 
   const soilC = rgb(pp.colA);
   const rockC = rgb(pp.colB);
-  const vegC = rgb(pp.colC);
+  // the green, not the third surface colour — on an ocean world those are the
+  // vegetation and the sea, and this layer is called `sward` (see system.js)
+  const vegC = rgb(pp.vegetation ?? pp.colC);
   // Rime is the world's own white: snow on a temperate world, ash on a volcanic
   // one, salt on a dry one. Keyed off the rock so it belongs to the palette.
   const rimeC = pp.typeId === 4

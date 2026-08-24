@@ -231,7 +231,50 @@ const scale3 = (c, k) => [c[0] * k, c[1] * k, c[2] * k];
  * which is blue. The root is not painted teal — it is painted *unlit*, and the
  * only light down there is the sky's.
  */
-export function grassPalette(base) {
+/**
+ * The vertical ramp, as luminance multipliers and hue rotations.
+ *
+ * Measured off `docs/reference/sakura-realm/src/world/grass.js`, whose shipped
+ * ramp is `uColBase #3a5630 -> uColTip #82a552 -> uColDry #b3ad6a`. Converted to
+ * linear light and divided through, those are:
+ *
+ *     tip / base   4.356        dry / base   5.468
+ *
+ * against the 2.10 and 3.96 this file shipped. A blade ran less than half the
+ * contrast of the reference's, and that — not the hue and not the count — is
+ * most of why AEON's meadow read flat and dark beside the reference's.
+ *
+ * The stops here are not those ratios typed in. They are solved: a sweep over
+ * `k` and `rot` minimising RGB distance from `grassPalette('#3a5630')` to the
+ * reference's own `#82a552` and `#b3ad6a`. The luminance ratio alone lands the
+ * brightness and misses the hue, because `warm` carries red at 1.9× and the
+ * reference's tip is greener than that pole; the solve trades a little of the
+ * ratio for the rotation and gets both. Residuals are 10/255 on the tip and
+ * 8/255 on the dry, against a base colour that moves per world anyway.
+ *
+ * `LEGACY` is the ramp every capture in this repo before `?veg=1` was shot
+ * with, kept so the A/B can be taken on one machine (§7.4).
+ */
+export const RAMP = {
+  reference: {
+    root: [0.30, -0.62], low: [0.60, -0.30], mid: [1.00, 0.00],
+    upper: [2.05, 0.20], tip: [4.15, 0.32], trans: [4.90, 0.42],
+    sheen: [4.50, 0.24], dry: [4.60, 0.69],
+    patchA: [1.30, 0.22], patchB: [0.84, -0.18],
+    patchC: [1.60, 0.10], patchD: [0.70, -0.34],
+    hollow: [0.22, -0.48],
+  },
+  legacy: {
+    root: [0.30, -0.62], low: [0.52, -0.30], mid: [1.00, 0.00],
+    upper: [1.52, 0.26], tip: [2.10, 0.52], trans: [2.55, 0.66],
+    sheen: [2.40, 0.30], dry: [1.70, 0.72],
+    patchA: [1.18, 0.22], patchB: [0.86, -0.18],
+    patchC: [1.34, 0.10], patchD: [0.74, -0.34],
+    hollow: [0.22, -0.48],
+  },
+};
+
+export function grassPalette(base, ramp = RAMP.legacy) {
   // Two poles to rotate between, each normalised to the base's own luminance so
   // that rotating hue never changes how bright the ramp is — the luminance ramp
   // is the other axis and they must not interfere.
@@ -250,27 +293,28 @@ export function grassPalette(base) {
   const warm = norm([base[0] * 1.9, base[1] * 0.7, base[2] * 0.8]);
 
   const stop = (k, rot) => scale3(rot < 0 ? mix3(base, cool, -rot) : mix3(base, warm, rot), k);
+  const at = (name) => stop(ramp[name][0], ramp[name][1]);
 
   return {
     // the vertical path: five stops, root to tip
-    root: stop(0.30, -0.62),
-    low: stop(0.52, -0.30),
-    mid: stop(1.00, 0.00),
-    upper: stop(1.52, 0.26),
-    tip: stop(2.10, 0.52),
+    root: at('root'),
+    low: at('low'),
+    mid: at('mid'),
+    upper: at('upper'),
+    tip: at('tip'),
     // what light coming *through* a blade looks like — §9.2's transmission
-    trans: stop(2.55, 0.66),
+    trans: at('trans'),
     // the sheen a laid-over blade catches on a gust front
-    sheen: mix3(stop(2.4, 0.30), [1, 1, 1], 0.45),
+    sheen: mix3(at('sheen'), [1, 1, 1], 0.45),
     // straw on the exposed shoulders
-    dry: mix3(stop(1.7, 0.72), [0.62, 0.50, 0.24], 0.45),
+    dry: mix3(at('dry'), [0.62, 0.50, 0.24], 0.45),
     // the four-colour meadow mosaic: two cooler, two warmer, all near the base
-    patchA: stop(1.18, 0.22),
-    patchB: stop(0.86, -0.18),
-    patchC: stop(1.34, 0.10),
-    patchD: stop(0.74, -0.34),
+    patchA: at('patchA'),
+    patchB: at('patchB'),
+    patchC: at('patchC'),
+    patchD: at('patchD'),
     // the deep interior of the sward, where nothing direct reaches
-    hollow: stop(0.22, -0.48),
+    hollow: at('hollow'),
   };
 }
 
@@ -536,11 +580,65 @@ export const MEADOW_GLSL = /* glsl */`
  */
 export const VEG_WEIRD = 0.95;        // top 5% of the draw — §3's budget
 
+/**
+ * The hue band real foliage occupies, as the **base** of a ramp: 85° to 117°.
+ *
+ * The first version of this was 72°–117°, chosen because the reference's tip
+ * `#C6D46B` is 74°. That is the mistake this file already records at the other
+ * end, mirrored: *"starting the base there too is the same rotation applied
+ * twice."* A tip is 74° **after** the ramp has rotated it warm; a base that
+ * starts there arrives past yellow. Measured — at 72° the `upper` stop comes
+ * out `#79783c`, red-dominant, and at 79° `trans` still is.
+ *
+ * 85° is where every one of the fourteen stops stays green-dominant across the
+ * whole draw and both inhabited states, which is what the suite holds. The
+ * reference's base `#3a5630` is 104°, comfortably inside.
+ */
+export const CHLOROPHYLL = [0.2361, 0.326];
+
+/**
+ * **Grass is chlorophyll. There is no world where it is not.**
+ *
+ * This function used to branch: the top 5% of the hue draw returned teal,
+ * violet or rust, because §3 sets a weirdness budget and says to enforce it
+ * "in the seed→biome function". That is still the right place and it is still
+ * enforced — but not *here*, because this is the lawn.
+ *
+ * The strangeness did not go anywhere. `exoticHSL()` below is the same draw,
+ * the same 5%, the same three colours, and `foliage.js`, `tree.js`,
+ * `ground-cover.js` and `strange.js` read it. So a strange world is now a
+ * strange *wood* standing in green grass rather than a teal lawn, which is a
+ * better reading of §3's own sentence — rarity is the mechanism by which
+ * strangeness lands, and it lands harder against something ordinary.
+ *
+ * `s` and `l` moved with it, from 0.50/0.22 to the reference's own measured
+ * 0.34/0.27. AEON's green was more saturated and darker than any real foliage,
+ * which is the other half of why the meadow read as poster paint.
+ */
 export function vegetationHSL(hue, inhabited = false) {
   const u = Math.min(Math.max(Number.isFinite(hue) ? hue : 0, 0), 1);
-  if (u > VEG_WEIRD) {
-    // teal, violet, rust — the 5% that make the other 95% mean something
-    return { h: 0.45 + (u - VEG_WEIRD) * 8.4, s: 0.55, l: inhabited ? 0.32 : 0.24, weird: true };
-  }
-  return { h: 0.20 + u * 0.126, s: 0.5, l: inhabited ? 0.3 : 0.22, weird: false };
+  return {
+    h: CHLOROPHYLL[0] + u * (CHLOROPHYLL[1] - CHLOROPHYLL[0]),
+    s: 0.34,
+    l: inhabited ? 0.32 : 0.26,
+    // reported, not applied — the caller decides whether *it* is the thing
+    // that gets to be strange on this world
+    weird: u > VEG_WEIRD,
+  };
+}
+
+/**
+ * §3's weirdness budget, and where it went.
+ *
+ * The same draw and the same 5%. What reads this is whatever *stands in* the
+ * grass — a wood, a thicket, ground cover, `strange.js`'s crystal growths —
+ * rather than the grass itself. On the 95% it returns null, which is a caller
+ * telling you plainly that this world is ordinary rather than a colour it has
+ * to test.
+ */
+export function exoticHSL(hue, inhabited = false) {
+  const u = Math.min(Math.max(Number.isFinite(hue) ? hue : 0, 0), 1);
+  if (u <= VEG_WEIRD) return null;
+  // teal, violet, rust — the 5% that make the other 95% mean something
+  return { h: 0.45 + (u - VEG_WEIRD) * 8.4, s: 0.55, l: inhabited ? 0.32 : 0.24, weird: true };
 }

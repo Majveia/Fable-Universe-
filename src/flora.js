@@ -684,7 +684,7 @@ export class GrassRing {
     this.curved = curved;
 
     // §9.1 · the palette is the world's, derived from its vegetation colour
-    const pal = grassPalette(palette?.base ?? [0.24, 0.36, 0.20]);
+    const pal = grassPalette(palette?.base ?? [0.24, 0.36, 0.20], palette?.ramp);
     const packed = PALETTE_KEYS.map((k) => new THREE.Vector3(...pal[k]));
     // what the far field settles toward — the sward's own mean, so the
     // convergence keeps the meadow's colour instead of greying toward nothing

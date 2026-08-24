@@ -195,7 +195,7 @@ export function addGroundCover(s) {
   const arr = (c, f) => [(c?.r ?? f[0]), (c?.g ?? f[1]), (c?.b ?? f[2])];
   const rockBase = arr(pp.colB, [0.42, 0.40, 0.38]);
   const soilBase = arr(pp.colA, [0.34, 0.27, 0.20]);
-  const vegBase = arr(pp.colC, [0.30, 0.42, 0.24]);
+  const vegBase = arr(pp.vegetation ?? pp.colC, [0.30, 0.42, 0.24]);
 
   /**
    * A mineral, as a tint of this world's rock.

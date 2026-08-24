@@ -112,7 +112,7 @@ import {
 import { SILHOUETTES, coverageOf, maskData } from '../src/silhouette.js';
 import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
-import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
+import { CHLOROPHYLL, RAMP, VEG_WEIRD, exoticHSL, vegetationHSL } from '../src/meadow.js';
 import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
 import {
   COVER_EXP, COVER_NEAR, MINERALS, SPECIES, communityOf, coverDensity, densityAt,
@@ -8135,13 +8135,30 @@ function suiteVegetation() {
     + ' root rotation adds a further cool turn on top of whichever it starts from');
 
   // --- and the exotic ones are actually exotic -----------------------------
+  //
+  // Asked of `exoticHSL()` now, because that is where the strangeness went.
+  // §3 says to enforce the budget "in the seed→biome function" and it still is
+  // — the draw, the 5% and the three colours are unchanged. What moved is
+  // *which surface wears it*: a strange world is a strange wood standing in
+  // green grass, rather than a teal lawn. `vegetationHSL()` still reports
+  // `weird` so a caller can ask; it just never returns a colour that is.
   ok('§3 · the 5% are not merely a slightly different green',
+    weird.every((u) => {
+      const v = exoticHSL(u, true);
+      const d = hueDeg(...hsl2rgb(v.h, v.s, v.l));
+      return d > 155;
+    }) && new Set(weird.map((u) => Math.round(exoticHSL(u).h * 10))).size >= 3,
+    'teal through violet — rarity is the mechanism by which strangeness lands');
+  ok('§3 · and the budget is still 5%, counted off the same draw',
+    weird.every((u) => exoticHSL(u) !== null) && norm.every((u) => exoticHSL(u) === null),
+    'one number, two readings, no perturbation (§2.3)');
+  ok('but the grass is chlorophyll on every one of them',
     weird.every((u) => {
       const v = vegetationHSL(u, true);
       const d = hueDeg(...hsl2rgb(v.h, v.s, v.l));
-      return d > 155;
-    }) && new Set(weird.map((u) => Math.round(vegetationHSL(u).h * 10))).size >= 3,
-    'teal through violet — rarity is the mechanism by which strangeness lands');
+      return d >= 60 && d <= 155;
+    }),
+    'there is no world where grass is not green');
 
   // --- monotone and total --------------------------------------------------
   ok('the mapping is monotone across the ordinary range, so neighbours resemble neighbours',
@@ -9030,6 +9047,174 @@ function suiteBlossom() {
 
 
 
+
+// ---------------------------------------------------------------------------
+// suite: green
+//
+// One sentence to hold: **there is no world where grass is not green.**
+//
+// It was not true. `surface.js` took the meadow's base from `pp.colC`, which is
+// the world's third surface colour and means a different thing per type —
+// vegetation on a terrestrial world and *water* on an ocean one. `isBiosphere()`
+// returns true for ocean worlds, so every one of them grew a lawn out of its own
+// sea. That is checked here by name, because a defect nobody wrote down is a
+// defect that comes back.
+//
+// The rest is the guarantee: over the whole hue draw, no stop of the fourteen
+// may come out blue-dominant, and every stop but one must be green-dominant.
+// The exception is `dry`, and it is not a loophole — straw is not green, and the
+// reference's own `#b3ad6a` is red-dominant. What straw may never be is blue.
+
+function suiteGreen() {
+  console.log('\ngreen — there is no world where grass is not green');
+
+  const hsl2rgb = (h, s, l) => {
+    const a = s * Math.min(l, 1 - l);
+    const f = (n) => {
+      const k = (n + h * 12) % 12;
+      return Math.pow(l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)), 2.2);
+    };
+    return [f(0), f(8), f(4)];
+  };
+  const hex = (c) => '#' + c.map((v) => Math.round(
+    Math.min(Math.max(Math.pow(Math.max(v, 0), 1 / 2.2), 0), 1) * 255)
+    .toString(16).padStart(2, '0')).join('');
+  const green = (c) => c[1] > c[0] && c[1] > c[2];
+  const notBlue = (c) => c[2] < c[0] || c[2] < c[1];
+
+  // --- 1 · the defect, by name --------------------------------------------
+  {
+    // `system.js`'s ocean branch, verbatim, as it still is — this is the water
+    const water = [0.1, 0.35, 0.5];
+    const wrong = grassPalette(water, RAMP.reference);
+    ok('an ocean world\'s colC really does grow blue grass',
+      !green(wrong.root) && !green(wrong.tip) && wrong.root[2] > wrong.root[1],
+      `root ${hex(wrong.root)} · tip ${hex(wrong.tip)} — the sea, mown`);
+
+    const src = readFileSync(new URL('../src/system.js', import.meta.url), 'utf8');
+    ok('so an ocean world carries a vegetation colour of its own',
+      /case 'ocean':[\s\S]{0,900}vegetation = new THREE\.Color\(\)\.setHSL\(veg\.h/.test(src),
+      'it passes isBiosphere(), so it has a meadow, and the meadow stands on land');
+    ok('and colC keeps meaning the water there',
+      /\/\/ the water, which is what `colC` means on this world\n\s*colC = new THREE\.Color\(0\.1, 0\.35, 0\.5\);/.test(src),
+      'one colour doing two jobs is what the whole defect was');
+
+    const surf = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+    ok('the meadow reads the vegetation colour, not the third surface colour',
+      /const vegCol = \(VEG && this\.pp\.vegetation\) \|\| this\.pp\.colC;/.test(surf));
+    for (const [f, what] of [
+      ['src/material.js', 'the sward layer'],
+      ['src/ground-cover.js', 'the plants'],
+    ]) {
+      const t = readFileSync(new URL('../' + f, import.meta.url), 'utf8');
+      ok(`${what} reads it too`, /pp\.vegetation \?\? pp\.colC/.test(t), f);
+    }
+  }
+
+  // --- 2 · the guarantee, over the whole draw -----------------------------
+  {
+    const N = 4001;
+    let blue = null, notGreen = null, checked = 0;
+    for (let i = 0; i < N; i++) {
+      const u = i / (N - 1);
+      for (const inhabited of [false, true]) {
+        const v = vegetationHSL(u, inhabited);
+        const p = grassPalette(hsl2rgb(v.h, v.s, v.l), RAMP.reference);
+        for (const [name, c] of Object.entries(p)) {
+          checked++;
+          if (!notBlue(c)) blue ||= { u, inhabited, name, c: hex(c) };
+          if (name !== 'dry' && !green(c)) notGreen ||= { u, inhabited, name, c: hex(c) };
+        }
+      }
+    }
+    ok('no stop, on any world, comes out blue',
+      blue === null, blue ? JSON.stringify(blue) : `${checked} stops across ${N} draws`);
+    ok('and every stop but the straw is green-dominant',
+      notGreen === null, notGreen ? JSON.stringify(notGreen)
+        : 'root, hollow and the two cool mosaic patches included');
+    // The straw, stated the way it is actually true.
+    //
+    // "Red-dominant on every world" was the first form and no ramp satisfies
+    // it: swept over `k` in [3.4, 5.6] and `rot` in [0.60, 1.00], nothing turns
+    // a 117° base red before green. That is not a gap in the calibration, it is
+    // the right answer — dried grass on a deep-green world is olive, and only a
+    // yellow-green world dries to gold. What holds everywhere is that the straw
+    // is *warmer than the blade it came from*, and never blue.
+    ok('the straw is warmer than the sward on every world, and never blue',
+      (() => {
+        for (let i = 0; i <= 200; i++) {
+          const u = i / 200;
+          for (const inh of [false, true]) {
+            const v = vegetationHSL(u, inh);
+            const base = hsl2rgb(v.h, v.s, v.l);
+            const d = grassPalette(base, RAMP.reference).dry;
+            if (!notBlue(d)) return false;
+            if (d[0] / d[1] <= base[0] / base[1]) return false;
+          }
+        }
+        return true;
+      })(),
+      'and at the reference\'s own base it lands on the reference\'s own #b3ad6a');
+  }
+
+  // --- 3 · the band, and that it is the reference's ------------------------
+  {
+    ok('the chlorophyll band is 85° to 117°, and it is the base of a ramp',
+      Math.abs(CHLOROPHYLL[0] * 360 - 85) < 1.5 && Math.abs(CHLOROPHYLL[1] * 360 - 117.4) < 1,
+      `[${CHLOROPHYLL[0]}, ${CHLOROPHYLL[1]}] — a tip is 74° AFTER the warm `
+      + 'rotation, so a base that starts there arrives past yellow');
+    ok('and vegetationHSL never leaves it, at either end of the draw',
+      [0, 0.5, VEG_WEIRD, 0.999, 1].every((u) => {
+        const h = vegetationHSL(u).h;
+        return h >= CHLOROPHYLL[0] - 1e-9 && h <= CHLOROPHYLL[1] + 1e-9;
+      }));
+  }
+
+  // --- 4 · the ramp is the reference's, measured ---------------------------
+  //
+  // Not "looks about right": the reference ships uColBase #3a5630, uColTip
+  // #82a552 and uColDry #b3ad6a, and feeding its own base through this file's
+  // ramp has to come back with its own tip and its own dry.
+  {
+    const srgb = (h) => [1, 3, 5].map((i) => Math.pow(parseInt(h.substr(i, 2), 16) / 255, 2.2));
+    const dist = (a, b) => Math.hypot(...a.map((v, i) => (
+      Math.pow(Math.max(v, 0), 1 / 2.2) - Math.pow(Math.max(b[i], 0), 1 / 2.2)) * 255));
+    const p = grassPalette(srgb('#3a5630'), RAMP.reference);
+    ok('the reference\'s base returns the reference\'s tip',
+      dist(p.tip, srgb('#82a552')) < 16,
+      `${hex(p.tip)} against #82a552 — ${dist(p.tip, srgb('#82a552')).toFixed(1)}/255`);
+    ok('and the reference\'s dry',
+      dist(p.dry, srgb('#b3ad6a')) < 16,
+      `${hex(p.dry)} against #b3ad6a — ${dist(p.dry, srgb('#b3ad6a')).toFixed(1)}/255`);
+
+    const lum = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+    const ratio = lum(p.tip) / lum(p.mid);
+    ok('a blade runs the reference\'s contrast, not half of it',
+      ratio > 3.6,
+      `${ratio.toFixed(2)}x base to tip, against the 2.10 that read flat`
+      + ' and the reference\'s own 4.36');
+
+    // monotone, or the ramp has a step in it
+    let mono = true, prev = -1;
+    for (const k of ['root', 'low', 'mid', 'upper', 'tip']) {
+      const L = lum(p[k]);
+      if (L < prev) mono = false;
+      prev = L;
+    }
+    ok('and it climbs without a step from root to tip', mono);
+  }
+
+  // --- 5 · the legacy ramp still exists, so the A/B is takeable ------------
+  {
+    ok('§7.4 · ?veg=0 restores the ramp every capture in this repo was shot with',
+      RAMP.legacy.tip[0] === 2.10 && RAMP.legacy.dry[0] === 1.70,
+      'a flag with no way back is not a flag');
+    const surf = readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8');
+    ok('and the flag chooses between them rather than editing one',
+      /ramp: VEG \? RAMP\.reference : RAMP\.legacy/.test(surf));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // suite: drainage
 //
@@ -9852,6 +10037,7 @@ const suites = {
   tree: suiteTree,
   silhouette: suiteSilhouette,
   paintUniforms: suitePaintUniforms,
+  green: suiteGreen,
   cloudshade: suiteCloudShade,
   drainage: suiteDrainage,
   invariants: suiteInvariants,

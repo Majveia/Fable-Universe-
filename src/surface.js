@@ -65,6 +65,7 @@ import {
   composeSunShadow, shaftUniforms,
 } from './cloudshade.js';
 import { DRAINAGE_GLSL, packDrainage, solveDrainage } from './drainage.js';
+import { RAMP } from './meadow.js';
 import { Q, TIER, qArr, qInt } from './quality.js';
 
 const PARAM = (k) => {
@@ -247,6 +248,17 @@ const CSHADE = CSHADE_ON;
  * for the measurement and the resolution it bought.
  */
 const WETLINE = PARAM('wetline') === '1';
+
+/**
+ * The grass is chlorophyll, and it runs the reference's contrast.
+ *
+ * Two changes under one flag because they are one change: the base comes from
+ * `pp.vegetation` rather than `pp.colC` — which on an ocean world is the water
+ * — and the ramp runs the reference's measured 4.15x base-to-tip instead of
+ * the 2.10 that made every meadow read flat. `?veg=0` restores the frame every
+ * capture in this repo was shot with, which is what makes the A/B takeable.
+ */
+const VEG = PARAM('veg') !== '0';
 
 /**
  * The sampler, at this tier's tap count — §5's LOD, arriving before the feature
@@ -1957,7 +1969,17 @@ export class SurfaceScale {
     const curvedRings = qInt('curved', 'curvedRings');
     // §9.1 · one base colour, and grassPalette() derives the ramp from it. The
     // nine greens are the world's, not the reference's.
-    const palette = { base: [this.pp.colC.r, this.pp.colC.g, this.pp.colC.b] };
+    //
+    // `vegetation`, not `colC`. See `system.js` — they were the same colour on
+    // a terrestrial world and different colours on an ocean one, and reading
+    // the wrong one grew cobalt-blue grass on every ocean world in the
+    // universe. The fallback is the old field rather than a constant, so a
+    // world params object from before this existed still renders.
+    const vegCol = (VEG && this.pp.vegetation) || this.pp.colC;
+    const palette = {
+      base: [vegCol.r, vegCol.g, vegCol.b],
+      ramp: VEG ? RAMP.reference : RAMP.legacy,
+    };
     // All four rings. §9.5: they exist *only* to switch tessellation, so the
     // only thing that differs between them here is `seg` and the row's own
     // per-ring multiplier — the density is one continuous law across all of
