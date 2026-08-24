@@ -197,6 +197,25 @@ const results = [];
   else mesh.position.set(-1.2, -0.6, 1.0);
   results.push(`plated: ${nParts} parts -> 1 draw, ${nVerts} verts, aHull baked`);
 }
+{
+  /* The conjured rocket's path: y-axis barrels, transparent (the conjuring
+     fades every part in from zero, so this is the veil program), un-baked, and
+     un-merged. Four differences from the case above and every one of them
+     assembles a different shader — the swizzle is in the vertex source, the
+     veil changes what §9.3 is allowed to write, and `defaultAttributeValues`
+     is the only thing standing between an un-baked part and a missing
+     attribute. */
+  const detail = greebleDetail({ axis: 'y', plate: 2.6, frame: true, pit: 0, soot: 0.12, bleach: 0.55 });
+  const m = paintedStandard(
+    { color: new THREE.Color(0.72, 0.69, 0.62), roughness: 1, transparent: true, opacity: 0.85 },
+    airWiring,
+    { ...stopsFrom([0.72, 0.69, 0.62], light), soft: 0.10, rim: 0.75,
+      u2m: 1, bumpScale: 1, detail });
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 1.6, 18), m);
+  mesh.position.set(1.4, 0.8, 0.6);
+  scene.add(mesh);
+  results.push('plated rocket tank: y-axis + veil + un-baked (no aHull)');
+}
 renderer.render(scene, cam);
 renderer.render(scene, cam);
 const gl = renderer.getContext();

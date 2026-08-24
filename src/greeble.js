@@ -966,13 +966,34 @@ export const GREEBLE_PARS = /* glsl */`
   }
 `;
 
-/** Object position and normal, in metres, plus the bake. */
-export const GREEBLE_VERT = /* glsl */`
+/**
+ * Object position and normal, in metres, plus the bake.
+ *
+ * `axis` names which way the object's barrels run, and it exists because the
+ * plate law's cylindrical branch is not symmetric: it reads a radius as
+ * `length(p.xy)` and an angle as `atan(p.y, p.x)`, so it assumes barrels run
+ * along **z**. That is the reference's convention, where every hull is a ship
+ * flying nose-first down z.
+ *
+ * AEON has objects that stand up. A conjured rocket's tanks are three's
+ * `CylinderGeometry`, which runs along **y**, and handing those to the z-law
+ * gives every tank a radius measured across its own length: the barrel test
+ * fails, the cut-plate branch wins everywhere, and a pressure vessel gets
+ * plated like a deck. A swizzle in the vertex shader is the whole fix, and it
+ * is free — the law downstream never learns it happened.
+ */
+export function greebleVert(axis = 'z') {
+  const sw = axis === 'y' ? '.xzy' : '';
+  return /* glsl */`
   #include <begin_vertex>
-  vGPos = position * uGreebleU2M;
-  vGNrm = normalize(normal);
+  vGPos = (position * uGreebleU2M)${sw};
+  vGNrm = normalize(normal)${sw};
   vGHull = aHull;
 `;
+}
+
+/** The z-axis default, for call sites that do not care. */
+export const GREEBLE_VERT = greebleVert('z');
 
 // ===========================================================================
 // 4 · the bridge — detail becomes §9.2's inputs
@@ -1026,6 +1047,7 @@ export const GREEBLE_VERT = /* glsl */`
  *   bump    relief gain, before uGreebleBump converts units
  *   ao      0..1 how much of the bake's occlusion to believe
  *   pit     0..1 micrometeoroid pitting
+ *   axis    'z' (default) or 'y' — which way this object's barrels run
  */
 export function greebleDetail(o = {}) {
   const plate = o.plate ?? 2.2;
@@ -1037,6 +1059,7 @@ export function greebleDetail(o = {}) {
   const bump = o.bump ?? 1.0;
   const aoK = o.ao ?? 1.0;
   const pit = o.pit ?? 1.0;
+  const axis = o.axis === 'y' ? 'y' : 'z';
   const f = (n) => Number(n).toFixed(4);
 
   const fragment = /* glsl */`
@@ -1196,11 +1219,11 @@ export function greebleDetail(o = {}) {
 
   return {
     pars: GREEBLE_PARS,
-    vertex: GREEBLE_VERT,
+    vertex: greebleVert(axis),
     fragment,
     // Cache key: two materials that compile to different programs must not
     // share one. Every number above is interpolated into the source, so the
     // options ARE the key.
-    key: `greeble-v1_${plate}_${frame}_${soot}_${bleach}_${glare}_${rivet}_${bump}_${aoK}_${pit}`,
+    key: `greeble-v1_${axis}_${plate}_${frame}_${soot}_${bleach}_${glare}_${rivet}_${bump}_${aoK}_${pit}`,
   };
 }
