@@ -50,6 +50,7 @@
 import * as THREE from 'three';
 
 import { SAT_AMOUNT } from './quality.js';
+import { PAINTED, SHOULDER_D2, registerMix } from './register.js';
 
 export const PRINT_SHADER = {
   uniforms: {
@@ -93,6 +94,36 @@ export const PRINT_SHADER = {
     // same instrument `?shdebug=1` is for the shadow term, and it is what makes
     // "the fog fraction survives to the print" a measurement rather than a hope.
     uFogView: { value: 0 },
+
+    /**
+     * The register — `src/register.js`, `docs/plans/SAKURA.md`.
+     *
+     * AEON has two vendored art references and they are photographs of
+     * different air, not two opinions about one. These fourteen numbers are the
+     * axis between them, and `registerFor(visibility)` chooses a point on it
+     * from the same weather the fog already runs on.
+     *
+     * They arrive as uniforms rather than as literals in the shader for the
+     * reason §2.7 gives about the height field: a table that exists twice is a
+     * table that will be edited once. `register.js` holds the only copy;
+     * `setRegister()` below packs it, and it is the only thing that may.
+     *
+     * The defaults are `PAINTED` — so a build that never calls `setRegister()`
+     * renders exactly what shipped before this file grew a register, which is
+     * what makes the axis reviewable at all.
+     */
+    uShoulder: { value: PAINTED.shoulder },
+    uPush: { value: new THREE.Vector2(PAINTED.shadowPush, PAINTED.highPush) },
+    uSBend: { value: PAINTED.sBend },
+    uSatX: { value: PAINTED.satX },
+    // x wash · y bleed base · z bleed gain
+    uWash: { value: new THREE.Vector3(PAINTED.wash, PAINTED.bleedBase, PAINTED.bleedGain) },
+    // x paper tooth · y directional fibre
+    uTooth: { value: new THREE.Vector2(PAINTED.tooth, PAINTED.fibre) },
+    // x depth · y how far the vignette's colour sits from neutral
+    uVig: { value: new THREE.Vector2(PAINTED.vignette, PAINTED.vigWarm) },
+    // x bloom multiplier · y warm halation
+    uBloomReg: { value: new THREE.Vector2(PAINTED.bloomX, PAINTED.halation) },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -107,15 +138,30 @@ export const PRINT_SHADER = {
     uniform sampler2D uBloom;
     uniform float uBloomAmt;
     uniform float uPaint, uExposure, uGrain, uVignette, uFogView, uSat;
+    uniform float uShoulder, uSBend, uSatX;
+    uniform vec2 uPush, uTooth, uVig, uBloomReg;
+    uniform vec3 uWash;
     uniform vec2 uRes;
     varying vec2 vUv;
 
     float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
     // §9.4 step 1 — a rational curve. Not ACES. Not Reinhard.
-    vec3 tonemapPrint(vec3 x) {
+    //
+    // The shoulder is the register's, and it is one coefficient. As written,
+    // 0.34 in the denominator's x^2 puts the asymptote at 0.36/0.34 = 1.0588,
+    // so the curve *reaches* white: solve a/b = 1 and it clips at x = 12.44,
+    // and everything above that is a flat hole with no shape in it — which is
+    // the defect sakura-realm reached for ACES to fix.
+    //
+    // At uShoulder = 1 the coefficient is 0.3735 and the asymptote is 0.9639.
+    // The positive root is gone entirely: nothing clips, highlights compress
+    // forever, a sun disc keeps its shape, and only the bloom composite added
+    // afterwards takes a pixel to white. A film shoulder, inside the rational
+    // family §9.4 specifies, without importing the curve it forbids.
+    vec3 tonemapPrint(vec3 x, float shoulder) {
       vec3 a = x * (x * 0.36 + 0.42);
-      vec3 b = x * (x * 0.34 + 0.66) + 0.11;
+      vec3 b = x * (x * (0.34 + 0.0335 * shoulder) + 0.66) + 0.11;
       return clamp(a / b, 0.0, 1.0);
     }
 
@@ -130,7 +176,7 @@ export const PRINT_SHADER = {
     // black survives the whole descent, not just its endpoints.
     vec3 tonemap(vec3 x, float paint) {
       x = max(x, vec3(0.0));
-      return mix(tonemapVacuum(x), tonemapPrint(x), paint);
+      return mix(tonemapVacuum(x), tonemapPrint(x, uShoulder), paint);
     }
 
     // §9.4 steps 1–4, as one function, because step 5 has to run the softened
@@ -145,7 +191,12 @@ export const PRINT_SHADER = {
       float l = luma(c);
       vec3 shadowPush = mix(vec3(0.90, 0.95, 1.16), vec3(1.0), smoothstep(0.0, 0.34, l));
       vec3 highPush   = mix(vec3(1.0), vec3(1.055, 1.012, 0.925), smoothstep(0.44, 0.98, l));
-      c *= mix(vec3(1.0), shadowPush, 0.85 * paint) * mix(vec3(1.0), highPush, 0.9 * paint);
+      // The strengths are the register's. Both survive at the photographic end
+      // rather than vanishing: sakura-realm's shadows are violet too — it gets
+      // them from a blue sky ambient instead of from a grade, but they are
+      // there, and a photograph with neutral-grey shadows is the one thing
+      // neither reference has.
+      c *= mix(vec3(1.0), shadowPush, uPush.x * paint) * mix(vec3(1.0), highPush, uPush.y * paint);
 
       // §9.4 step 3 — the lift, and §2.8's whole argument in one line: it is
       // scaled by uPaint, so in vacuum it is exactly zero and black stays black
@@ -153,12 +204,17 @@ export const PRINT_SHADER = {
       c = c * (1.0 - lift) + lift;
 
       // §9.4 step 4 — a gentle S, then saturation in the midtones only
-      c = mix(c, c * c * (3.0 - 2.0 * c), 0.16 * paint);
+      c = mix(c, c * c * (3.0 - 2.0 * c), uSBend * paint);
       l = luma(c);
 
       // The boost the band asks for, as an EXCESS above 1 rather than a factor.
       // Zero outside the band, which is what keeps this exactly neutral there.
-      float e = uSat * paint
+      // uSatX is the register's multiplier: a photographic print carries more
+      // saturation because it has no wash left to carry colour outward for it.
+      // The knee below is unchanged, so the extra excess still walks up to the
+      // gamut wall rather than through it — which is the property that made a
+      // number this large safe in the first place.
+      float e = uSat * uSatX * paint
         * smoothstep(0.10, 0.42, l) * (1.0 - smoothstep(0.62, 0.96, l));
 
       // How far the colour can travel away from grey before a channel leaves
@@ -230,7 +286,22 @@ export const PRINT_SHADER = {
       // downsampled four times and one bad texel would now be a neighbourhood.
       vec3 bl = texture2D(uBloom, vUv).rgb;
       bl = mix(vec3(0.0), bl, vec3(equal(bl, bl)));
-      c += max(bl, vec3(0.0)) * uBloomAmt;
+      // The register's gain, and its halation. Halation is a real mechanism and
+      // not a warm-bloom preset: light that passed the emulsion, scattered off
+      // the film base and came back through. It reads warm because the red
+      // layer sits deepest and is most of what survives the return trip — which
+      // is why the tint is a red-weighted vec3 rather than a saturation boost.
+      // One mix on a vec3 already fetched; nothing is sampled twice.
+      // Both scaled by uPaint, and the gain as much as the tint. §2.8 has to
+      // hold in the *shader*, not in a policy: registerForScale() happens to
+      // return the painted end in vacuum today, so an ungated gain would have
+      // been correct by agreement rather than by construction — and the next
+      // caller to set a register on a vacuum scale would have brightened the
+      // deep field by 55% with nothing anywhere saying it could not. Gated, a
+      // vacuum frame is invariant to the register no matter who sets it.
+      vec3 halo = mix(vec3(1.0), vec3(1.10, 0.98, 0.90), uBloomReg.y * uPaint);
+      float bloomX = mix(1.0, uBloomReg.x, uPaint);
+      c += max(bl, vec3(0.0)) * uBloomAmt * bloomX * halo;
 
       c = grade(c, uPaint);
 
@@ -255,7 +326,7 @@ export const PRINT_SHADER = {
       // writes 1, which reads here as "no fog": sharp, and correct.
       float fog = 1.0 - clamp(src.a, 0.0, 1.0);
       if (uFogView > 0.5) { gl_FragColor = vec4(vec3(fog), 1.0); return; }
-      float wet = 0.42 * fog;
+      float wet = uWash.x * fog;
       if (wet > 0.002) {
         vec2 px = 1.6 / max(uRes, vec2(1.0));
         vec3 t = texture2D(tDiffuse, vUv + vec2( px.x,  px.y)).rgb
@@ -271,7 +342,7 @@ export const PRINT_SHADER = {
         // do not": the *colour* is taken from the spread tap while the
         // luminance stays exactly where it was, so edges keep their drawing
         // and only the pigment wanders across them.
-        float bleed = (0.09 + 0.17 * wet) * uPaint;
+        float bleed = (uWash.y + uWash.z * wet) * uPaint;
         c = mix(c, vec3(luma(c)) + (soft - vec3(luma(soft))), bleed);
       }
 
@@ -279,13 +350,19 @@ export const PRINT_SHADER = {
       vec2 gp = vUv * uRes / 2.4;
       float grain = pn2(gp * 0.5) * 0.62 + pn2(gp * 0.13 + 11.0) * 0.38;
       float fibre = pn2(vec2(vUv.x * uRes.x * 0.06, vUv.y * uRes.y * 0.9));
-      c *= 1.0 + grain * 0.030 * uGrain * uPaint + fibre * 0.010 * uGrain * uPaint;
+      c *= 1.0 + grain * 0.030 * uTooth.x * uGrain * uPaint
+               + fibre * 0.010 * uTooth.y * uGrain * uPaint;
 
       // §9.4 step 7 — warm-dark vignette
       vec2 d = vUv - 0.5;
       float r2 = dot(d, d);
       float vig = pow(clamp(1.0 - r2 * 1.15, 0.0, 1.0), 1.55);
-      c *= mix(vec3(1.0), mix(vec3(0.62, 0.60, 0.66), vec3(1.0), vig), uVignette * uPaint);
+      // uVig.y is how *coloured* the vignette is, and it drops much further
+      // than its depth does. Paper darkens warm-grey at the edge because the
+      // print is a physical object; a lens darkens neutral, because it is only
+      // running out of aperture.
+      vec3 vigCol = mix(vec3(1.0), vec3(0.62, 0.60, 0.66), uVig.y);
+      c *= mix(vec3(1.0), mix(vigCol, vec3(1.0), vig), uVig.x * uVignette * uPaint);
 
       c = toSRGB(clamp(c, 0.0, 1.0));
 
@@ -307,6 +384,58 @@ export const PRINT_SHADER = {
     }
   `,
 };
+
+/**
+ * Pack a register onto a print pass's uniforms. **The only thing that may.**
+ *
+ * `register.js` holds the one copy of the table and this is the one place it is
+ * read into GL, so a knob cannot acquire a second value the way §2.7 warns a
+ * height field can. `uniforms` is `printPass.uniforms`; anything without a
+ * register block (the pre-M2 path, which has no print at all) is a no-op rather
+ * than an error, because whether a build has a print is `post.js`'s question.
+ *
+ * Returns the knobs it packed, so a caller — the HUD, `tools/gate.js` — can
+ * report what the frame was actually printed with rather than what it asked for.
+ */
+export function setRegister(uniforms, r) {
+  const k = registerMix(r);
+  if (!uniforms || !uniforms.uShoulder) return k;
+  uniforms.uShoulder.value = k.shoulder;
+  uniforms.uPush.value.set(k.shadowPush, k.highPush);
+  uniforms.uSBend.value = k.sBend;
+  uniforms.uSatX.value = k.satX;
+  uniforms.uWash.value.set(k.wash, k.bleedBase, k.bleedGain);
+  uniforms.uTooth.value.set(k.tooth, k.fibre);
+  uniforms.uVig.value.set(k.vignette, k.vigWarm);
+  uniforms.uBloomReg.value.set(k.bloomX, k.halation);
+  return k;
+}
+
+/**
+ * The register a scale prints in, before the weather has a say.
+ *
+ * Vacuum is the interesting case and it is the reason this is not simply "ask
+ * the air": at `uPaint = 0` every knob multiplies a term that is already zero,
+ * so the register is *unobservable* there and any value is equally correct.
+ * Returning the painted end keeps a vacuum frame byte-identical to what it has
+ * always been, which is what `tools/repeat.js` and the digest both want, and it
+ * means §2.8 needs no second branch anywhere in the chain.
+ *
+ * Inside an atmosphere the answer belongs to `registerFor()` and to the world,
+ * so this returns `null` — "ask the air" — rather than guessing at a default
+ * the caller is in a better position to know.
+ */
+export function registerForScale(scale) {
+  switch (scale?.kind) {
+    case 'cosmic':
+    case 'galaxy':
+    case 'system':
+    case 'blackhole':
+      return 1;
+    default:
+      return null;
+  }
+}
 
 /**
  * How much print a scale gets. §2.8 splits by medium, so this is a property of

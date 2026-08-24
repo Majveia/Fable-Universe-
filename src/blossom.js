@@ -144,6 +144,97 @@ export function paramNumber(raw) {
 }
 
 /**
+ * How strongly this world has seasons at all, 0..1 — and it is the twist.
+ *
+ * `docs/plans/SAKURA.md` set out to make AEON's worlds look like sakura-realm,
+ * and ran straight into this file. Sakura-realm's tree is in bloom because it
+ * was built in bloom; here a world has an orbit, `seasonOpenness` opens a
+ * window across 32% of a year, and **two visits in three arrive to bare wood**.
+ * Widening the window for everyone would answer the ask by deleting the best
+ * thing this module does, which is that a season can be missed.
+ *
+ * The better answer was already sitting on the planet record, unread.
+ *
+ * A spring is not a property of life. It is a property of an **orbit**: a
+ * world's year only has seasons if something modulates the light it receives
+ * around that year, and only two things can — the axis being tilted, and the
+ * orbit not being a circle. Both are already generated, because `system.js`
+ * needed `tilt` to lean the rings and `e` to draw the ellipse.
+ *
+ *     S = √( sin²ε + (2e)² )
+ *
+ * Obliquity dominates and the eccentricity term is the annual insolation
+ * swing, `ΔE/E = 2e` to first order — 0.398 and 0.033 on Earth, which is why
+ * Earth's seasons are an axis and not a distance, a thing most people have
+ * backwards. In quadrature because they are orthogonal forcings: obliquity
+ * makes hemispheres take turns, eccentricity makes the whole world do it
+ * together, and one does not cancel the other.
+ *
+ * A world with neither has no annual signal for a plant to synchronise to —
+ * so its flora does not synchronise. It flowers continuously and out of phase
+ * with itself, and it is **always** in bloom.
+ *
+ * That is the whole spice, and it costs nothing: it is a readout of an orbit
+ * that was already drawn, it is deterministic, most worlds keep their spring
+ * intact, and "our worlds look like sakura-realm" becomes something you can
+ * *find* — a class of world you learn to recognise from the system diagram
+ * before you land, because a low tilt and a round orbit are visible there.
+ */
+export function seasonality(pp = {}) {
+  const eps = Math.abs(num(pp.tilt, 0));
+  const ecc = clamp(Math.abs(num(pp.e, 0)), 0, 0.95);
+  return Math.hypot(Math.sin(eps), 2 * ecc);
+}
+
+/** Earth's, and the fixture: 23.44° of tilt against e = 0.0167. */
+export const SEASONALITY_EARTH = Math.hypot(Math.sin(23.44 * Math.PI / 180), 2 * 0.0167);
+
+/** the window an Earth-like forcing opens — the value this file shipped with */
+export const WIDTH_EARTH = 0.16;
+
+/** no window is narrower than this, or a spring becomes a single afternoon */
+export const WIDTH_MIN = 0.055;
+
+/**
+ * The flowering window's half-width for a world, from its seasonal forcing.
+ *
+ * Inverse, and inverse rather than exponential for the reason a phenologist
+ * would give: the window is the interval over which the cue is unambiguous,
+ * and a cue's ambiguity goes as one over its amplitude. Twice the forcing, half
+ * the window.
+ *
+ * `WIDTH_EARTH · S_earth / S`, so **an Earth-like world returns exactly
+ * 0.16** — the constant this file shipped with, unmoved, by construction rather
+ * than by fitting. Same discipline as `starlight.js`'s fixture.
+ *
+ * | tilt | e | S | window | year in flower |
+ * |---|---|---|---|---|
+ * | 23.4° | 0.017 | 0.40 | 0.160 | 32% — Earth, unchanged |
+ * | 41° | 0.05 | 0.66 | 0.097 | 19% — a sharp, short spring |
+ * | 4° | 0.01 | 0.073 | 0.500 | **always**, a hanami world |
+ *
+ * Capped at 0.5, because at a half-width of half a year every phase is inside
+ * the window and there is nothing further to open.
+ */
+export function bloomWidth(pp = {}) {
+  const S = seasonality(pp);
+  if (!(S > 1e-6)) return 0.5;
+  return clamp(WIDTH_EARTH * SEASONALITY_EARTH / S, WIDTH_MIN, 0.5);
+}
+
+/**
+ * Whether this world's flora has any spring at all.
+ *
+ * True when the window has opened to the whole year — no annual cue, so no
+ * synchronisation, so no bare season. §8 axis 8 wants the HUD's claims to match
+ * the pixels, and "always in bloom" is a claim worth being able to print beside
+ * the tilt it follows from.
+ */
+export function perpetualBloom(pp = {}) {
+  return bloomWidth(pp) >= 0.5 - 1e-9;
+}
+
+/**
  * How far into its flowering the world is, 0..1, at a point in its orbit.
  *
  * A window of half-width `width` around a seeded centre, opening and closing
@@ -151,10 +242,16 @@ export function paramNumber(raw) {
  * narrower band in full bloom, which is roughly a real temperate spring
  * measured as a fraction of a year.
  *
+ * `width` defaults to Earth's rather than to the world's, and the default is
+ * load-bearing: a caller that has a planet record should pass
+ * `bloomWidth(pp)`, and a caller that has only a phase — a test, a tool, the
+ * `?season=` override — gets the fixture. Making the default read a global
+ * would be the same defect as a height field with two copies, one scale up.
+ *
  * The distance is taken **around the circle**, not along the line, so a world
  * whose spring straddles its new year gets a spring rather than two half ones.
  */
-export function seasonOpenness(phase, seed = 0, width = 0.16) {
+export function seasonOpenness(phase, seed = 0, width = WIDTH_EARTH) {
   const w = Math.max(num(width, 0.16), 1e-4);
   const centre = new RNG(hash(seed >>> 0, 0x5ea5)).float(0, 1);
   let ph = num(phase, 0) % 1;

@@ -26,7 +26,7 @@ import { seedAmbient, starName, universeEpigraph } from './rng.js';
 import { advance as advanceClock, resetClock } from './clock.js';
 import { Bench, BENCH_ON, BENCH_SEED } from './bench.js';
 import { Q, pixelRatio } from './quality.js';
-import { paintForScale } from './print.js';
+import { paintForScale, registerForScale } from './print.js';
 import { pinIdleClock, tickInput } from './input.js';
 import { gravityOf } from './avatar.js';
 import { CABIN_ON, CabinScale } from './cabin.js';
@@ -1092,6 +1092,18 @@ class App {
     s.update(dt);
     s.glide?.(dt);
     this.post.setPaint(paintForScale(s));
+    // Which print, and at what aperture — `docs/plans/SAKURA.md`.
+    //
+    // Both are asked of the *scale*, once a frame, because both are properties
+    // of where you are standing rather than of the app: the register is the
+    // air's (§2, `registerFor`), and the exposure is the star's and the hour's
+    // (`exposure.js`). A scale that has no opinion returns `null`/`undefined`
+    // and gets the fallback, which is exactly what shipped before either
+    // existed — vacuum prints painted at exposure 1, where every knob and every
+    // stop multiplies a term §2.8 has already zeroed.
+    const reg = s.printRegister?.() ?? registerForScale(s) ?? 1;
+    this.post.setRegister(reg);
+    this.post.setExposure(s.printExposure?.(dt) ?? 1);
     this.post.render(dt);
     this.zoom.render();
     this.hud.tick(dt);
