@@ -251,7 +251,9 @@ and carries on with a broken program, so a `pageerror` listener watches for the
 one symptom this defect does not produce.
 
 `cabincost.js` now fails on any console error, which makes it the post-assembly
-shader check for this scale as well as its cost report.
+shader check for this scale as well as its cost report — and it runs in
+`shaders.yml`, before the forty-minute station walk, because a gate nobody runs
+is not a gate either. It costs seconds: three cabins rendered, three frames.
 
 Made to go red by deleting one argument from a call in the injected fragment —
 `plateSeam(vCabinPos, uGauge)` against a three-parameter function:
