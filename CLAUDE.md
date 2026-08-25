@@ -434,6 +434,13 @@ it) · `flora.js` · `meadow.js` (the §9.5 density law; note §11's CPU/GPU pai
 `strange.js` / `wonder.js` (the ≤5% weirdness budget) · `constellations.js` ·
 `weather.js` / `precip.js` · `silhouette.js` · `audio.js` + `score.js`.
 
+**Vacuum** (RECKONING Act F, from `docs/reference/the-long-silence/`):
+`greeble.js` — the geometry kit, the plate-seam law, the `aHull` occlusion bake
+and the band limits, feeding `painted.js` rather than a PBR tail, because §9.2
+decides every lit surface and four of §9's eight subsections assume air ·
+`pilot.js` (the stopping-bound governor; no `three` import, so `verify.js` flies
+it in Node).
+
 **Instrumentation inside `src/`:** `bench.js` (`?bench=1`, §5) — it and
 `city.js` are the sanctioned clock readers in §14's entropy ratchet.
 
@@ -446,7 +453,7 @@ it) · `flora.js` · `meadow.js` (the §9.5 density law; note §11's CPU/GPU pai
   clause it answers to. Keep that; it is how the map above stays true.
 - New location kind ⇒ extend the deep-link schema in `main.js` in the same
   commit (§2.4). Deep-link keys today: `seed`, `g`, `s`, `p`, `pl`, `moon`,
-  `cl`, `room`, `bh`.
+  `cl`, `room`, `bh`, `cr` (a piloted craft at system scale, quantised).
 - New generation-path entropy ⇒ `rng.js` only, and expect `invariants.js` to
   refuse anything the ratchet has not been taught.
 
@@ -460,9 +467,10 @@ Shipped (default on, `?x=0` disables): `m1`, `web`, `m2`, `mat`, `sea`,
 `ridge`, `m3`, `m4`, `m5`, `m7`, `solve`, `sky`, `shadow`, `aerial`, `dither`.
 
 Default-off (`?x=1` enables): `paint` — the §9.2 light model, the last
-unflipped item in RECKONING's ledger — plus debug views `comp`, `fogview`,
-`windview`, `bladedbg`, `shdebug`, `noclip`, and the experiments `airmat`,
-`aurora`, `built`, `climb`.
+unflipped item in RECKONING's ledger — plus `greeble` (the vacuum surface law)
+and `pilot` (the governed cruise), both from the Long Silence port, RECKONING
+Act F; plus debug views `comp`, `fogview`, `windview`, `bladedbg`, `shdebug`,
+`noclip`, and the experiments `airmat`, `aurora`, `built`, `climb`.
 
 Harness/diagnostic params: `bench=1`, `dt=<ms>` (pinned timestep — required for
 `repeat.js`), `quad=1`, `tier=<n>`.
@@ -499,7 +507,11 @@ With a browser: `capture.js` (the fixed six-scale route → numbered PNGs + perf
 JSON), `gate.js` (the numeric gate clauses — hue families, banding, vacuum
 black), `repeat.js` (one URL twice from cold, compared at app frame N, ≥97%
 within 2/255), `pixeldiff.js` (CPU reference vs. shader, §7.3), `blind.js`
-(shuffles capture sets for §8 scoring), `drawcensus.js` / `perfgrow.js` /
+(shuffles capture sets for §8 scoring), `paintcheck.js` (every §9.2 program,
+compiled post-assembly in about twenty seconds — the cheap half of §M0's shader
+gate), `ringcensus.js` (the station ring's draw count, both builders, because
+`drawcensus.js` navigates by deep link and the ring has no URL),
+`drawcensus.js` / `perfgrow.js` /
 `alphaudit.js` / `tone.js` / `footplant.js` / `glimpse.js` (targeted audits),
 `serve.js` (serves the reference so its importmap resolves offline), `boot.js`,
 `shot.js`, `contact.js`.
