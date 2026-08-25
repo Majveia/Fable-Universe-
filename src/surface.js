@@ -64,7 +64,9 @@ import {
   CLOUD_SHADE_GLSL, CSHADE_ON, SHAFTS_ON, cloudShadeUniforms, cloudShaftGLSL,
   composeSunShadow, shaftUniforms,
 } from './cloudshade.js';
-import { DRAINAGE_GLSL, packDrainage, solveDrainage } from './drainage.js';
+import {
+  DRAINAGE_GLSL, WETLINE_ON, packDrainage, solveDrainage,
+} from './drainage.js';
 import { RAMP } from './meadow.js';
 import { Q, TIER, qArr, qInt } from './quality.js';
 
@@ -247,7 +249,7 @@ const CSHADE = CSHADE_ON;
  * Default-off per §7.4, and it costs 184 ms once at build — see `drainage.js`
  * for the measurement and the resolution it bought.
  */
-const WETLINE = PARAM('wetline') === '1';
+const WETLINE = WETLINE_ON;
 
 /**
  * The grass is chlorophyll, and it runs the reference's contrast.
@@ -2002,6 +2004,7 @@ export class SurfaceScale {
         // the twelve million blades standing in it would be worse than none —
         // §6 M3's one-field doctrine applied a third time.
         cloudShade: CSHADE ? this._cloudShadeUniforms() : null,
+        drainage: WETLINE ? this._drainageUniforms() : null,
       }));
     }
     for (const ring of this.meadow) this.scene.add(ring.group);

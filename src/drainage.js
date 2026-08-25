@@ -52,6 +52,18 @@
 // `material.js`, `meadow.js` and `cloudshade.js` have, bought the same way.
 // This returns typed arrays; `surface.js` wraps them in a `DataTexture`.
 
+/**
+ * The flag, in one place — the same argument `cloudshade.js` makes for its own.
+ * Three modules want to know whether the ground carries a drainage field, and
+ * three copies of one `searchParams.get` is three chances to disagree — which
+ * here means the terrain knowing where the water is while the grass standing in
+ * it does not.
+ */
+export const WETLINE_ON = (() => {
+  try { return new URL(window.location.href).searchParams.get('wetline') === '1'; }
+  catch { return false; }
+})();
+
 /** the landing tile, in metres — the same EXT `surface.js` and `rivers.js` use */
 export const DRAIN_EXT = 1400;
 

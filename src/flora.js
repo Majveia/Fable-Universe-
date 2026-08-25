@@ -41,6 +41,7 @@
 
 import * as THREE from 'three';
 import { CLOUD_SHADE_GLSL, CSHADE_ON } from './cloudshade.js';
+import { DRAINAGE_GLSL, WETLINE_ON } from './drainage.js';
 import {
   HEIGHT_RES, WIND_MEAN_GLSL, WIND_NOISE_GLSL, WIND_PASS_GLSL, WIND_SAMPLE_GLSL,
   WIND_SPAN, bakeHeight, windUniforms,
@@ -318,6 +319,7 @@ const BLADE_VERT = /* glsl */`
   ${HEIGHT_GLSL}
   ${WIND_MEAN_GLSL}
   ${WIND_SAMPLE_GLSL}
+  ${WETLINE_ON ? DRAINAGE_GLSL : ''}
   uniform float uChunkSize;   // this ring's chunk extent, in metres
   uniform float uWpx;         // this ring's angular width floor, in pixels
   uniform float uRingB;       // blades per m² at uRingDn, for the saturation cap
@@ -383,7 +385,17 @@ const BLADE_VERT = /* glsl */`
     // than one because a meadow is lumpy at both, and a single octave reads as
     // a texture rather than as ground that has plants growing in clumps on it.
     float tuss = wNoise3(uWindSeed + 21, vec3(world * 0.62, 0.0)) * 0.5 + 0.5;
+    // The swale — how much of a hollow this blade is standing in.
+    //
+    // It was a 23 m noise field and nothing else: a swale that was not anywhere,
+    // drawn over ground that has real hollows in it. drainage.js solves where
+    // the water actually goes, so the noise becomes the *detail* on a real
+    // field rather than a substitute for one, and grass grows tall where water
+    // collects. The noise stays because the drainage tile is 8.75 m a cell and
+    // a metre-scale wobble on top of it is the difference between a seam and a
+    // stencil.
     float swale = wNoise3(uWindSeed + 22, vec3(world * 0.043, 0.0)) * 0.5 + 0.5;
+    ${WETLINE_ON ? 'swale = mix(swale, clamp(drainAt(world).g * 1.25, 0.0, 1.0), 0.72);' : ''}
     float dryF = wNoise3(uWindSeed + 23, vec3(world * 0.011, 0.0)) * 0.5 + 0.5;
     vTint = vec3(tuss, swale, dryF);
 
@@ -393,7 +405,12 @@ const BLADE_VERT = /* glsl */`
     vec2 flow = w.rg;
 
     // tussocks are taller as well as differently coloured
-    float h = aHeight * uHeightScale * live * (0.72 + 0.56 * tuss) * (0.86 + 0.28 * swale);
+    // §M-sward · height is what closes the mat, and the swale is what decides
+    // it. The old span was 0.86–1.14, which is a 28% wobble — invisible against
+    // the 3.5x span the reference's own lawn-to-tall modes cover. swardAt()
+    // carries those modes; this is the shader's half of the same statement.
+    float h = aHeight * uHeightScale * live * (0.72 + 0.56 * tuss)
+            * mix(0.46, 1.30, swale);
     // bladedbg level 2: eight times tall, sixty times wide. If THAT does not
     // appear, nothing is being drawn at all and the fault is the draw rather
     // than any dimension in it.
@@ -756,6 +773,9 @@ export class GrassRing {
         uSward: { value: swardMean },
         uSunDir: opts.sunDir ?? { value: new THREE.Vector3(0.3, 0.4, 0.86) },
         ...(CSHADE_ON ? (opts.cloudShade ?? {}) : {}),
+        // the same tile the ground reads, so a wet seam is the same seam in
+        // both — the grass grows tall in exactly the hollow the terrain darkens
+        ...(WETLINE_ON ? (opts.drainage ?? {}) : {}),
         uSunColor: opts.sunColor ?? { value: new THREE.Vector3(1, 0.92, 0.78) },
         uSkyColor: opts.skyColor ?? { value: new THREE.Vector3(0.36, 0.52, 0.78) },
         uDusk: { value: 1 },

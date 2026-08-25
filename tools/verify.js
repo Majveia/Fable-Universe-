@@ -112,7 +112,9 @@ import {
 import { SILHOUETTES, coverageOf, maskData } from '../src/silhouette.js';
 import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
-import { CHLOROPHYLL, RAMP, VEG_WEIRD, exoticHSL, vegetationHSL } from '../src/meadow.js';
+import {
+  CHLOROPHYLL, RAMP, SWARD_MODES, VEG_WEIRD, exoticHSL, swardAt, vegetationHSL,
+} from '../src/meadow.js';
 import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
 import {
   COVER_EXP, COVER_NEAR, MINERALS, SPECIES, communityOf, coverDensity, densityAt,
@@ -9048,6 +9050,115 @@ function suiteBlossom() {
 
 
 
+
+// ---------------------------------------------------------------------------
+// suite: sward
+//
+// Height is what closes a mat. The reference states the law and AEON broke it:
+//
+//   "A blade hides ground roughly in proportion to its own projected area, so
+//    halving the height halves the cover each blade gives; keeping the count
+//    constant would open the soil right up, which is exactly what a naive
+//    'short grass' setting looks like."
+//
+// AEON shipped 0.42–1.00 m against the reference's 0.42–1.48 for the same mode,
+// with **six times** its blades per square metre. Denser and shorter, and by the
+// law above the shortness wins. That was "thin" — not a count, a stature.
+
+function suiteSward() {
+  console.log('\nsward — height is what closes the mat');
+
+  // --- 1 · the modes are the reference's ----------------------------------
+  {
+    const ref = {
+      lawn: [0.060, 0.185], meadow: [0.190, 0.600], tall: [0.420, 1.480],
+    };
+    for (const [name, [lo, hi]] of Object.entries(ref)) {
+      near(`${name} hMin`, SWARD_MODES[name].hMin, lo, 1e-9);
+      near(`${name} hMax`, SWARD_MODES[name].hMax, hi, 1e-9);
+    }
+    ok('and they are ordered, so the interpolation has somewhere to go',
+      SWARD_MODES.lawn.hMax < SWARD_MODES.meadow.hMax
+      && SWARD_MODES.meadow.hMax < SWARD_MODES.tall.hMax);
+    ok('a short mode gets wider blades, which is what a mown lawn is',
+      SWARD_MODES.lawn.widthMul > SWARD_MODES.tall.widthMul,
+      '"a much denser stand of much smaller leaves"');
+    ok('and lays them over, so they overlap and close the mat',
+      SWARD_MODES.lawn.droopMul > SWARD_MODES.tall.droopMul);
+  }
+
+  // --- 2 · the blade a world actually grows -------------------------------
+  {
+    const r = bladeRoots(1, 4096, 9);
+    let lo = Infinity, hi = -Infinity;
+    for (const h of r.height) { lo = Math.min(lo, h); hi = Math.max(hi, h); }
+    ok('the default stand reaches the reference\'s full height',
+      hi > 1.40 && lo < 0.50,
+      `${lo.toFixed(3)}–${hi.toFixed(3)} m, against the 0.42–1.00 that read thin`);
+
+    // and the mode is honoured when one is passed
+    const mown = bladeRoots(1, 1024, 9, SWARD_MODES.lawn);
+    let mhi = 0;
+    for (const h of mown.height) mhi = Math.max(mhi, h);
+    ok('and a lawn is a lawn', mhi <= SWARD_MODES.lawn.hMax + 1e-6,
+      `${mhi.toFixed(3)} m`);
+  }
+
+  // --- 3 · continuous in wetness, because ground is -----------------------
+  //
+  // A discrete mode would draw a contour line across the meadow at each
+  // boundary — §11's "un-grassed annuli" one axis over: a step in a field that
+  // has no step in it.
+  {
+    let mono = true, prevMax = -1, jump = 0;
+    for (let i = 0; i <= 400; i++) {
+      const s = swardAt(i / 400);
+      if (s.hMax < prevMax - 1e-9) mono = false;
+      if (prevMax > 0) jump = Math.max(jump, s.hMax - prevMax);
+      prevMax = s.hMax;
+    }
+    ok('taller ground is wetter ground, without exception', mono);
+    ok('and it climbs smoothly rather than in steps',
+      jump < 0.02, `largest step ${(jump * 100).toFixed(2)} cm across the range`);
+    near('dry ground is a lawn', swardAt(0).hMax, SWARD_MODES.lawn.hMax, 1e-9);
+    near('and the wettest is the tall mode', swardAt(1).hMax, SWARD_MODES.tall.hMax, 1e-9);
+    ok('the ends are clamped rather than extrapolated',
+      swardAt(-5).hMax === swardAt(0).hMax && swardAt(9).hMax === swardAt(1).hMax);
+  }
+
+  // --- 4 · the shader reads the real field, not a noise field -------------
+  {
+    const f = readFileSync(new URL('../src/flora.js', import.meta.url), 'utf8');
+    ok('the swale is the drainage field now, not 23 m of noise',
+      /swale = mix\(swale, clamp\(drainAt\(world\)\.g/.test(f),
+      'a swale that was not anywhere, drawn over ground that has real hollows');
+    ok('with the noise kept as detail on top of it',
+      /wNoise3\(uWindSeed \+ 22/.test(f),
+      'the tile is 8.75 m a cell; a metre-scale wobble is what makes it a seam '
+      + 'rather than a stencil');
+    ok('and the height span is the modes\' span, not a 28% wobble',
+      /mix\(0\.46, 1\.30, swale\)/.test(f) && !/0\.86 \+ 0\.28 \* swale/.test(f));
+    ok('the grass reads the same tile the ground does',
+      /drainage: WETLINE \? this\._drainageUniforms\(\) : null/.test(
+        readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8')),
+      'or the terrain darkens a hollow the grass is not standing in');
+  }
+
+  // --- 5 · a blade is still a blade and not a leek ------------------------
+  //
+  // The reference records the failure on the other side: 8–19 mm half-widths
+  // "rendered 2–4 cm ribbons that read as leeks rather than grass". Real meadow
+  // grass is 4–10 mm across, so a half-width near 3 mm.
+  {
+    const f = readFileSync(new URL('../src/flora.js', import.meta.url), 'utf8');
+    const m = f.match(/uWidth: \{ value: ([\d.]+) \}/);
+    ok('the near-field blade is millimetres, not centimetres',
+      !!m && Number(m[1]) * 0.22 >= 0.004 && Number(m[1]) * 0.22 <= 0.013,
+      m ? `${(Number(m[1]) * 0.22 * 1000).toFixed(1)} mm at the floor, against `
+        + 'the reference\'s 5.2–12.4 mm full width' : 'uWidth not found');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // suite: green
 //
@@ -10038,6 +10149,7 @@ const suites = {
   silhouette: suiteSilhouette,
   paintUniforms: suitePaintUniforms,
   green: suiteGreen,
+  sward: suiteSward,
   cloudshade: suiteCloudShade,
   drainage: suiteDrainage,
   invariants: suiteInvariants,

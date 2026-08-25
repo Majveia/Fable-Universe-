@@ -342,7 +342,60 @@ export const PALETTE_KEYS = [
  * — a hash already decorrelates index from position — which would be shipping
  * a line that looks load-bearing and is not.
  */
-export function bladeRoots(seed, n, chunk) {
+/**
+ * How tall a stand of grass is, and what that does to everything else.
+ *
+ * The reference's own three modes, from
+ * `docs/reference/sakura-realm/src/world/grass.js`, with its reasoning intact:
+ *
+ *   "A blade hides ground roughly in proportion to its own projected area, so
+ *    halving the height halves the cover each blade gives; keeping the count
+ *    constant would open the soil right up, which is exactly what a naive
+ *    'short grass' setting looks like. Short modes therefore get many more,
+ *    slightly wider blades — which is also what a real mown lawn is: a much
+ *    denser stand of much smaller leaves."
+ *
+ * AEON shipped `0.42 + rand·0.58`, so 0.42–1.00 m, against the reference's
+ * 0.42–1.48 for the same mode. Six times the blades per square metre at two
+ * thirds the height — and by the law above, height is the term that closes the
+ * mat. That is what "thin" was: not a count, a *stature*.
+ *
+ * `chunkScale` is deliberately **not** ported. The reference needs it because
+ * its per-chunk instance count is capped and its near chunks already sit at the
+ * cap, so shrinking the chunk is the only way to raise blades per square metre.
+ * AEON's density is one continuous law (§9.5) with no such cap, and `RINGS`
+ * already carries 1,099 blades/m² at ring 0 against the reference's ~167. The
+ * dial exists here; it is `RINGS[r].blades`.
+ */
+export const SWARD_MODES = {
+  lawn: { hMin: 0.060, hMax: 0.185, widthMul: 1.85, droopMul: 1.35 },
+  meadow: { hMin: 0.190, hMax: 0.600, widthMul: 1.25, droopMul: 0.90 },
+  tall: { hMin: 0.420, hMax: 1.480, widthMul: 1.00, droopMul: 1.00 },
+};
+
+/** the order they interpolate in, driest to wettest */
+export const SWARD_ORDER = ['lawn', 'meadow', 'tall'];
+
+/**
+ * The sward a piece of ground carries, as a continuous function of how wet it
+ * is — `drainage.js`'s wetness index, 0 dry .. 1 saturated.
+ *
+ * Continuous rather than three settings, because ground is. A discrete mode
+ * would draw a visible contour across the meadow at each boundary, which is the
+ * §11 artefact ("un-grassed annuli") one axis over: a step in a field that has
+ * no step in it.
+ */
+export function swardAt(wet) {
+  const w = wet < 0 ? 0 : wet > 1 ? 1 : wet;
+  const t = w * (SWARD_ORDER.length - 1);
+  const i = Math.min(Math.floor(t), SWARD_ORDER.length - 2);
+  const f = t - i;
+  const a = SWARD_MODES[SWARD_ORDER[i]], b = SWARD_MODES[SWARD_ORDER[i + 1]];
+  const lerp = (k) => a[k] + (b[k] - a[k]) * f;
+  return { hMin: lerp('hMin'), hMax: lerp('hMax'), widthMul: lerp('widthMul'), droopMul: lerp('droopMul') };
+}
+
+export function bladeRoots(seed, n, chunk, sward = SWARD_MODES.tall) {
   const g = Math.ceil(Math.sqrt(n));
   const cell = chunk / g;
   const order = shuffledIndices(hash(seed, 0x91a5), n);
@@ -354,7 +407,7 @@ export function bladeRoots(seed, n, chunk) {
     root[i * 2] = ((k % g) + frac01(hash(seed, k, 0x11))) * cell;
     root[i * 2 + 1] = (Math.floor(k / g) + frac01(hash(seed, k, 0x22))) * cell;
     rand[i] = frac01(hash(seed, k, 0x33));
-    height[i] = 0.42 + frac01(hash(seed, k, 0x44)) * 0.58;
+    height[i] = sward.hMin + frac01(hash(seed, k, 0x44)) * (sward.hMax - sward.hMin);
   }
   return { root, rand, height, cells: g, cell };
 }
