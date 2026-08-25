@@ -25,6 +25,7 @@ import {
   makeRingMaterial, blackbodyRGB, NOISE_GLSL,
 } from './planet.js';
 import { vegetationHSL } from './meadow.js';
+import { Pilot, decodeCraft, encodeCraft } from './pilot.js';
 import { planck, spectrumToXYZ, xyzToLinearSRGB, toGamut } from './starlight.js';
 
 const AU_DRAW = 46;      // display units at 1 AU
@@ -932,7 +933,22 @@ const BELT_FRAG = /* glsl */`
   }
 `;
 
+const _ax = new THREE.Vector3();
+const _lk = new THREE.Vector3();
+
+const PARAM = (k) => {
+  try { return new URL(window.location.href).searchParams.get(k); }
+  catch { return null; }
+};
+
 // ------------------------------------------------------------- the scale ----
+
+/**
+ * §7.4 — built, not shipped. `?pilot=1` gives the cruise a governor, a roll and
+ * a URL. Without it the old cube-and-clamp is untouched, which is what every
+ * capture in this repo was shot with.
+ */
+const PILOT_ON = PARAM('pilot') === '1';
 
 export class SystemScale {
   constructor(app, ctx) {
@@ -1065,6 +1081,9 @@ export class SystemScale {
 
     // relativistic cruise state (J to engage)
     this.rel = { on: false, beta: 0, target: 0.5, gamma: 1, dir: new THREE.Vector3(0, 0, -1) };
+    /** §7.4's craft. Constructed unconditionally and stepped only under
+     *  `?pilot=1`, so the flag costs one object and no branch in the hot path. */
+    this.pilot = new Pilot();
     this._relKeys = new Set();
     this._relKd = (e) => this._relKeys.add(e.code);
     this._relKu = (e) => this._relKeys.delete(e.code);
@@ -1484,7 +1503,35 @@ export class SystemScale {
       this.skyRel.uBeta.value = this.rel.beta;
       this.skyRel.uDir.value.copy(this.rel.dir);
     }
-    if (this.rel.beta > 0.001) {
+    if (PILOT_ON && this.rel.on) {
+      /* The governed cruise — §7.4, `?pilot=1`.
+         `pilot.js` owns every number; this is the wiring. The throttle keys are
+         the same W/S the old cruise used and the beta they drive is the same
+         beta the sky aberrates on, so the relativistic view is unchanged: what
+         changes is that the speed is now bounded by what the craft can still
+         stop from, and the 13,000-unit clamp is gone with the reason for it. */
+      const t = (this._relKeys.has('KeyW') ? 1 : 0) - (this._relKeys.has('KeyS') ? 1 : 0);
+      const r = (this._relKeys.has('KeyE') ? 1 : 0) - (this._relKeys.has('KeyQ') ? 1 : 0);
+      const v = this.pilot.step(dt, {
+        throttle: t, rollIn: r, pos: this.camera.position, bodies: this._pilotBodies(),
+      });
+      // The sky reads the *demand*, not the governed speed: a craft braking
+      // hard into a world is still travelling at a large fraction of c, and
+      // un-aberrating the sky as it slows is the physics, not a decision.
+      this.rel.beta = Math.min(this.pilot.beta * 0.985, 0.985);
+      this.camera.position.addScaledVector(this.rel.dir, v * dt);
+      /* Roll is about the heading, so the reference up has to be orthogonalised
+         against it first — otherwise the roll angle means something different
+         depending on where you are pointing, and flying straight up gives a
+         degenerate frame and a camera that snaps. The Z fallback is for exactly
+         that pole. */
+      _ax.set(0, 1, 0);
+      if (Math.abs(this.rel.dir.y) > 0.995) _ax.set(0, 0, 1);
+      _ax.addScaledVector(this.rel.dir, -_ax.dot(this.rel.dir)).normalize();
+      _ax.applyAxisAngle(this.rel.dir, this.pilot.roll);
+      this.camera.up.copy(_ax);
+      this.camera.lookAt(_lk.copy(this.camera.position).add(this.rel.dir));
+    } else if (this.rel.beta > 0.001) {
       const v = 60 + 2600 * this.rel.beta ** 3;
       this.camera.position.addScaledVector(this.rel.dir, v * dt);
       if (this.camera.position.length() > 13000) this.camera.position.setLength(13000);
@@ -2054,6 +2101,57 @@ export class SystemScale {
       this.controls.target.copy(this.camera.position).addScaledVector(this.rel.dir, 120);
       this.app.hud.setHint('');
     }
+  }
+
+  /**
+   * Everything the governor has to stop clear of, in drawn scene units.
+   *
+   * Drawn, not true: `drawR()` compresses orbital radius by `au^0.62` so the
+   * outer worlds stay on screen, and `drawRadius` is likewise not the world's
+   * real radius. The governor's job is to stop the *camera* clear of the
+   * *geometry*, so it is the drawn numbers it must be given — handing it true
+   * radii would brake for a world that is not where it is.
+   *
+   * Moons are deliberately absent. They orbit inside their host's approach
+   * envelope, so the host already binds, and a per-frame loop over every moon
+   * in the system to re-derive a bound that is never the minimum is cost for
+   * nothing.
+   */
+  _pilotBodies() {
+    const out = [{
+      x: this.starMesh.position.x, y: this.starMesh.position.y, z: this.starMesh.position.z,
+      radius: this.starDrawR,
+    }];
+    if (this.secondary) {
+      const m = this.secondary.mesh;
+      out.push({ x: m.position.x, y: m.position.y, z: m.position.z, radius: this.secondary.dR });
+    }
+    for (const node of this.planetNodes) {
+      const p = node.group.position;
+      out.push({ x: p.x, y: p.y, z: p.z, radius: node.pp.drawRadius });
+    }
+    return out;
+  }
+
+  /** §2.4 — the craft is a place, so it is a URL. `null` when nobody is flying. */
+  craftLink() {
+    if (!PILOT_ON || !this.rel.on) return null;
+    return encodeCraft(this.camera.position, this.rel.dir);
+  }
+
+  /** the other half: drop the visitor back where the link says, at rest. */
+  applyCraftLink(s) {
+    if (!PILOT_ON) return false;
+    const c = decodeCraft(s);
+    if (!c) return false;
+    this.camera.position.set(c.pos.x, c.pos.y, c.pos.z);
+    this.rel.dir.set(c.dir.x, c.dir.y, c.dir.z).normalize();
+    // Arrive stopped. A shared link that dropped you at speed would resolve to
+    // a different place a second later, which is §2.4 failing with extra steps.
+    this.pilot.release();
+    if (!this.rel.on) this.toggleRel();
+    this.camera.lookAt(_lk.copy(this.camera.position).add(this.rel.dir));
+    return true;
   }
 
   onKey(code) {

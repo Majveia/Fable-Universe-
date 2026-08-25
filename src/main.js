@@ -174,6 +174,11 @@ class App {
     if (s) {
       this.active().exit();
       this.stack.push(new SystemScale(this, { starSeed: s }));
+      // Taken before anything deeper is pushed: `cr=` addresses a craft in
+      // *this* system, and a link that also names a world means the visitor
+      // went on from here — the world wins and the craft is where they left.
+      const cr = url.searchParams.get('cr');
+      if (cr) this.active().applyCraftLink?.(cr);
       // deeper still? a world, a moon, a cloud deck — or the whole globe
       const pIdx = parseInt(url.searchParams.get('p'));
       const sys = this.active();
@@ -278,10 +283,24 @@ class App {
   _reflectUrl() {
     const u = new URL(window.location.href);
     u.searchParams.set('seed', this.seed);
-    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room']) u.searchParams.delete(k);
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room', 'cr']) u.searchParams.delete(k);
     for (const sc of this.stack) {
       if (sc.kind === 'galaxy') u.searchParams.set('g', sc.ctx.galaxySeed);
-      if (sc.kind === 'system') u.searchParams.set('s', sc.ctx.starSeed);
+      if (sc.kind === 'system') {
+        u.searchParams.set('s', sc.ctx.starSeed);
+        /* §2.4 — "any feature creating a new kind of location extends the
+           deep-link schema in the same commit". Flying a craft is one: two
+           visitors on the same `s=` are not in the same place if one of them is
+           four thousand units out on a heading.
+
+           `craftLink()` returns null unless `?pilot=1` is on and the helm is
+           actually taken, so a shared URL from the default build is byte-for-
+           byte what it always was. The value is quantised in `pilot.js` — §11,
+           because this reaches a *place* and a place must not ride a last
+           bit. */
+        const cr = sc.craftLink?.();
+        if (cr) u.searchParams.set('cr', cr);
+      }
       if (sc.kind === 'blackhole') u.searchParams.set('bh', '1');
       if (sc.kind === 'planet') u.searchParams.set('pl', sc.ctx.hostIndex);
       if (sc.kind === 'surface') {
@@ -774,7 +793,7 @@ class App {
     if (e.seed !== this.seed) {
       // other universe: cold jump
       const u = new URL(window.location.href);
-      for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room']) u.searchParams.delete(k);
+      for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room', 'cr']) u.searchParams.delete(k);
       u.searchParams.set('seed', e.seed);
       for (const [k, v] of Object.entries(e.params)) u.searchParams.set(k, v);
       window.location.href = u;
@@ -788,7 +807,7 @@ class App {
   teleport(params) {
     if (this._warping || this.zoom.busy) return;
     const u = new URL(window.location.href);
-    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room']) u.searchParams.delete(k);
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room', 'cr']) u.searchParams.delete(k);
     u.searchParams.set('seed', this.seed);
     for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
     this._warping = true;
