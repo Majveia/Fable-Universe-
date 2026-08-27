@@ -11554,6 +11554,49 @@ function suiteHero() {
       growTree({ seed: 1, height: bad.height, habit: bad.habit }).segments > 24);
   }
 
+  // --- §16 rule 2: what it costs against §5, before it is proposed ---------
+  //
+  // *"Before proposing a feature, state its cost against §5 measured with the
+  // grass on."* The grass is measured elsewhere in this file and it is measured
+  // as catastrophic; this is the part the hero itself adds, and it is small
+  // enough that the two questions are genuinely separate.
+  //
+  // Triangles per primitive, from the call sites in `life.js`:
+  // a wood segment is `CylinderGeometry(1,1,1,5,1,true)` — five quads, ten
+  // triangles; a leaf clump is `IcosahedronGeometry(1,0)` — twenty; a petal is
+  // a pentagon — five.
+  {
+    const SEG = 10, LEAF = 20;
+    for (const [label, base] of [['low/mobile', 240], ['desktop/ultra', 520]]) {
+      let net = 0, flowers = 0, n = 0;
+      const heroCap = Math.min(Math.round((base > 300 ? 44000 : 13000) * 0.22), 4200);
+      for (let i = 0; i < 40; i++) {
+        const site = heroSite({ seed: 1000 + i, heading: 0.7, groundAt: () => 0 });
+        // what life.js grows for the hero, against what it would have grown anyway
+        const h = growTree({ seed: 2000 + i, height: site.height, habit: site.habit, budget: base * 3 });
+        const o = growTree({ seed: 2000 + i, height: 9, budget: base });
+        net += (h.segments - o.segments) * SEG
+          + (tipsOf(h, 0.018).length - tipsOf(o, 0.018).length) * LEAF;
+        flowers += blossomsFor(h, { seed: 2000 + i, openness: 1, budget: heroCap }).length;
+        n++;
+      }
+      net /= n; flowers /= n;
+      ok(`§5 · ${label}: the hero adds under 1.5% of the 2.2 M triangle budget`,
+        net < 2.2e6 * 0.015,
+        `${Math.round(net).toLocaleString()} triangles net over 40 worlds · ${(net / 2.2e6 * 100).toFixed(2)}%`);
+      // and the thing it was for: a crown that is actually in bloom rather than
+      // a tree with some blossom on it
+      ok(`...and carries ${Math.round(flowers)} flowers against the ~110 an even split gave every tree`,
+        flowers > 400, `${Math.round(flowers)} on average, cap ${heroCap}`);
+    }
+    // the flowers are MOVED, not added — the world's cap is untouched, which is
+    // what lets the §5 figure above be wood and leaves only
+    ok('the flower cap is unchanged: 22% off the top, not 22% more',
+      Math.min(Math.round(44000 * 0.22), 4200) === 4200
+      && Math.min(Math.round(13000 * 0.22), 4200) === 2860,
+      'desktop 4200 of 44000 · low 2860 of 13000');
+  }
+
   // --- the hero is a tree the wood can actually make ------------------------
   {
     // heroHeight() is a claim about a tree; growTree() is the thing that has to

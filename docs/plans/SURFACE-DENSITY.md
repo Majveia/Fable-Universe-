@@ -245,15 +245,27 @@ committed separately so either can be reverted without the other.
 
 ## 5 · Budgets (§5)
 
-Act 2 adds **one tree**. Its cost is bounded by its own `budget` argument and
-its blossom share, both stated at the call site, and it is the one object in the
-frame §9.7 says should be expensive.
+§16 rule 2 asks for a feature's cost against §5 *before* it is proposed. Here it
+is, grown with the real `growTree()` and counted over 40 worlds — a wood segment
+is ten triangles, a leaf clump twenty, a petal five:
 
-Act 3 is a **refund**, and the size of the refund is the whole argument for it.
+| tier | height | segments | wood | clumps | leaves | flowers | **net added** | of §5 |
+|---|---|---|---|---|---|---|---|---|
+| low / mobile | 19.8 m | 720 | 7,200 | 505 | 10,096 | 554 | **11,705** | **0.53%** |
+| desktop / ultra | 19.8 m | 1,343 | 13,429 | 1,128 | 22,554 | 1,277 | **27,383** | **1.24%** |
 
-Neither act is measured for frame *time* in this container (§0.2). Triangles are
-measured, per tier, by `tools/drawcensus.js`, before and after, and the numbers
-go in this file's §7 as they land.
+"Net added" is against the ordinary tree that site would have grown anyway. The
+flowers are **moved, not added** — 22% off an unchanged cap — which is why the
+net is wood and leaves only. `suiteHero` holds both numbers.
+
+For scale: the hero is **1.24% of §5's triangle budget** and the grass is
+**1343%** of it. The two questions are genuinely separate, and only one of them
+is this milestone's to answer without a frame.
+
+Act 3's built half (`curvedRings` 2 → 1 on ultra) is a **refund** of 20.0 M
+triangles. Its unbuilt half is in §1.2.
+
+No frame *time* is measured in this container (§0.2).
 
 ---
 
