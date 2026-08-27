@@ -84,6 +84,7 @@ import {
   DENS_POW, MEADOW_GLSL, RINGS, chunkCount, chunkGrid, chunkInstances,
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
+  CURVE_PX, bladePixels, bladeWidth, curveReach,
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import {
@@ -4888,6 +4889,70 @@ function suiteMeadow() {
         for (let i = 0; i < n * 2; i++) if (b.root[i] !== root[i]) return false;
         return true;
       })());
+  }
+
+  // --- §9.5's tier rule, in the unit §9.5 states it in ----------------------
+  //
+  // *"Once a blade is two or three pixels wide, everything varying across its
+  // width is sub-pixel and should be dropped by tier."* That is a rule about
+  // PIXELS, and until `bladeWidth()` existed nothing in the repository could
+  // evaluate it — so the `curvedRings` column, which is the knob the rule
+  // governs, was set from an estimate. The estimate was *"at 5 m a blade is
+  // about 9 px"* and it is wrong by a factor of ten in distance.
+  {
+    // the projections the tiers actually render at: DPR 1, times the row's own
+    // supersample factor, over a 52° vertical FOV
+    const pxr = (h, px) => (h * px) / (52 * Math.PI / 180);
+    const P720 = pxr(720, 0.85), P1440 = pxr(1440, 1.12), PULTRA = pxr(1440, 1.32);
+
+    ok('a ring-0 blade is 1.70 px wide at 5 m, not the 9 px the column assumed',
+      Math.abs(bladePixels(0, 5, P720) - 1.70) < 0.02,
+      `${bladePixels(0, 5, P720).toFixed(2)} px at 720p · `
+      + `${bladePixels(0, 5, P1440).toFixed(2)} px at 1440p·1.12`);
+
+    // and it is 1.70 px at every distance in the band past the metric minimum,
+    // because `wpx` is a floor *in pixels* and no natural width is an input
+    const across = [4, 8, 12, 18, 26].map((d) => bladePixels(0, d, P720));
+    ok('...and at 1.70 px across the whole of ring 0’s band, by construction',
+      across.every((v) => Math.abs(v - 1.70) < 0.01),
+      across.map((v) => v.toFixed(2)).join(' / ') + ' px at 4/8/12/18/26 m');
+
+    // the JS law and the GLSL it mirrors must agree about which term binds
+    ok('the metric minimum is the only term that ever exceeds the pixel floor',
+      bladePixels(0, 1, P720) > 3 && bladePixels(0, 6, P720) < 2,
+      `${bladePixels(0, 1, P720).toFixed(2)} px at 1 m · ${bladePixels(0, 6, P720).toFixed(2)} px at 6 m`);
+
+    // How far each ring earns the rolled-leaf cross-section, against its band.
+    // This is the measurement the column should have been set from.
+    for (const [label, P] of [['desktop', P1440], ['ultra', PULTRA]]) {
+      const reach = curveReach(0, P);
+      ok(`${label}: ring 0 earns the curved cross-section over ${((reach / RINGS[0].far) * 100).toFixed(0)}% of its band`,
+        reach < RINGS[0].far * 0.25,
+        `${reach.toFixed(2)} m of ${RINGS[0].far} m, at the ${CURVE_PX} px threshold`);
+    }
+    ok('ring 1 never earns it on any row — it is at its 2.00 px floor throughout',
+      curveReach(1, PULTRA) <= RINGS[1].near,
+      `${curveReach(1, PULTRA).toFixed(2)} m against a band starting at ${RINGS[1].near} m`);
+
+    // …and therefore the column. This is the assertion that stops it drifting
+    // back: a row may only spend the cross-section on a ring where the blade is
+    // actually wider than the threshold somewhere inside the ring's own band.
+    const PX_OF = { low: pxr(720, 0.85), mobile: pxr(844 * 2, 1.00), desktop: P1440, ultra: PULTRA };
+    for (const q of QUALITY) {
+      const P = PX_OF[q.name] ?? P1440;
+      const bad = [];
+      for (let r = 0; r < q.curvedRings; r++) if (curveReach(r, P) <= RINGS[r].near) bad.push(r);
+      ok(`§9.5 · ${q.name}’s curvedRings spends nothing on a ring that is sub-pixel throughout`,
+        bad.length === 0,
+        `curvedRings ${q.curvedRings}` + (bad.length ? ` · ring(s) ${bad.join(',')} never reach ${CURVE_PX} px` : ''));
+    }
+
+    // the refund, stated so it is on the record rather than in a commit message
+    const tri = (seg, curved) => seg * (curved ? 4 : 2);
+    const d = QUALITY[2];
+    ok('retiring ring 0’s cross-section on desktop halves its triangles per blade',
+      tri(d.blades[0], true) === 16 && tri(d.blades[0], false) === 8,
+      '16 → 8, on the largest single line in the surface frame');
   }
 
   // --- the quality table's §M3 columns -------------------------------------
