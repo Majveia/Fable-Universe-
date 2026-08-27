@@ -177,6 +177,11 @@ const MEASURE = () => new Promise((done) => {
     if (app.halted > 0 || app.frames >= target) {
       const out = { calls: info.render.calls, tris: info.render.triangles };
       info.autoReset = true;
+      // Stop the loop again before handing back. `resume()` above cleared
+      // `_haltAt`, and a page still rendering is a page `page.screenshot()`
+      // cannot get a stable frame out of — on a software rasteriser that is
+      // not a race you win, it is a 30-second timeout every time.
+      app.haltAt(app.frames);
       return done(out);
     }
     requestAnimationFrame(tick);
@@ -232,7 +237,11 @@ for (const b of builds) {
   const info = await page.evaluate(MEASURE);
   const name = (b || 'default').replace(/[^a-z0-9]+/gi, '-') + (how === 'timeout' ? '-PARTIAL' : '');
   const file = resolve(dir, name + '.png');
-  await writeFile(file, await page.screenshot());
+  // Playwright's default is 30 s, which is a fine number for a GPU and not for
+  // this one: the frame under it is being rasterised on the CPU. Reuse the
+  // per-build cap, which is already the caller's statement about how slow the
+  // machine is.
+  await writeFile(file, await page.screenshot({ timeout: Math.max(capMs, 60000) }));
   written.push(file);
   console.log(`  ${how === 'timeout' ? 'part' : 'ok  '} ${(b || 'default').padEnd(24)}`
     + ` ${String(info?.calls ?? '?').padStart(5)} calls`
