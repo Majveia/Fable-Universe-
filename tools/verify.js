@@ -132,7 +132,10 @@ import { SILHOUETTES, coverageOf, maskData } from '../src/silhouette.js';
 import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
-import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
+import {
+  HABITS, HERO_FAR, HERO_NEAR, HERO_OVER, WOOD, curvature, forkRadii, growTree, heroHeight,
+  heroSite, lengthOf, radiusForHeight, tipsOf,
+} from '../src/tree.js';
 import {
   COVER_EXP, COVER_NEAR, MINERALS, SPECIES, communityOf, coverDensity, densityAt,
   mineralChunk, mineralFit, mineralsOf, scatterChunk, tolerance,
@@ -11242,7 +11245,210 @@ function suiteExposure() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// suite: hero
+//
+// §9.7's "one hero landmark in the opening frustum, with scale legible against
+// a human-height reference." The clause was never enforced by anything: the
+// composition solver's `hero` term scores TERRAIN prominence over a 200 m
+// collar, and a hill at 600 m satisfies it while leaving the frame without a
+// subject. `heroSite()` is the subject; this is what holds it to the clause.
+//
+// Every assertion below is a sentence of §9.7 turned into a number, and the
+// ones that are art direction rather than geometry say so.
+
+function suiteHero() {
+  console.log('\nhero — §9.7’s subject in the opening frustum');
+
+  const HF = 26 * Math.PI / 180;             // the camera’s vertical fov/2
+  const flat = () => 0;
+
+  // --- Greenhill: hero height is a readout of gravity ----------------------
+  {
+    ok('an Earth-gravity hero stands HERO_OVER above the canopy',
+      Math.abs(heroHeight(9, 9.80665) - 9 * HERO_OVER) < 1e-9,
+      `${heroHeight(9, 9.80665).toFixed(3)} m over a 9 m canopy`);
+
+    // h proportional to g^-1/3 -- Greenhill's buckling limit with the wood held
+    // constant, which is what makes this a law rather than a lookup
+    let worst = 0;
+    for (const g of [0.5, 1.62, 3.7, 9.80665, 24.8, 40]) {
+      const want = 9 * HERO_OVER * Math.cbrt(9.80665 / g);
+      if (want > 90 || want < 9 * 1.25) continue;        // clamped, not scaled
+      worst = Math.max(worst, Math.abs(heroHeight(9, g) - want) / want);
+    }
+    ok('...and scales as g^-1/3 across two decades of gravity',
+      worst < 1e-12, `worst relative error ${worst.toExponential(2)}`);
+
+    ok('a low-gravity moon holds a taller tree than Earth does',
+      heroHeight(9, 1.62) > heroHeight(9, 9.80665) * 1.7,
+      `${heroHeight(9, 1.62).toFixed(1)} m at 0.17 g against ${heroHeight(9, 9.80665).toFixed(1)} m at 1 g`);
+    ok('...and a super-earth holds a shorter one',
+      heroHeight(9, 23.5) < heroHeight(9, 9.80665) * 0.8,
+      `${heroHeight(9, 23.5).toFixed(1)} m at 2.4 g`);
+
+    ok('no hero exceeds growTree’s own 90 m ceiling, at any gravity',
+      [0.01, 0.05, 0.2, 1, 60].every((g) => heroHeight(40, g) <= 90),
+      `tallest ${Math.max(...[0.01, 0.05, 0.2, 1, 60].map((g) => heroHeight(40, g))).toFixed(1)} m`);
+    ok('...and none is shorter than the population it must dominate',
+      [0.01, 1, 9.8, 60].every((g) => heroHeight(9, g) >= 9 * 1.25));
+  }
+
+  // --- §9.7: in the opening frustum, on every world -------------------------
+  {
+    // A thousand (seed, heading) pairs over open ground. The clause is "in the
+    // opening frustum" and the half-angle is the narrow one heroSite() uses, so
+    // passing here means passing with 15 degrees of margin on the real 16:9
+    // frustum -- which is what keeps a 20 m crown off the frame edge.
+    let n = 0, inFrame = 0, centred = 0, worstOff = 0;
+    for (let i = 0; i < 1000; i++) {
+      const heading = (i / 1000) * Math.PI * 2;
+      const h = heroSite({ seed: i + 1, heading, halfFov: HF, groundAt: flat });
+      if (!h) continue;
+      n++;
+      // bearing, measured back into the camera's own frame
+      let d = h.bearing - heading;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      if (Math.abs(d) <= HF) inFrame++;
+      worstOff = Math.max(worstOff, Math.abs(d) / HF);
+      if (Math.abs(d) / (2 * HF) < 0.04) centred++;
+    }
+    ok('a hero is found on open ground, every time', n === 1000, `${n}/1000`);
+    ok('§9.7 · and it is inside the opening frustum, every time',
+      inFrame === n, `${inFrame}/${n}, worst ${(worstOff * 100).toFixed(0)}% of the half-angle`);
+    ok('§9.7 · "nothing is centred" — none lands on the axis',
+      centred === 0, `${centred} within 4% of frame centre`);
+  }
+
+  // --- §9.7: off-centre means the third line, and both sides get used -------
+  {
+    let left = 0, right = 0, sumFrac = 0, n = 0;
+    for (let i = 0; i < 600; i++) {
+      const h = heroSite({ seed: 5000 + i, heading: 0, halfFov: HF, groundAt: flat });
+      if (!h) continue;
+      n++;
+      if (h.offset < 0) left++; else right++;
+      sumFrac += Math.abs(h.offset) / (2 * HF);
+    }
+    const mean = sumFrac / n;
+    ok('the mean offset sits near the third line, not the centre or the edge',
+      mean > 0.10 && mean < 0.26, `mean ${(mean).toFixed(3)} of frame width (THIRD_OFF = 0.167)`);
+    // the sign comes from the seed, so a universe does not put every tree left
+    const bias = Math.abs(left - right) / n;
+    ok('...and the side is the seed’s, so the universe is not one-handed',
+      bias < 0.25, `${left} left / ${right} right`);
+  }
+
+  // --- §9.7: scale legible against a human-height reference ----------------
+  {
+    // The clause is a pixel argument at both ends and this is it, in degrees.
+    // At the far end a 1.68 m figure must still be a figure; at the near end
+    // the crown must be a subject rather than a wall.
+    let n = 0, minSub = 1e9, maxSub = 0, minFig = 1e9, tooNear = 0;
+    for (let i = 0; i < 600; i++) {
+      const h = heroSite({ seed: 900 + i, heading: 1.1, halfFov: HF, groundAt: flat });
+      if (!h) continue;
+      n++;
+      const sub = 2 * Math.atan2(h.height * 0.5, h.dist) * 180 / Math.PI;
+      const fig = 2 * Math.atan2(1.68 * 0.5, h.dist) * 180 / Math.PI;
+      minSub = Math.min(minSub, sub); maxSub = Math.max(maxSub, sub);
+      minFig = Math.min(minFig, fig);
+      if (h.dist < 14) tooNear++;
+    }
+    ok('the crown is a subject — never under an eighth of a 52° frame',
+      minSub > 52 / 8, `smallest ${minSub.toFixed(1)}° of 52°`);
+    ok('...and never a wall — never over three quarters of it',
+      maxSub < 52 * 0.75, `largest ${maxSub.toFixed(1)}°`);
+    ok('§9.7 · a 1.68 m figure at its base is still resolvable',
+      minFig * (720 / 52) > 8, `${(minFig * (720 / 52)).toFixed(1)} px at 720p, ${(minFig * (1440 / 52)).toFixed(1)} px at 1440p`);
+    ok('life.js’ own 14 m doorway rule is never violated',
+      tooNear === 0 && HERO_NEAR >= 14, `nearest band edge ${HERO_NEAR} m`);
+  }
+
+  // --- the ground gets a veto, and it is a real one ------------------------
+  {
+    // A spawn facing open water has no hero, and inventing one puts a tree in
+    // the sea. `null` is the answer, and this is the assertion that it is
+    // actually reachable rather than dead code.
+    const none = heroSite({ seed: 3, heading: 0, halfFov: HF, groundAt: () => null });
+    ok('no plantable ground anywhere ⇒ no hero, rather than a tree in the sea',
+      none === null);
+
+    // half the frame is water: it must find the dry half rather than give up
+    let found = 0;
+    for (let i = 0; i < 200; i++) {
+      const h = heroSite({
+        seed: 40 + i, heading: 0, halfFov: HF,
+        groundAt: (x) => (x > 0 ? 0 : null),
+      });
+      if (h && h.x > 0) found++;
+    }
+    ok('half the frame under water ⇒ it still finds the dry third',
+      found > 190, `${found}/200 placed on land`);
+
+    // and a settlement's ground is not available
+    let clear = 0, placed = 0;
+    for (let i = 0; i < 200; i++) {
+      const h = heroSite({
+        seed: 700 + i, heading: 0.4, halfFov: HF, groundAt: flat,
+        blocked: (x, z) => Math.hypot(x - 30, z - 50) < 45,
+      });
+      if (!h) continue;
+      placed++;
+      if (Math.hypot(h.x - 30, h.z - 50) >= 45) clear++;
+    }
+    ok('...and it never stands on ground something else owns',
+      placed > 0 && clear === placed, `${clear}/${placed} clear of the exclusion`);
+  }
+
+  // --- §2.3 -----------------------------------------------------------------
+  {
+    const a = heroSite({ seed: 12345, heading: 2.2, halfFov: HF, groundAt: flat });
+    const b = heroSite({ seed: 12345, heading: 2.2, halfFov: HF, groundAt: flat });
+    ok('§2.3 · same seed and heading give the same tree, in the same place',
+      JSON.stringify(a) === JSON.stringify(b));
+    const c = heroSite({ seed: 12346, heading: 2.2, halfFov: HF, groundAt: flat });
+    ok('...and a different seed moves it',
+      JSON.stringify(a) !== JSON.stringify(c));
+
+    // the heading is the solved one, so the tree follows the camera around
+    const north = heroSite({ seed: 88, heading: 0, halfFov: HF, groundAt: flat });
+    const east = heroSite({ seed: 88, heading: Math.PI / 2, halfFov: HF, groundAt: flat });
+    ok('the site is placed against the SOLVED heading, not against the world',
+      Math.abs((east.bearing - north.bearing) - Math.PI / 2) < 1e-9,
+      'rotating the heading rotates the hero with it');
+  }
+
+  // --- a poisoned world still yields something standable -------------------
+  {
+    const bad = heroSite({
+      seed: NaN, heading: NaN, halfFov: NaN, height: NaN, gravity: NaN,
+      near: NaN, far: NaN, groundAt: flat,
+    });
+    ok('NaN in every argument still returns a finite, plantable site',
+      bad !== null && [bad.x, bad.z, bad.dist, bad.height].every(Number.isFinite),
+      bad ? `${bad.dist.toFixed(1)} m out, ${bad.height.toFixed(1)} m tall` : 'null');
+    ok('...and the tree it asks for actually grows',
+      growTree({ seed: 1, height: bad.height, habit: bad.habit }).segments > 24);
+  }
+
+  // --- the hero is a tree the wood can actually make ------------------------
+  {
+    // heroHeight() is a claim about a tree; growTree() is the thing that has to
+    // honour it. A height the grower clamps away is a law with no effect.
+    for (const [g, name] of [[1.62, 'a 0.17 g moon'], [9.80665, 'Earth'], [23.5, 'a 2.4 g super-earth']]) {
+      const H = heroHeight(9, g);
+      const t = growTree({ seed: 7, gravity: g, height: H, habit: 'spreading', budget: 900 });
+      const top = Math.max(...t.seg.y1);
+      ok(`${name}: the grown hero reaches the height the law asked for`,
+        top > H * 0.55, `asked ${H.toFixed(1)} m, crown top ${top.toFixed(1)} m`);
+    }
+  }
+}
+
 const suites = {
+  hero: suiteHero,
   register: suiteRegister, exposure: suiteExposure,
   blossom: suiteBlossom,
   cover: suiteCover,

@@ -333,3 +333,196 @@ export function tipsOf(tree, minRadius = 0.02) {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// The hero — §9.7's "one hero landmark in the opening frustum"
+//
+// §9.7 asks for *"at least one hero landmark in the opening frustum, with scale
+// legible against a human-height reference."* Nothing in the pipeline ever
+// promised one. `landing.js`'s `hero` term scores **terrain prominence** over a
+// 200 m collar at 180–1000 m; on the world captured for `SURFACE-DENSITY.md` it
+// returned 0.96, and it was not wrong. It had found a hill. A hill at 600 m is
+// a landmark in the cartographer's sense and it is not a *subject* — you cannot
+// tell how big it is, and §9.7's second clause is entirely about being able to.
+//
+// Four facts made a subject impossible rather than merely absent:
+//
+//   · every tree on a world is one uniform draw, so nothing may dominate;
+//   · the near cluster is isotropic about the spawn, so the 81.9° frustum gets
+//     its angular share by chance and is guaranteed nothing;
+//   · the median radial distance is ~153 m, where a 9 m tree is 47 px tall;
+//   · the flower cap is split equally across ~400 trees.
+//
+// This file owns the first and third: how tall a hero may be, and where it
+// stands. `life.js` owns the wood and the flowers it is then given.
+//
+// It lives here rather than in `life.js` for the reason `quality.js` gives
+// about `SAT_AMOUNT`: **`life.js` imports THREE, so `tools/verify.js` cannot
+// import it in node.** A composition rule nothing can check is a preference.
+
+/**
+ * How tall the tallest tree on this world may stand.
+ *
+ * Greenhill's limit (1881): a column buckles under its own weight above
+ * `h ∝ (E/ρg)^⅓ · r^⅔`. Everything in that expression except `g` is a property
+ * of wood, which this file already treats as one material — so across worlds
+ * the whole law collapses to **`h ∝ g^-⅓`**, and hero height becomes a readout
+ * of the world you are standing on rather than a number somebody picked.
+ *
+ * It is the same argument `growTree`'s beam curvature already makes, one level
+ * up: gravity was in law 3 as a *shape*, and here it is as a *size*. A 0.16 g
+ * moon holds a tree 1.8× taller than Earth does; a 2.4 g super-earth holds it
+ * to 0.75×. Neither was written down.
+ *
+ * `canopy` is the world's ordinary canopy height — what the population is drawn
+ * from — and `HERO_OVER` is how far above it a hero stands. 2.2 is not a
+ * physical constant: it is the ratio at which a tree stops being the tallest
+ * member of a stand and starts being the thing the frame is about, and it is
+ * the one number here that is art direction. The clamp is, though — no tree may
+ * exceed `growTree`'s own 90 m ceiling, and none may be shorter than the
+ * population it is supposed to dominate.
+ */
+export const HERO_OVER = 2.2;
+
+export function heroHeight(canopy = 9, gravity = G_EARTH) {
+  const c = clamp(num(canopy, 9), 0.6, 40);
+  const g = clamp(num(gravity, G_EARTH), 0.01, 60);
+  const h = c * HERO_OVER * Math.cbrt(G_EARTH / g);
+  return clamp(h, c * 1.25, 90);
+}
+
+/**
+ * Where the subject stands.
+ *
+ * Three constraints, and each one is a clause of §9.7 rather than a preference:
+ *
+ * **In the opening frustum.** The bearing is measured off the solved heading,
+ * and the half-angle used is the camera's *vertical* fov/2 — deliberately
+ * narrower than the 41° the 16:9 frustum actually spans. That is the same
+ * convention `scoreComposition` samples the ground in, so a hero placed to
+ * satisfy this is a hero the solver's own `offCentre` term would reward, and
+ * the margin between 26° and 41° is what keeps the crown off the frame edge.
+ *
+ * **Nothing is centred.** `THIRD_OFF = 1/6` of the frame width is the
+ * rule-of-thirds line `landing.js` already scores against, and it is what this
+ * aims at. Sign comes from the seed, so half the worlds put their tree left.
+ *
+ * **Scale legible against a human.** This is the distance band, and it is a
+ * pixel argument at both ends. Too far and the tree is a mark: at 200 m a 20 m
+ * crown is 5.7°, and the 1.68 m figure that would give it scale is 0.48° — 6 px
+ * at 720p, which is not a reference, it is a smudge. Too near and it is a wall
+ * rather than a subject, and `life.js` already refuses a trunk inside 14 m for
+ * that reason. The band below puts the crown between roughly 12° and 38° of a
+ * 52° frame and the figure between 1.0° and 3.2°.
+ *
+ * The search is a lattice rather than a scatter: two third-lines by a sweep of
+ * distances, jittered once from the seed. A scatter would need many more draws
+ * to cover the same band as evenly, and every draw is a §2.3 liability — an
+ * extra `next()` here moves every subsequent decision on the world.
+ *
+ * Returns `null` when the ground refuses every candidate, which is an answer.
+ * A world whose spawn faces open water has no hero and should not be given a
+ * tree standing in the sea.
+ */
+/** the near edge of the band: closer than this a hero is a wall, not a subject */
+export const HERO_NEAR = 30;
+/** the far edge: past this the 1.68 m figure that gives it scale stops resolving */
+export const HERO_FAR = 95;
+
+export function heroSite({
+  seed = 1,
+  spawn = { x: 0, z: 0 },
+  heading = 0,
+  halfFov = 26 * Math.PI / 180,
+  groundAt = () => 0,
+  blocked = () => false,
+  near = HERO_NEAR,
+  far = HERO_FAR,
+  height = 9,
+  gravity = G_EARTH,
+  thirdOff = 1 / 6,
+} = {}) {
+  const r = new RNG(hash(seed >>> 0, 0x8e40));
+  const sx = num(spawn?.x, 0), sz = num(spawn?.z, 0);
+  const hd = num(heading, 0);
+  const hf = clamp(num(halfFov, 0.4538), 0.08, 1.4);
+  const d0 = clamp(num(near, HERO_NEAR), 16, 400);
+  const d1 = clamp(num(far, HERO_FAR), d0 + 4, 600);
+  const H = heroHeight(height, gravity);
+
+  // the eye's own ground, so "is this tree above me or below me" has a datum
+  const base = groundAt(sx, sz);
+  const eyeGround = Number.isFinite(base) ? base : 0;
+
+  // the ideal bearing: a third of the way out, on the side the seed picks
+  const side = r.float(0, 1) < 0.5 ? -1 : 1;
+  const wantOff = thirdOff * 2 * hf;          // frame fraction → radians
+  const jitter = r.float(-0.16, 0.16);        // one draw, not one per candidate
+  // How much of the frame this world's hero fills, as a fraction of the
+  // vertical. It is a *draw* rather than a constant, and that is not a
+  // flourish: with a fixed target the distance sweep is not a search at all —
+  // every other term is flat in `d`, so the size term alone decides, and every
+  // hero in the universe lands at the identical subtended angle. Measured
+  // before this line existed: 1,000 worlds, every crown 18.0° of 52°, to the
+  // decimal. A law that returns one answer is a constant with a loop around it.
+  const wantFill = r.float(0.26, 0.46);
+
+  let best = null;
+  // 7 bearings × 11 distances. The bearing lattice is scaled so that ±1 step
+  // lands EXACTLY on `thirdOff`, because the score's own maximum is there and a
+  // lattice that straddles it can only ever return a worse answer than the rule
+  // it is implementing. It was ±0.7 and ±1.4 of the third, and the mean landed
+  // at 0.222 of frame width against a target of 0.167.
+  //
+  // Both sides are tried: the side the seed asked for can be water, and a hero
+  // on the wrong third beats no hero.
+  const STEPS = [-1.3, -1, -0.55, 0, 0.55, 1, 1.3];
+  for (let b = 0; b < STEPS.length; b++) {
+    const off = STEPS[b] * wantOff + jitter * wantOff;
+    for (let k = 0; k < 11; k++) {
+      const d = d0 + (d1 - d0) * (k / 10);
+      const a = hd + off;
+      const x = sx + Math.sin(a) * d, z = sz + Math.cos(a) * d;
+      const y = groundAt(x, z);
+      if (y === null || !Number.isFinite(y)) continue;
+      if (blocked(x, z)) continue;
+
+      // --- how well this candidate reads ---------------------------------
+      // the third line, asymmetric exactly as `landing.js`'s offCentre is: a
+      // centred subject is the fault §9.7 names and scores zero; one pushed
+      // past the third is merely weaker
+      const frac = Math.abs(off) / (2 * hf);
+      const place = clamp(frac / thirdOff, 0, 1)
+        * (1 - 0.55 * clamp((frac - thirdOff) / (0.5 - thirdOff), 0, 1));
+      // the side the seed asked for, if it can be had
+      const sided = Math.sign(off) === side ? 1 : 0.82;
+      // how much of the frame the crown fills — this world's own target, and
+      // falling off either side of it
+      const sub = 2 * Math.atan2(H * 0.5, Math.max(d, 1));
+      const fill = clamp(sub / (2 * hf), 0, 1.4);
+      const size = 1 - Math.min(Math.abs(fill - wantFill) / 0.34, 1);
+      // and it should stand roughly where you do. A hero 30 m up a bluff is a
+      // silhouette against sky, which is a different picture; one 30 m down a
+      // hollow is a crown with no trunk. Neither is wrong, both are unstable,
+      // and the band is generous enough that ordinary ground never binds.
+      const rise = Math.abs(y - eyeGround) / Math.max(H, 1);
+      const level = 1 - clamp((rise - 0.35) / 0.9, 0, 1);
+
+      const score = place * 1.5 + size * 1.3 + level * 0.9 + sided * 0.4;
+      if (!best || score > best.score) {
+        best = { x, z, y, dist: d, bearing: a, offset: off, height: H, score };
+      }
+    }
+  }
+  if (!best) return null;
+
+  // The habit is the seed's, but not uniformly: a hero is a tree you are meant
+  // to read the shape of at a hundred metres, and two of the four habits say
+  // more at that range than the others. `columnar` is a silhouette a conifer
+  // stand already supplies; `spreading` and `umbrella` are what a single
+  // dominant crown looks like in every painting of one.
+  const pick = ['spreading', 'umbrella', 'weeping', 'spreading'][r.int(0, 3)];
+  best.habit = pick;
+  best.yaw = r.float(0, Math.PI * 2);
+  return best;
+}
