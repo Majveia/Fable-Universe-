@@ -169,13 +169,24 @@ const MEASURE = () => new Promise((done) => {
   if (!info) return done(null);
   info.autoReset = false;
   info.reset();
-  const target = app.frames + 1;
+  const f0 = app.frames;
+  const target = f0 + 1;
   app.haltAt(target);
   app.resume();
   app.haltAt(target);
   const tick = () => {
     if (app.halted > 0 || app.frames >= target) {
-      const out = { calls: info.render.calls, tris: info.render.triangles };
+      // Divide by the frames that ACTUALLY elapsed, not by the one we asked
+      // for. The tick polls on requestAnimationFrame and the app is free to
+      // render several frames between two polls, so "step exactly one frame"
+      // is a request, not a guarantee — and with autoReset off the counters
+      // just keep adding. Unnoticed, that reported 10.74 M triangles on a
+      // frame that `tools/drawcensus.js` — which counts at the WebGL call and
+      // needs no rendered frame — puts at 2.11 M, i.e. GREEN against §5's
+      // 2.2 M. Five frames' worth, read as one, and it very nearly became a
+      // reported budget violation that did not exist.
+      const n = Math.max(app.frames - f0, 1);
+      const out = { calls: info.render.calls / n, tris: info.render.triangles / n, frames: n };
       info.autoReset = true;
       // Stop the loop again before handing back. `resume()` above cleared
       // `_haltAt`, and a page still rendering is a page `page.screenshot()`
@@ -244,7 +255,7 @@ for (const b of builds) {
   await writeFile(file, await page.screenshot({ timeout: Math.max(capMs, 60000) }));
   written.push(file);
   console.log(`  ${how === 'timeout' ? 'part' : 'ok  '} ${(b || 'default').padEnd(24)}`
-    + ` ${String(info?.calls ?? '?').padStart(5)} calls`
+    + ` ${String(Math.round(info?.calls ?? 0)).padStart(5)} calls`
     + ` ${((info?.tris ?? 0) / 1e6).toFixed(2).padStart(6)}M tris`
     + `  build ${((tBuilt - tGo) / 1000).toFixed(0)}s settle ${((tSettled - tBuilt) / 1000).toFixed(0)}s`
     + `  →  ${name}.png`);
