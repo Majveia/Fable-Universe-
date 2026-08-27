@@ -118,6 +118,46 @@ const SETTLE = ([n, ms]) => new Promise((done) => {
   requestAnimationFrame(tick);
 });
 
+/**
+ * One frame's draw calls and triangles — **all of them**, which is not what
+ * reading `renderer.info` after a halt gives you.
+ *
+ * The bug this replaces reported `1 calls · 0.00M tris` on a frame with a
+ * continent in it, on every capture this tool has ever taken. three.js resets
+ * `info` at the top of each `render()`, and `EffectComposer` calls `render()`
+ * once per pass — so a read after the loop stops sees only whatever the *last*
+ * pass did, which is the print's fullscreen quad. One call. No triangles.
+ *
+ * §5 makes the frame budget a correctness property and names ≤900 calls and
+ * ≤2.2 M triangles at surface scale. A tool that answers "1" to both cannot
+ * ever say that budget was missed, so the number was not merely wrong — it was
+ * unfalsifiable, which is worse.
+ *
+ * The fix is the documented one: turn `autoReset` off, zero the counters, step
+ * exactly one frame through the app's own `resume`/`haltAt` pair, and read the
+ * accumulated total. One frame, every pass, no double count.
+ */
+const MEASURE = () => new Promise((done) => {
+  const app = window.AEON;
+  const info = app.renderer?.info;
+  if (!info) return done(null);
+  info.autoReset = false;
+  info.reset();
+  const target = app.frames + 1;
+  app.haltAt(target);
+  app.resume();
+  app.haltAt(target);
+  const tick = () => {
+    if (app.halted > 0 || app.frames >= target) {
+      const out = { calls: info.render.calls, tris: info.render.triangles };
+      info.autoReset = true;
+      return done(out);
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+});
+
 const pw = await playwright();
 const site = await serve();
 const browser = await launch(pw);
@@ -155,10 +195,7 @@ for (const b of builds) {
   await page.waitForFunction('window.AEON && window.AEON.active && window.AEON.active()',
     null, { timeout: readyMs });
   const how = await page.evaluate(SETTLE, [frames, capMs]);
-  const info = await page.evaluate(() => {
-    const i = window.AEON.renderer?.info;
-    return i ? { calls: i.render.calls, tris: i.render.triangles } : null;
-  });
+  const info = await page.evaluate(MEASURE);
   const name = (b || 'default').replace(/[^a-z0-9]+/gi, '-') + (how === 'timeout' ? '-PARTIAL' : '');
   const file = resolve(dir, name + '.png');
   await writeFile(file, await page.screenshot());
