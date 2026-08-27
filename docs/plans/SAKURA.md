@@ -309,3 +309,33 @@ at the photographic one, and that `registerFor()` chooses between them from the
 air. §3's third row already almost says this: *"they are not competing
 tonemaps — the reference's is a grade, and grades belong to atmospheres."*
 This generalises that sentence from one grade to the whole print.
+
+---
+
+## 12 · Measured negatives — things not to spend a day on
+
+Recorded so the next session does not re-derive them.
+
+**Widening the landing solver does not help.** §9.7's composition terms come
+back weak on real worlds (`walls 0.16`, `lead 0.24` on the meadow world), and
+the obvious response is to search harder. Measured over eight worlds, off the
+frame, with `solveLandingSite` called directly:
+
+| shortlist × headings | mean total | walls | lead | hero | ms/world |
+|---|---|---|---|---|---|
+| 10 × 8 (shipped) | **0.670** | 0.571 | 0.553 | 0.587 | 139 |
+| 24 × 8 | 0.671 | 0.542 | 0.552 | 0.554 | 283 |
+| 24 × 16 | 0.663 | 0.506 | 0.552 | 0.543 | 405 |
+| 48 × 16 | 0.651 | 0.500 | 0.509 | 0.540 | 811 |
+
+Six times the search buys nothing — it is flat to slightly *worse*, which at
+n = 8 is noise around "no effect". The terms are already at what the terrain
+offers, so the constraint is **relief**, not search. A composition solver cannot
+find a valley wall on a world that has none.
+
+**The register is not an exposure control.** Ablating each of the fourteen knobs
+across the scene brightness range, painted versus clear differs by at most 0.03
+of output luma, and at the bright end the clear register is *darker* than the
+painted one because the shoulder holds highlights. Any large brightness
+difference attributed to the register is something else wearing its clothes —
+which is exactly how §11's wash bug stayed hidden.
