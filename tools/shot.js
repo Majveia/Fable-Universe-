@@ -217,10 +217,18 @@ console.log(`  world: galaxy ${route.galaxySeed} star ${route.starSeed} planet $
 const written = [];
 for (const b of builds) {
   const url = `${site.origin}/index.html?seed=${seed}&${where}${b ? '&' + b : ''}&dt=16.667`;
+  const tGo = Date.now();
   await page.goto(url, { waitUntil: 'load' });
   await page.waitForFunction('window.AEON && window.AEON.active && window.AEON.active()',
     null, { timeout: readyMs });
+  // Where the time actually goes, because on a software rasteriser it is not
+  // where anyone assumes. Building the world — streaming the quadtree, meshing
+  // tiles in float64, instancing the meadow, growing the flora — is CPU work
+  // that does not care how many pixels the frame has. Settling is fill, and
+  // fill is the only half a smaller viewport makes cheaper.
+  const tBuilt = Date.now();
   const how = await page.evaluate(SETTLE, [frames, capMs]);
+  const tSettled = Date.now();
   const info = await page.evaluate(MEASURE);
   const name = (b || 'default').replace(/[^a-z0-9]+/gi, '-') + (how === 'timeout' ? '-PARTIAL' : '');
   const file = resolve(dir, name + '.png');
@@ -228,7 +236,9 @@ for (const b of builds) {
   written.push(file);
   console.log(`  ${how === 'timeout' ? 'part' : 'ok  '} ${(b || 'default').padEnd(24)}`
     + ` ${String(info?.calls ?? '?').padStart(5)} calls`
-    + ` ${((info?.tris ?? 0) / 1e6).toFixed(2).padStart(6)}M tris  →  ${name}.png`);
+    + ` ${((info?.tris ?? 0) / 1e6).toFixed(2).padStart(6)}M tris`
+    + `  build ${((tBuilt - tGo) / 1000).toFixed(0)}s settle ${((tSettled - tBuilt) / 1000).toFixed(0)}s`
+    + `  →  ${name}.png`);
 }
 
 await browser.close();
