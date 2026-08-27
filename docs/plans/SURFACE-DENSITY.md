@@ -103,6 +103,15 @@ Draw calls are comfortable — 82 against 900. **Triangles are 2.3× to 25× ove
 on every row, before a single triangle of terrain, wood, foliage, blossom,
 furniture or settlement is counted.**
 
+**Cross-checked against `tools/drawcensus.js`**, which records what was
+submitted rather than what came back and so runs at full speed on a software
+rasteriser. Directly measured, no model: at `grass=0.012,0.010,0.006,0.006` —
+1.2% density, with the terrain also cheapened to `qd=10&qr=17&vc=0` — the frame
+is **2,942,376 triangles, 1.3× over §5 already**. The census counts 100,314
+blades over 164 chunks where the model predicts 57,765 over 104, so the model
+**undercounts by 1.74× at identical settings** and every figure in the table
+above is a floor.
+
 This is not a new defect discovered here; it is one the repository had already
 measured and not summed. `src/quality.js`'s own note records *"ring 0 spent
 5,368,656 triangles — 40% of the entire frame — on the 447,388 blades inside 26
@@ -111,6 +120,43 @@ The model above reproduces that measurement to 3%. The sentence was written to
 justify the `curvedRings` column and the conclusion beside it was never drawn.
 
 **§16 rule 3 is therefore closed, and the answer is worse than "unmeasured".**
+
+### 1.2 · …and *why*, which is one arithmetic slip, thirty years old in optics
+
+`density()`'s own note justifies the exponent like this:
+
+> The falloff is *slower* than the `d^-2` that would keep the count per
+> steradian constant, which is the whole trick: at 1.5 the count per steradian
+> rises slightly with distance, and that is what makes the horizon read as a
+> meadow rather than as a green plane.
+
+**`d^-2` is the neutral exponent for a fronto-parallel surface — a wall.** Ground
+is a floor. Seen from a fixed eye height `e`, the patch of ground subtending one
+steradian at distance `d` has area `d³/e`; the extra power is the grazing
+incidence, and it is the entire difference between a wall and a floor. The
+neutral exponent for a floor is **3**, and the law is not half a power over it,
+it is one and a half powers *under* it.
+
+Measured over the bands the rings actually occupy:
+
+| | 26 m (ring 0's edge) | 1250 m (ring 3's edge) | ratio |
+|---|---|---|---|
+| blades per steradian | 1.61 M | 407.6 M | **254×** |
+| ground overdraw | 6× at 2 m | 610× | **~100×** |
+
+"Rises slightly" is 254×. And the outcome is precisely the thing the sentence
+was written to prevent: at ring 3's far edge the spacing cap has grown a "blade"
+to **1.69 m wide and 1.38 m tall**, with no ground visible between them
+anywhere. §M3's gate asks that *"grass reads as meadow at the horizon, not as a
+green plane"*; at 1250 m it is a green plane, made of four million billboards,
+and it is where roughly half the grass budget goes.
+
+**The exponent is not the dial.** §6 M3 pins it at exactly 1.5 so the shader can
+evaluate `x·x·inversesqrt(x)`, and §3 forbids re-litigating settled rulings
+mid-build. What is *not* pinned is where the rings stop: `RINGS[3].far` is
+1250 m because the reference's valley is 2400 m across, and `horizon.js` already
+draws past the haze line as silhouette (§M2). **The band is the dial, and moving
+it needs a scored frame this container cannot render** — see §7.
 
 ---
 
@@ -228,12 +274,52 @@ go in this file's §7 as they land.
 
 ## 7 · Evidence
 
-Filled in as it lands. Nothing here is a claim about a frame until it cites a
-capture (§16 rule 1).
+Nothing here is a claim about a frame unless it cites a capture (§16 rule 1).
 
-- `docs/captures/density-baseline/` — `?q=desktop`, seed 1337146641, biosphere
-  world, landing solved 0.578 (`lowHorizon 0.59 offCentre 0.95 hero 0.96
-  lead 0.58 walls 0.00 band 1.00`).
+### Offline, and therefore settled
+
+| gate | result |
+|---|---|
+| `parse.js` | 137/137 modules · 3 raw shaders · 369 import edges |
+| `invariants.js` | 709 checks clean — §2.1 assets, §2.2 deps, §2.3 entropy, §4, §10 |
+| `verify.js` | **1156/1156**, including 26 in the new `hero` suite and 12 added to `meadow` |
+| `digest.js` | `d33f6d933f1642d35a2921df814e9d194ad45a9a8eb8e5428dc65e7cf0bb73bf` · 7521 samples · linux/x64 |
+
+The `curvedRings` gate was seen to go **red before it went green**, per
+`docs/notes/ci.md`'s rule that a gate nobody has watched fail is not evidence:
+it failed on ultra's `curvedRings: 2` (ring 1 never reaches 3 px anywhere in its
+22–84 m band) and passes on 1.
+
+### On a frame — and what this container could not do
+
+**This container cannot render a `?q=desktop` surface frame on a land world.**
+Established the hard way: a capture at `--seed 144 --builds "q=desktop"` ran
+**over forty minutes** without reaching a first frame and was killed. The one
+`?q=desktop` capture that *did* complete (seed 1337146641) completed because it
+landed on a 240 K ocean world with no dryland and therefore no meadow to build —
+which is how `tools/meadowseed.js` came to exist.
+
+So the A/B below runs at `grass=0.06,0.05,0.03,0.02, blades=2,1,1,1` — about 5%
+of the desktop row — because that is what will render here. **It is evidence
+about the hero and it is not evidence about the meadow's density.** The meadow's
+density is settled by `drawcensus.js` above, which needs no frame.
+
+- `docs/captures/density-baseline/q-desktop.png` — the ocean world, kept
+  deliberately: it is the picture that shows why `--want life` is not a meadow
+  predicate.
+- `docs/captures/subject/` — seed 144, star 1933272655, planet 2, G star
+  5749 K, Teq 286 K. Landing solved 0.642 (`lowHorizon 0.00 offCentre 0.65
+  hero 1.00 lead 0.72 walls 1.00 band 1.00`). A/B on `?subj=1`.
+
+### The next act, and what it needs
+
+Act 3's remaining half — bringing `RINGS[3].far` in from 1250 m to where
+`meadowSettle()` has already converged the far field toward the sward mean
+(90–430 m) and `horizon.js` takes over — is **specified in §1.2 and not built**.
+It is the change that would pay most of §5's bill, and it is exactly the change
+that must not be made blind: on a clear-air world (`visibilityFor()` reaching
+22 km) a grass line at 500 m would be visible, and no gate here can tell me
+whether it is. It needs one capture on real silicon.
 
 ---
 

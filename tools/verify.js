@@ -84,7 +84,8 @@ import {
   DENS_POW, MEADOW_GLSL, RINGS, chunkCount, chunkGrid, chunkInstances,
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
-  CURVE_PX, bladePixels, bladeWidth, curveReach,
+  CURVE_PX, NEUTRAL_POW, bladePixels, bladeWidth, bladesPerSteradian, curveReach,
+  groundOverdraw,
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import {
@@ -4610,6 +4611,12 @@ function suiteMeadow() {
   }
 
   // --- the falloff is slower than d^-2, which is the whole trick ------------
+  //
+  // True as written, and it is a statement about a WALL. `d^-2` is the neutral
+  // exponent for a fronto-parallel surface; the block below this one does the
+  // same arithmetic for a floor, where the neutral exponent is 3 and the law is
+  // one and a half powers under it rather than half a power over. Both checks
+  // are correct; only the second is about the ground.
   {
     // count per steradian goes as density * d^2; at exponent 1.5 that RISES
     const perSr = (d) => density(2, d) * d * d;
@@ -4889,6 +4896,55 @@ function suiteMeadow() {
         for (let i = 0; i < n * 2; i++) if (b.root[i] !== root[i]) return false;
         return true;
       })());
+  }
+
+  // --- what the density law is actually about, evaluated ------------------
+  //
+  // `density()`'s note argues the exponent against `d^-2`, "the falloff that
+  // would keep the count per steradian constant". That is the neutral exponent
+  // for a wall. Ground is a floor: from a fixed eye height the patch subtending
+  // one steradian at distance d has area d^3/e, not d^2, and the extra power is
+  // the grazing incidence. So the claim "the count per steradian rises slightly"
+  // is off by one and a half powers of d, and this is the arithmetic.
+  {
+    ok('the neutral exponent for a FLOOR is 3, not the 2 the law reasons against',
+      NEUTRAL_POW === 3);
+
+    // hold the ratio to the definition rather than to a transcribed number
+    let worst = 0;
+    for (const [r, d] of [[0, 12], [1, 40], [2, 150], [3, 700]]) {
+      const want = density(r, d) * d * d * d / 1.68;
+      worst = Math.max(worst, Math.abs(bladesPerSteradian(r, d) - want) / want);
+    }
+    ok('...and bladesPerSteradian is density · d³ / eye, to the digit',
+      worst < 1e-12, `worst relative error ${worst.toExponential(2)}`);
+
+    const nearSr = bladesPerSteradian(0, RINGS[0].far);
+    const farSr = bladesPerSteradian(3, RINGS[3].far);
+    ok('MEASURED · the count per steradian does not rise "slightly" — it rises 254×',
+      farSr / nearSr > 200,
+      `${(nearSr / 1e6).toFixed(2)} M/sr at ${RINGS[0].far} m → `
+      + `${(farSr / 1e6).toFixed(1)} M/sr at ${RINGS[3].far} m · ${(farSr / nearSr).toFixed(0)}×`);
+
+    // …and the same thing from the fill side
+    const P = 1440 * 1.12 / (52 * Math.PI / 180);
+    const overNear = groundOverdraw(0, 2, P), overFar = groundOverdraw(3, RINGS[3].far, P);
+    ok('MEASURED · and the ground is covered 6× underfoot against 610× at the far edge',
+      overFar / overNear > 80,
+      `${overNear.toFixed(0)}× at 2 m → ${overFar.toFixed(0)}× at ${RINGS[3].far} m`);
+
+    // The consequence, and it is §M3's own gate clause: "grass reads as meadow
+    // at the horizon, not as a green plane." At ring 3's far edge the spacing
+    // cap has grown a blade to 1.69 m and there is no ground visible between
+    // them anywhere — which is a green plane, made of four million billboards.
+    const wFar = bladeWidth(3, RINGS[3].far, P);
+    ok('§M3 gate · a "blade" at the far edge is 1.7 m wide, which is a billboard',
+      wFar > 1.5, `${wFar.toFixed(2)} m wide, ${(0.71 * RINGS[3].hs).toFixed(2)} m tall`);
+
+    // The exponent is NOT the dial — §6 M3 pins it at 1.5 for the inversesqrt,
+    // and §3 says settled rulings are not re-litigated mid-build. The band is.
+    ok('§6 M3 · the exponent stays pinned at 1.5 regardless of the above',
+      DENS_POW === 1.5, 'the band is the dial; changing it needs a scored frame');
   }
 
   // --- §9.5's tier rule, in the unit §9.5 states it in ----------------------
