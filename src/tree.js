@@ -450,9 +450,22 @@ export function heroSite({
   const d1 = clamp(num(far, HERO_FAR), d0 + 4, 600);
   const H = heroHeight(height, gravity);
 
-  // the eye's own ground, so "is this tree above me or below me" has a datum
-  const base = groundAt(sx, sz);
-  const eyeGround = Number.isFinite(base) ? base : 0;
+  // The datum for "is this tree above me or below me".
+  //
+  // The eye's own ground is the obvious choice and it is not available: the
+  // `groundAt` a caller passes is `life.js`'s `dryland`, which returns `null`
+  // above `amp · 0.55` — so on a mountainous world a spawn perfectly fine to
+  // stand on is not plantable, the datum falls back to zero, and the `level`
+  // term then reads every candidate as hundreds of metres out of place and
+  // scores them all at zero. Not wrong, but the term stops discriminating,
+  // silently, on exactly the terrain it exists for.
+  //
+  // So the datum comes from the candidates. Gather them first, take the median
+  // ground among the ones that are plantable at all, and score against that:
+  // it needs no second probe, it cannot be `null`, and "level" ends up meaning
+  // *level relative to the ground this hero could stand on*, which is the more
+  // useful reading anyway.
+  const cands = [];
 
   // the ideal bearing: a third of the way out, on the side the seed picks
   const side = r.float(0, 1) < 0.5 ? -1 : 1;
@@ -467,7 +480,6 @@ export function heroSite({
   // decimal. A law that returns one answer is a constant with a loop around it.
   const wantFill = r.float(0.26, 0.46);
 
-  let best = null;
   // 7 bearings × 11 distances. The bearing lattice is scaled so that ±1 step
   // lands EXACTLY on `thirdOff`, because the score's own maximum is there and a
   // lattice that straddles it can only ever return a worse answer than the rule
@@ -486,34 +498,45 @@ export function heroSite({
       const y = groundAt(x, z);
       if (y === null || !Number.isFinite(y)) continue;
       if (blocked(x, z)) continue;
-
-      // --- how well this candidate reads ---------------------------------
-      // the third line, asymmetric exactly as `landing.js`'s offCentre is: a
-      // centred subject is the fault §9.7 names and scores zero; one pushed
-      // past the third is merely weaker
-      const frac = Math.abs(off) / (2 * hf);
-      const place = clamp(frac / thirdOff, 0, 1)
-        * (1 - 0.55 * clamp((frac - thirdOff) / (0.5 - thirdOff), 0, 1));
-      // the side the seed asked for, if it can be had
-      const sided = Math.sign(off) === side ? 1 : 0.82;
-      // how much of the frame the crown fills — this world's own target, and
-      // falling off either side of it
-      const sub = 2 * Math.atan2(H * 0.5, Math.max(d, 1));
-      const fill = clamp(sub / (2 * hf), 0, 1.4);
-      const size = 1 - Math.min(Math.abs(fill - wantFill) / 0.34, 1);
-      // and it should stand roughly where you do. A hero 30 m up a bluff is a
-      // silhouette against sky, which is a different picture; one 30 m down a
-      // hollow is a crown with no trunk. Neither is wrong, both are unstable,
-      // and the band is generous enough that ordinary ground never binds.
-      const rise = Math.abs(y - eyeGround) / Math.max(H, 1);
-      const level = 1 - clamp((rise - 0.35) / 0.9, 0, 1);
-
-      const score = place * 1.5 + size * 1.3 + level * 0.9 + sided * 0.4;
-      if (!best || score > best.score) {
-        best = { x, z, y, dist: d, bearing: a, offset: off, height: H, score };
-      }
+      cands.push({ x, z, y, d, off, a });
     }
   }
+  if (!cands.length) return null;
+
+  const ys = cands.map((c) => c.y).sort((p, q) => p - q);
+  const eyeGround = ys[ys.length >> 1];
+
+  let best = null;
+  for (const c of cands) {
+    const { x, z, y, d, off, a } = c;
+
+    // --- how well this candidate reads ---------------------------------
+    // the third line, asymmetric exactly as `landing.js`'s offCentre is: a
+    // centred subject is the fault §9.7 names and scores zero; one pushed
+    // past the third is merely weaker
+    const frac = Math.abs(off) / (2 * hf);
+    const place = clamp(frac / thirdOff, 0, 1)
+      * (1 - 0.55 * clamp((frac - thirdOff) / (0.5 - thirdOff), 0, 1));
+    // the side the seed asked for, if it can be had
+    const sided = Math.sign(off) === side ? 1 : 0.82;
+    // how much of the frame the crown fills — this world's own target, and
+    // falling off either side of it
+    const sub = 2 * Math.atan2(H * 0.5, Math.max(d, 1));
+    const fill = clamp(sub / (2 * hf), 0, 1.4);
+    const size = 1 - Math.min(Math.abs(fill - wantFill) / 0.34, 1);
+    // and it should stand roughly where you do. A hero 30 m up a bluff is a
+    // silhouette against sky, which is a different picture; one 30 m down a
+    // hollow is a crown with no trunk. Neither is wrong, both are unstable,
+    // and the band is generous enough that ordinary ground never binds.
+    const rise = Math.abs(y - eyeGround) / Math.max(H, 1);
+    const level = 1 - clamp((rise - 0.35) / 0.9, 0, 1);
+
+    const score = place * 1.5 + size * 1.3 + level * 0.9 + sided * 0.4;
+    if (!best || score > best.score) {
+      best = { x, z, y, dist: d, bearing: a, offset: off, height: H, score };
+    }
+  }
+
   if (!best) return null;
 
   // The habit is the seed's, but not uniformly: a hero is a tree you are meant

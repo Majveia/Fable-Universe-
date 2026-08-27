@@ -11508,6 +11508,35 @@ function suiteHero() {
     ok('half the frame under water ⇒ it still finds the dry third',
       found > 190, `${found}/200 placed on land`);
 
+    // The datum for "level" comes from the candidates, not from the spawn.
+    //
+    // `life.js` passes `dryland` as `groundAt`, and `dryland` returns null
+    // above `amp · 0.55` — so on a mountainous world a spawn you can perfectly
+    // well stand on is not *plantable*, and a datum taken from it would be
+    // absent. Taking it from the spawn and defaulting to zero made the level
+    // term read every candidate as hundreds of metres out of place and score
+    // them all identically: not wrong, but silently non-discriminating on
+    // exactly the terrain it exists for. This is that case.
+    {
+      // ground at 600 m everywhere, and the spawn itself refused
+      const g = (x, z) => (x === 0 && z === 0 ? null : 600);
+      const h = heroSite({ seed: 61, heading: 0.3, halfFov: HF, groundAt: g });
+      ok('a spawn its own groundAt refuses still yields a placed hero',
+        h !== null && Math.abs(h.y - 600) < 1e-9, h ? `y = ${h.y}` : 'null');
+
+      // and the term still discriminates: a bluff among level ground loses
+      const bluff = (x, z) => (Math.hypot(x - 40, z - 40) < 12 ? 640 : 600);
+      let onBluff = 0, n = 0;
+      for (let i = 0; i < 200; i++) {
+        const p = heroSite({ seed: 300 + i, heading: 0.785, halfFov: HF, groundAt: bluff });
+        if (!p) continue;
+        n++;
+        if (Math.hypot(p.x - 40, p.z - 40) < 12) onBluff++;
+      }
+      ok('...and 40 m of unexplained rise is still avoided rather than ignored',
+        n > 0 && onBluff / n < 0.2, `${onBluff}/${n} placed on the bluff`);
+    }
+
     // and a settlement's ground is not available
     let clear = 0, placed = 0;
     for (let i = 0; i < 200; i++) {
