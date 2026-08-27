@@ -57,7 +57,33 @@ const scale = String(arg('scale', 'surface'));
 const readyMs = Number(arg('ready', 120)) * 1000;
 /** what the route search is looking for: any rocky world, a living one, or one with an aurora */
 const want = String(arg('want', scale === 'surface' ? 'life' : 'any'));
-const WANT = { any: 'true', life: 'hit.alive', aurora: 'hit.alive && auroral(pl, starSeed, sp)' };
+/**
+ * What the route search is looking for.
+ *
+ * `meadow` exists because of a mistake this tool made easy. `life` takes the
+ * first world with a biosphere, and on the default seed that is a **cool-star
+ * ocean world with ice floes** — a legitimate AEON world and a useless one to
+ * judge the art direction from, because the reference this project is being
+ * compared against is a temperate green field under a sun-like star.
+ *
+ * Two captures were scored against sakura-realm before anyone noticed they were
+ * of a different kind of place. The transfer was not wrong: at 2600 K
+ * `airColours` genuinely returns a teal zenith over a yellow horizon, and the
+ * frame was an honest photograph of an M-dwarf sky. It simply was not the
+ * comparison anybody meant to make.
+ *
+ * So the comparison gets a name and a definition, rather than being whatever
+ * the search happened to land on: a G-type star, a rocky world, liquid-water
+ * temperatures, and something alive on it.
+ */
+const WANT = {
+  any: 'true',
+  life: 'hit.alive',
+  aurora: 'hit.alive && auroral(pl, starSeed, sp)',
+  meadow: "hit.alive && pl.type === 'terrestrial'"
+    + ' && sp.temp > 5200 && sp.temp < 6400'
+    + ' && pl.Teq > 250 && pl.Teq < 305',
+};
 
 /**
  * Find a world worth photographing, in the page, from the same generators the
