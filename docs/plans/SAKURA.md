@@ -339,3 +339,62 @@ of output luma, and at the bright end the clear register is *darker* than the
 painted one because the shoulder holds highlights. Any large brightness
 difference attributed to the register is something else wearing its clothes —
 which is exactly how §11's wash bug stayed hidden.
+
+---
+
+## 13 · §5 is red, and the meadow is not empty — it is spent at the wrong distance
+
+Two instruments, one world (`seed=1337146641&g=2248432278&s=51574389&p=1`, a
+G-star temperate land world with a biosphere), tier `low`, knobs intact:
+
+```
+§5 · 10,740,531 triangles/frame against 2,200,000   RED · 4.9x over
+§5 · 240 draw calls/frame against 900               GREEN
+```
+
+`tools/shot.js` (renderer.info, one frame) and `tools/drawcensus.js` (counted at
+the WebGL call, no frame rendered) agree to five significant figures. RECKONING
+has said since M5 that "§5's budgets were last measured with the grass off".
+This is the measurement with it on, and it fails.
+
+### Where it goes
+
+| ring | chunks | blades | tri/blade | triangles | reach |
+|---|---|---|---|---|---|
+| 0 | 36 | 413,654 | 6 | 2,481,924 | 26 m |
+| 1 | 38 | 741,896 | 2 | 1,483,792 | 84 m |
+| 2 | 41 | **1,277,569** | 2 | 2,555,138 | **290 m** |
+| 3 | 44 | 958,743 | 2 | 1,917,486 | 1250 m |
+| **total** | | **3,391,862** | | **8,438,340** | |
+
+The meadow is **79% of the frame's triangles**, and §M3's gate asks for 800,000
+blades — so the sward is not thin, it is **4.2x over its own gate**.
+
+### The contradiction this reopens
+
+`tools/drawcensus.js` was written for exactly this, and its header still quotes
+the open case:
+
+> **In the frame, there is no grass.** Visually confirmed at magnification.
+> **In the CPU's bookkeeping, there are 3.5 M blades across 162 chunks.**
+> Both are facts and they do not agree.
+
+It is still true, and now it is measured on a world where the frame reads as a
+flat acid-green wash. 3.39 M blades submitted; no blades legible.
+
+### The shape of the answer
+
+Rings 2 and 3 carry **2.24 M blades and 4.47 M triangles between them, at 290 m
+and 1250 m**. At those distances §9.5's own angular floor puts a blade under a
+pixel, so more than half the entire frame budget is spent on geometry that
+cannot resolve — while ring 0, the 26 m band where a blade is nine pixels wide
+and would actually read, gets 413 k.
+
+The density law is not wrong; §9.5's `blades/m²(d) = B·min(1, (dn/d)^1.5)` is
+doing what it says. What is missing is a **far cutoff**: the law thins with
+distance but never stops, and ring 3 reaches 1250 m. The reference solves the
+same problem by making distant grass a *ground colour* rather than blades.
+
+**Do not read this as "add more grass".** It is the opposite: the frame is
+already paying five times its budget for a meadow it cannot see, and the near
+field is the part that is starved relative to what it could afford.
