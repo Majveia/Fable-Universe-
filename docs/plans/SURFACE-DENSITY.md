@@ -311,6 +311,27 @@ density is settled by `drawcensus.js` above, which needs no frame.
   5749 K, Teq 286 K. Landing solved 0.642 (`lowHorizon 0.00 offCentre 0.65
   hero 1.00 lead 0.72 walls 1.00 band 1.00`). A/B on `?subj=1`.
 
+### One more line, measured in passing and not acted on
+
+`tools/drawcensus.js`'s attribution shows a `MeshDepthMaterial USE_INSTANCING`
+pass carrying **152,604 instances and 1,901,780 triangles** — 86% of §5's whole
+frame budget, in the shadow pass alone, at 1.2% grass and with the shadow map
+already wrecked down to `shres=512, shtaps=1`. It is the tree wood and foliage:
+`life.js` calls `markCaster()` on both, and both are single `InstancedMesh`es
+spanning the whole 1400 m tile.
+
+`SHADOW_SPAN` is **480 m**. The tile is 1400 m. So a large fraction of those
+instances stand outside the light camera's box and cannot contribute a texel —
+but a world-spanning instanced mesh has one bounding sphere, so three submits
+every instance to the depth pass every frame regardless.
+
+**Not fixed here, and the reason is that the obvious fix is wrong.** A static
+near/far split around the spawn works for the opening frame and breaks the
+moment you walk 300 m, because the shadow box follows the view and the mesh is
+built once. Doing it properly means spatial buckets, which is a design decision
+and not a tweak — and, like the ring bands, its payoff is a §5 line that cannot
+be scored here. It is written down so the next session starts from the number.
+
 ### The next act, and what it needs
 
 Act 3's remaining half — bringing `RINGS[3].far` in from 1250 m to where
