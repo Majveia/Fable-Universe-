@@ -344,24 +344,34 @@ One sentence per axis, naming the region, per §8:
    rather than in front of it, so there is no middle ground; the whole 84–1250 m
    band reads as one continuous green.
 4. **Motion — n/a on a still.**
-5. **Materials — 2.** The sward is nameable as grass and nothing else is
-   nameable at all. Every one of `bladeColour()`'s features — tussock at two
-   scales, the four-patch mosaic, dry shoulders, per-blade variation — is
-   computed and none of them resolves anywhere in the lower half.
+5. **Materials — 2, and this score is not admissible against the material
+   law.** The sward is nameable as grass and nothing else in frame is nameable
+   at all. But `?grass=0.06` is a *short list*, and `qArr()` pads a short list
+   from the row — so this frame ran **ring 0 at 6% and rings 1–3 at the full
+   desktop row**, which is the near field thinned to a sixteenth while the far
+   field runs at 100%. That is the opposite of a real frame. Roughly the bottom
+   43% of the lower half is ring 0 at 6%, and everything above it is the
+   84–1250 m band at full density. So the flatness in the lower half is partly
+   §1.2's green plane — which this frame does confirm, at the scale predicted —
+   and partly an artefact of the thinning, and this capture cannot separate
+   them. **The axis-5 number stands as an observation about this frame and not
+   as a finding about `bladeColour()`.**
 6. **Colour — 3.** Two hue families (chartreuse, sky-cream) plus the pale
    blossom accent; nothing clips; the lift holds, correctly for an atmosphere.
 7. **Chrome — 4.** Deleting the HUD loses nothing.
 8. **Honesty — 4.** Nothing contradicts the physics the HUD asserts.
 
 **Mean 2.7, against §8's gate of ≥4 on every axis and ≥4.5 mean. It fails, and
-the blocking axis is 1.**
+the blocking axis is 1.** Axis 1 is admissible — a thinned near field cannot
+remove a subject that was never placed — and so are 2, 3, 6, 7 and 8. Axis 5 is
+not, for the reason given above.
 
 What it settles:
 
 - **The floor is not empty.** The meadow fills the lower ~55% of the frame and
-  the blades are individually legible as strokes. Every claim in §1 about the
-  near field is visible here. The problem was never that there is too little
-  grass.
+  the blades are individually legible as strokes — **at a sixteenth of the near
+  ring's density**, which is a stronger result than a full-density frame would
+  have been. The problem was never that there is too little grass.
 - **There is no subject.** Axis 1 confirms §2 from the frame rather than from
   the code.
 
