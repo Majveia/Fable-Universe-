@@ -5098,6 +5098,15 @@ function suiteMeadow() {
     // and the density cap is behind the guard, so densityMul is untouched
     ok('the density cap is inside the flag’s guard, so the multiplier is untouched',
       /if \(COVER && !this\._capped\)/.test(src));
+
+    // a ring switched off entirely should not mint meshes for it. Ring 3's grid
+    // is derived from its own 1250 m far edge, so it was allocating 169 of them
+    // — permanently invisible, walked on every updateMatrixWorld, held until
+    // teardown.
+    ok('a ring whose whole band is beyond the reach allocates no chunks',
+      /const dead = COVER && this\.spec\.near >= COVER_REACH;/.test(src)
+      && /for \(let cx = -this\.grid; !dead && cx <= this\.grid; cx\+\+\)/.test(src),
+      `ring 3 would otherwise mint ${chunkCount(3)} meshes it can never draw`);
   }
 
   // --- the physical bound on width ------------------------------------------

@@ -887,7 +887,20 @@ export class GrassRing {
     geo.instanceCount = 0;
     this.geometry = geo;
 
-    for (let cx = -this.grid; cx <= this.grid; cx++) {
+    // A ring whose whole band lies beyond the reach has nothing to draw, ever.
+    //
+    // The fade already collapses its blades and `update()` already refuses its
+    // chunks, so this costs no triangles either way — but the grid is derived
+    // from the ring's own `far`, so ring 3 was still minting **169 meshes** and
+    // ring 2 another 81, all of them permanently invisible. Objects three has
+    // to walk on every `updateMatrixWorld` and hold until teardown, for a ring
+    // that is switched off.
+    //
+    // The rings are still *constructed*, because `surface.js` builds all four
+    // and adding a branch there is not this session's to make; an empty group
+    // is a perfectly good no-op and `dispose()` still works on it.
+    const dead = COVER && this.spec.near >= COVER_REACH;
+    for (let cx = -this.grid; !dead && cx <= this.grid; cx++) {
       for (let cz = -this.grid; cz <= this.grid; cz++) {
         const mesh = new THREE.Mesh(geo, mat);
         mesh.userData.near = this.spec.dn;
