@@ -206,3 +206,105 @@ moves at all — the shadow is the cloud, bit for bit.
   of it.
 - **The three flags are default-off**, so none of this is shipped. Flipping any
   of them wants the numbers above from a real GPU first.
+
+---
+
+# Part two · green grass, a real sky, an ultra row
+
+A second session, from five reference frames and
+`github.com/Leonxlnx/sakura-realm` — which turned out to be **already vendored**
+at `docs/reference/sakura-realm/`, with `tree.js`, `blossom.js`, `foliage.js`,
+`scatter.js` and `precip.js` already ports of its methods. What was never ported
+was its sky, its grass colour and its quality ceiling.
+
+## Act 1 · Grass is chlorophyll
+
+**The defect.** `_buildMeadow` took its base from `pp.colC`. On a terrestrial
+world that is the vegetation; **on an ocean world it is the water**, and
+`isBiosphere()` is true for ocean worlds. Every one of them grew a lawn out of
+its own sea — base `#5a9eba`, root `#2854a3`, tip `#a1d7ff`. `material.js`'s
+sward layer and `ground-cover.js` read the same colour and had the same bug.
+
+One colour was doing two jobs with nothing saying which. `pp.vegetation` is the
+green now; `colC` keeps its per-type meaning.
+
+**§3's weirdness moved rather than died.** `exoticHSL()` is the same draw, the
+same 5%, the same teal and violet — read by whatever *stands in* the grass. A
+strange world is a strange wood in green grass.
+
+**The ramp was flat.** The reference ships a 4.36× base-to-tip luminance ramp;
+AEON shipped 2.10. The stops are solved rather than typed — a sweep minimising
+RGB distance to `#82a552` and `#b3ad6a`, landing 10/255 and 8/255.
+
+Two measurements moved the design mid-flight. The chlorophyll band started at
+72° because the reference's *tip* is 74° — the same double-rotation error the
+file already recorded at the cool end; 85° is where all fourteen stops stay
+green. And "the straw is red-dominant" is false and unreachable: swept over `k`
+in [3.4, 5.6] and `rot` in [0.60, 1.00], nothing turns a 117° base red before
+green. Dried grass on a deep-green world is olive, and only a yellow-green world
+dries to gold.
+
+**The gate:** 104,026 palette stops across 4,001 draws — not one blue.
+
+## Act 2 · Height is what closes the mat
+
+Not a count. AEON's near ring is 1,099 blades/m² against the reference's ~167 —
+six times as many — and read sparse, because it capped blades at 1.00 m where
+the reference's tall mode reaches 1.48. The reference states the law:
+
+> A blade hides ground roughly in proportion to its own projected area.
+
+The three sward modes are ported with their reasoning. `chunkScale` is
+deliberately **not**: the reference needs it because its per-chunk count is
+capped; AEON's density is one continuous law and the dial is `RINGS[r].blades`.
+
+They interpolate continuously in wetness — largest step 0.44 cm — and what
+drives them is `drainage.js`. The `swale` term was 23 m of noise: a swale that
+was not anywhere, drawn over ground with real hollows in it.
+
+## Act 3 · The sky the planet already had
+
+`planetscale.js` builds real Rayleigh + Mie LUTs and renders the atmosphere from
+orbit. Land, and a four-stop gradient got painted instead. **The one scale you
+spend the most time in was the one without a sky in it.**
+
+The march is forty lines ported from `ATMO2_FRAG`, which is position-independent
+— standing on the ground puts the camera inside the shell. One line changed:
+looking down from inside, the near root of the ground sphere is behind you.
+
+The medium is Earth's real coefficients scaled by this world's pressure, scale
+height and composition. **Earth's 8.5 km falls out at 8.43 without being fitted
+to it.** The star arrives as a spectrum at the *top* of the air — `beamXYZ()`
+would have reddened the sunset twice.
+
+The painted wash and the painted Mie halo go together; the disc and the cirrus
+stay, because those are art direction and an integral has no opinion about them.
+
+## Act 4 · The ultra row
+
+`chooseTier()` graded a *class* and let `hardwareConcurrency` pick between two
+rows, so **an RTX 3060 in a six-core desktop was graded desktop, not ultra** —
+the tier of a fill-rate-bound scene decided by the CPU. It reads the model
+number now, over seventeen real renderer strings.
+
+`shadowRes` 4096, `atmoSteps` 26, `shaftTaps` 16. `grass` deliberately did not
+move: the sward's height rose 48% in the same session and a blade covers pixels
+in proportion to its height.
+
+## Still owed
+
+- **SMAA, cascaded shadows, the volumetric cloud march.** Features, not knobs.
+  Each needs its own measurement.
+- **§5 is unmeasured.** Chromium here is SwiftShader. The 60 fps hold is a
+  standing instruction, not a result.
+- **No blind capture.** §8 has not scored any of this.
+
+## Three bugs the work found rather than confirmed
+
+1. `drainAt()` hard-coded `texture2D`, which three aliases for ES 1.00 and
+   deliberately does not for 3.00. The terrain compiled; the blade's *vertex*
+   shader did not. **The meadow was silently absent while the ground looked
+   right.** Both chunks carry a version-safe macro now.
+2. `_buildSky` reads `this.pp`; the atmosphere block used a bare `pp`.
+3. An over-broad regex in my own edit ate `QUALITY` and `SAT_AMOUNT` from
+   `verify.js`'s imports, and I reported 1019/1019 for a run that threw.
