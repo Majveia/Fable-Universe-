@@ -355,10 +355,24 @@ export const PALETTE_KEYS = [
  *    slightly wider blades — which is also what a real mown lawn is: a much
  *    denser stand of much smaller leaves."
  *
- * AEON shipped `0.42 + rand·0.58`, so 0.42–1.00 m, against the reference's
- * 0.42–1.48 for the same mode. Six times the blades per square metre at two
- * thirds the height — and by the law above, height is the term that closes the
- * mat. That is what "thin" was: not a count, a *stature*.
+ * **What I first wrote here was wrong, and the frame said so.**
+ *
+ * The claim was that AEON shipped 0.42–1.00 m against the reference's
+ * 0.42–1.48. It did not. `bladeRoots` returns a *base*, and `flora.js` then
+ * multiplies it by the ring's `hs`, by a tussock term spanning 0.72–1.28, and
+ * by a swale term. The blade that actually reaches the screen at ring 0 was
+ *
+ *     0.42 × 0.72 × 0.86  to  1.00 × 1.28 × 1.14   =   0.26 to 1.459 m
+ *
+ * — which is the reference's 1.48 already, at the top. Substituting the
+ * reference's *final* range for AEON's *base* range multiplied it a second time
+ * and produced 2.46 m blades, taller than the 1.68 m walker standing in them.
+ * They spanned the frame as vertical streaks, which is what a capture showed
+ * and no offline check could have.
+ *
+ * So the modes below are **final** heights, and `bladeRoots` divides by the
+ * multipliers the shader is going to apply. The lawn-to-tall range survives,
+ * driven by the drainage field; the scale error does not.
  *
  * `chunkScale` is deliberately **not** ported. The reference needs it because
  * its per-chunk instance count is capped and its near chunks already sit at the
@@ -375,6 +389,18 @@ export const SWARD_MODES = {
 
 /** the order they interpolate in, driest to wettest */
 export const SWARD_ORDER = ['lawn', 'meadow', 'tall'];
+
+/**
+ * The most `flora.js` can multiply a base height by: the tussock term's 1.28
+ * and the swale term's 1.16.
+ *
+ * It lives here because `SWARD_MODES` is stated as a *final* height and this is
+ * what makes that true. If either term in the shader changes, this changes with
+ * it — and `tools/verify.js` checks the two against each other rather than
+ * trusting the comment, because that is exactly the coupling that produced a
+ * 2.46 m blade.
+ */
+export const MULT_MAX = 1.28 * 1.16;
 
 /**
  * The sward a piece of ground carries, as a continuous function of how wet it
@@ -407,7 +433,8 @@ export function bladeRoots(seed, n, chunk, sward = SWARD_MODES.tall) {
     root[i * 2] = ((k % g) + frac01(hash(seed, k, 0x11))) * cell;
     root[i * 2 + 1] = (Math.floor(k / g) + frac01(hash(seed, k, 0x22))) * cell;
     rand[i] = frac01(hash(seed, k, 0x33));
-    height[i] = sward.hMin + frac01(hash(seed, k, 0x44)) * (sward.hMax - sward.hMin);
+    height[i] = (sward.hMin + frac01(hash(seed, k, 0x44)) * (sward.hMax - sward.hMin))
+      / MULT_MAX;
   }
   return { root, rand, height, cells: g, cell };
 }

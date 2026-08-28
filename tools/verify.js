@@ -117,7 +117,8 @@ import { SILHOUETTES, coverageOf, maskData } from '../src/silhouette.js';
 import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import {
-  CHLOROPHYLL, RAMP, SWARD_MODES, VEG_WEIRD, exoticHSL, swardAt, vegetationHSL,
+  CHLOROPHYLL, MULT_MAX, RAMP, SWARD_MODES, VEG_WEIRD, exoticHSL, swardAt,
+  vegetationHSL,
 } from '../src/meadow.js';
 import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
 import {
@@ -9366,9 +9367,36 @@ function suiteSward() {
     const r = bladeRoots(1, 4096, 9);
     let lo = Infinity, hi = -Infinity;
     for (const h of r.height) { lo = Math.min(lo, h); hi = Math.max(hi, h); }
-    ok('the default stand reaches the reference\'s full height',
-      hi > 1.40 && lo < 0.50,
-      `${lo.toFixed(3)}–${hi.toFixed(3)} m, against the 0.42–1.00 that read thin`);
+    // **The check this suite did not have, and the bug it did not catch.**
+    //
+    // bladeRoots() returns a *base*. flora.js then multiplies it by a tussock
+    // term spanning 0.72–1.28 and a swale term spanning 0.86–1.16, so the blade
+    // that reaches the screen is up to 1.485x what comes out of here. The first
+    // version of this suite asserted on the base and called it "the reference's
+    // full height" — so it passed while the shader drew 2.46 m blades that
+    // stood taller than the walker and striped the frame.
+    //
+    // What has to be checked is the *product*, and both halves of it have to be
+    // read from the files that own them rather than restated here.
+    const f = readFileSync(new URL('../src/flora.js', import.meta.url), 'utf8');
+    const swale = f.match(/\* mix\(([\d.]+), ([\d.]+), swale\);/);
+    const tuss = f.match(/\(0\.72 \+ ([\d.]+) \* tuss\)/);
+    ok('the shader\'s multipliers are still the ones MULT_MAX describes',
+      !!swale && !!tuss
+      && Math.abs((0.72 + Number(tuss[1])) * Number(swale[2]) - MULT_MAX) < 1e-9,
+      swale && tuss
+        ? `(0.72+${tuss[1]}) x ${swale[2]} = `
+          + `${((0.72 + Number(tuss[1])) * Number(swale[2])).toFixed(4)} against `
+          + `MULT_MAX ${MULT_MAX.toFixed(4)}`
+        : 'could not find the terms in flora.js');
+    const finalMax = hi * MULT_MAX;
+    const finalMin = lo * 0.72 * Number(swale ? swale[1] : 0.86);
+    near('and the blade that reaches the screen tops out at the mode\'s hMax',
+      finalMax, SWARD_MODES.tall.hMax, 1e-3);
+    ok('which is waist-high on a 1.68 m walker rather than over their head',
+      finalMax < 1.68,
+      `${finalMin.toFixed(3)}–${finalMax.toFixed(3)} m on screen · `
+      + `base ${lo.toFixed(3)}–${hi.toFixed(3)}`);
 
     // and the mode is honoured when one is passed
     const mown = bladeRoots(1, 1024, 9, SWARD_MODES.lawn);
@@ -9413,8 +9441,12 @@ function suiteSward() {
       /wNoise3\(uWindSeed \+ 22/.test(f),
       'the tile is 8.75 m a cell; a metre-scale wobble is what makes it a seam '
       + 'rather than a stencil');
-    ok('and the height span is the modes\' span, not a 28% wobble',
-      /mix\(0\.46, 1\.30, swale\)/.test(f) && !/0\.86 \+ 0\.28 \* swale/.test(f));
+    // Deliberately narrow, and the reason is the bug above: the lawn-to-tall
+    // span lives in SWARD_MODES, on the base. Putting it here as well applied
+    // it twice.
+    ok('the swale term is a wobble on top, not the mode range a second time',
+      /mix\(0\.86, 1\.16, swale\)/.test(f) && !/mix\(0\.46, 1\.30, swale\)/.test(f),
+      'a hollow a little ranker than the shoulder above it');
     // Zero from drainAt() means "off the map" as well as "dry", and the meadow
     // reaches 1250 m against a 700 m half-span — so past the edge it read as
     // dry, went short, and drew a ring.

@@ -415,12 +415,17 @@ const BLADE_VERT = /* glsl */`
     vec2 flow = w.rg;
 
     // tussocks are taller as well as differently coloured
-    // §M-sward · height is what closes the mat, and the swale is what decides
-    // it. The old span was 0.86–1.14, which is a 28% wobble — invisible against
-    // the 3.5x span the reference's own lawn-to-tall modes cover. swardAt()
-    // carries those modes; this is the shader's half of the same statement.
+    // The swale's own contribution to height, and it is deliberately narrow.
+    //
+    // It was 0.46-1.30 for one commit, on the theory that the lawn-to-tall
+    // range belonged here. It does not: that range is SWARD_MODES, applied to
+    // the *base* in meadow.js, and applying it in both places made 2.46 m
+    // blades that stood taller than the 1.68 m walker and striped the frame.
+    // This term is the metre-scale wobble on top — a hollow a little ranker
+    // than the shoulder above it — and MULT_MAX in meadow.js is the other half
+    // of this same number, which is why a suite checks the two agree.
     float h = aHeight * uHeightScale * live * (0.72 + 0.56 * tuss)
-            * mix(0.46, 1.30, swale);
+            * mix(0.86, 1.16, swale);
     // bladedbg level 2: eight times tall, sixty times wide. If THAT does not
     // appear, nothing is being drawn at all and the fault is the draw rather
     // than any dimension in it.
