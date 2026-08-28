@@ -2272,7 +2272,7 @@ export class SurfaceScale {
       // value — a copy would be the sky one frame behind the walker.
       this._atmoCam = { value: new THREE.Vector3() };
       this.atmosphere = ATMO_SKY ? makeAtmosphere({
-        pp, atmo: this.atmo, gravity: gravityOf(pp),
+        pp: this.pp, atmo: this.atmo, gravity: gravityOf(this.pp),
         starT: this.ctx.system?.temp ?? 5778,
         steps: qInt('atmosteps', 'atmoSteps'),
         sunDir: this.uSunDir, camPos: this._atmoCam,

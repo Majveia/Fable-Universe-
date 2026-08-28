@@ -42,6 +42,40 @@ const TIER_NAMES = ['low', 'mobile', 'desktop', 'ultra'];
  *   cities      the full metropolis generator
  *   volumetrics volumetric cloud deck and god rays
  *
+ * ---------------------------------------------------------------------------
+ * The ultra row, and what it is allowed to cost
+ *
+ * §5 budgets three tiers — desktop, mobile and low — and has never had a row
+ * for ultra. The reference's own quality.js says outright that "ULTRA is
+ * allowed to sit around 30-40 fps" and targets 40. AEON's does not take that
+ * licence: the standing instruction for this row is **hold 60 fps p95 on an
+ * RTX 3060**, so ultra stays a tier you can play at rather than a screenshot
+ * mode.
+ *
+ * What moved, and why each was cheap enough:
+ *
+ *   · `shadowRes` 2560 -> 4096, matching the reference. One pass, no extra
+ *     fill in the main scene, and `shadowTaps` is unchanged so the sampling
+ *     cost per lit fragment is exactly what it was.
+ *   · `atmoSteps` 16 -> 26. It costs sky pixels only, and it only costs
+ *     anything at all under `?atmo=1`, where the sky went from four painted
+ *     stops to a real integral and the step count became the thing that decides
+ *     whether the horizon bands.
+ *   · `shaftTaps` 12 -> 16, on the same argument: gated on looking toward the
+ *     sun, so most of the frame pays nothing.
+ *
+ * What deliberately did **not** move is `grass`. The sward's height went from
+ * 0.42-1.00 m to the reference's 0.42-1.48 in the same session, and a blade
+ * covers pixels in proportion to its height — so that change already spent the
+ * meadow's share of this row's budget, and raising the count on top of it would
+ * be spending it twice. `curvedRings` stayed at 2 for the reason its own commit
+ * records: the curved cross-section cost 40% of the frame for 26 metres of
+ * grass.
+ *
+ * Still owed, and none of them a number in this table: SMAA in place of FXAA,
+ * cascaded shadows, and the volumetric cloud march. Those are features rather
+ * than knobs, and each needs its own measurement on real silicon.
+ *
  * `shaftTaps` is the same rule again, and it is the reason the shafts could be
  * built at all. A ray march through the cloud field is the one thing in this
  * project that is genuinely expensive per fragment, so the tap count is a tier
@@ -109,7 +143,7 @@ export const QUALITY = [
   { name: 'low', px: 0.85, cosmic: 44, quadSplit: 4.5, quadDepth: 14, tileRes: 25, atmoSteps: 6, shadowRes: 1024, shadowTaps: 1, shaftTaps: 0, cities: false, volumetrics: false, grass: [0.30, 0.28, 0.26, 0.24], wind: 160, blades: [3, 1, 1, 1], curvedRings: 0 },
   { name: 'mobile', px: 1.00, cosmic: 56, quadSplit: 5.5, quadDepth: 16, tileRes: 29, atmoSteps: 8, shadowRes: 1536, shadowTaps: 5, shaftTaps: 0, cities: true, volumetrics: false, grass: [0.58, 0.55, 0.52, 0.48], wind: 224, blades: [3, 2, 1, 1], curvedRings: 0 },
   { name: 'desktop', px: 1.12, cosmic: 68, quadSplit: 6.5, quadDepth: 18, tileRes: 33, atmoSteps: 12, shadowRes: 2048, shadowTaps: 5, shaftTaps: 8, cities: true, volumetrics: true, grass: [1.00, 1.00, 1.00, 1.00], wind: 288, blades: [4, 2, 1, 1], curvedRings: 1 },
-  { name: 'ultra', px: 1.32, cosmic: 86, quadSplit: 8.0, quadDepth: 20, tileRes: 41, atmoSteps: 16, shadowRes: 2560, shadowTaps: 5, shaftTaps: 12, cities: true, volumetrics: true, grass: [1.45, 1.38, 1.30, 1.20], wind: 352, blades: [5, 3, 2, 1], curvedRings: 2 },
+  { name: 'ultra', px: 1.32, cosmic: 86, quadSplit: 8.0, quadDepth: 20, tileRes: 41, atmoSteps: 26, shadowRes: 4096, shadowTaps: 5, shaftTaps: 16, cities: true, volumetrics: true, grass: [1.45, 1.38, 1.30, 1.20], wind: 352, blades: [5, 3, 2, 1], curvedRings: 2 },
 ];
 
 const param = (k) => {
