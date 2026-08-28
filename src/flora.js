@@ -399,7 +399,12 @@ const BLADE_VERT = /* glsl */`
     // world is the blade's root in world xz — a vec2 — and drainAt() is
     // indexed in world space and takes the full position. y is unused by it
     // (the tile is a plan, not a volume) and zero is the honest value to pass.
-    swale = mix(swale, clamp(drainAt(vec3(world.x, 0.0, world.y)).g * 1.25, 0.0, 1.0), 0.72);
+    vec3 w3 = vec3(world.x, 0.0, world.y);
+    // Weighted by the tile's own coverage, so grass beyond its edge keeps the
+    // noise swale it always had instead of reading as dry. Zero from drainAt()
+    // is "off the map" out there, not "no water", and mixing toward it drew a
+    // ring at 700 m where ring 3 crosses the boundary.
+    swale = mix(swale, clamp(drainAt(w3).g * 1.25, 0.0, 1.0), 0.72 * drainCover(w3));
     ` : ''}
     float dryF = wNoise3(uWindSeed + 23, vec3(world * 0.011, 0.0)) * 0.5 + 0.5;
     vTint = vec3(tuss, swale, dryF);

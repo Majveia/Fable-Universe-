@@ -9407,7 +9407,7 @@ function suiteSward() {
     // so the conversion is part of the check: `drainAt(world)` compiled in
     // exactly nobody's GLSL and the meadow was absent until it was found.
     ok('the swale is the drainage field now, not 23 m of noise',
-      /swale = mix\(swale, clamp\(drainAt\(vec3\(world\.x, 0\.0, world\.y\)\)\.g/.test(f),
+      /swale = mix\(swale, clamp\(drainAt\(w3\)\.g \* 1\.25, 0\.0, 1\.0\), 0\.72 \* drainCover\(w3\)\)/.test(f),
       'a swale that was not anywhere, drawn over ground that has real hollows');
     ok('with the noise kept as detail on top of it',
       /wNoise3\(uWindSeed \+ 22/.test(f),
@@ -9415,6 +9415,13 @@ function suiteSward() {
       + 'rather than a stencil');
     ok('and the height span is the modes\' span, not a 28% wobble',
       /mix\(0\.46, 1\.30, swale\)/.test(f) && !/0\.86 \+ 0\.28 \* swale/.test(f));
+    // Zero from drainAt() means "off the map" as well as "dry", and the meadow
+    // reaches 1250 m against a 700 m half-span — so past the edge it read as
+    // dry, went short, and drew a ring.
+    ok('and beyond the tile it keeps the noise instead of reading as dry',
+      /float drainCover\(vec3 wp\)/.test(DRAINAGE_GLSL)
+      && /0\.72 \* drainCover\(w3\)/.test(f),
+      'ring 3 carries blades four times further out than the tile is wide');
     ok('the grass reads the same tile the ground does',
       /drainage: WETLINE \? this\._drainageUniforms\(\) : null/.test(
         readFileSync(new URL('../src/surface.js', import.meta.url), 'utf8')),

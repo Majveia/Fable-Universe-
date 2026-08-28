@@ -367,11 +367,23 @@ uniform vec2  uDrainOrigin;   // the tile's min corner, world xz
 uniform float uDrainSpan;     // its size in metres
 uniform float uDrainAmt;      // 0 off .. 1 — the world's own rain, folded in
 
+// How much of this point the tile actually covers. 1 inside, 0 beyond the
+// edge, smooth between.
+//
+// Exposed separately because zero from drainAt() means two different things —
+// "this ground is dry" and "this ground is off the map" — and a caller that
+// cannot tell them apart gets a step at the tile edge. The meadow found this:
+// ring 3 carries blades to 1250 m and the tile is 700 m of half-span, so the
+// far field read as dry, went short, and drew a ring.
+float drainCover(vec3 wp) {
+  vec2 e = abs((wp.xz - uDrainOrigin) / uDrainSpan - 0.5);
+  return 1.0 - smoothstep(0.40, 0.499, max(e.x, e.y));
+}
+
 // r flow · g wetness · b silt · a dry-wash braid, all faded outside the tile
 vec4 drainAt(vec3 wp) {
   vec2 uv = (wp.xz - uDrainOrigin) / uDrainSpan;
-  vec2 e = abs(uv - 0.5);
-  float inside = 1.0 - smoothstep(0.40, 0.499, max(e.x, e.y));
+  float inside = drainCover(wp);
   if (inside <= 0.0) return vec4(0.0);
   return AEON_TEX(uDrainTex, clamp(uv, 0.0, 1.0)) * inside * uDrainAmt;
 }
