@@ -395,7 +395,12 @@ const BLADE_VERT = /* glsl */`
     // a metre-scale wobble on top of it is the difference between a seam and a
     // stencil.
     float swale = wNoise3(uWindSeed + 22, vec3(world * 0.043, 0.0)) * 0.5 + 0.5;
-    ${WETLINE_ON ? 'swale = mix(swale, clamp(drainAt(world).g * 1.25, 0.0, 1.0), 0.72);' : ''}
+    ${WETLINE_ON ? /* glsl */`
+    // world is the blade's root in world xz — a vec2 — and drainAt() is
+    // indexed in world space and takes the full position. y is unused by it
+    // (the tile is a plan, not a volume) and zero is the honest value to pass.
+    swale = mix(swale, clamp(drainAt(vec3(world.x, 0.0, world.y)).g * 1.25, 0.0, 1.0), 0.72);
+    ` : ''}
     float dryF = wNoise3(uWindSeed + 23, vec3(world * 0.011, 0.0)) * 0.5 + 0.5;
     vTint = vec3(tuss, swale, dryF);
 
