@@ -9352,8 +9352,11 @@ function suiteSward() {
   // --- 4 · the shader reads the real field, not a noise field -------------
   {
     const f = readFileSync(new URL('../src/flora.js', import.meta.url), 'utf8');
+    // The lookup takes a full world position and the blade's root is a vec2,
+    // so the conversion is part of the check: `drainAt(world)` compiled in
+    // exactly nobody's GLSL and the meadow was absent until it was found.
     ok('the swale is the drainage field now, not 23 m of noise',
-      /swale = mix\(swale, clamp\(drainAt\(world\)\.g/.test(f),
+      /swale = mix\(swale, clamp\(drainAt\(vec3\(world\.x, 0\.0, world\.y\)\)\.g/.test(f),
       'a swale that was not anywhere, drawn over ground that has real hollows');
     ok('with the noise kept as detail on top of it',
       /wNoise3\(uWindSeed \+ 22/.test(f),
