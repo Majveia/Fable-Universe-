@@ -944,11 +944,23 @@ const PARAM = (k) => {
 // ------------------------------------------------------------- the scale ----
 
 /**
- * §7.4 — built, not shipped. `?pilot=1` gives the cruise a governor, a roll and
- * a URL. Without it the old cube-and-clamp is untouched, which is what every
- * capture in this repo was shot with.
+ * §7.4 — **shipped**, with an escape hatch. `?pilot=0` restores the old
+ * cube-and-clamp cruise, which is what every capture in this repo before now
+ * was shot with, so §2.4's saved URLs keep resolving.
+ *
+ * Flipped on the human's explicit instruction. The evidence behind this one is
+ * unusually good for a thing with no screenshot: `tools/verify.js` does not
+ * check the governor's algebra, it *flies* it — integrating an approach at one
+ * millisecond and asserting where the craft actually comes to rest, which is a
+ * check a tuned falloff would fail. Twenty-one checks, in Node, on any machine.
+ *
+ * What has never been seen is the feel of it, and that cannot be captured here:
+ * a craft arrives at rest by design (§2.4 — a link that dropped you at speed
+ * would resolve elsewhere a second later), and no headless tool can hold a
+ * throttle. So the governor is proven and unwatched, and that is the honest
+ * summary.
  */
-const PILOT_ON = PARAM('pilot') === '1';
+const PILOT_ON = PARAM('pilot') !== '0';
 
 export class SystemScale {
   constructor(app, ctx) {
