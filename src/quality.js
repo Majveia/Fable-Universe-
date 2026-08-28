@@ -125,6 +125,113 @@ const param = (k) => {
  * wrong is a frame budget, and the cost of changing rows mid-flight is a
  * visibly pumping image. `?q=` settles it for anyone who disagrees.
  */
+/**
+ * The number after a pattern, or 0 — the reference's `numAfter`, which is the
+ * whole of how a renderer string becomes a tier.
+ */
+function numAfter(s, re) {
+  const m = s.match(re);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+/**
+ * Which row this machine gets.
+ *
+ * **The GPU decides.** That was already the intent — the string was already in
+ * hand for the software check — but the implementation graded a *class*
+ * (`discrete`) and then let `hardwareConcurrency` pick between two rows. So an
+ * RTX 3060 in a six-core desktop was graded `desktop` rather than `ultra`: the
+ * tier decided by the CPU, on a scene that is fill-rate bound. A part that can
+ * take the top row was being handed the second one because of how many threads
+ * its host happens to have.
+ *
+ * The model number is right there in the string, so read it. Shape and
+ * thresholds from `docs/reference/sakura-realm/src/core/quality.js`, which
+ * makes the same call for the same reason and adds the one refinement worth
+ * having: a **mobile** x050/x060 is a 35–75 W part and does not get the top row
+ * just because the name looks modern.
+ *
+ * Cores still decide when the string says nothing — a virtualised or masked
+ * renderer is the case that has no better signal.
+ */
+/**
+ * Renderer string, core count and pointer kind in — a row out.
+ *
+ * Pure, and separated from `chooseTier()` for one reason: this is the part with
+ * the judgement in it, and a function that reads three browser globals cannot
+ * be tested without inventing a browser. `tools/verify.js` runs it over fifteen
+ * real renderer strings instead.
+ */
+export function tierForRenderer(renderer, cores = 4, coarse = false) {
+  const s = String(renderer || '').toLowerCase();
+  // a software rasteriser is not a tier, it is a different machine
+  if (/swiftshader|llvmpipe|software|basic render|virgl|paravirtual/.test(s)) return 0;
+
+  // --- phones and tablets, by name rather than by pointer type ------------
+  if (/adreno|mali[- ]|powervr|videocore|xclipse|immortalis/.test(s)) {
+    const adreno = numAfter(s, /adreno[^\d]*(\d{3})/);
+    return (/immortalis/.test(s) || adreno >= 730) ? 1 : 0;
+  }
+  if (coarse) return cores >= 6 ? 1 : 0;
+
+  // --- Apple silicon ------------------------------------------------------
+  if (/apple m\d/.test(s)) return /\bm\d\s*(max|ultra)\b/.test(s) ? 3 : 2;
+  if (/apple gpu|apple a\d{1,2} gpu/.test(s)) return 1;
+
+  // --- NVIDIA -------------------------------------------------------------
+  if (/nvidia|geforce|quadro|rtx|gtx/.test(s)) {
+    if (/\bmx\d{3}\b/.test(s)) return 1;
+    const rtx = numAfter(s, /rtx\s*(\d{4})/);
+    if (rtx > 0) {
+      const model = rtx % 1000;
+      // a mobile x050/x060 is a 35–75 W part, and this scene is fill-rate
+      // bound: it does not get the top row because the name looks modern
+      const laptop = /laptop|max-q|mobile/.test(s);
+      return (model >= 60 && !(laptop && model < 70)) ? 3 : 2;
+    }
+    const gtx = numAfter(s, /gtx\s*(\d{3,4})/);
+    if (gtx > 0) return gtx >= 1060 ? 2 : 1;
+    return 2;
+  }
+
+  // --- AMD ----------------------------------------------------------------
+  if (/amd|radeon|ati /.test(s)) {
+    const rx = numAfter(s, /(?:radeon\s*)?rx\s*(\d{3,4})/);
+    if (rx > 0) {
+      const series = Math.floor(rx / 1000);
+      if (series >= 6) return rx % 1000 >= 500 ? 3 : 2;
+      return rx % 1000 >= 500 ? 2 : 1;
+    }
+    // an APU — Vega, 780M and friends. Capable, and not a discrete part.
+    return /\b(780m|880m|890m)\b/.test(s) ? 2 : 1;
+  }
+
+  // --- Intel --------------------------------------------------------------
+  if (/intel/.test(s) && /\barc\b|\ba\d{3}m?\b/.test(s)) return 2;
+  if (/intel|uhd|iris/.test(s)) return /iris xe/.test(s) ? 1 : 0;
+
+  // --- nothing recognisable: the one case where cores are the best signal.
+  // A masked renderer string is the common cause, and it is a real one.
+  if (cores >= 12) return 3;
+  if (cores >= 6) return 2;
+  return 1;
+}
+
+/**
+ * Which row this machine gets.
+ *
+ * **The GPU decides.** That was already the intent — the string was already in
+ * hand for the software check — but the implementation graded a *class*
+ * (`discrete`) and then let `hardwareConcurrency` pick between two rows. So an
+ * RTX 3060 in a six-core desktop was graded `desktop` rather than `ultra`: the
+ * tier decided by the CPU, on a scene that is fill-rate bound. A part that can
+ * take the top row was handed the second one because of how many threads its
+ * host happens to have.
+ *
+ * The model number is right there in the string, so read it. Shape and
+ * thresholds from `docs/reference/sakura-realm/src/core/quality.js`, which
+ * makes the same call for the same reason.
+ */
 function chooseTier() {
   const explicit = param('q') ?? param('tier');
   const named = TIER_NAMES.indexOf(String(explicit));
@@ -132,29 +239,13 @@ function chooseTier() {
   if (explicit !== null && /^[0-3]$/.test(explicit)) return Number(explicit);
 
   try {
-    // a software rasteriser is not a tier, it is a different machine
     const gl = document.createElement('canvas').getContext('webgl2');
     if (!gl) return 0;
     const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-    const renderer = String(gl.getParameter(dbg ? dbg.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
-    if (/swiftshader|llvmpipe|software|basic render/i.test(renderer)) return 0;
-
-    const cores = navigator.hardwareConcurrency || 4;
-    const coarse = window.matchMedia && matchMedia('(pointer: coarse)').matches;
-    if (coarse) return cores >= 6 ? 1 : 0;
-
-    // The GPU decides, and it used to not get a vote. The first version keyed
-    // the tier on `hardwareConcurrency` alone, which is backwards on both ends:
-    // a six-core desktop with a discrete card was graded below a sixteen-core
-    // laptop with integrated graphics. The renderer string is already in hand
-    // for the software check, so ask it.
-    const discrete = /\b(rtx|gtx|radeon rx|geforce|quadro|arc a\d|apple m[1-9])\b/i.test(renderer);
-    const integrated = /\b(intel|uhd|iris|vega \d|adreno|mali|powervr)\b/i.test(renderer);
-    if (discrete) return cores >= 8 ? 3 : 2;
-    if (integrated) return cores >= 8 ? 2 : 1;
-    if (cores >= 12) return 3;
-    if (cores >= 6) return 2;
-    return 1;
+    return tierForRenderer(
+      gl.getParameter(dbg ? dbg.UNMASKED_RENDERER_WEBGL : gl.RENDERER),
+      navigator.hardwareConcurrency || 4,
+      typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches);
   } catch {
     return 1;
   }

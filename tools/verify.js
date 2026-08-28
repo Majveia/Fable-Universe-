@@ -85,7 +85,7 @@ import {
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
 } from '../src/meadow.js';
-import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
+import { tierForRenderer } from '../src/quality.js';
 import { walkable, wonderDestination, wonderScore } from '../src/wonder.js';
 import {
   RHO, TROFFER_GLSL, bounceGain, cavityBounce, ceilingQuad, polygonIrradiance,
@@ -9051,6 +9051,75 @@ function suiteBlossom() {
 
 
 
+
+// ---------------------------------------------------------------------------
+// suite: tier
+//
+// The defect: `chooseTier()` graded a *class* — "is this discrete?" — and then
+// let `hardwareConcurrency` choose between two rows. An RTX 3060 in a six-core
+// desktop came out `desktop` rather than `ultra`, so the tier of a fill-rate
+// bound scene was being decided by how many threads the host happens to have.
+//
+// Fifteen real renderer strings, and the row each one has to land on. This is
+// the only kind of test that catches a classifier: the logic is a pile of
+// regexes and the only thing that matters is what it says about actual parts.
+
+function suiteTier() {
+  console.log('\ntier — the GPU decides, not the core count');
+
+  const NAME = ['low', 'mobile', 'desktop', 'ultra'];
+  const cases = [
+    // the defect, first
+    ['ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)', 6, false, 3,
+      'the whole reason this changed — six cores used to cap it at desktop'],
+    ['ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 Direct3D11, D3D11)', 24, false, 3, ''],
+    ['ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Laptop GPU Direct3D11, D3D11)', 16, false, 3, ''],
+    // and the refinement that keeps it honest
+    ['ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Laptop GPU Direct3D11, D3D11)', 16, false, 2,
+      'a mobile x060 is a 35-75 W part and this scene is fill-rate bound'],
+    ['ANGLE (NVIDIA, NVIDIA GeForce RTX 3050 Direct3D11, D3D11)', 8, false, 2, ''],
+    ['ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11, D3D11)', 8, false, 2, ''],
+    ['ANGLE (NVIDIA, NVIDIA GeForce GTX 960 Direct3D11, D3D11)', 8, false, 1, ''],
+    ['ANGLE (NVIDIA, NVIDIA GeForce MX150 Direct3D11, D3D11)', 8, false, 1, ''],
+    ['ANGLE (AMD, AMD Radeon RX 6800 XT Direct3D11, D3D11)', 16, false, 3, ''],
+    ['ANGLE (AMD, AMD Radeon RX 6600 Direct3D11, D3D11)', 12, false, 3, ''],
+    ['ANGLE (AMD, AMD Radeon(TM) 780M Graphics Direct3D11, D3D11)', 16, false, 2,
+      'the reference\'s own target part'],
+    ['Apple M3 Max', 14, false, 3, ''],
+    ['Apple M1', 8, false, 2, ''],
+    ['ANGLE (Intel, Intel(R) UHD Graphics 620, OpenGL 4.5)', 8, false, 0, ''],
+    ['ANGLE (Google, Vulkan 1.3 (SwiftShader Device))', 32, false, 0,
+      'a software rasteriser is not a tier, it is a different machine'],
+    ['Adreno (TM) 750', 8, true, 1, ''],
+    ['Mali-G57 MC2', 8, true, 0, ''],
+  ];
+
+  for (const [renderer, cores, coarse, want, why] of cases) {
+    const got = tierForRenderer(renderer, cores, coarse);
+    ok(`${NAME[want].padEnd(7)} · ${renderer.replace(/^ANGLE \(([^,]+), /, '').slice(0, 44)}`,
+      got === want, why || `${cores} cores` + (got === want ? '' : ` — got ${NAME[got]}`));
+  }
+
+  // --- the properties, not the table --------------------------------------
+  {
+    ok('the core count cannot move a recognised part',
+      [2, 4, 8, 16, 32].every((c) => tierForRenderer(
+        'NVIDIA GeForce RTX 3060', c, false) === 3),
+      'which is exactly what it used to do');
+    ok('but it still decides when the string says nothing',
+      tierForRenderer('WebKit WebGL', 16, false) > tierForRenderer('WebKit WebGL', 2, false),
+      'a masked renderer is the one case with no better signal, and it is common');
+    ok('an unknown string never crashes and never returns undefined',
+      [undefined, null, '', '???', 42].every((r) => {
+        const t = tierForRenderer(r, 8, false);
+        return Number.isInteger(t) && t >= 0 && t <= 3;
+      }));
+    ok('and software always loses, whatever else the string claims',
+      tierForRenderer('NVIDIA GeForce RTX 4090 (SwiftShader Device)', 32, false) === 0,
+      'the check runs first for that reason');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // suite: sward
 //
@@ -10150,6 +10219,7 @@ const suites = {
   paintUniforms: suitePaintUniforms,
   green: suiteGreen,
   sward: suiteSward,
+  tier: suiteTier,
   cloudshade: suiteCloudShade,
   drainage: suiteDrainage,
   invariants: suiteInvariants,
