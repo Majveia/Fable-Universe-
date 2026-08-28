@@ -12,7 +12,7 @@
 
 import * as THREE from 'three';
 import {
-  atmosphereGLSL, mediumFor, starIrradiance,
+  SKY_EXPOSURE, atmosphereGLSL, mediumFor, starIrradiance,
 } from './atmosphere.js';
 
 const MU_LO = -0.3, MU_RANGE = 1.3;
@@ -188,7 +188,7 @@ export function buildScatterLUTs(P) {
  */
 export function makeAtmosphere({
   pp = {}, atmo = 1, gravity = 9.81, starT = 5778, steps = 12,
-  sunDir, camPos, intensity = 22,
+  sunDir, camPos, intensity = SKY_EXPOSURE,
 } = {}) {
   const m = mediumFor(pp, atmo, gravity);
   const irr = starIrradiance(starT);

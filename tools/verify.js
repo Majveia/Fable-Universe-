@@ -41,7 +41,8 @@ import {
   DRAINAGE_GLSL, SLOPE_FLOOR, TWI_CLIP, packDrainage, solveDrainage,
 } from '../src/drainage.js';
 import {
-  atmosphereGLSL, mediumFor, starIrradiance,
+  SKY_EXPOSURE, atmosphereGLSL, mediumFor, skyRadianceCPU, solveExposure,
+  starIrradiance,
 } from '../src/atmosphere.js';
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
@@ -9164,7 +9165,57 @@ function suiteAtmosphere() {
     })(), 'hotter is bluer, without exception');
   }
 
-  // --- 4 · the chunk ------------------------------------------------------
+  // --- 4 · the CPU twin, and the exposure it measured ---------------------
+  //
+  // §7.3 wants a CPU reference for new shader maths. This one earns its keep
+  // twice, because the exposure that lifts the model into the renderer's linear
+  // range cannot be guessed — and the first version of this file guessed 22,
+  // three times too dark.
+  {
+    const m = mediumFor(EARTH, 1, 9.81);
+    const zen = skyRadianceCPU(m, 90, 60, 96);
+    ok('an Earth zenith is blue, from the integral and nothing else',
+      zen[2] > zen[1] && zen[1] > zen[0],
+      zen.map((v) => v.toExponential(2)).join(' '));
+    ok('and lands at the order the reference states for its own model',
+      zen[1] > 1e-3 && zen[1] < 1e-1,
+      'the reference: "radiance comes out around 0.006 for a daytime zenith"');
+
+    const e = solveExposure(1.0, 60);
+    near('the solved exposure', e, 65.8, 2.0);
+    ok('and the baked one sits below it, by the multiple scattering the twin omits',
+      SKY_EXPOSURE < e && SKY_EXPOSURE > e * 0.75,
+      `${SKY_EXPOSURE} against ${e.toFixed(1)} — the shader adds the MS LUT`);
+
+    // the properties an integral has and a gradient cannot
+    ok('the horizon is brighter than the zenith at a high sun',
+      (() => {
+        const h = skyRadianceCPU(m, 0.5, 60, 96), z = skyRadianceCPU(m, 90, 60, 96);
+        const L = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+        return L(h) > L(z);
+      })(), 'more air along the ray, so more of it scatters');
+    ok('and it is warmer than the zenith, because the blue got scattered out',
+      (() => {
+        const h = skyRadianceCPU(m, 0.5, 60, 96), z = skyRadianceCPU(m, 90, 60, 96);
+        return h[0] / h[2] > z[0] / z[2];
+      })(), 'which is the one thing a four-stop gradient had to be told');
+    ok('a thin atmosphere gives a dark sky without being told to',
+      (() => {
+        const thin = mediumFor({ Teq: 210, typeId: 1, radiusE: 0.53 }, 0.006, 3.72);
+        const a = skyRadianceCPU(thin, 90, 60, 96), b = skyRadianceCPU(m, 90, 60, 96);
+        return a[1] < b[1] * 0.05;
+      })(), 'Mars, at 0.6% of an Earth column');
+    ok('the sun below the horizon does not light the zenith like noon',
+      (() => {
+        const day = skyRadianceCPU(m, 90, 60, 96), night = skyRadianceCPU(m, 90, -8, 96);
+        return night[1] < day[1] * 0.05 && night[1] >= 0;
+      })(), 'civil twilight falls out of the transmittance, not out of a floor');
+    ok('and the twin never returns a NaN, at any elevation',
+      [-90, -8, 0, 0.5, 45, 90].every((el) =>
+        skyRadianceCPU(m, el, 30, 32).every((v) => Number.isFinite(v) && v >= 0)));
+  }
+
+  // --- 5 · the chunk ------------------------------------------------------
   {
     const g = atmosphereGLSL(12);
     ok('the step count is compiled in, not a uniform',

@@ -69,7 +69,7 @@ import {
   DRAINAGE_GLSL, WETLINE_ON, packDrainage, solveDrainage,
 } from './drainage.js';
 import { RAMP } from './meadow.js';
-import { Q, TIER, qArr, qInt } from './quality.js';
+import { Q, TIER, qArr, qFloat, qInt } from './quality.js';
 
 const PARAM = (k) => {
   try { return new URL(window.location.href).searchParams.get(k); }
@@ -2276,6 +2276,7 @@ export class SurfaceScale {
         starT: this.ctx.system?.temp ?? 5778,
         steps: qInt('atmosteps', 'atmoSteps'),
         sunDir: this.uSunDir, camPos: this._atmoCam,
+        intensity: qFloat('atmoi', 'atmoExposure'),
       }) : null;
       if (this.atmosphere) {
         const m = this.atmosphere.medium;

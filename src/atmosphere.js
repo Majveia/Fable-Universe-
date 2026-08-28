@@ -67,6 +67,27 @@ export const H_RAY_EARTH = 8500;
 /** the Mie asymmetry — forward-scattering, which is what makes the aureole */
 export const MIE_G = 0.76;
 
+/**
+ * What lifts the model's output into the renderer's linear range.
+ *
+ * Not a guess and not a taste. `solveExposure()` integrates Earth's zenith at a
+ * 60 degree sun and scales it to linear 1.0, which is where §9.4's tonemap puts
+ * a bright unclipped sky — that curve sends 1.0 to 0.70 on the display. It
+ * comes out at 65.8; the first version of this file guessed **22**, three times
+ * too dark, and looked exactly like a sky that had been graded rather than lit.
+ *
+ * Trimmed to 56 from there for one stated reason: `solveExposure()` integrates
+ * single scattering only, and the shader adds the multiple-scattering LUT on
+ * top, which at an Earth zenith is worth something like a further fifth. Better
+ * to name the correction than to let the twin and the shader disagree by it
+ * silently.
+ *
+ * One number for every world, deliberately. A thin atmosphere is dark because
+ * it scatters less, not because it is exposed differently — calibrating per
+ * world would delete exactly the thing the model is for.
+ */
+export const SKY_EXPOSURE = 56;
+
 /** how far above the ground the model stops caring, in scale heights */
 export const ATMO_TOP = 9;
 
@@ -231,4 +252,128 @@ vec4 skyRadiance(vec3 dir) {
   return vec4(max(L, 0.0), clamp(dot(Tview, vec3(0.3333)), 0.0, 1.0));
 }
 `;
+}
+
+// ---------------------------------------------------------------------------
+// the same integral, on the CPU
+//
+// §7.3: "New shader math gets a CPU reference implementation and a pixel diff
+// before it enters the render loop." This is that, and it earns its keep twice
+// — because the exposure that lifts the model's output into the renderer's
+// linear range cannot be guessed, and this is what measures it.
+//
+// The reference states the scale its own model works at: *"radiance comes out
+// around 0.006 for a daytime zenith. SKY_EXPOSURE lifts that into the
+// renderer's linear range."* Same here — the units are "solar irradiance = 1",
+// so the raw number is small and the exposure is the whole of the calibration.
+// `?atmoI=` overrides it; `solveExposure()` is where the default came from.
+
+const A_EPS = 1e-9;
+
+function rsi(ox, oy, dx, dy, r) {
+  // 2D is enough: the geometry is a ray against a sphere, and everything here
+  // lies in the plane containing the ray and the centre
+  const b = ox * dx + oy * dy;
+  const c = ox * ox + oy * oy - r * r;
+  const disc = b * b - c;
+  if (disc < 0) return null;
+  const s = Math.sqrt(disc);
+  return [-b - s, -b + s];
+}
+
+/**
+ * Radiance along one direction, as `[r, g, b]` in the model's own units.
+ *
+ * Single scattering only — the multiple-scattering term is a LUT the shader
+ * reads and this does not need it to calibrate an exposure, which is set by the
+ * daytime zenith where multiple scattering is a few percent. Stated rather than
+ * hidden, because a twin that quietly computes something else is worse than no
+ * twin.
+ *
+ * @param {object} m       from `mediumFor()`
+ * @param {number} elevDeg the view direction's elevation
+ * @param {number} sunDeg  the star's elevation
+ * @param {number} steps
+ */
+export function skyRadianceCPU(m, elevDeg = 90, sunDeg = 45, steps = 64) {
+  const th = (elevDeg * Math.PI) / 180;
+  // in the plane, with +y the zenith: the eye sits at (0, R)
+  const dx = Math.cos(th), dy = Math.sin(th);
+  const ox = 0, oy = m.R + 2;
+  const atm = rsi(ox, oy, dx, dy, m.Ra);
+  if (!atm) return [0, 0, 0];
+  let t0 = Math.max(atm[0], 0), t1 = atm[1];
+  const gnd = rsi(ox, oy, dx, dy, m.R);
+  if (gnd) {
+    if (gnd[0] > 0) t1 = Math.min(t1, gnd[0]);
+    else if (gnd[1] > 0) t1 = Math.min(t1, gnd[1]);
+  }
+  if (t1 <= t0) return [0, 0, 0];
+
+  const sd = (sunDeg * Math.PI) / 180;
+  const sx = Math.cos(sd), sy = Math.sin(sd);
+  const mu = dx * sx + dy * sy;
+  const phR = (3 / (16 * Math.PI)) * (1 + mu * mu);
+  const g = MIE_G;
+  const phM = (3 / (8 * Math.PI)) * (1 - g * g) * (1 + mu * mu)
+    / ((2 + g * g) * Math.pow(Math.max(1 + g * g - 2 * g * mu, 1e-4), 1.5));
+
+  const dt = (t1 - t0) / steps;
+  const sumR = [0, 0, 0], sumM = [0, 0, 0];
+  let odR = 0, odM = 0;
+  for (let i = 0; i < steps; i++) {
+    const t = t0 + (i + 0.5) * dt;
+    const px = ox + dx * t, py = oy + dy * t;
+    const pr = Math.hypot(px, py);
+    const h = Math.max(pr - m.R, 0);
+    const dR = Math.exp(-h / m.Hr) * dt;
+    const dM = Math.exp(-h / m.Hm) * dt;
+    odR += dR; odM += dM;
+    // transmittance from the sample to the star, integrated rather than
+    // looked up — the LUT is the shader's optimisation, not the model
+    const mus = (px * sx + py * sy) / Math.max(pr, A_EPS);
+    const ts = sunTransmittance(m, h, mus, 24);
+    for (let c = 0; c < 3; c++) {
+      const tv = Math.exp(-m.betaR[c] * odR - m.betaM * 1.1 * odM);
+      sumR[c] += tv * ts[c] * dR;
+      sumM[c] += tv * ts[c] * dM;
+    }
+  }
+  return sumR.map((v, c) => v * m.betaR[c] * phR + sumM[c] * m.betaM * phM);
+}
+
+/** transmittance from a point at height `h`, cosine `mu`, to the top */
+export function sunTransmittance(m, h, mu, steps = 24) {
+  const r0 = m.R + Math.max(h, 0);
+  const dx = Math.sqrt(Math.max(1 - mu * mu, 0)), dy = mu;
+  const gnd = rsi(0, r0, dx, dy, m.R);
+  if (gnd && gnd[0] > 0) return [0, 0, 0];
+  const atm = rsi(0, r0, dx, dy, m.Ra);
+  if (!atm || atm[1] <= 0) return [1, 1, 1];
+  const dt = atm[1] / steps;
+  let odR = 0, odM = 0;
+  for (let i = 0; i < steps; i++) {
+    const t = (i + 0.5) * dt;
+    const pr = Math.hypot(dx * t, r0 + dy * t);
+    const hh = Math.max(pr - m.R, 0);
+    odR += Math.exp(-hh / m.Hr) * dt;
+    odM += Math.exp(-hh / m.Hm) * dt;
+  }
+  return m.betaR.map((b) => Math.exp(-b * odR - m.betaM * 1.1 * odM));
+}
+
+/**
+ * The exposure that puts an Earth daytime zenith where the print expects it.
+ *
+ * §9.4's tonemap sends linear 1.0 to 0.70 on the display, which is where a
+ * bright but unclipped sky belongs. So: integrate Earth's zenith at a high sun,
+ * and scale it to 1.0. Everything else — a thin atmosphere, a red dwarf, dusk —
+ * then falls out of the model at that one fixed exposure, which is the point of
+ * calibrating on a reference world rather than per world.
+ */
+export function solveExposure(target = 1.0, sunDeg = 60) {
+  const m = mediumFor({ Teq: 255, typeId: 1, radiusE: 1 }, 1, 9.81);
+  const L = skyRadianceCPU(m, 90, sunDeg, 96);
+  const lum = L[0] * 0.2126 + L[1] * 0.7152 + L[2] * 0.0722;
+  return target / Math.max(lum, 1e-12);
 }
