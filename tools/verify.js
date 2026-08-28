@@ -84,6 +84,8 @@ import {
   DENS_POW, MEADOW_GLSL, RINGS, chunkCount, chunkGrid, chunkInstances,
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
+  BLADE_MAX_W, COVER_REACH, COVER_TARGET, EYE_H, FADE_START, bladeWidth, coverMul,
+  coverMuls, fadeBand, groundOverdraw, ringLives,
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import {
@@ -4885,6 +4887,160 @@ function suiteMeadow() {
         for (let i = 0; i < n * 2; i++) if (b.root[i] !== root[i]) return false;
         return true;
       })());
+  }
+
+  // --- coverage: the quantity nothing bounded --------------------------------
+  //
+  // `drawcensus.js` has carried a contradiction in its header since it was
+  // written — no grass in the frame, 3.5 M blades in the bookkeeping — and this
+  // is the arithmetic that reconciles them. Ground overdraw: density x width x
+  // height over sin(theta). How many blades deep you are looking.
+  {
+    // the low row, as shipped, at the projection it actually renders at
+    const PXR = 720 * 0.85 / (52 * Math.PI / 180);
+    const MUL = [0.30, 0.28, 0.26, 0.24];
+    const over = (r, d, m) => groundOverdraw(r, d, density(r, d) * m, PXR, 0.028);
+
+    // MEASURED, and quoted in docs/plans/MEADOW-BUDGET.md §1
+    const shipped = [0, 1, 2, 3].map((r) => over(r, RINGS[r].dn, MUL[r]));
+    ok('MEASURED · the shipped rings hide the ground 17x to 202x over',
+      shipped[0] > 15 && shipped[3] > 180,
+      shipped.map((v, i) => `ring ${i} ${v.toFixed(1)}x`).join(' · '));
+    ok('...and it gets monotonically worse outward, which is backwards',
+      shipped.every((v, i) => i === 0 || v > shipped[i - 1]),
+      'the far rings are the ones that cannot resolve a blade at all');
+
+    // the definition, held to itself rather than to a transcribed number
+    {
+      const d = 12, n = 40;
+      const w = bladeWidth(1, d, PXR, n, 0.028);
+      const want = n * w * 0.71 * RINGS[1].hs / (EYE_H / d);
+      ok('groundOverdraw is density x width x height over sin(theta), to the digit',
+        Math.abs(groundOverdraw(1, d, n, PXR, 0.028) - want) < 1e-12);
+    }
+
+    // the reference's own criterion, ported as a number: 205 blades/m2 over its
+    // chunk, ~10 mm wide, ~0.40 m tall, called "the density at which the ground
+    // stops being visible between blades"
+    const ref = 205 * 0.010 * 0.40 / (EYE_H / 5);
+    ok('the reference sits near 2x, which is what COVER_TARGET is calibrated against',
+      ref > 1.5 && ref < 3.5 && COVER_TARGET > 1.5 && COVER_TARGET < 4,
+      `reference ${ref.toFixed(2)}x · COVER_TARGET ${COVER_TARGET}`);
+  }
+
+  // --- the solve --------------------------------------------------------------
+  {
+    const PXR = 720 * 0.85 / (52 * Math.PI / 180);
+    // it hits its target, on every ring, at the ring's own quoted distance
+    let worst = 0;
+    for (let r = 0; r < RINGS.length; r++) {
+      const m = coverMul(r, RINGS[r].dn, COVER_TARGET, PXR, 0.028, BLADE_MAX_W);
+      const got = groundOverdraw(r, RINGS[r].dn, density(r, RINGS[r].dn) * m, PXR, 0.028, BLADE_MAX_W);
+      worst = Math.max(worst, Math.abs(got - COVER_TARGET) / COVER_TARGET);
+    }
+    ok('coverMul hits its target on every ring',
+      worst < 1e-6, `worst relative error ${worst.toExponential(2)}`);
+
+    // monotone in the target — coverage is increasing in density, so the
+    // bisection cannot invert. If it ever did, a tier row asking for more
+    // coverage would get fewer blades.
+    let mono = true;
+    for (let r = 0; r < RINGS.length; r++) {
+      let prev = -1;
+      for (const t of [1, 1.5, 2, 2.6, 4, 6, 10]) {
+        const m = coverMul(r, RINGS[r].dn, t, PXR, 0.028, BLADE_MAX_W);
+        if (m < prev - 1e-12) mono = false;
+        prev = m;
+      }
+    }
+    ok('...and is monotone in the target, so more coverage never means fewer blades', mono);
+
+    // and what it costs, which is the milestone.
+    //
+    // Both halves, because neither works alone. The cap on its own left the
+    // meadow at 3.0 M — bounding the width means a thinned far blade can no
+    // longer widen to stand in for its neighbours, so solving for coverage at a
+    // kilometre asks for MORE blades. The reach is what says blades are not the
+    // thing that covers ground at a kilometre in the first place.
+    const muls = coverMuls(COVER_TARGET, PXR, 0.028, BLADE_MAX_W);
+    const B = [413654, 741896, 1277569, 958743], TPB = [6, 2, 2, 2];
+    const MUL = [0.30, 0.28, 0.26, 0.24];
+    const cost = (useReach) => {
+      let bl = 0, tr = 0;
+      for (let r = 0; r < 4; r++) {
+        if (useReach && !ringLives(r)) continue;
+        // a surviving ring is clipped to the reach as well as capped
+        const span = Math.min(RINGS[r].far, useReach ? COVER_REACH : RINGS[r].far) - RINGS[r].near;
+        const frac = Math.max(0, span) / (RINGS[r].far - RINGS[r].near);
+        const b = B[r] * (Math.min(MUL[r], muls[r]) / MUL[r]) * (useReach ? frac : 1);
+        bl += b; tr += b * TPB[r];
+      }
+      return { bl, tr };
+    };
+    const capOnly = cost(false), both = cost(true);
+    ok('the cap alone is not enough — the width bound fights it at distance',
+      capOnly.tr > 8438340 / 5,
+      `cap alone ${Math.round(capOnly.tr).toLocaleString()} triangles, only ${(8438340 / capOnly.tr).toFixed(1)}x cheaper`);
+    ok(`MEASURED · cap + reach takes the meadow from 8,438,340 triangles to ${Math.round(both.tr).toLocaleString()}`,
+      both.tr < 8438340 / 8,
+      `${Math.round(both.bl).toLocaleString()} blades · ${(8438340 / both.tr).toFixed(1)}x cheaper`
+      + ` · frame ${Math.round(both.tr + 2302191).toLocaleString()} against §5's 2,200,000`
+      + ` (${((both.tr + 2302191) / 2200000).toFixed(2)}x)`);
+
+    // the reach, and the two independent numbers that agree on it
+    ok('the reach lands where the reference put its own field',
+      COVER_REACH >= 70 && COVER_REACH <= 100,
+      `${COVER_REACH} m against the reference's 90 m — AEON's ring-1 far edge, arrived at separately`);
+    // `(r) => ringLives(r)` and not `ringLives`: the second parameter is the
+    // reach, and Array#filter passes the INDEX there. Written bare, ring 0 asks
+    // whether its band starts inside a reach of zero and retires itself. The
+    // check caught it on its first run, which is the argument for the check.
+    const live = [0, 1, 2, 3].filter((r) => ringLives(r));
+    ok('every ring whose band starts beyond the reach draws nothing at all',
+      live.join(',') === '0,1,2',
+      `rings ${live.join(',')} live · ring 3 retired entirely`
+      + ` · ring 2 keeps only ${(COVER_REACH - RINGS[2].near).toFixed(0)} m of its ${RINGS[2].far - RINGS[2].near} m band`);
+
+    // the fade is long, which is the whole point of it
+    const [f0, f1] = fadeBand();
+    ok('...and the field lies down over two fifths of its reach rather than ending at a line',
+      (f1 - f0) / f1 > 0.35 && f1 === COVER_REACH,
+      `${f0.toFixed(0)}–${f1.toFixed(0)} m · ${((f1 - f0) / f1 * 100).toFixed(0)}% of the field`);
+
+    // it is a CAP: a row or a URL asking for less still gets less (§2.4)
+    ok('the cap never raises a density above what the caller asked for',
+      muls.every((m, r) => Math.min(MUL[r], m) <= MUL[r] + 1e-12),
+      muls.map((m, r) => `r${r} ${Math.min(MUL[r], m).toFixed(4)}`).join(' '));
+
+    // a finer screen earns more blades, because they resolve there
+    const fine = coverMul(0, RINGS[0].dn, COVER_TARGET, PXR * 2, 0.028, BLADE_MAX_W);
+    const coarse = coverMul(0, RINGS[0].dn, COVER_TARGET, PXR, 0.028, BLADE_MAX_W);
+    ok('a screen with twice the pixels earns more blades, not the same number',
+      fine > coarse * 1.5, `${coarse.toFixed(4)} → ${fine.toFixed(4)} at 2x pxPerRadian`);
+  }
+
+  // --- the physical bound on width ------------------------------------------
+  {
+    const PXR = 720 * 0.85 / (52 * Math.PI / 180);
+    // Unbounded, the spacing cap turns the far field into billboards as it
+    // thins — the marks grow to fill exactly what they stopped covering.
+    const unbounded = bladeWidth(3, RINGS[3].far, PXR, density(3, RINGS[3].far) * 0.24, 0.028);
+    ok('MEASURED · unbounded, a "blade" at the far edge is 3.4 m wide',
+      unbounded > 3, `${unbounded.toFixed(2)} m — a billboard, not a blade`);
+
+    let worst = 0;
+    for (let r = 0; r < RINGS.length; r++) {
+      for (const d of [1, 5, 20, 60, 150, 400, 900, 1250]) {
+        for (const m of [0.001, 0.01, 0.1, 1]) {
+          worst = Math.max(worst, bladeWidth(r, d, PXR, density(r, d) * m, 0.028, BLADE_MAX_W));
+        }
+      }
+    }
+    ok('bounded, no blade anywhere exceeds BLADE_MAX_W at any density',
+      worst <= BLADE_MAX_W + 1e-12, `widest ${(worst * 1000).toFixed(1)} mm, bound ${BLADE_MAX_W * 1000} mm`);
+    ok('...and the bound is a real blade of grass, per the reference’s own note',
+      BLADE_MAX_W >= 0.010 && BLADE_MAX_W <= 0.030,
+      `${BLADE_MAX_W * 1000} mm against "real meadow grass is 4–10 mm across"`);
   }
 
   // --- the quality table's §M3 columns -------------------------------------
