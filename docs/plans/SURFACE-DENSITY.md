@@ -323,6 +323,55 @@ density is settled by `drawcensus.js` above, which needs no frame.
   5749 K, Teq 286 K. Landing solved 0.642 (`lowHorizon 0.00 offCentre 0.65
   hero 1.00 lead 0.72 walls 1.00 band 1.00`). A/B on `?subj=1`.
 
+### §8, scored on the baseline frame
+
+`docs/captures/subject/q-desktop-grass-0-06.png` — **UNIVERSE 144 · KORORA**,
+terrestrial, 1.04 g, 286 K, `FIRST BLOSSOM · NO SEASON, ALWAYS`, print
+`PAINTED`, sun +12°. Ring 0 at 6% density, rings 1–3 at the full desktop row.
+This is the **first frame this project has of a temperate land world with grass
+in it**, and it settles two arguments and opens a third.
+
+One sentence per axis, naming the region, per §8:
+
+1. **Silhouette — 1.** The only vertical objects in 1280×720 are eight thin pale
+   arcs sitting exactly *on* the horizon line between x≈150 and x≈650, and one
+   low blue-grey mass at x≈850. Nothing reads as a subject at any of the three
+   distances the axis asks about; the lower half of the frame is one texture.
+2. **Light — 3.** A dominant sun is legible in the upper-left wash and the sward
+   carries a broad vertical gradient, but no surface in frame shows a second
+   term — no rim on the tree arcs, no bounce under them.
+3. **Depth — 2.** Two planes: sward and sky. The trees are *on* the horizon
+   rather than in front of it, so there is no middle ground; the whole 84–1250 m
+   band reads as one continuous green.
+4. **Motion — n/a on a still.**
+5. **Materials — 2.** The sward is nameable as grass and nothing else is
+   nameable at all. Every one of `bladeColour()`'s features — tussock at two
+   scales, the four-patch mosaic, dry shoulders, per-blade variation — is
+   computed and none of them resolves anywhere in the lower half.
+6. **Colour — 3.** Two hue families (chartreuse, sky-cream) plus the pale
+   blossom accent; nothing clips; the lift holds, correctly for an atmosphere.
+7. **Chrome — 4.** Deleting the HUD loses nothing.
+8. **Honesty — 4.** Nothing contradicts the physics the HUD asserts.
+
+**Mean 2.7, against §8's gate of ≥4 on every axis and ≥4.5 mean. It fails, and
+the blocking axis is 1.**
+
+What it settles:
+
+- **The floor is not empty.** The meadow fills the lower ~55% of the frame and
+  the blades are individually legible as strokes. Every claim in §1 about the
+  near field is visible here. The problem was never that there is too little
+  grass.
+- **There is no subject.** Axis 1 confirms §2 from the frame rather than from
+  the code.
+
+And what it opened: **the eight arcs are trees in full bloom, and they are the
+defect this frame found.** At ~300 m the foliage LOD keeps 16% of a crown's
+clumps while the blossom kept its full even share — so the petals outnumber the
+leaves and a tree reads as a wire with specks on it. That is fixed under
+`?subj=1` (`blossomShares()`), and it is the third time `coverDensity` has had
+to be carried to an object class that was missed.
+
 ### One more line, measured in passing and not acted on
 
 `tools/drawcensus.js`'s attribution shows a `MeshDepthMaterial USE_INSTANCING`
