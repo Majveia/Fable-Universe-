@@ -314,8 +314,36 @@ how a session stops being reviewable.
 **Colour 3** (the single-hue dominance is broken, the accent is now unintended) ·
 **Silhouette 4** (trees are trees).
 
-- Offline gates: `parse` 136/136 · `invariants` 709 clean · `verify` 1149/1149 ·
-  `glslcheck` clean.
+### Determinism, and the branch that nearly broke it
+
+The tree bound changed a generation path, so `docs/captures/digest.json` had to
+move with it — CI's `§2 holds` said so in the tool's own words (*"moved · tree ·
+§M2"*, and *"the generators changed — then update the baseline in the same
+commit"*), and it was right.
+
+Two things worth keeping from that.
+
+**The engines agree.** All nine per-suite hashes are identical between this
+container's v22.22.2 (V8 node.39) and CI's v22.23.2 (V8 node.56), and after the
+update CI's `every machine agrees (§2.3)` passes on **ubuntu, windows and
+macos** alike. §2.3's per-architecture clause is not carrying any weight here.
+
+**But regenerating alone would have been wrong.** `turnLimit` is
+`breakCurvature(r) · lengthOf(r)`, and `lengthOf` is `k·r^p` — a `pow`. The
+growth loop *branches* on it. §11 is explicit:
+
+> …one that reaches a *count*, an *index*, or a *branch* must not. Quantise
+> before it crosses that line.
+
+Unquantised, one bit of disagreement in `pow` on arm64 is not a tree a fraction
+of a degree different — it is a tree with a **different number of branches**.
+`turnLimit` now lands on a micro-radian grid, held by perturbing the radius one
+and two ULPs in both directions across 364 samples from 2 mm to 90 cm: none
+moves the threshold. The baseline was regenerated *after* that, so what is
+committed is the shipped law's.
+
+- Offline gates: `parse` 136/136 · `invariants` 709 clean · `verify` 1153/1153 ·
+  `glslcheck` clean · `digest` matches on three platforms.
 
 **This container has no GPU.** Chromium runs under `--enable-unsafe-swiftshader`
 and `chooseTier()` returns tier 0 on every capture. No frame *time* is measured
