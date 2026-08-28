@@ -136,7 +136,7 @@ import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecol
 import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
 import {
   HABITS, WOOD, breakCurvature, curvature, forkRadii, growTree, lengthOf,
-  radiusForHeight, tipsOf, turnLimit,
+  radiusForHeight, tipsOf, turnLimit, TURN_GRID,
 } from '../src/tree.js';
 import {
   COVER_EXP, COVER_NEAR, MINERALS, SPECIES, communityOf, coverDensity, densityAt,
@@ -8820,6 +8820,41 @@ function suiteTree() {
     ok('...and no limb may now turn past a right angle',
       radii.every((r) => turnLimit(r) < Math.PI / 2),
       `widest turn ${(Math.max(...radii.map(turnLimit)) * 180 / Math.PI).toFixed(0)}°`);
+
+    // --- §11: this one reaches a BRANCH ---------------------------------------
+    //
+    // "A quantity that reaches the frame through sin, cos, exp or pow may land
+    // a last bit apart on arm64 and after a V8 upgrade; one that reaches a
+    // count, an index, or a branch must not." `turnLimit` is `k·r^p` times a
+    // reciprocal, and the growth loop branches on it to decide whether a shoot
+    // has another segment. Unquantised, one bit of disagreement in `pow` is not
+    // a tree a fraction of a degree different — it is a tree with a different
+    // number of branches.
+    {
+      const ulp = (x) => {
+        const b = new DataView(new ArrayBuffer(8));
+        b.setFloat64(0, x);
+        b.setBigUint64(0, b.getBigUint64(0) + 1n);
+        return b.getFloat64(0);
+      };
+      let moved = 0, n = 0;
+      for (let r = 0.002; r < 0.9; r *= 1.07) {
+        const base = turnLimit(r);
+        // nudge the radius by one and two ULPs in both directions — the size of
+        // disagreement a differently-compiled `pow` actually produces
+        for (const rr of [ulp(r), ulp(ulp(r)), -ulp(-r), -ulp(ulp(-r))]) {
+          n++;
+          if (turnLimit(rr) !== base) moved++;
+        }
+      }
+      ok('§11 · a last-bit difference in the radius cannot change the turn limit',
+        moved === 0, `${n} perturbations of ${TURN_GRID} rad grid, ${moved} moved the threshold`);
+      ok('...and the grid is far finer than anything a segment can add',
+        TURN_GRID < 1e-4 && TURN_GRID > 1e-9,
+        `${TURN_GRID} rad — invisible, and unreachable by a last bit`);
+      ok('the limit is on the grid, exactly',
+        [0.004, 0.02, 0.1, 0.5].every((r) => Math.abs(turnLimit(r) / TURN_GRID - Math.round(turnLimit(r) / TURN_GRID)) < 1e-6));
+    }
 
     // --- the defect itself, counted -----------------------------------------
     // An arch is a limb end back on the ground, away from the trunk. Nothing

@@ -194,7 +194,28 @@ export const breakCurvature = (r) => WOOD.rupture / Math.max(r, 1e-6);
  * deliver: on a heavy world limbs terminate early, so the same species comes
  * out squat and thick rather than arched.
  */
-export const turnLimit = (r) => breakCurvature(r) * lengthOf(r);
+export const TURN_GRID = 1e-6;
+
+export function turnLimit(r) {
+  // Quantised, and §11 is why.
+  //
+  //   > A quantity that reaches the *frame* through `sin`, `cos`, `exp` or
+  //   > `pow` may land a last bit apart on arm64 and after a V8 upgrade; one
+  //   > that reaches a *count*, an *index*, or a *branch* must not. Quantise
+  //   > before it crosses that line.
+  //
+  // This one reaches a branch. `lengthOf` is `k·r^p` — a `pow` — and the growth
+  // loop compares `turned >= turnLimit(rStart)` to decide whether a shoot has
+  // another segment in it. Unquantised, one bit of disagreement in `pow` on a
+  // different architecture is not a tree a fraction of a degree different; it
+  // is a tree with a different number of branches, which is §2.3's promise
+  // broken rather than bent.
+  //
+  // A micro-radian grid is four orders of magnitude coarser than the smallest
+  // turn a segment can add and thirteen finer than the values themselves, so it
+  // cannot be seen and cannot be reached by a last-bit difference.
+  return Math.round(breakCurvature(r) * lengthOf(r) / TURN_GRID) * TURN_GRID;
+}
 
 /**
  * Split a parent radius across `n` children by the area rule.
