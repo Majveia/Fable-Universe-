@@ -411,6 +411,9 @@ const panelHtml = (places) => `
   <label><input type="checkbox" name="cshade"> cloud shadows</label>
   <label><input type="checkbox" name="wetline"> the water's record</label>
   <label><input type="checkbox" name="shafts"> crepuscular light</label>
+  <div class="sec">green grass, a real sky</div>
+  <label><input type="checkbox" name="veg"> chlorophyll &amp; the full ramp</label>
+  <label><input type="checkbox" name="atmo"> scattering, not a gradient</label>
   <div class="sec">the rest of the frame</div>
   <label><input type="checkbox" name="m3"> wind and grass</label>
   <label><input type="checkbox" name="mat"> ground materials</label>
@@ -423,8 +426,10 @@ ${places.map((pl) => `  <a class="go" href="?${pl.q.replace(/&/g, '&amp;')}">${p
   <div class="note">Stand still at golden hour and wait. A shadow crosses the
   valley as a front — it darkens the grass without draining it, and the sheen
   in the wet hollow goes out and comes back. Look up: the gap that did it is
-  overhead. How sharp the edge is belongs to the star — under a white dwarf it
-  is cut paper.</div>
+  overhead. How sharp the edge is belongs to the star: under a white dwarf it
+  is cut paper.<br><br>The grass is waist-high where the water collects and
+  short on the dry braid. The sky is an integral, not a painting — so it is
+  blue because the star is 5,800&nbsp;K, and the red dwarf's is not.</div>
 </div>`;
 
 main();
