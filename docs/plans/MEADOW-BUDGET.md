@@ -267,7 +267,54 @@ picture: 3,989 → 0 limb ends returning to the ground, over 96 trees, held by
 `suiteTree`. The `?cover=1` frame lands beside this one when it finishes
 rendering.
 
-- Offline gates: `parse` 136/136 · `invariants` 709 clean · `verify` 1144/1144 ·
+### The `?cover=1` frame
+
+`docs/captures/meadow-budget/cover-1.png` — same world, same seed, same tier,
+same landing solve (0.642, to three decimals). Two things fixed and one
+uncovered.
+
+**The trees are trees.** Every croquet hoop is gone. Six trunks with crowns
+stand where six closed arcs stood — at x ≈ 180, 300, 440, 545, 1180, 1230 —
+and the silhouette is now a tree's. This is the rupture bound, seen rather than
+counted, and it is the visual half of `suiteTree`'s 3,989 → 0.
+
+**The blades resolve.** The lower field carries visible individual strokes where
+the baseline carried a flat grain. It is the same 205 blades/m² the reference
+converged on, and it reads as a sward rather than as a colour.
+
+**And the hand-off does not land — for a reason that is not the meadow's.**
+Between roughly y ≈ 370 and y ≈ 400, from x ≈ 0 to x ≈ 700, a pale sand band
+stands where the fade hands over. The dissolve works exactly as designed — the
+blades lie down over the last 45% of the field — but **what they lie down into
+is not meadow-coloured.**
+
+Reading `surface.js`'s bands (read, not touched): `col = mix(meadow, uColA,
+smoothstep(0.02, 0.45, hgt))`, then `mix(col, uColB, smoothstep(0.35, 0.85,
+hgt) · 0.8)`. **The terrain's meadow colour lives only in a narrow band just
+above sea level.** Rising ground is soil, then rock, within a normalised height
+of 0.45. The crest in this frame is outside that band, so the substrate under
+the sward is sand-and-soil coloured, and it always was.
+
+**Which reframes what the 1250 m reach was for.** The blades were not extending
+to a kilometre because a meadow needs blades at a kilometre. They were covering
+ground the terrain has no material for. §5's 4.9× overrun was, in part, the
+price of concealing `RECKONING.md` §0's oldest open defect — *"the ground has no
+material … it is more than half of every frame, and it is the single defect
+behind both failing axes."* Take the concealment away and the defect is visible
+in one frame.
+
+**This is not fixable from this session's files.** The band is in `surface.js`,
+hands-off. `ground-cover.js` is mine and reaches 420 m, so a sward-coloured
+ground cover through the hand-off band is a real option — but it is a third
+change, it cannot be scored here, and building it blind on top of two others is
+how a session stops being reviewable.
+
+§8 on the axes this milestone touches, against the baseline's 2/2/2:
+**Materials 3** (blades nameable; the sand band is nameable and wrong) ·
+**Colour 3** (the single-hue dominance is broken, the accent is now unintended) ·
+**Silhouette 4** (trees are trees).
+
+- Offline gates: `parse` 136/136 · `invariants` 709 clean · `verify` 1149/1149 ·
   `glslcheck` clean.
 
 **This container has no GPU.** Chromium runs under `--enable-unsafe-swiftshader`

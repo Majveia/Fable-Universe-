@@ -5068,6 +5068,38 @@ function suiteMeadow() {
       fine > coarse * 1.5, `${coarse.toFixed(4)} → ${fine.toFixed(4)} at 2x pxPerRadian`);
   }
 
+  // --- ?cover=0 must be the previous build, to the bit ----------------------
+  //
+  // §7.4 builds behind a flag, and a flag is only reviewable if the off state
+  // is *exactly* what shipped. Every term added here is written so that its
+  // no-op value collapses the expression back to the one that was there.
+  {
+    const src = readFileSync(new URL('../src/flora.js', import.meta.url), 'utf8');
+
+    // the width bound: min(inversesqrt(dens), uMaxW) with uMaxW = 1e9
+    ok('the width bound’s off value cannot bind — density is floored at 1e-6, so the cap tops out at 1000 m',
+      /uMaxW: \{ value: COVER \? BLADE_MAX_W : 1e9 \}/.test(src)
+      && 1 / Math.sqrt(1e-6) < 1e9,
+      `spacing cap maxes at ${(1 / Math.sqrt(1e-6)).toFixed(0)} m against a sentinel of 1e9`);
+    ok('...and it is a finite sentinel rather than Infinity',
+      !/uMaxW[^\n]*Infinity/.test(src),
+      'a non-finite uniform is a thing every driver and ANGLE backend has to agree about');
+
+    // the fade: 1 - smoothstep(1e9, 1e9+1, d) is 1.0 for every distance a
+    // surface scale can produce
+    ok('the fade’s off band starts past any distance the scale can reach',
+      /fadeBand\(\) : \[1e9, 1e9 \+ 1\]/.test(src) && RINGS[3].far < 1e9,
+      `the furthest ring reaches ${RINGS[3].far} m`);
+
+    // the reach: `this.far` is the ring's own far edge when the flag is off
+    ok('the reach falls back to each ring’s own far edge',
+      /this\.far = COVER \? Math\.min\(this\.spec\.far, COVER_REACH\) : this\.spec\.far;/.test(src));
+
+    // and the density cap is behind the guard, so densityMul is untouched
+    ok('the density cap is inside the flag’s guard, so the multiplier is untouched',
+      /if \(COVER && !this\._capped\)/.test(src));
+  }
+
   // --- the physical bound on width ------------------------------------------
   {
     const PXR = 720 * 0.85 / (52 * Math.PI / 180);

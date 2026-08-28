@@ -769,7 +769,12 @@ export class GrassRing {
         // sent as their own no-ops when `?cover=1` is absent — +infinity and a
         // band starting past the ring's far edge — so the shipped frame is
         // reproduced exactly rather than approximately.
-        uMaxW: { value: COVER ? BLADE_MAX_W : Infinity },
+        // 1e9 rather than Infinity: `min(inversesqrt(dens), uMaxW)` needs a
+        // value that cannot bind, and the largest width the spacing cap can
+        // ever ask for is 1000 m (density is floored at 1e-6). A finite
+        // sentinel is the same no-op without asking every driver and every
+        // ANGLE backend to agree about what a non-finite uniform means.
+        uMaxW: { value: COVER ? BLADE_MAX_W : 1e9 },
         uFade: { value: new THREE.Vector2(
           ...(COVER ? fadeBand() : [1e9, 1e9 + 1])) },
         // §9.5's angular width floor, finally wired.
