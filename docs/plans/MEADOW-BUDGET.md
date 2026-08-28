@@ -238,7 +238,37 @@ soil" is a claim about a frame (§16 rule 1).
 Nothing here is a claim about a frame unless it cites a capture (§16 rule 1).
 
 - **Reproduced**, two instruments, exact: §0.
-- Offline gates and the capture set land here as they go green.
+
+### The baseline frame
+
+`docs/captures/meadow-budget/m3-1.png` — **UNIVERSE 144 · KORORA**,
+terrestrial, 1.04 g, 286 K, `FIRST BLOSSOM`, low tier, meadow at shipped
+density. 1280×720.
+
+Both defects are visible in one frame, and neither needed magnification.
+
+1. **The wash.** The lower ~48% of the frame is one flat saturated chartreuse.
+   There is a faint vertical grain but **no individual blade resolves anywhere**,
+   and none of `bladeColour()`'s features — tussock at two scales, the
+   four-patch mosaic, dry shoulders, per-blade variation — is legible. This is
+   17.2× to 36.1× overdraw, seen rather than computed.
+2. **The arches.** Six pale tan closed loops stand on the skyline between
+   x ≈ 50 and x ≈ 1210, each running from a crown back down to the ground.
+   Croquet hoops, in the brief's word, and unmistakable at 1×.
+
+§8, on the axes this milestone touches: **Materials 2** (one surface nameable,
+and the frame is more than half that surface) · **Colour 2** (a single hue
+family occupying half the frame, at a saturation nothing else in the frame
+carries) · **Silhouette 2** (the only shapes on the skyline are broken).
+
+**This frame predates the tree bound** — the page loaded before that commit — so
+it is the "before" for the arches. The "after" for them is arithmetic and not a
+picture: 3,989 → 0 limb ends returning to the ground, over 96 trees, held by
+`suiteTree`. The `?cover=1` frame lands beside this one when it finishes
+rendering.
+
+- Offline gates: `parse` 136/136 · `invariants` 709 clean · `verify` 1144/1144 ·
+  `glslcheck` clean.
 
 **This container has no GPU.** Chromium runs under `--enable-unsafe-swiftshader`
 and `chooseTier()` returns tier 0 on every capture. No frame *time* is measured
