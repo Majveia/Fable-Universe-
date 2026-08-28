@@ -144,7 +144,7 @@ import {
 } from '../src/scatter.js';
 import { phaseOf, precipFor, subpixel, terminalVelocity, wrap } from '../src/precip.js';
 import {
-  EXTINCTION as BLOSSOM_L, PETAL, blossomsFor, floweringAt, opticalDepth,
+  EXTINCTION as BLOSSOM_L, PETAL, blossomShares, blossomsFor, floweringAt, opticalDepth,
   SEASONALITY_EARTH, WIDTH_EARTH, WIDTH_MIN, bloomWidth, paramNumber,
   perpetualBloom, petalFall, petalHue, seasonOpenness, seasonPhaseOf, seasonality,
 } from '../src/blossom.js';
@@ -11581,6 +11581,68 @@ function suiteHero() {
       bad ? `${bad.dist.toFixed(1)} m out, ${bad.height.toFixed(1)} m tall` : 'null');
     ok('...and the tree it asks for actually grows',
       growTree({ seed: 1, height: bad.height, habit: bad.habit }).segments > 24);
+  }
+
+  // --- the blossom LOD: the one class the distance law never reached -------
+  //
+  // `life.js` thins wood by distance and foliage by distance, and split the
+  // flowers evenly. So a tree at 300 m carried a full share of white petals
+  // over the 16% of its leaves that survived the foliage LOD — which is what
+  // `docs/captures/subject/`'s first frame shows: bare arcing branches with
+  // white specks along the horizon, no canopy mass anywhere.
+  {
+    // a plausible world: one hero, then trees at every distance out to 700 m
+    const dists = [];
+    for (let i = 0; i < 400; i++) dists.push(6 + (i / 399) ** 1.6 * 700);
+    const w = [0, ...dists.map((d) => coverDensity(d, 90))];
+    const cap = 44000, heroCap = 4200;
+    const sh = blossomShares(w, { cap, heroCap, heroIndex: 0 });
+
+    ok('the hero’s share is taken off the top and is not diluted by 400 neighbours',
+      sh[0] === heroCap, `${sh[0]} of ${cap}`);
+
+    const spent = sh.reduce((a, b) => a + b, 0);
+    ok('§5 · the cap is conserved — flowers are moved, not added',
+      spent <= cap * 1.02, `${spent.toLocaleString()} allocated against a cap of ${cap.toLocaleString()}`);
+
+    // the property the whole change is for: near trees get more than far ones
+    const near = sh[1], far = sh[sh.length - 1];
+    ok('a tree at 6 m carries far more blossom than one at 700 m',
+      near > far * 5, `${near} at ${dists[0].toFixed(0)} m against ${far} at ${dists[dists.length - 1].toFixed(0)} m`);
+    ok('...and the far one is still in bloom rather than speckled',
+      far >= 12, `${far} flowers, floor 12`);
+
+    // monotone in distance, which is what stops a mid-ground tree out-blooming
+    // one in front of it
+    let mono = true;
+    for (let i = 2; i < sh.length; i++) if (sh[i] > sh[i - 1] + 1) mono = false;
+    ok('the share falls monotonically with distance', mono);
+
+    // the even split it replaces, for the record
+    const even = Math.floor((cap - heroCap) / dists.length);
+    ok(`MEASURED · the even split gave every tree ${even}; the nearest now gets ${near}`,
+      near > even * 2, `${even} → ${near} at the near end, ${even} → ${far} at the far`);
+  }
+
+  // --- and the degenerate cases, because they are all reachable ------------
+  {
+    // every tree beyond the falloff: coverDensity returns 0 for all of them,
+    // which is a real world (a spawn on a bare plain with a distant wood) and
+    // must not be a division by zero
+    const zero = blossomShares([0, 0, 0, 0], { cap: 1000, heroCap: 0 });
+    ok('all-zero weights fall back to the even split rather than to NaN',
+      zero.every((v) => Number.isFinite(v) && v > 0), zero.join('/'));
+
+    ok('an empty world returns an empty allocation',
+      blossomShares([]).length === 0);
+
+    const noHero = blossomShares([1, 1, 1], { cap: 300, heroCap: 0, heroIndex: -1 });
+    ok('with no hero the whole cap is shared among the trees',
+      noHero.reduce((a, b) => a + b, 0) === 300, noHero.join('/'));
+
+    const bad = blossomShares([NaN, Infinity, -1, 2], { cap: NaN, heroCap: NaN, heroIndex: 0 });
+    ok('poisoned weights and a poisoned cap still return finite shares',
+      bad.every(Number.isFinite), bad.join('/'));
   }
 
   // --- §16 rule 2: what it costs against §5, before it is proposed ---------

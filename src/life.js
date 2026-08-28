@@ -11,7 +11,7 @@ import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
 import { growTree, heroSite, tipsOf } from './tree.js';
 import {
-  PETAL_GLSL, blossomsFor, bloomWidth, paramNumber, petalFall, petalHue,
+  PETAL_GLSL, blossomShares, blossomsFor, bloomWidth, paramNumber, petalFall, petalHue,
   seasonOpenness, seasonPhaseOf,
 } from './blossom.js';
 import { airDensity } from './precip.js';
@@ -595,12 +595,40 @@ export function addLife(s) {
     // what is left. The total is unchanged — this moves flowers, it does not
     // add them, and §5's 10%-of-budget figure above still stands.
     const heroCap = sites[0]?.hero ? Math.min(Math.round(cap * 0.22), 4200) : 0;
-    const per = Math.max(24, Math.floor((cap - heroCap) / Math.max(grown.length - (heroCap ? 1 : 0), 1)));
+    const flat = Math.max(24, Math.floor((cap - heroCap) / Math.max(grown.length - (heroCap ? 1 : 0), 1)));
+
+    // ------------------------------------------------ and the same law again ---
+    //
+    // The wood is thinned by distance. The foliage is thinned by distance, by
+    // `coverDensity`, with a note explaining that a tree at 700 m spending 256
+    // sub-pixel leaf clumps is *"exactly the defect the ground cover had."*
+    // **The blossom was never thinned at all.** Every tree got the same `per`
+    // whatever its distance, so at 300 m a tree showed a full share of white
+    // petals over the 16% of its leaves that survived the foliage LOD — and
+    // that is what a distant tree in bloom actually looked like in the first
+    // capture taken for this plan: a bare arcing wire with white specks on it,
+    // no canopy mass, eight of them strung along the horizon.
+    //
+    // A flower is 5 triangles against a leaf clump's 20 and there are up to
+    // 44 000 of them, so this was never a budget oversight — it is the one
+    // object class the argument was never carried to.
+    //
+    // Weighted rather than clipped: the freed flowers are not discarded, they
+    // are redistributed to the trees near enough to resolve them. The cap is
+    // untouched, so this is the same "moves flowers, does not add them" trade
+    // the hero's own share makes, applied to the other four hundred trees.
+    const heroIndex = sites[0]?.hero ? 0 : -1;
+    const shares = SUBJ
+      ? blossomShares(
+        sites.map((p) => coverDensity(Math.hypot(p.x - sp.x, p.z - sp.z), LEAF_NEAR)),
+        { cap, heroCap, heroIndex })
+      : null;
+    const share = (p, i) => (shares ? shares[i] : (p.hero ? heroCap : flat));
     const fx = [], frec = [];
     for (let ti = 0; ti < grown.length && fx.length / 3 < cap; ti++) {
       const t = grown[ti], p = sites[ti];
       const sy = Math.sin(p.yaw), cy = Math.cos(p.yaw);
-      for (const f of blossomsFor(t, { seed: p.seed, openness, budget: p.hero ? heroCap : per })) {
+      for (const f of blossomsFor(t, { seed: p.seed, openness, budget: share(p, ti) })) {
         fx.push(p.x + f.x * cy - f.z * sy, p.y + f.y, p.z + f.x * sy + f.z * cy);
         f.crown = t.crown;
         f.worldYaw = p.yaw;
