@@ -23,7 +23,7 @@ Here is the sum, as of M5.
 
 | debt | §  | state |
 |---|---|---|
-| The §9.2 light model is off by default | 9.2 | `?paint=1` |
+| ~~The §9.2 light model is off by default~~ | 9.2 | **CLOSED** — flipped on. Both withdrawal causes were fixed by later work (act 3b's detail normal; `visibilityFor` making fog a weather) and nobody re-tested. Re-measured: ground luma 0.581 → 0.608, saturation and sky unchanged, 0.6% blown either way. The old "flattens to a pale wash" is gone. A small win, and `SAKURA.md` §13 says why — that frame's lower half is grass, and `paint()` shades terrain |
 | Four-layer materials off | M2 act 4 | `?mat=1` |
 | The Gerstner ocean off | M2 act 5 | `?sea=1` |
 | Far ridges as silhouette off | M2 act 6 | `?ridge=1` |

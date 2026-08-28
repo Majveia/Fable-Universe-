@@ -95,6 +95,11 @@ export const TIERS = {
   desktop: { viewport: { width: 2560, height: 1440 }, deviceScaleFactor: 1, label: 'desktop ref @1440p' },
   mobile: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, label: 'mobile ref, DPR 2' },
   low: { viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, label: 'low tier @720p' },
+  // For iterating on a software rasteriser, where fill is the whole cost.
+  // 640x360 is a quarter of the pixels of `low` and still reads composition,
+  // colour and light — which is what an A/B is for. Not a gate tier: §5's
+  // budgets and §8's scoring both want `low` or `desktop`.
+  thumb: { viewport: { width: 640, height: 360 }, deviceScaleFactor: 1, label: 'thumbnail @360p' },
 };
 
 export async function launch(pw) {

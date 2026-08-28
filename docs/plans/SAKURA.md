@@ -309,3 +309,129 @@ at the photographic one, and that `registerFor()` chooses between them from the
 air. §3's third row already almost says this: *"they are not competing
 tonemaps — the reference's is a grade, and grades belong to atmospheres."*
 This generalises that sentence from one grade to the whole print.
+
+---
+
+## 12 · Measured negatives — things not to spend a day on
+
+Recorded so the next session does not re-derive them.
+
+**Widening the landing solver does not help.** §9.7's composition terms come
+back weak on real worlds (`walls 0.16`, `lead 0.24` on the meadow world), and
+the obvious response is to search harder. Measured over eight worlds, off the
+frame, with `solveLandingSite` called directly:
+
+| shortlist × headings | mean total | walls | lead | hero | ms/world |
+|---|---|---|---|---|---|
+| 10 × 8 (shipped) | **0.670** | 0.571 | 0.553 | 0.587 | 139 |
+| 24 × 8 | 0.671 | 0.542 | 0.552 | 0.554 | 283 |
+| 24 × 16 | 0.663 | 0.506 | 0.552 | 0.543 | 405 |
+| 48 × 16 | 0.651 | 0.500 | 0.509 | 0.540 | 811 |
+
+Six times the search buys nothing — it is flat to slightly *worse*, which at
+n = 8 is noise around "no effect". The terms are already at what the terrain
+offers, so the constraint is **relief**, not search. A composition solver cannot
+find a valley wall on a world that has none.
+
+**The register is not an exposure control.** Ablating each of the fourteen knobs
+across the scene brightness range, painted versus clear differs by at most 0.03
+of output luma, and at the bright end the clear register is *darker* than the
+painted one because the shoulder holds highlights. Any large brightness
+difference attributed to the register is something else wearing its clothes —
+which is exactly how §11's wash bug stayed hidden.
+
+---
+
+## 13 · §5 is red, and the meadow is not empty — it is spent at the wrong distance
+
+Two instruments, one world (`seed=1337146641&g=2248432278&s=51574389&p=1`, a
+G-star temperate land world with a biosphere), tier `low`, knobs intact:
+
+```
+§5 · 10,740,531 triangles/frame against 2,200,000   RED · 4.9x over
+§5 · 240 draw calls/frame against 900               GREEN
+```
+
+`tools/shot.js` (renderer.info, one frame) and `tools/drawcensus.js` (counted at
+the WebGL call, no frame rendered) agree to five significant figures. RECKONING
+has said since M5 that "§5's budgets were last measured with the grass off".
+This is the measurement with it on, and it fails.
+
+### Where it goes
+
+| ring | chunks | blades | tri/blade | triangles | reach |
+|---|---|---|---|---|---|
+| 0 | 36 | 413,654 | 6 | 2,481,924 | 26 m |
+| 1 | 38 | 741,896 | 2 | 1,483,792 | 84 m |
+| 2 | 41 | **1,277,569** | 2 | 2,555,138 | **290 m** |
+| 3 | 44 | 958,743 | 2 | 1,917,486 | 1250 m |
+| **total** | | **3,391,862** | | **8,438,340** | |
+
+The meadow is **79% of the frame's triangles**, and §M3's gate asks for 800,000
+blades — so the sward is not thin, it is **4.2x over its own gate**.
+
+### The contradiction this reopens
+
+`tools/drawcensus.js` was written for exactly this, and its header still quotes
+the open case:
+
+> **In the frame, there is no grass.** Visually confirmed at magnification.
+> **In the CPU's bookkeeping, there are 3.5 M blades across 162 chunks.**
+> Both are facts and they do not agree.
+
+It is still true, and now it is measured on a world where the frame reads as a
+flat acid-green wash. 3.39 M blades submitted; no blades legible.
+
+### The shape of the answer
+
+Rings 2 and 3 carry **2.24 M blades and 4.47 M triangles between them, at 290 m
+and 1250 m**. At those distances §9.5's own angular floor puts a blade under a
+pixel, so more than half the entire frame budget is spent on geometry that
+cannot resolve — while ring 0, the 26 m band where a blade is nine pixels wide
+and would actually read, gets 413 k.
+
+The density law is not wrong; §9.5's `blades/m²(d) = B·min(1, (dn/d)^1.5)` is
+doing what it says. What is missing is a **far cutoff**: the law thins with
+distance but never stops, and ring 3 reaches 1250 m. The reference solves the
+same problem by making distant grass a *ground colour* rather than blades.
+
+**Do not read this as "add more grass".** It is the opposite: the frame is
+already paying five times its budget for a meadow it cannot see, and the near
+field is the part that is starved relative to what it could afford.
+
+---
+
+## 14 · The sky is fine, and how to measure it without fooling yourself
+
+Three separate "the sky is desaturated" findings this session were all
+measurement artifacts. Recording the method so the fourth one is real.
+
+Measured on the meadow world (5961 K star, sun +12°), de-vignetted, against
+`skyWash`'s own stop for the elevation each row actually looks at:
+
+| view elev | rendered | sat | §9.1 stop | sat |
+|---|---|---|---|---|
+| 21.1° | (120,168,187) | 0.358 | (122,168,203) | 0.399 |
+| 17.5° | (142,192,213) | 0.333 | (130,174,206) | 0.369 |
+| 13.3° | (171,215,233) | 0.266 | (147,186,213) | 0.310 |
+| 8.1° | (186,220,231) | 0.195 | (165,200,220) | 0.250 |
+
+**78–90% of spec, hue correct, blue about 8% low.** Within what the cirrus term
+and the print together account for. The sky is not the defect.
+
+Two traps, both of which produced a confident wrong number:
+
+1. **The top of the frame is not the zenith.** At a 1.68 m eye height with
+   FOV 52 and pitch −0.04, the frame spans roughly 0–24° of elevation.
+   `skyWash` does not reach `uSkyZen` until `d.y ≥ 0.86`, i.e. **59°**. A frame
+   at ground level never contains the zenith stop at all, so comparing its top
+   row to `#4E80B4` compares two different things and reports a 3× deficit that
+   does not exist.
+2. **The corners are vignetted.** §9.4 step 7 multiplies by up to 0.77 at the
+   frame edge. Sampling at (0.92, 0.04) — the natural "bit of clear sky" — puts
+   the probe in the deepest part of it.
+
+And the check that saves the most time: **push the transfer's own output
+through the print offline first.** `airColours(T, elev)` → `grade()` *raises*
+sky saturation by 8–28%. So the print can never be the cause of a desaturated
+sky, and any hunt that starts there is already lost.

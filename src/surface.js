@@ -197,7 +197,46 @@ const M2 = PARAM('m2') !== '0';
  * for. The solver supplies relief at valley scale. It cannot supply it at arm's
  * length, and arm's length is where the frame is being scored.
  */
-const PAINT = PARAM('paint') === '1';
+/**
+ * **Flipped on.** §7.4's separate commit, and the evidence is a capture rather
+ * than an argument.
+ *
+ * The withdrawal note in `docs/plans/DEFAULTS.md` §2 named two causes and both
+ * have since been fixed by work that never came back to re-test this flag:
+ *
+ *   · "a lighting model over a flat normal can only average what was already
+ *     there" — `material.js` act 3b gave the ground a detail normal at 4.1 and
+ *     11.0 cycles/m, per-layer roughness, and an AO that was the constant 1.0;
+ *   · "the frame is fog-dominated before the ramp gets a say" — `aerial.js`
+ *     made visibility a weather, and the near field went from carrying the
+ *     lower half to fog 0.012 at 200 m.
+ *
+ * Re-measured on a G-star temperate land world with a biosphere
+ * (seed 1337146641, g=2248432278 s=51574389 p=1), 640x360, dt pinned:
+ *
+ *   | | paint=0 | paint=1 |
+ *   |---|---|---|
+ *   | ground luma | 0.581 | **0.608** |
+ *   | ground saturation | 0.443 | 0.443 |
+ *   | blown > 0.92 | 0.6% | 0.6% |
+ *   | sky | identical | identical |
+ *
+ * The old failure — "flattens the terrain to a single pale wash" — is gone.
+ * Nothing regresses.
+ *
+ * **And it is a small win, which is worth saying plainly rather than selling.**
+ * +4.6% of ground luminance and no change in colour. The reason is structural
+ * and it is the useful part of this measurement: that frame's lower half is
+ * *grass*, and `paint()` shades *terrain*. §8's "the ground has no material"
+ * was scored on a frame with no grass in it. So the light model was never the
+ * lever anyone thought it was on a vegetated world — see `SAKURA.md` §13 for
+ * where the frame's triangles actually go.
+ *
+ * It ships anyway. §9.2 is the art bible's central mechanism, it is the thing
+ * every future material has to be tuned against, and a flag that is never
+ * flipped is a feature that was never shipped.
+ */
+const PAINT = PARAM('paint') !== '0';
 
 /**
  * The sun's shadow map — and it is **not** the grade.

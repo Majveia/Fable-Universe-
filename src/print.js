@@ -301,7 +301,11 @@ export const PRINT_SHADER = {
       // vacuum frame is invariant to the register no matter who sets it.
       vec3 halo = mix(vec3(1.0), vec3(1.10, 0.98, 0.90), uBloomReg.y * uPaint);
       float bloomX = mix(1.0, uBloomReg.x, uPaint);
-      c += max(bl, vec3(0.0)) * uBloomAmt * bloomX * halo;
+      // Named, because step 5 needs the same value. A wash that softens toward
+      // a tap without the glow in it does not soften the image, it *removes*
+      // the glow — see the note there.
+      vec3 glow = max(bl, vec3(0.0)) * uBloomAmt * bloomX * halo;
+      c += glow;
 
       c = grade(c, uPaint);
 
@@ -335,7 +339,34 @@ export const PRINT_SHADER = {
                + texture2D(tDiffuse, vUv + vec2(-px.x, -px.y)).rgb;
         // §11's firewall again: a NaN four texels away must not spread here
         t = mix(vec3(0.0), t, vec3(equal(t, t)));
-        vec3 soft = grade(t * 0.25, uPaint);
+        // The glow goes into the softened tap too, and leaving it out was a
+        // bug with a large, measured cost.
+        //
+        // c is grade(scene + glow). t is four taps of tDiffuse, which is
+        // the scene *without* the bloom — the composite happens above, in this
+        // shader, and never reaches that texture. So mix(c, soft, wet) was
+        // not softening the image toward a blurred copy of itself. It was
+        // lerping wet of the way toward a version with **no glow at all**,
+        // which makes step 5 a bloom suppressor whose strength happens to be
+        // the watercolour amount.
+        //
+        // Measured, on the surface scale at seed 1337146641: the sky writes
+        // alpha 0, so fog is 1.0 across the whole dome and wet is exactly
+        // uWash.x. The painted register (0.42) therefore threw away 42% of
+        // the sky's bloom and the clear register (0.138) only 14% — a 1.49x
+        // difference in residual glow that had nothing to do with either
+        // register's intent, and it read as a 2.1x brightness gain at the top
+        // of the sky rising to 4.9x at the horizon, because bloom follows
+        // brightness.
+        //
+        // §9.4 step 5 is "wet-in-wet, *not* bokeh" — pigment spreading in damp
+        // paper. Paper does not un-glow. The glow is part of the image and the
+        // wash softens the image.
+        //
+        // It costs nothing: bl is already fetched, and a bloom pyramid is a
+        // blurred image by construction, so it needs no second blur to belong
+        // in a blurred tap.
+        vec3 soft = grade(t * 0.25 + glow, uPaint);
         c = mix(c, soft, wet * uPaint);
 
         // §9.4 step 5b — chroma bleed at 0.09 + 0.17·wet. "Paint runs, pixels
