@@ -134,7 +134,10 @@ import { SILHOUETTES, coverageOf, maskData } from '../src/silhouette.js';
 import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
-import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
+import {
+  HABITS, WOOD, breakCurvature, curvature, forkRadii, growTree, lengthOf,
+  radiusForHeight, tipsOf, turnLimit,
+} from '../src/tree.js';
 import {
   COVER_EXP, COVER_NEAR, MINERALS, SPECIES, communityOf, coverDensity, densityAt,
   mineralChunk, mineralFit, mineralsOf, scatterChunk, tolerance,
@@ -8694,6 +8697,109 @@ function suiteTree() {
     === JSON.stringify(growTree({ seed: 42, gravity: 9.8, height: 10 })));
   ok('and a different seed grows a different one',
     JSON.stringify(growTree({ seed: 42 })) !== JSON.stringify(growTree({ seed: 43 })));
+  // --- law 3b: eventually the limb breaks -----------------------------------
+  //
+  // `turnBudget` was 3.4 radians — 195°, past vertical — while the comment
+  // beside it read "a branch deflects; it does not orbit". A limb could curve
+  // up, over and back down into the ground, where the no-underground clamp
+  // pinned it and closed the arc. Trees on a 1.23 g world rendered as croquet
+  // hoops. This is the bound that replaces it, and it is the wood's own.
+  {
+    // κ_break = MOR/(E·r): the I in κ = M/(E·I) cancels against the I in
+    // σ = M·r/I, so neither E nor I survives into the answer
+    let worst = 0;
+    for (const r of [0.004, 0.01, 0.05, 0.2, 0.6]) {
+      worst = Math.max(worst, Math.abs(breakCurvature(r) - WOOD.rupture / r) / breakCurvature(r));
+    }
+    ok('breakCurvature is rupture/r — neither E nor I survives the algebra',
+      worst < 1e-12, `worst relative error ${worst.toExponential(2)}`);
+
+    ok('the rupture strain is green wood’s, not a number picked for a look',
+      WOOD.rupture >= 0.005 && WOOD.rupture <= 0.012,
+      `${WOOD.rupture} — MOR/E, 60–100 MPa over ~10 GPa`);
+
+    // a thick limb may barely bend; a twig may curl right up
+    ok('a 4 mm twig may turn far more than a 20 cm limb',
+      turnLimit(0.004) > turnLimit(0.2) * 4,
+      `${(turnLimit(0.004) * 180 / Math.PI).toFixed(0)}° at 4 mm against `
+      + `${(turnLimit(0.2) * 180 / Math.PI).toFixed(0)}° at 20 cm`);
+
+    // and every one of them is under the constant it replaces
+    const radii = [0.004, 0.01, 0.03, 0.08, 0.2, 0.4];
+    ok('MEASURED · the old flat budget was 2.5x to 14x what any wood allows',
+      radii.every((r) => turnLimit(r) < WOOD.turnBudget),
+      radii.map((r) => `${(WOOD.turnBudget / turnLimit(r)).toFixed(1)}x`).join(' / ')
+      + ` at ${radii.map((r) => r * 1000).join('/')} mm`);
+    ok('...and no limb may now turn past a right angle',
+      radii.every((r) => turnLimit(r) < Math.PI / 2),
+      `widest turn ${(Math.max(...radii.map(turnLimit)) * 180 / Math.PI).toFixed(0)}°`);
+
+    // --- the defect itself, counted -----------------------------------------
+    // An arch is a limb end back on the ground, away from the trunk. Nothing
+    // else in the model produces one, so counting them counts arches.
+    const arches = (g) => {
+      let n = 0;
+      for (let i = 0; i < 24; i++) {
+        for (const h of HABITS) {
+          const t = growTree({ seed: 900 + i, gravity: g, height: 11, habit: h.id, budget: 520 });
+          for (let k = 0; k < t.seg.y1.length; k++) {
+            if (t.seg.y1[k] <= 0.03 && Math.hypot(t.seg.x1[k], t.seg.z1[k]) > 1.5) n++;
+          }
+        }
+      }
+      return n;
+    };
+    const counts = [1.62, 9.80665, 12.06, 23.5].map(arches);
+    ok('MEASURED · no limb comes back to the ground, on any gravity (was 3,989 at 1.23 g)',
+      counts.every((c) => c === 0),
+      `96 trees per gravity · ${counts.join('/')} arches at 0.17/1.00/1.23/2.40 g`);
+
+    // --- and the tree is still a tree ---------------------------------------
+    const shape = (g) => {
+      let top = 0, rad = 0, n = 0;
+      for (let i = 0; i < 24; i++) {
+        for (const h of HABITS) {
+          const t = growTree({ seed: 900 + i, gravity: g, height: 11, habit: h.id, budget: 520 });
+          top += Math.max(...t.seg.y1);
+          rad += Math.max(...t.seg.y1.map((_, k) => Math.hypot(t.seg.x1[k], t.seg.z1[k])));
+          n++;
+        }
+      }
+      return { top: top / n, rad: rad / n };
+    };
+    const moon = shape(1.62), earth = shape(9.80665), heavy = shape(23.5);
+    ok('the gravity signature survives the bound — it is stronger, not weaker',
+      moon.top > earth.top * 1.3 && heavy.top < earth.top * 0.85,
+      `${moon.top.toFixed(1)} m at 0.17 g · ${earth.top.toFixed(1)} m at 1 g · ${heavy.top.toFixed(1)} m at 2.4 g`);
+    ok('...which is the header’s own promise, finally kept: squat and thick, not arched',
+      heavy.rad < earth.rad && heavy.top / earth.top > heavy.rad / earth.rad - 0.15,
+      `crown radius ${earth.rad.toFixed(1)} m → ${heavy.rad.toFixed(1)} m`);
+
+    // §8 axis 1: four habits still distinguishable in silhouette
+    const hw = HABITS.map((h) => {
+      const sh = (() => {
+        let top = 0, rad = 0, n = 0;
+        for (let i = 0; i < 24; i++) {
+          const t = growTree({ seed: 900 + i, gravity: 9.80665, height: 11, habit: h.id, budget: 520 });
+          top += Math.max(...t.seg.y1);
+          rad += Math.max(...t.seg.y1.map((_, k) => Math.hypot(t.seg.x1[k], t.seg.z1[k])));
+          n++;
+        }
+        return top / (2 * rad);
+      })();
+      return { id: h.id, hw: sh };
+    });
+    ok('§8 axis 1 · the four habits are still distinguishable in silhouette',
+      Math.max(...hw.map((x) => x.hw)) / Math.min(...hw.map((x) => x.hw)) > 2.5,
+      hw.map((x) => `${x.id} ${x.hw.toFixed(2)}`).join(' · '));
+
+    // the budget is still spent — a bound that stunted the tree would be a
+    // different bug wearing this one's clothes
+    const segs = HABITS.map((h) => growTree({ seed: 7, gravity: 12.06, height: 11, habit: h.id, budget: 520 }).segments);
+    ok('...and a heavy world still spends its whole segment budget',
+      segs.every((v) => v > 500), `${segs.join('/')} of 520`);
+  }
+
   ok('§11 · no world produces a NaN, an underground branch or a runaway',
     [{}, { gravity: 0 }, { gravity: 1e6 }, { height: NaN }, { height: 1e9 },
       { seed: -1 }, { budget: NaN }].every((o) => {

@@ -77,7 +77,36 @@ export const WOOD = {
   alloP: 0.62,
   /** `κ = gravityK · g/g⊕ · load / r⁴`, per metre */
   gravityK: 5.4e-5,
-  /** a branch deflects; it does not orbit */
+  /**
+   * The strain in the outer fibre at which green wood ruptures — `MOR/E`.
+   *
+   * This is the one new material constant, and it is a ratio of two properties
+   * the file already implies rather than a number chosen for a look: the
+   * modulus of rupture over Young's modulus. Green wood measures roughly
+   * 60–100 MPa over about 10 GPa, so 0.006–0.010, and it is remarkably stable
+   * across species because both terms scale with density together.
+   *
+   * What it buys is the bound below, and the bound is the difference between a
+   * tree and a croquet hoop.
+   */
+  rupture: 0.008,
+  /**
+   * a branch deflects; it does not orbit
+   *
+   * ...which is what the comment said while the number said otherwise.
+   * `turnBudget` was **3.4 radians — 195°**, past vertical, so a limb could
+   * curve up, over and back down into the ground, where `q.y < 0.02` pinned it
+   * and closed the arc. That is the arch: measured over 96 trees at 1.23 g,
+   * **3,989 limb ends came back to the ground more than 1.5 m from the trunk**,
+   * and the count tracks gravity exactly as law 3 says it should — 0 on a
+   * 0.17 g moon, 3,297 on Earth, 7,244 on a 2.4 g super-earth. The file's own
+   * header promises that a heavy world makes limbs *"squat, thick and
+   * weeping"*; unbounded, weeping became a closed loop.
+   *
+   * Both constants are now derived from `rupture` — see `breakCurvature()` and
+   * `turnLimit()` — and both of these survive only as the ceilings a caller
+   * gets when it asks for the old behaviour.
+   */
   maxCurvature: 0.75,
   turnBudget: 3.4,
   /** below this radius a shoot is a twig and stops forking (metres) */
@@ -127,6 +156,45 @@ export function curvature(r, load, g = G_EARTH) {
   const k = WOOD.gravityK * (Math.max(g, 0) / G_EARTH) * Math.max(load, 0) / (rr * rr * rr * rr);
   return clamp(k, 0, WOOD.maxCurvature);
 }
+
+/**
+ * The curvature at which a beam of radius `r` breaks, per metre.
+ *
+ * Bending a round beam puts its outer fibre at `σ = κ·E·r` — the `I` in
+ * `κ = M/(E·I)` cancels against the `I` in `σ = M·r/I`, which is why this comes
+ * out as clean as it does. Rupture is `σ = MOR`, so
+ *
+ *     κ_break = MOR/(E·r) = rupture / r
+ *
+ * and neither `E` nor `I` survives into the answer. A thick limb may barely
+ * bend before it fails; a twig may curl right up. That is not a stylisation of
+ * wood, it is the same `r⁴` argument law 3 already makes, taken one step to its
+ * own limit.
+ *
+ * `WOOD.maxCurvature`'s flat 0.75 is right for a 1 cm twig and **19× too
+ * permissive for a 20 cm limb**, which is the licence the arch grew through.
+ */
+export const breakCurvature = (r) => WOOD.rupture / Math.max(r, 1e-6);
+
+/**
+ * The most a shoot of radius `r` may turn, in radians, before it breaks.
+ *
+ * Its own break curvature over its own allometric length:
+ * `θ = κ_break · L = rupture · k · r^(p−1)`. So it falls with radius as
+ * `r^-0.38` — a 4 mm twig may turn 78°, a 20 cm limb 18°, and the flat 195° it
+ * replaces was between 2.5× and 14× more than any of them.
+ *
+ * **What happens at the limit is that the shoot stops.** Not that it stops
+ * bending and carries on straight — a limb that has reached its rupture
+ * curvature is not a limb any more, and the tree does not have it. Growing it
+ * straight from there is what produced a horizontal member at ground level
+ * running away from the trunk.
+ *
+ * The consequence is the one `tree.js`'s header already promised and could not
+ * deliver: on a heavy world limbs terminate early, so the same species comes
+ * out squat and thick rather than arched.
+ */
+export const turnLimit = (r) => breakCurvature(r) * lengthOf(r);
 
 /**
  * Split a parent radius across `n` children by the area rule.
@@ -246,9 +314,18 @@ export function growTree({
     for (let i = 0; i < steps; i++) {
       const rEnd = rStart + (rEndOfShoot - rStart) * ((i + 1) / steps);
 
-      // --- law 3: the limb sags ------------------------------------------
+      // --- law 3: the limb sags, and law 3b: eventually it breaks ---------
+      //
+      // The budget is the wood's own, not a constant: `turnLimit(rStart)` is
+      // this shoot's break curvature over its own allometric length. When it is
+      // spent the shoot is **finished** — a limb at its rupture curvature is
+      // not a limb any more, and the tree does not have it. Carrying on
+      // straight from there is what drew a member running away from the trunk
+      // at ground level and closed the arc.
+      const budget = turnLimit(rStart);
+      if (turned >= budget) break;
       const k = curvature(rad, load, g);
-      const bend = Math.min(k * dl, WOOD.turnBudget - turned);
+      const bend = Math.min(k * dl, budget - turned);
       if (bend > 0) { d.y -= bend; turned += bend; }
 
       // --- law 4: one tropism, one sign change ---------------------------
