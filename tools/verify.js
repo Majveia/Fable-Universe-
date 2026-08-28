@@ -11645,6 +11645,65 @@ function suiteHero() {
       bad.every(Number.isFinite), bad.join('/'));
   }
 
+  // --- and now on real ground, at the real solved heading ------------------
+  //
+  // Every check above uses a synthetic `groundAt`, which proves the geometry
+  // and proves nothing about whether AEON's actual terrain will accept a hero.
+  // `makeGround()` is THREE-free and `solveLandingSite()` is the same solver
+  // `surface.js` runs, so the real question is answerable here: on twelve
+  // worlds, at the heading each one's solver actually chose, does the ground
+  // give the subject somewhere to stand?
+  //
+  // This is the check that would have caught a hero placed into the sea, and it
+  // is the one the offline suite exists for — the capture that would show it
+  // takes forty minutes in this container and covers one world.
+  {
+    const worlds = [];
+    for (let i = 0; i < 12; i++) {
+      worlds.push({
+        noiseSeed: 1000 + i * 7919,
+        oceanLevel: i % 4 === 3 ? -1 : 0.004 + (i % 5) * 0.006,
+        radiusE: 0.7 + (i % 6) * 0.22,
+      });
+    }
+    let placed = 0, drowned = 0, tooSteep = 0, n = 0;
+    const dists = [];
+    for (let i = 0; i < worlds.length; i++) {
+      const w = worlds[i];
+      const sol = solveLandingSite(w, 0x51 + i * 977, { sites: 90 });
+      if (!sol || sol.fallback) continue;
+      const g = makeGround(w, sol.dir);
+      const sea = g.seaLevel ?? -1e9;
+      const amp = g.amp ?? 1e9;
+      // life.js's own dryland(), to the letter
+      const dryland = (x, z) => {
+        const h = g.heightAt(x, z);
+        if (sea !== null && h < sea + 1.5) return null;
+        if (h > amp * 0.55) return null;
+        return h;
+      };
+      n++;
+      const site = heroSite({
+        seed: 0xbeef + i, spawn: { x: 0, z: 0 }, heading: sol.heading,
+        halfFov: 26 * Math.PI / 180, groundAt: dryland,
+      });
+      if (!site) continue;
+      placed++;
+      dists.push(site.dist);
+      if (site.y < sea + 1.5) drowned++;
+      if (site.y > amp * 0.55) tooSteep++;
+    }
+    ok('§9.7 · real terrain accepts a hero at the solved heading on every world',
+      n > 0 && placed === n, `${placed}/${n} worlds placed`);
+    ok('...and not one of them stands in the sea',
+      drowned === 0, `${drowned} below sea level + 1.5 m`);
+    ok('...nor above the altitude life.js refuses to plant on',
+      tooSteep === 0, `${tooSteep} above amp · 0.55`);
+    const lo = Math.min(...dists), hi = Math.max(...dists);
+    ok('...and the distances spread across the band rather than pinning to one',
+      hi - lo > 10, `${lo.toFixed(0)}–${hi.toFixed(0)} m over ${dists.length} worlds`);
+  }
+
   // --- §16 rule 2: what it costs against §5, before it is proposed ---------
   //
   // *"Before proposing a feature, state its cost against §5 measured with the
