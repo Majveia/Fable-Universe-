@@ -398,3 +398,40 @@ same problem by making distant grass a *ground colour* rather than blades.
 **Do not read this as "add more grass".** It is the opposite: the frame is
 already paying five times its budget for a meadow it cannot see, and the near
 field is the part that is starved relative to what it could afford.
+
+---
+
+## 14 · The sky is fine, and how to measure it without fooling yourself
+
+Three separate "the sky is desaturated" findings this session were all
+measurement artifacts. Recording the method so the fourth one is real.
+
+Measured on the meadow world (5961 K star, sun +12°), de-vignetted, against
+`skyWash`'s own stop for the elevation each row actually looks at:
+
+| view elev | rendered | sat | §9.1 stop | sat |
+|---|---|---|---|---|
+| 21.1° | (120,168,187) | 0.358 | (122,168,203) | 0.399 |
+| 17.5° | (142,192,213) | 0.333 | (130,174,206) | 0.369 |
+| 13.3° | (171,215,233) | 0.266 | (147,186,213) | 0.310 |
+| 8.1° | (186,220,231) | 0.195 | (165,200,220) | 0.250 |
+
+**78–90% of spec, hue correct, blue about 8% low.** Within what the cirrus term
+and the print together account for. The sky is not the defect.
+
+Two traps, both of which produced a confident wrong number:
+
+1. **The top of the frame is not the zenith.** At a 1.68 m eye height with
+   FOV 52 and pitch −0.04, the frame spans roughly 0–24° of elevation.
+   `skyWash` does not reach `uSkyZen` until `d.y ≥ 0.86`, i.e. **59°**. A frame
+   at ground level never contains the zenith stop at all, so comparing its top
+   row to `#4E80B4` compares two different things and reports a 3× deficit that
+   does not exist.
+2. **The corners are vignetted.** §9.4 step 7 multiplies by up to 0.77 at the
+   frame edge. Sampling at (0.92, 0.04) — the natural "bit of clear sky" — puts
+   the probe in the deepest part of it.
+
+And the check that saves the most time: **push the transfer's own output
+through the print offline first.** `airColours(T, elev)` → `grade()` *raises*
+sky saturation by 8–28%. So the print can never be the cause of a desaturated
+sky, and any hunt that starts there is already lost.
