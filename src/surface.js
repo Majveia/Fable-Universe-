@@ -36,6 +36,7 @@ import { PAINT_GLSL, lightFor } from './paint.js';
 import { exposureFor, nightFraction, nightLight, skyLux } from './night.js';
 import { AERIAL_GLSL, aerialParams, airFor, applyAerial, visibilityFor } from './aerial.js';
 import { makeSurfaceSky } from './starfield.js';
+import { makeAtmosphere } from './scatterlut.js';
 import { makeCumulus } from './clouds.js';
 import { addAurora } from './curtain.js';
 import {
@@ -261,6 +262,17 @@ const WETLINE = WETLINE_ON;
  * capture in this repo was shot with, which is what makes the A/B takeable.
  */
 const VEG = PARAM('veg') !== '0';
+
+/**
+ * §9.6, overridden: the sky is an integral rather than a painted wash.
+ *
+ * The planet already has a real atmosphere — `planetscale.js` builds Rayleigh
+ * and Mie LUTs through `scatterlut.js` and renders it from orbit — and lost it
+ * the moment you landed. `?atmo=1` stops that happening. `?atmo=0` restores
+ * §9.6's four painted stops, which is the frame every capture in this repo was
+ * shot with.
+ */
+const ATMO_SKY = PARAM('atmo') === '1';
 
 /**
  * The sampler, at this tier's tap count — §5's LOD, arriving before the feature
@@ -2254,7 +2266,26 @@ export class SurfaceScale {
       // never read, though `starlight.js` has been computing every one of them
       // from the star's spectrum since M2 act 2. That is most of "the worlds
       // look washed out", and it was a wiring fault rather than a palette one.
+      // The eye, in planet frame: on the surface of a sphere of this world's
+      // radius, plus however high the camera is standing. The integral starts
+      // from wherever the eye is, so this is a uniform object rather than a
+      // value — a copy would be the sky one frame behind the walker.
+      this._atmoCam = { value: new THREE.Vector3() };
+      this.atmosphere = ATMO_SKY ? makeAtmosphere({
+        pp, atmo: this.atmo, gravity: gravityOf(pp),
+        starT: this.ctx.system?.temp ?? 5778,
+        steps: qInt('atmosteps', 'atmoSteps'),
+        sunDir: this.uSunDir, camPos: this._atmoCam,
+      }) : null;
+      if (this.atmosphere) {
+        const m = this.atmosphere.medium;
+        console.info(`[atmo] ${(m.Hr / 1000).toFixed(2)} km scale height · `
+          + `beta_R.b ${(m.betaR[2] * 1e6).toFixed(1)}e-6 /m · `
+          + `${m.earthLike.toFixed(2)}x Earth's column · `
+          + `${qInt('atmosteps', 'atmoSteps')} steps`);
+      }
       this.skyDome = makeSurfaceSky({
+        scattering: this.atmosphere,
         sunDir: this.uSunDir,
         T: this.ctx.system?.temp ?? 5778,
         atmo: this.atmo,
@@ -3369,6 +3400,15 @@ export class SurfaceScale {
           cirrusDrift: this._cloudDrift,
           cirrusDir: { x: cw.x, y: cw.z },
         });
+      }
+      if (this.atmosphere) {
+        // The eye in planet frame. Local +y *is* the zenith here — that is what
+        // a tangent frame means — so the horizontal walk does not enter: over a
+        // 1400 m tile it is eleven significant figures below the planet radius
+        // and would be rounded away by the float64 before it reached the
+        // shader, let alone by the float32 after.
+        this._atmoCam.value.set(
+          0, this.atmosphere.medium.R + Math.max(this.camera.position.y, 0), 0);
       }
       if (this.cumulus) {
         this.cumulus.update(elevDeg, this._cloudDrift);

@@ -11,6 +11,9 @@
 // brighter where it matters: the blue that hangs on after the sun is gone.
 
 import * as THREE from 'three';
+import {
+  atmosphereGLSL, mediumFor, starIrradiance,
+} from './atmosphere.js';
 
 const MU_LO = -0.3, MU_RANGE = 1.3;
 
@@ -167,4 +170,53 @@ export function buildScatterLUTs(P) {
   texMS.needsUpdate = true;
 
   return { texT, texMS, psiScale: psiMax };
+}
+
+// ---------------------------------------------------------------------------
+// the surface sky's block, assembled
+
+/**
+ * Everything the chunk reads, built from a world, a star and a tier.
+ *
+ * The LUTs come from `scatterlut.js` unchanged — the two expensive tables are
+ * already there and already correct, and this is the third caller rather than a
+ * second implementation. That is the whole reason this file is short.
+ *
+ * `camPos` is handed in as a uniform object rather than a value: the eye moves
+ * every frame and the integral starts from wherever it is, so a copy would be
+ * the sky lagging the walker by a frame.
+ */
+export function makeAtmosphere({
+  pp = {}, atmo = 1, gravity = 9.81, starT = 5778, steps = 12,
+  sunDir, camPos, intensity = 22,
+} = {}) {
+  const m = mediumFor(pp, atmo, gravity);
+  const irr = starIrradiance(starT);
+  const luts = buildScatterLUTs({
+    R: m.R,
+    Ra: m.Ra,
+    betaR: { x: m.betaR[0], y: m.betaR[1], z: m.betaR[2] },
+    betaM: m.betaM,
+    Hr: m.Hr,
+    Hm: m.Hm,
+  });
+  return {
+    medium: m,
+    glsl: atmosphereGLSL(steps),
+    uniforms: {
+      uAtmoCam: camPos || { value: new THREE.Vector3(0, m.R, 0) },
+      uAtmoSun: sunDir || { value: new THREE.Vector3(0, 1, 0) },
+      uAtmoBetaR: { value: new THREE.Vector3(...m.betaR) },
+      uAtmoSunCol: { value: new THREE.Vector3(...irr) },
+      uAtmoBetaM: { value: m.betaM },
+      uAtmoR: { value: m.R },
+      uAtmoRa: { value: m.Ra },
+      uAtmoHr: { value: m.Hr },
+      uAtmoHm: { value: m.Hm },
+      uAtmoI: { value: intensity },
+      uAtmoT: { value: luts.texT },
+      uAtmoMS: { value: luts.texMS },
+      uAtmoPsi: { value: luts.psiScale },
+    },
+  };
 }

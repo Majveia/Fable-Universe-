@@ -40,6 +40,9 @@ import { CLOUD_FIELD_GLSL } from '../src/cloudfield.js';
 import {
   DRAINAGE_GLSL, SLOPE_FLOOR, TWI_CLIP, packDrainage, solveDrainage,
 } from '../src/drainage.js';
+import {
+  atmosphereGLSL, mediumFor, starIrradiance,
+} from '../src/atmosphere.js';
 import { makeGround } from '../src/ground.js';
 import { soften, wetFor } from '../src/wash.js';
 import {
@@ -9052,6 +9055,157 @@ function suiteBlossom() {
 
 
 
+
+// ---------------------------------------------------------------------------
+// suite: atmosphere
+//
+// §9.6 ruled the sky "a painted gradient, not a scattering integral", and this
+// overrides that clause — so the burden is to show the integral earns it. The
+// checks that matter are the ones a painted gradient could never pass:
+//
+//   · Earth's own scale height falls out of kT/mg without being told;
+//   · the medium responds to pressure, gravity and composition rather than to a
+//     colour someone chose;
+//   · the star's spectrum reaches the sky as a spectrum, not as a tint.
+
+function suiteAtmosphere() {
+  console.log('\natmosphere — the sky the planet already had');
+
+  const EARTH = { Teq: 255, typeId: 1, radiusE: 1 };
+
+  // --- 1 · Earth falls out ------------------------------------------------
+  {
+    const m = mediumFor(EARTH, 1, 9.81);
+    // The measured value is 8.5 km. Nothing here was fitted to it: it is
+    // kT/mg with T from surfaceTemp() and M from molarMass(), both of which
+    // predate this file.
+    near('Earth\'s scale height, from kT/mg alone', m.Hr / 1000, 8.5, 0.12);
+    near('and its Rayleigh coefficient at 440 nm',
+      m.betaR[2] * 1e6, 33.1, 1e-6);
+    ok('blue scatters more than red, which is the whole reason the sky is blue',
+      m.betaR[2] > m.betaR[1] && m.betaR[1] > m.betaR[0],
+      `${(m.betaR[0] * 1e6).toFixed(1)} / ${(m.betaR[1] * 1e6).toFixed(1)} / `
+      + `${(m.betaR[2] * 1e6).toFixed(1)} e-6 per metre`);
+    // 1/λ⁴ at 680, 550 and 440 nm — the ratio, recomputed rather than read back
+    const l = [680, 550, 440];
+    const want = l.map((x) => Math.pow(l[0] / x, 4));
+    const got = m.betaR.map((b) => b / m.betaR[0]);
+    for (let i = 0; i < 3; i++) {
+      ok(`and the ratio at ${l[i]} nm is 1/lambda^4 to within 6%`,
+        Math.abs(got[i] / want[i] - 1) < 0.06,
+        `${got[i].toFixed(3)} against ${want[i].toFixed(3)}`);
+    }
+    near('Earth reports as one Earth column', m.earthLike, 1, 0.02);
+  }
+
+  // --- 2 · and other worlds do not ----------------------------------------
+  {
+    const thin = mediumFor({ Teq: 210, typeId: 1, radiusE: 0.53 }, 0.006, 3.72);
+    const thick = mediumFor({ Teq: 290, typeId: 1, radiusE: 1.2 }, 4, 12.0);
+    const giant = mediumFor({ Teq: 130, typeId: 5, radiusE: 11 }, 1, 24.8);
+    const earth = mediumFor(EARTH, 1, 9.81);
+
+    ok('a thin atmosphere barely scatters', thin.earthLike < 0.05,
+      `${(thin.betaR[2] * 1e6).toFixed(2)}e-6 against Earth's 33.1 — a dark sky`);
+    ok('a thick one scatters much more', thick.earthLike > 3,
+      `${thick.earthLike.toFixed(2)}x Earth's column`);
+    ok('lower gravity holds a deeper atmosphere',
+      thin.Hr > earth.Hr, `${(thin.Hr / 1000).toFixed(1)} km at 3.72 m/s^2`);
+    ok('and a hydrogen envelope is deeper still at higher gravity',
+      giant.Hr > earth.Hr,
+      `${(giant.Hr / 1000).toFixed(1)} km — molar mass is in the denominator, `
+      + 'so H2 wins against 24.8 m/s^2');
+    ok('the medium is monotone in pressure', (() => {
+      let prev = -1;
+      for (const a of [0.1, 0.5, 1, 2, 4, 8]) {
+        const v = mediumFor(EARTH, a, 9.81).betaR[2];
+        if (v < prev) return false;
+        prev = v;
+      }
+      return true;
+    })());
+    ok('and never produces a NaN, however absurd the world',
+      [[{}, 0, 0], [{ Teq: 0, typeId: 9, radiusE: 0 }, -5, -1],
+        [{ Teq: 5000, typeId: 5, radiusE: 99 }, 1e6, 1e6]].every(([pp, a, g]) => {
+        const v = mediumFor(pp, a, g);
+        return [v.R, v.Ra, v.Hr, v.Hm, v.betaM, ...v.betaR].every(Number.isFinite)
+          && v.Ra > v.R && v.Hr > 0;
+      }));
+  }
+
+  // --- 3 · the star arrives as a spectrum ---------------------------------
+  //
+  // §9.6's surviving clause: "sun colour must stay honest to the star's
+  // blackbody temperature". A painted gradient can only tint; an integral takes
+  // the spectrum in at the top and reddens it on the way down itself.
+  {
+    const cool = starIrradiance(3300), sun = starIrradiance(5778);
+    const hot = starIrradiance(25000);
+    ok('a red dwarf is red at the top of the atmosphere',
+      cool[0] > cool[2] * 2, cool.map((v) => v.toFixed(2)).join(', '));
+    ok('a hot star is blue', hot[2] > hot[0] * 2, hot.map((v) => v.toFixed(2)).join(', '));
+    ok('and a G-type is very nearly white',
+      Math.abs(sun[0] - sun[2]) < 0.25, sun.map((v) => v.toFixed(3)).join(', '));
+    ok('every one of them carries unit luminance, so the star sets colour and '
+      + 'not brightness',
+      [3300, 5778, 9000, 25000].every((T) => {
+        const c = starIrradiance(T);
+        return Math.abs(c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722 - 1) < 1e-6;
+      }));
+    ok('the tilt is monotone in temperature', (() => {
+      let prev = Infinity;
+      for (const T of [2500, 3300, 4500, 5778, 9000, 25000]) {
+        const c = starIrradiance(T);
+        const r = c[0] / c[2];
+        if (r > prev) return false;
+        prev = r;
+      }
+      return true;
+    })(), 'hotter is bluer, without exception');
+  }
+
+  // --- 4 · the chunk ------------------------------------------------------
+  {
+    const g = atmosphereGLSL(12);
+    ok('the step count is compiled in, not a uniform',
+      /for \(int i = 0; i < 12; i\+\+\)/.test(g),
+      '§11 · quality is set once at init, never adapted mid-frame');
+    ok('and the tier can move it', /for \(int i = 0; i < 24; i\+\+\)/.test(atmosphereGLSL(24)));
+    ok('it reads the LUTs rather than marching toward the sun per step',
+      /atmoSunT\(h, mus\)/.test(g) && !/for[\s\S]{0,200}sunMarch/.test(g),
+      'which is the whole reason a scattering integral is affordable here');
+    // The bug this replaces: `drainAt()` hard-coded `texture2D`, which three
+    // aliases for an ES 1.00 shader and deliberately does not for a 3.00 one.
+    // The terrain (1.00) compiled and the blade's vertex shader (3.00) did not,
+    // so the meadow was silently absent while the ground looked right.
+    const outsideDefine = (chunk) => chunk.split('\n')
+      .filter((l) => !/#define AEON_TEX/.test(l)).join('\n');
+    for (const [name, chunk] of [['the sky', g], ['the drainage', DRAINAGE_GLSL]]) {
+      ok(`${name} chunk spells its sampler version-safely`,
+        /#define AEON_TEX/.test(chunk)
+        && /#if __VERSION__ >= 300/.test(chunk)
+        && !/texture2D\(/.test(outsideDefine(chunk)),
+        'ES 1.00 says texture2D and 3.00 says texture, and both chunks are '
+        + 'included in both kinds of host');
+    }
+    ok('looking down from inside finds the ground rather than a black band',
+      /else if \(gnd\.y > 0\.0\) t1 = min\(t1, gnd\.y\);/.test(g),
+      'the near root is behind you when you are standing under the sky');
+    ok('and the view transmittance comes back, so a disc can set behind the air',
+      /return vec4\(max\(L, 0\.0\), clamp\(dot\(Tview/.test(g));
+
+    const sf = readFileSync(new URL('../src/starfield.js', import.meta.url), 'utf8');
+    ok('the painted wash and the painted halo are replaced together',
+      /vec3 col = skyRadiance\(d\)\.rgb;/.test(sf)
+      && /\$\{scattered \?/.test(sf),
+      'both are models of scattering, so keeping one would count the light twice');
+    ok('but the disc and the cirrus survive, because those are art direction',
+      sf.indexOf('float chord = length(d - uSunDir);')
+        > sf.indexOf('vec3 col = skyRadiance(d).rgb;'),
+      '§9.6 draws the disc three times oversize on purpose');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // suite: tier
 //
@@ -10220,6 +10374,7 @@ const suites = {
   green: suiteGreen,
   sward: suiteSward,
   tier: suiteTier,
+  atmosphere: suiteAtmosphere,
   cloudshade: suiteCloudShade,
   drainage: suiteDrainage,
   invariants: suiteInvariants,

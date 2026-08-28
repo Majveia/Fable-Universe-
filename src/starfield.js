@@ -409,7 +409,7 @@ uniform vec3 uSunDir;
  * is the only expensive thing in this shader and §5 wants one row of the
  * quality table to reconfigure it.
  */
-const skyBody = (cirrusWarp, cirrusDetail) => /* glsl */`
+const skyBody = (cirrusWarp, cirrusDetail, scattered = false) => /* glsl */`
 ${SKY_NOISE_GLSL}
 ${skyFbm(cirrusDetail)}
 ${cirrusWarp > 0 ? skyFbm(cirrusWarp) : ''}
@@ -441,16 +441,32 @@ vec3 skyWash(vec3 d) {
 // sun is.
 vec3 skyDome(vec3 d, out float sunMask) {
   float air = clamp(uSkyAir, 0.0, 1.0);
+  float ang = dot(d, uSunDir);
+${scattered ? /* glsl */`
+  // The wash is an integral now — see atmosphere.js.
+  //
+  // What it replaces is skyWash()'s four painted stops plus a painted Mie
+  // halo. Both are models of scattering, and there is a scattering model here
+  // now, so keeping them would be the same light counted twice — the aureole
+  // especially, which the Mie phase inside skyRadiance() already produces and
+  // which is exactly what pow(ang, 7.0) was approximating.
+  //
+  // Everything below this line stays: the disc, the cirrus, the ground-side
+  // wash. Those are art direction rather than physics — §9.6 draws the disc
+  // three times oversize on purpose and says so — and an integral has no
+  // opinion about them.
+  vec3 col = skyRadiance(d).rgb;
+` : /* glsl */`
   vec3 col = skyWash(d) * (uSkyLum * air);
 
   // Mie forward-scatter halo — §9.6's exponents exactly. It is scattered
   // light, so it needs air: in vacuum this term is zero and the star sits on
   // black, which is §2.8 arriving out of the physics rather than a branch.
-  float ang = dot(d, uSunDir);
   float halo = pow(max(ang, 0.0), 7.0);
   float wide = pow(max(ang, 0.0), 1.9);
   col = mix(col, uSunGlow * uSkyLum,
             clamp(halo * 0.72 + wide * 0.16, 0.0, 0.9) * air);
+`}
 
   // The disc. Chord length rather than the angle: for a sun a third of a
   // degree across, cos(ang) sits 1e-5 below 1.0, and thresholding a float32
@@ -524,9 +540,17 @@ const CIRRUS_OCTAVES = {
  * two-plus-four (six). The wash, the asymmetry, the halo and the disc are the
  * same arithmetic on every tier, because none of them is measurable.
  */
-export function skyGLSL(tier = 'desktop', withSun = true) {
+/**
+ * @param {string} tier     which cirrus octave count this row gets
+ * @param {boolean} withSun whether the host already declares uSunDir
+ * @param {string} atmo     atmosphere.js's chunk, or '' for §9.6's painted
+ *                          gradient. Its presence is what switches the dome
+ *                          from a wash to an integral — see skyBody.
+ */
+export function skyGLSL(tier = 'desktop', withSun = true, atmo = '') {
   const [w, d] = CIRRUS_OCTAVES[tier] || CIRRUS_OCTAVES.desktop;
-  return (withSun ? SKY_SUN_GLSL : '') + SKY_UNIFORM_GLSL + skyBody(w, d);
+  return (withSun ? SKY_SUN_GLSL : '') + SKY_UNIFORM_GLSL + atmo
+    + skyBody(w, d, !!atmo);
 }
 
 /**
@@ -544,7 +568,7 @@ export function skyGLSL(tier = 'desktop', withSun = true) {
  */
 export function makeSurfaceSky({
   sunDir, T = 5778, atmo = 1, sunAng = 0.012, cirrus = 0.45,
-  tier = 'desktop', radius = 20000,
+  tier = 'desktop', radius = 20000, scattering = null,
 } = {}) {
   const v3 = (c) => new THREE.Vector3(c[0], c[1], c[2]);
   const u = {
@@ -566,6 +590,8 @@ export function makeSurfaceSky({
     uCirrusAmt: { value: cirrus },
     uCirrusDir: { value: new THREE.Vector2(1, 0) },
     uCirrusDrift: { value: new THREE.Vector2(0, 0) },
+    // the integral's own block, when there is one — `atmosphere.js`
+    ...(scattering ? scattering.uniforms : {}),
   };
 
   const mesh = new THREE.Mesh(
@@ -593,7 +619,7 @@ export function makeSurfaceSky({
         // a shader must be compile-checked *as assembled*, and a shader that is
         // never assembled has nothing to check. The first frame that asked for
         // this sky is the first frame that could have found it.
-        ${skyGLSL(tier, true)}
+        ${skyGLSL(tier, true, scattering ? scattering.glsl : '')}
         varying vec3 vDir;
         void main() {
           float sm;

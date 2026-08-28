@@ -349,6 +349,19 @@ export function packDrainage(d) {
  * rather than to a hard edge.
  */
 export const DRAINAGE_GLSL = /* glsl */`
+// GLSL ES 1.00 spells it texture2D and 3.00 spells it texture, and this
+// chunk is included in both: the terrain's fragment shader is 1.00 and the
+// blade's *vertex* shader is 3.00. three defines the alias for 1.00 shaders and
+// deliberately does not for 3.00, so a chunk that hard-codes either one
+// compiles in one host and fails in the other — which is how this was found,
+// with the meadow silently absent and the terrain fine.
+#ifndef AEON_TEX
+  #if __VERSION__ >= 300
+    #define AEON_TEX(s, uv) texture(s, uv)
+  #else
+    #define AEON_TEX(s, uv) texture2D(s, uv)
+  #endif
+#endif
 uniform sampler2D uDrainTex;
 uniform vec2  uDrainOrigin;   // the tile's min corner, world xz
 uniform float uDrainSpan;     // its size in metres
@@ -360,6 +373,6 @@ vec4 drainAt(vec3 wp) {
   vec2 e = abs(uv - 0.5);
   float inside = 1.0 - smoothstep(0.40, 0.499, max(e.x, e.y));
   if (inside <= 0.0) return vec4(0.0);
-  return texture2D(uDrainTex, clamp(uv, 0.0, 1.0)) * inside * uDrainAmt;
+  return AEON_TEX(uDrainTex, clamp(uv, 0.0, 1.0)) * inside * uDrainAmt;
 }
 `;
