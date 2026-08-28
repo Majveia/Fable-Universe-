@@ -190,7 +190,9 @@ console.log(`drawcensus · ${url}`);
 const pageNotes = [];
 page.on('console', (m) => {
   const t = m.text();
-  if (/\[(ground|§M3)\]/.test(t)) pageNotes.push(t.slice(0, 170));
+  // §9.7 too: `life.js` reports where it put the hero, and a census that
+  // cannot see whether the subject was placed cannot price it either.
+  if (/\[(ground|§M3|§9\.7)\]/.test(t)) pageNotes.push(t.slice(0, 170));
 });
 
 await page.goto(origin + url, { waitUntil: 'domcontentloaded' });

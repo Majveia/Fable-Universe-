@@ -403,6 +403,67 @@ export function blossomsFor(tree, {
 }
 
 /**
+ * How a world's flower budget is shared out — §5, and §9.5's distance law
+ * carried to the one object class it was never carried to.
+ *
+ * `life.js` thins wood by distance and thins foliage by distance, with a note
+ * saying that a tree at 700 m spending sub-pixel leaf clumps is *"exactly the
+ * defect the ground cover had."* The blossom was split **evenly**, so a tree at
+ * 300 m carried the same share as one at 30 m — over the 16% of its leaves that
+ * survived the foliage LOD. A capture of a world in full bloom shows what that
+ * is: bare arcing branches with white specks on them, strung along the horizon,
+ * with no canopy mass anywhere.
+ *
+ * Three properties, and each one is a thing the even split got wrong:
+ *
+ *   · **weighted**, so flowers go where they resolve;
+ *   · **conserving** — the freed share is redistributed rather than discarded,
+ *     so the total is exactly the cap and this moves flowers instead of
+ *     removing them;
+ *   · **floored**, because a tree with four flowers on it is not in bloom, it
+ *     is speckled, and a skyline should read as blossom or as leaf.
+ *
+ * `hero` takes its share off the top before any of that (§9.7), and is excluded
+ * from the weighting so it cannot be diluted by four hundred neighbours.
+ *
+ * It lives here rather than at the call site for the reason `meadow.js` gives
+ * about `vegetationHSL`: `life.js` imports THREE and `tools/verify.js` cannot
+ * reach it in node, so an allocation rule written there is a rule nothing
+ * checks.
+ */
+export function blossomShares(weights, { cap = 44000, heroCap = 0, floor = 12, heroIndex = -1 } = {}) {
+  const w = Array.isArray(weights) ? weights : [];
+  const n = w.length;
+  if (!n) return [];
+  const total = Math.max(num(cap, 0) | 0, 0);
+  const hero = clamp(num(heroCap, 0) | 0, 0, total);
+  const rest = total - hero;
+  const fl = Math.max(num(floor, 0) | 0, 0);
+
+  const share = new Array(n).fill(0);
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    if (i === heroIndex) continue;
+    const v = num(w[i], 0);
+    if (v > 0) sum += v;
+  }
+  // Nothing to weight by — every tree beyond the falloff, or a caller that
+  // passed zeros — is a real case and it gets the even split it always had
+  // rather than a division by zero.
+  if (!(sum > 0)) {
+    const others = heroIndex >= 0 && heroIndex < n ? n - 1 : n;
+    const even = others > 0 ? Math.floor(rest / others) : 0;
+    for (let i = 0; i < n; i++) share[i] = i === heroIndex ? hero : Math.max(fl, even);
+    return share;
+  }
+  for (let i = 0; i < n; i++) {
+    if (i === heroIndex) { share[i] = hero; continue; }
+    share[i] = Math.max(fl, Math.floor(rest * (Math.max(num(w[i], 0), 0) / sum)));
+  }
+  return share;
+}
+
+/**
  * How a petal falls here.
  *
  * The speed is `precip.js`'s drag law with a petal's numbers in it, so this is

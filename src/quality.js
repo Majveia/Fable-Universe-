@@ -92,6 +92,32 @@ const TIER_NAMES = ['low', 'mobile', 'desktop', 'ultra'];
  * is §5's rule applied to it: *any change that costs frames must pay for them*,
  * and the two rows least able to pay were the ones paying most.
  *
+ * -------------------------------------------------------------------------
+ * …and then the arithmetic behind "at 5 m a blade is about 9 px" was done.
+ *
+ * It is **1.70 px**, and it is 1.70 px at 4 m, 8 m, 12 m, 18 m and 26 m as
+ * well. The sentence above reasoned from a blade's natural width, and a blade
+ * does not have one: `meadowWidth()` returns `wpx · d / pxPerRadian`, which is
+ * a width *defined in pixels*, so it is constant in pixels by construction and
+ * a blade does not get wider as you walk up to it. The only term that ever
+ * exceeds it is the 6.2 mm metric minimum, and that binds inside about two
+ * metres. `meadow.js`'s `bladeWidth()` is that law in JS and `suiteMeadow`
+ * now evaluates §9.5's rule against it rather than against an estimate.
+ *
+ * What survives and what does not:
+ *
+ *   · **ring 0 keeps it on desktop and ultra.** It clears the 3 px threshold
+ *     inside 3.65 m (desktop) and 4.30 m (ultra) — 14% and 17% of a 26 m band,
+ *     which is a small share of the band and a large share of the lower third
+ *     of the frame. That is the trade the column was for.
+ *   · **ring 1 never clears it, on any row.** Its blade sits at its own 2.00 px
+ *     floor from 22 m to 84 m, which is inside §9.5's retirement regime along
+ *     the whole band. Ultra was spending 12 triangles a blade on across-blade
+ *     shading that cannot resolve anywhere it is drawn: measured, 20.0 M of
+ *     ultra's 55.7 M grass triangles. `curvedRings` 2 → 1.
+ *
+ * `?curved=` still overrides, so the previous build is one URL parameter away.
+ *
  * `grass` is per-ring rather than a single number because the rings do not
  * scale together, and the direction is the opposite of the obvious guess. On
  * every row `grass[0] > grass[3]`: the near ring keeps proportionally more
@@ -109,7 +135,7 @@ export const QUALITY = [
   { name: 'low', px: 0.85, cosmic: 44, quadSplit: 4.5, quadDepth: 14, tileRes: 25, atmoSteps: 6, shadowRes: 1024, shadowTaps: 1, shaftTaps: 0, cities: false, volumetrics: false, grass: [0.30, 0.28, 0.26, 0.24], wind: 160, blades: [3, 1, 1, 1], curvedRings: 0 },
   { name: 'mobile', px: 1.00, cosmic: 56, quadSplit: 5.5, quadDepth: 16, tileRes: 29, atmoSteps: 8, shadowRes: 1536, shadowTaps: 5, shaftTaps: 0, cities: true, volumetrics: false, grass: [0.58, 0.55, 0.52, 0.48], wind: 224, blades: [3, 2, 1, 1], curvedRings: 0 },
   { name: 'desktop', px: 1.12, cosmic: 68, quadSplit: 6.5, quadDepth: 18, tileRes: 33, atmoSteps: 12, shadowRes: 2048, shadowTaps: 5, shaftTaps: 8, cities: true, volumetrics: true, grass: [1.00, 1.00, 1.00, 1.00], wind: 288, blades: [4, 2, 1, 1], curvedRings: 1 },
-  { name: 'ultra', px: 1.32, cosmic: 86, quadSplit: 8.0, quadDepth: 20, tileRes: 41, atmoSteps: 16, shadowRes: 2560, shadowTaps: 5, shaftTaps: 12, cities: true, volumetrics: true, grass: [1.45, 1.38, 1.30, 1.20], wind: 352, blades: [5, 3, 2, 1], curvedRings: 2 },
+  { name: 'ultra', px: 1.32, cosmic: 86, quadSplit: 8.0, quadDepth: 20, tileRes: 41, atmoSteps: 16, shadowRes: 2560, shadowTaps: 5, shaftTaps: 12, cities: true, volumetrics: true, grass: [1.45, 1.38, 1.30, 1.20], wind: 352, blades: [5, 3, 2, 1], curvedRings: 1 },
 ];
 
 const param = (k) => {
