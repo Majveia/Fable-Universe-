@@ -1,0 +1,24 @@
+{
+  "gateValid": false,
+  "note": "A glimpse is not a capture. Software rasteriser, wrecked quality knobs. Binary questions only — see the header of tools/glimpse.js.",
+  "url": "/index.html?seed=700181046&g=1&s=2309773419&pl=2&quad=1&ap=0&dt=0.0166&q=low&grass=0.012,0.010,0.006,0.006&blades=1,1,1,1&wind=64&shres=512&shtaps=1&qd=10&qr=17&vc=0",
+  "preset": "cheap",
+  "viewport": {
+    "w": 480,
+    "h": 300
+  },
+  "frames": 1,
+  "builtMs": 0,
+  "perFrameMs": 0,
+  "settled": false,
+  "nearGround": {
+    "gradient": 10.109690508765523,
+    "min": 51.760400000000004,
+    "max": 252.7966,
+    "samples": 12288
+  },
+  "colour": {
+    "saturation": 0.8072982002696939
+  },
+  "notes": []
+}
