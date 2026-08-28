@@ -314,6 +314,50 @@ how a session stops being reviewable.
 **Colour 3** (the single-hue dominance is broken, the accent is now unintended) ·
 **Silhouette 4** (trees are trees).
 
+### The census, and one thing it says that the frame cannot
+
+`drawcensus --preset none` on the captured world (seed 144), with and without
+the flag. It renders **320×180** — remember that, because it turns out to
+matter.
+
+| | shipped | `?cover=1` |
+|---|---|---|
+| frame | 10,568,367 · **4.8× §5** | 3,509,549 · **1.6× §5** |
+| meadow | 8,445,378 | **1,386,560** |
+| blades | 3,378,441 | **464,524** |
+| draw calls | 230 | 155 |
+| chunks | 412 | 243 |
+| ring 3 | 45 chunks · 1,016,616 blades | **0 · 0** |
+| ring 2 | 36 chunks | 6 — its first 8 m only |
+
+**The model predicted ring 0 would keep 27.1% of its blades. It kept 27.1%.**
+
+**But the flag's number does not transfer between viewports, and the shipped
+one does.** That is not a caveat, it is the law working: the cap depends on
+`pxPerRadian`, so a 320×180 census earns fewer blades than a 720p frame earns,
+because at 320×180 fewer blades genuinely resolve. The shipped law has no such
+term, so its 8.4 M is the same at any size.
+
+Scaled to the rows that actually ship — same measured baseline, each row's own
+projection and tessellation:
+
+| row | ring 0 kept | meadow triangles | vs shipped |
+|---|---|---|---|
+| low @ 720p | 62% | 1,957,227 | **4.3×** |
+| mobile @ 844p·2 | 45% | 2,947,830 | **6.6×** |
+| desktop @ 1440p | 26% | 6,660,872 | **7.6×** |
+| ultra @ 1440p | 18% | 9,552,368 | **12.4×** |
+
+The cap bites hardest on the rows that were most over-drawn, which is the
+property it was built to have.
+
+**And it exposes a second lever this plan does not pull.** Desktop's meadow is
+still 6.66 M *after* the cap, because ring 0 there is **16 triangles a blade** —
+`blades: [4,…]` with `curvedRings: 1`, a curved cross-section on a blade that
+§9.5's own pixel rule retires. Density and tessellation are independent
+multipliers and this plan moves only the first. The second is worth roughly
+another 2× on desktop and is not measured here.
+
 ### Determinism, and the branch that nearly broke it
 
 The tree bound changed a generation path, so `docs/captures/digest.json` had to
