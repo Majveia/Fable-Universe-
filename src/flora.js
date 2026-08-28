@@ -48,7 +48,7 @@ import {
 import {
   MEADOW_COLOUR_GLSL, MEADOW_GLSL, MEADOW_PART_GLSL, PALETTE_KEYS, PART_RADIUS,
   BLADE_MAX_W, COVER_REACH, COVER_TARGET, RINGS, bladeRoots, chunkGrid,
-  chunkInstances, chunkNearDist, coverMul, fadeBand, grassPalette, ringB,
+  chunkInstances, chunkNearDist, coverAt, coverMul, fadeBand, grassPalette, ringB,
 } from './meadow.js';
 
 /**
@@ -965,7 +965,10 @@ export class GrassRing {
     // address, and a cap keeps it meaning what it meant.
     if (COVER && !this._capped) {
       this._capped = true;
-      const cap = coverMul(this.ring, this.spec.dn, COVER_TARGET,
+      // Evaluated where the ring is SEEN, not where its density is quoted —
+      // see `coverAt`. Setting ring 0's cap by its behaviour at dn = 7 m left
+      // the ground bare underfoot, because coverage falls toward the camera.
+      const cap = coverMul(this.ring, coverAt()(this.ring), COVER_TARGET,
         pxPerRadian, this.material.uniforms.uWidth.value, BLADE_MAX_W);
       const was = this.densityMul;
       this.densityMul = Math.min(was, cap);

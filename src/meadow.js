@@ -249,9 +249,38 @@ export function coverMul(r, d, target = COVER_TARGET, pxPerRadian = 793, uWidth 
  * region ends. Nearer than `dn` coverage is *lower*, which is the right
  * direction: underfoot the ground should show between blades.
  */
-export function coverMuls(target = COVER_TARGET, pxPerRadian = 793, uWidth = 0.028, maxW = Infinity) {
-  return RINGS.map((ring, r) => coverMul(r, ring.dn, target, pxPerRadian, uWidth, maxW));
+export function coverMuls(target = COVER_TARGET, pxPerRadian = 793, uWidth = 0.028, maxW = Infinity, fovDeg = 52) {
+  const at = coverAt(fovDeg);
+  return RINGS.map((ring, r) => coverMul(r, at(r), target, pxPerRadian, uWidth, maxW));
 }
+
+/**
+ * Where to evaluate a ring's coverage — and it is not the ring's `dn`.
+ *
+ * `dn` is where the ring's density is *quoted*, which is a different question
+ * from where the ring is *seen*. Evaluating there set ring 0's cap by its
+ * behaviour at 7 m, and because coverage falls toward the camera — `sin θ` is
+ * `eye/d`, so looking down at ground near your feet you see a lot of it per
+ * blade — the near end went bare: **0.06× at half a metre, 0.26× at two
+ * metres.** The shipped build is thin there too (0.4× at half a metre), so the
+ * cap was deepening a hole rather than digging one, but deepening it is still
+ * the wrong direction.
+ *
+ * The right evaluation point is where the meadow first fills the frame, and
+ * that is derivable rather than chosen. The bottom third of a `fov` frame spans
+ * from `fov/6` to `fov/2` below the centre line, so the ground it lands on runs
+ * from `eye/tan(fov/2)` to `eye/tan(fov/6)` — **3.44 m to 11.0 m** at a 52°
+ * frame and a 1.68 m eye. The near edge of that is where a meadow starts being
+ * the picture, and it is the distance the cap should be set by.
+ *
+ * A ring whose band starts beyond it is evaluated at its own near edge, because
+ * the frame's lower third is not where that ring lives.
+ */
+export const lowerThirdNear = (fovDeg = 52, eye = EYE_H) =>
+  eye / Math.tan((fovDeg / 2) * Math.PI / 180);
+
+export const coverAt = (fovDeg = 52) => (r) =>
+  Math.max(RINGS[r].near, Math.min(lowerThirdNear(fovDeg), RINGS[r].far));
 
 /**
  * The physical bound on a blade's width, in metres.

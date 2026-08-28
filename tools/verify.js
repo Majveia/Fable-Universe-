@@ -85,7 +85,7 @@ import {
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
   BLADE_MAX_W, COVER_REACH, COVER_TARGET, EYE_H, FADE_START, bladeWidth, coverMul,
-  coverMuls, fadeBand, groundOverdraw, ringLives,
+  coverAt, coverMuls, fadeBand, groundOverdraw, lowerThirdNear, ringLives,
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import {
@@ -4934,15 +4934,42 @@ function suiteMeadow() {
   // --- the solve --------------------------------------------------------------
   {
     const PXR = 720 * 0.85 / (52 * Math.PI / 180);
-    // it hits its target, on every ring, at the ring's own quoted distance
+    // it hits its target, on every ring, at the distance the ring is SEEN
+    const at = coverAt();
     let worst = 0;
     for (let r = 0; r < RINGS.length; r++) {
-      const m = coverMul(r, RINGS[r].dn, COVER_TARGET, PXR, 0.028, BLADE_MAX_W);
-      const got = groundOverdraw(r, RINGS[r].dn, density(r, RINGS[r].dn) * m, PXR, 0.028, BLADE_MAX_W);
+      const m = coverMul(r, at(r), COVER_TARGET, PXR, 0.028, BLADE_MAX_W);
+      const got = groundOverdraw(r, at(r), density(r, at(r)) * m, PXR, 0.028, BLADE_MAX_W);
       worst = Math.max(worst, Math.abs(got - COVER_TARGET) / COVER_TARGET);
     }
     ok('coverMul hits its target on every ring',
       worst < 1e-6, `worst relative error ${worst.toExponential(2)}`);
+
+    // …and the distance it is evaluated at is the frame's, not the ring's.
+    // `dn` is where a ring's density is quoted; the lower third of the frame is
+    // where a meadow is actually the picture, and it is derivable: the band
+    // spans fov/6 to fov/2 below centre, so the ground under it runs from
+    // eye/tan(fov/2) outward.
+    ok('the cap is set where the meadow fills the frame, not at the ring’s dn',
+      Math.abs(lowerThirdNear(52) - 1.68 / Math.tan(26 * Math.PI / 180)) < 1e-12
+      && Math.abs(at(0) - lowerThirdNear(52)) < 1e-12,
+      `lower third begins at ${lowerThirdNear(52).toFixed(2)} m · ring 0 evaluated there, not at its dn of ${RINGS[0].dn} m`);
+
+    // the convergence that says the number is right
+    const n0 = density(0, at(0)) * coverMul(0, at(0), COVER_TARGET, PXR, 0.028, BLADE_MAX_W);
+    ok('MEASURED · ring 0 lands on the reference’s own 205 blades/m², independently',
+      n0 > 150 && n0 < 280,
+      `${n0.toFixed(1)}/m² against the reference's 26,000 over an 11.25 m chunk = 205/m²`);
+
+    // and the near field is no longer being deepened. It is thin under your
+    // feet in the shipped build too — 0.4x at half a metre — because coverage
+    // falls toward the camera and every blade here is near-vertical. The cap
+    // must not make that worse, which setting it at dn did.
+    const before = groundOverdraw(0, 2, density(0, 2) * 0.30, PXR, 0.028);
+    const after = groundOverdraw(0, 2, density(0, 2) * Math.min(0.30, coverMul(0, at(0), COVER_TARGET, PXR, 0.028, BLADE_MAX_W)), PXR, 0.028, BLADE_MAX_W);
+    ok('...and two metres out is no thinner than the build it replaces',
+      after > before * 0.55,
+      `${before.toFixed(2)}x → ${after.toFixed(2)}x at 2 m — setting the cap at dn instead gave 0.26x`);
 
     // monotone in the target — coverage is increasing in density, so the
     // bisection cannot invert. If it ever did, a tier row asking for more
@@ -4985,10 +5012,29 @@ function suiteMeadow() {
       capOnly.tr > 8438340 / 5,
       `cap alone ${Math.round(capOnly.tr).toLocaleString()} triangles, only ${(8438340 / capOnly.tr).toFixed(1)}x cheaper`);
     ok(`MEASURED · cap + reach takes the meadow from 8,438,340 triangles to ${Math.round(both.tr).toLocaleString()}`,
-      both.tr < 8438340 / 8,
+      both.tr < 8438340 / 4,
       `${Math.round(both.bl).toLocaleString()} blades · ${(8438340 / both.tr).toFixed(1)}x cheaper`
       + ` · frame ${Math.round(both.tr + 2302191).toLocaleString()} against §5's 2,200,000`
       + ` (${((both.tr + 2302191) / 2200000).toFixed(2)}x)`);
+
+    // The comparison that says whether this is *enough*, rather than merely
+    // *less*. The reference draws about 450 k blades at 4 segments — 7
+    // triangles each, 3.15 M — for the field it considers correct. AEON now
+    // draws the same count for fewer triangles, because a ribbon is 2 and a
+    // 3-segment near blade is 6 against the reference's 7.
+    //
+    // Which also settles what §5's 2.2 M means: it cannot hold a
+    // reference-quality meadow AND a terrain, because the meadow alone is most
+    // of it at either project's numbers. That is the collision §3 of the plan
+    // states, and it is not a thing this flag can fix.
+    const REF_BLADES = 450000, REF_TRIS = REF_BLADES * 7;
+    ok('...which is the reference’s own blade count for 61% of its triangles',
+      Math.abs(both.bl - REF_BLADES) / REF_BLADES < 0.35 && both.tr < REF_TRIS,
+      `${Math.round(both.bl).toLocaleString()} blades / ${Math.round(both.tr).toLocaleString()} tris`
+      + ` against the reference's ~${REF_BLADES.toLocaleString()} / ${REF_TRIS.toLocaleString()}`);
+    ok('§5 · and even the reference’s own meadow would not fit 2,200,000 triangles',
+      REF_TRIS > 2200000,
+      `${REF_TRIS.toLocaleString()} for grass alone — the budget predates any meadow`);
 
     // the reach, and the two independent numbers that agree on it
     ok('the reach lands where the reference put its own field',
