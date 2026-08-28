@@ -9975,6 +9975,51 @@ function suitePilot() {
   ok('and holding it open against the governor does', r2.braking,
     `limit ${r2.limit.toFixed(1)} under a demand of ${PILOT.vMax}`);
 
+  // --- arrived(): the helm handback ---------------------------------------
+  // This predicate exists because the check it replaces was wrong, and the
+  // wrongness was invisible: system.js asked `rel.beta < 0.09`, the pilot
+  // overwrote rel.beta after the check had run, and so an interstellar arrival
+  // under ?pilot=1 handed the helm back within a frame or two of engaging.
+  // Nothing caught it — pilot.js was correct, boot.js proved construction did
+  // not throw, and the defect lived in the wiring between them. These are the
+  // checks that would have.
+  {
+    const a = new Pilot();
+    ok('a craft that has not moved reads as arrived', a.arrived(), '');
+    for (let i = 0; i < 600; i++) a.step(1 / 60, { throttle: 1, pos: far, bodies: [] });
+    ok('and one at full drive does not', !a.arrived(), `speed ${a.speed.toFixed(1)}`);
+
+    // The failure mode in one check: a craft one second into a cruise is under
+    // way, however small its speed still is. The old test read this as arrived.
+    const b = new Pilot();
+    for (let i = 0; i < 60; i++) b.step(1 / 60, { throttle: 1, pos: far, bodies: [] });
+    ok('a craft one second into a cruise is under way, not arrived',
+      !b.arrived(), `speed ${b.speed.toFixed(2)}, demand ${b.demand.toFixed(3)}`);
+
+    // Riding the governor to a crawl on a close pass is not arriving either:
+    // the drive is still open, the craft is still going somewhere.
+    const c = new Pilot();
+    const close = { x: 0, y: 0, z: 60 };
+    const world = [{ x: 0, y: 0, z: 0, radius: 40 }];
+    for (let i = 0; i < 600; i++) c.step(1 / 60, { throttle: 1, pos: close, bodies: world });
+    ok('a craft governed to a crawl with the drive open is not arrived',
+      !c.arrived() && c.braking, `speed ${c.speed.toFixed(2)}, limit ${c.limit.toFixed(2)}`);
+
+    // …and closing the throttle from there is.
+    for (let i = 0; i < 900; i++) c.step(1 / 60, { throttle: -1, pos: close, bodies: world });
+    ok('closing the throttle from a crawl is', c.arrived(),
+      `speed ${c.speed.toFixed(3)}, demand ${c.demand.toFixed(3)}`);
+
+    // release() is what a §2.5 transition calls when it takes the camera; it
+    // has to leave the craft in a state that reads as arrived rather than as
+    // one still under way with nobody at the helm.
+    const d = new Pilot();
+    for (let i = 0; i < 600; i++) d.step(1 / 60, { throttle: 1, pos: far, bodies: [] });
+    d.release();
+    ok('release() leaves the craft reading as arrived', d.arrived(),
+      `demand ${d.demand}, beta ${d.beta}`);
+  }
+
   // --- §2.4 · the deep link round-trips exactly ---------------------------
   // §11's boundary: this value reaches a *place*, so it must not ride a last
   // bit. Encode and decode are inverse on the grid, not merely close.

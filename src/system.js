@@ -1480,15 +1480,33 @@ export class SystemScale {
   update(dt) {
     // relativistic cruise: your second is γ of everyone else's
     if (this.rel.on) {
-      if (this._relKeys.has('KeyW')) this.rel.target = Math.min(this.rel.target + dt * 0.35, 0.985);
-      if (this._relKeys.has('KeyS')) this.rel.target = Math.max(this.rel.target - dt * 0.5, 0.02);
-      this.rel.beta += (this.rel.target - this.rel.beta) * (1 - Math.exp(-1.6 * dt));
+      /* Under `?pilot=1` the throttle belongs to `pilot.js` and this
+         integration must not run at all.
+         Both models were live at once for one commit, and the way that failed
+         is worth keeping: this block drove `rel.beta` from `rel.target`, and
+         the pilot block thirty lines below overwrote it from its own demand.
+         So this one never saw its own integration — every frame it lerped from
+         whatever the pilot had left, which for the first seconds of a cruise
+         is near zero, and the arrival test below therefore read true almost
+         immediately. An interstellar arrival handed the helm straight back.
+         `rel.target` is likewise dead under the flag; leaving it to be driven
+         by keys that no longer reach anything is how the next reader loses an
+         hour. */
+      if (!PILOT_ON) {
+        if (this._relKeys.has('KeyW')) this.rel.target = Math.min(this.rel.target + dt * 0.35, 0.985);
+        if (this._relKeys.has('KeyS')) this.rel.target = Math.max(this.rel.target - dt * 0.5, 0.02);
+        this.rel.beta += (this.rel.target - this.rel.beta) * (1 - Math.exp(-1.6 * dt));
+      }
       this._trackDestination(dt);
-      // arrival momentum spent — hand the helm back
-      if (this.ctx.arrive && this.rel.beta < 0.09) {
+      // Arrival momentum spent — hand the helm back. With the governor on, the
+      // question is about the craft rather than the sky: `rel.beta` is a
+      // display quantity the pilot is about to rewrite, and `Pilot.arrived()`
+      // asks whether the thing has actually come to rest.
+      if (this.ctx.arrive && (PILOT_ON ? this.pilot.arrived() : this.rel.beta < 0.09)) {
         this.ctx.arrive = null;
         this.rel.on = false;
         this.rel.target = 0.5;
+        this._levelCamera();
         this.controls.enabled = true;
         this.controls.target.copy(this.camera.position).addScaledVector(this.rel.dir, 150);
         this.app.hud.setHint('arrived · ' + this.params.name);
@@ -2097,10 +2115,29 @@ export class SystemScale {
       this.controls.enabled = false;
       this.app.hud.setHint('relativistic cruise · w faster, s slower · j to disengage');
     } else {
+      this._levelCamera();
       this.controls.enabled = true;
       this.controls.target.copy(this.camera.position).addScaledVector(this.rel.dir, 120);
       this.app.hud.setHint('');
     }
+  }
+
+  /**
+   * Put the horizon back.
+   *
+   * The roll writes `camera.up` every frame it is flying, and `OrbitControls`
+   * reads that same vector for its own frame. Nothing used to give it back, so
+   * disengaging after any roll handed over a permanently tilted system view
+   * with no control that could recover it — the camera was level in the only
+   * mode that could not fix it and tilted in the one that could not explain it.
+   *
+   * Called from both ways out of the cruise: the pilot pressing J, and the
+   * arrival that takes the helm on its own.
+   */
+  _levelCamera() {
+    this.camera.up.set(0, 1, 0);
+    this.pilot.roll = 0;
+    this.pilot.rollV = 0;
   }
 
   /**

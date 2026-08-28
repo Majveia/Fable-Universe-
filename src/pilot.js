@@ -193,11 +193,47 @@ export class Pilot {
     return this.speed;
   }
 
-  /** hand the helm back — used when a transition takes the camera (§2.5) */
+  /**
+   * Has an interstellar arrival spent its momentum?
+   *
+   * `system.js` has always asked this, and before the governor it asked it of
+   * `rel.beta` — the relativistic parameter — because that was the only number
+   * a cruise had. Under `?pilot=1` that reading is wrong twice over. `rel.beta`
+   * is now a *display* quantity derived from the pilot's demand, and the pilot
+   * overwrites it after the check has already run, so the check sees a beta
+   * from the previous frame that is near zero for the first seconds of every
+   * cruise — which handed the helm back the moment you arrived somewhere.
+   *
+   * The honest question is about the craft, not the sky: has it actually come
+   * to rest? That is `speed` against the governor, and both live here, so the
+   * predicate lives here too and `tools/verify.js` can ask it in Node.
+   *
+   * `slow` is a fraction of peak, not an absolute: a craft still under way at
+   * a hundredth of its drive is not arriving, whatever the governor is
+   * allowing it nearby.
+   */
+  arrived(slow = 0.02) {
+    // Riding the bound is not arriving — a craft can be governed to a crawl on
+    // a close pass and still be going somewhere. Demand has to be off too.
+    return this.speed <= this.o.vMax * slow && this.demand <= slow;
+  }
+
+  /**
+   * Hand the helm back — used when a transition takes the camera (§2.5).
+   *
+   * `speed` is stood down with the rest, and it was not: the first version
+   * cleared the *inputs* and left the last computed speed in place, so a craft
+   * whose camera had been taken by a hyperzoom went on reporting full drive to
+   * anything that asked. `arrived()` asks, which is how it was caught — the
+   * predicate and the reset have to agree about what "not flying" means, and
+   * a released craft is not flying.
+   */
   release() {
     this.demand = 0;
     this.beta = 0;
     this.rollV = 0;
+    this.speed = 0;
+    this.braking = false;
   }
 }
 
