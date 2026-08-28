@@ -1265,9 +1265,18 @@ export class PlanetScale {
   /** the interior: a walkable catwalk ring inside the habitat torus. The
    *  hull culls itself from within (backfaces), so the whole sky — the
    *  planet, the stars, the traffic — wheels past as the station spins. */
-  _buildRing(dock) {
+  /**
+   * @param {object} dock
+   * @param {boolean} plated  which surface law. Defaults to the flag, and is a
+   *   parameter so the A/B stays measurable after the flag flips — the moment
+   *   `GREEBLE` went default-on, `tools/ringcensus.js` could no longer reach
+   *   the stock path at all and its comparison silently became one number
+   *   against itself. A tool that can only see the current default is not an
+   *   instrument.
+   */
+  _buildRing(dock, plated = GREEBLE) {
     const g = new THREE.Group();
-    if (GREEBLE) { this._buildRingPlated(dock, g); return; }
+    if (plated) { this._buildRingPlated(dock, g); return; }
 
     const R0 = dock.ringR, tube = dock.tubeR;
     const rf = R0 + tube * 0.55;             // spinward is down: the floor

@@ -29,8 +29,9 @@ const stub = {
   uSunDir: { value: new THREE.Vector3(0.42, 0.30, 0.85).normalize() },
   planetGroup: new THREE.Group(),
 };
-if (which === 'stock') Cls.prototype._buildRing.call(stub, dock);
-else Cls.prototype._buildRingPlated.call(stub, dock, new THREE.Group());
+// plated passed explicitly, not left to the flag — see ringcensus.html
+stub._buildRingPlated = Cls.prototype._buildRingPlated;
+Cls.prototype._buildRing.call(stub, dock, which !== 'stock');
 
 const scene = new THREE.Scene();
 scene.add(stub.planetGroup);

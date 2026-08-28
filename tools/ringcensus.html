@@ -36,15 +36,12 @@ for (const [name, fn] of [['stock', '_buildRing'], ['plated', '_buildRingPlated'
     planetGroup: new THREE.Group(),
   };
   try {
-    if (fn === '_buildRing') {
-      // the stock path builds into its own group and stores it; call it and
-      // read what it attached
-      Cls.prototype._buildRing.call(stub, dock);
-      out[name] = count(stub._ring);
-    } else {
-      Cls.prototype._buildRingPlated.call(stub, dock, g);
-      out[name] = count(stub._ring);
-    }
+    // `plated` is passed explicitly rather than left to the flag: once
+    // ?greeble went default-on, letting _buildRing choose made both columns
+    // the same builder and the comparison meaningless.
+    stub._buildRingPlated = Cls.prototype._buildRingPlated;
+    Cls.prototype._buildRing.call(stub, dock, fn !== '_buildRing');
+    out[name] = count(stub._ring);
   } catch (e) { fails.push(`${name}: ${e && e.message ? e.message : e}`); }
 }
 window.__result = { out, fails, haveClass: !!Cls };

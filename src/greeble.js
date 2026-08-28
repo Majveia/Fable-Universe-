@@ -99,13 +99,22 @@ const PARAM = (k) => {
 };
 
 /**
- * §7.4 — built, not shipped. `?greeble=1` enables it.
+ * §7.4 — **shipped**, with an escape hatch. `?greeble=0` restores the old
+ * surfaces so §2.4's saved URLs keep resolving.
  *
- * Flipping the default is a separate commit, and RECKONING §0 is the reason it
- * is not this one: a flag that goes on without a capture behind it is how the
- * ledger got long in the first place.
+ * Flipped on the human's explicit instruction, and the shape of the evidence
+ * behind it should be stated rather than implied. `tools/ringshot.js` shows the
+ * station ring before and after and the difference is not subtle — but those
+ * frames are SwiftShader, so `gateValid` is false and §8 has not scored them.
+ * Two questions are open and recorded in `docs/captures/greeble/README.md`:
+ * whether the lit stop is over-saturated, and whether the mid-distance speckle
+ * is `gLod` not yet biting or the software rasteriser's `fwidth`.
+ *
+ * What is measured rather than looked at: 68 draws become 2 on the ring
+ * (`tools/ringcensus.js`), and every §9.2 program compiles post-assembly
+ * (`tools/paintcheck.js`). Those hold on any GPU.
  */
-export const GREEBLE = PARAM('greeble') === '1';
+export const GREEBLE = PARAM('greeble') !== '0';
 
 // ===========================================================================
 // 1 · geometry — parts that merge
