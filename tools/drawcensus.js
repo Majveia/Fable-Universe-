@@ -1,7 +1,30 @@
 // What the driver was actually asked to draw — CLAUDE.md §M0.
 //
-//   node tools/drawcensus.js
+//   node tools/drawcensus.js --preset none --at "g=…&s=…&p=…" --seed …   <- for §5
 //   node tools/drawcensus.js --flags "bladedbg=2" --frames 2
+//
+// ---------------------------------------------------------------------------
+// READ THIS BEFORE QUOTING A NUMBER FROM IT
+//
+// **The defaults change the subject, and until now they did it silently.**
+// `--at` points at one fixed world that is almost certainly not yours, and
+// `--preset cheap` multiplies the grass down to about a hundredth and takes the
+// shadow map, the wind field and the quadtree with it.
+//
+// Both defaults are there for good reasons — the preset is what makes this
+// runnable on a software rasteriser at all, and a fixed world is what makes two
+// runs comparable with each other. Neither is a reason to let the output look
+// like an answer to a question nobody asked.
+//
+// The cost is on the record. A §5 measurement taken under the preset came back
+// **GREEN** and was quoted three times before anyone re-ran it with the knobs
+// intact, at which point the same frame was **4.9× RED** — 10,740,531 triangles
+// against 2,200,000. The tool was not wrong. It was answering a different
+// question in the same voice.
+//
+// It now prints a banner on stderr naming every substitution it made, and a
+// one-line all-clear when it made none, because "no banner" has to mean
+// something for the banner to be worth printing.
 //
 // `docs/captures/blind/SCORE.md` ends on two facts and an admission:
 //
@@ -69,6 +92,37 @@ const WHERE = String(arg('at', 'g=1153665109&s=679069590&p=1'));
 const CHEAP = String(arg('preset', 'cheap')) === 'none' ? ''
   : 'q=low&grass=0.012,0.010,0.006,0.006&blades=1,1,1,1&wind=64&shres=512&shtaps=1&qd=10&qr=17&vc=0';
 
+/**
+ * Say out loud that the defaults changed the subject.
+ *
+ * This tool has two defaults that quietly replace what you asked about: `--at`
+ * points at one particular world that is not yours, and `--preset cheap`
+ * multiplies the grass down to about a hundredth and takes the shadow map,
+ * the wind field and the quadtree with it. Both exist for good reasons — the
+ * preset is what makes the census runnable on a software rasteriser at all, and
+ * a fixed world is what makes two runs comparable — and neither announced
+ * itself.
+ *
+ * The cost of that is on the record: a §5 measurement was taken with the
+ * preset in place, came back GREEN, and was quoted three times before someone
+ * re-ran it with the knobs intact and got **4.9× RED**. The tool was not wrong.
+ * It was answering a question nobody had asked, in a voice indistinguishable
+ * from the one they had.
+ *
+ * So it says so, every run, on stderr, in the units that matter — and a run
+ * that carries neither substitution says that too, because "no banner" has to
+ * mean something.
+ */
+const SUBSTITUTED = [];
+if (String(arg('preset', 'cheap')) !== 'none') {
+  SUBSTITUTED.push('--preset cheap · grass ×0.012/0.010/0.006/0.006, blades 1/1/1/1, '
+    + 'shadow 512¹, wind 64², quadtree depth 10 — the scene is measured with its legs cut off');
+}
+if (arg('at', null) === null) {
+  SUBSTITUTED.push(`--at defaults to g=1153665109&s=679069590&p=1 — one fixed world, `
+    + 'probably not the one you are asking about');
+}
+
 // same precedence rule as tools/glimpse.js, and for the same reason: a
 // repeated key resolves to its FIRST occurrence, so a preset placed ahead of
 // `--flags` silently eats the override.
@@ -83,6 +137,17 @@ const merged = (() => {
   return [...out].map(([k, v]) => (v === '' ? k : `${k}=${v}`)).join('&');
 })();
 const url = `/index.html?seed=${SEED}&${WHERE}&dt=0.0166${merged ? '&' + merged : ''}`;
+
+if (SUBSTITUTED.length) {
+  console.error('\n  ' + '!'.repeat(74));
+  console.error('  !! THIS RUN IS NOT MEASURING WHAT YOU PROBABLY MEAN');
+  for (const line of SUBSTITUTED) console.error(`  !!   ${line}`);
+  console.error('  !! Numbers from this run are NOT comparable against §5. For that:');
+  console.error('  !!   node tools/drawcensus.js --preset none --at "g=…&s=…&p=…" --seed …');
+  console.error('  ' + '!'.repeat(74) + '\n');
+} else {
+  console.error('  census · full quality, on the world you named — comparable against §5\n');
+}
 
 const pw = await playwright();
 const { origin, close } = await serve();
