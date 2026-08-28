@@ -196,7 +196,27 @@ const M2 = PARAM('m2') !== '0';
  * for. The solver supplies relief at valley scale. It cannot supply it at arm's
  * length, and arm's length is where the frame is being scored.
  */
-const PAINT = PARAM('paint') === '1';
+/*
+ * **Shipped**, on the human's explicit instruction. `?paint=0` restores the old
+ * ground so §2.4's saved URLs keep resolving.
+ *
+ * This is the one RECKONING §0 called "the last big one", and flipping it is
+ * the reason that ledger exists — so the case against doing it now should be
+ * written down here rather than left out of the file it applies to.
+ *
+ * §8's blind run scored the all-flags frame **3.00 against a gate of ≥4 per
+ * axis and ≥4.5 mean**, and named the ground's material as the blocking axis.
+ * That run predates the material work, so the number is stale in a direction
+ * nobody has measured — but it is the only §8 number that exists, and it is a
+ * fail. Everything green on this branch is a suite, and §16 rule 1 is explicit
+ * that a suite is not evidence about a frame.
+ *
+ * So: this is not a claim that the frame passes. It is the human choosing to
+ * ship the project's visual thesis and look at it, which is theirs to choose
+ * and is the only way the next §8 run has anything new to score. The escape
+ * hatch is one character.
+ */
+const PAINT = PARAM('paint') !== '0';
 
 /**
  * The sun's shadow map — and it is **not** the grade.
