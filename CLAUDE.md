@@ -464,13 +464,21 @@ status: `!== '0'` means **shipped, with an escape hatch** so §2.4's saved URLs
 still resolve; `=== '1'` means **built but not shipped** (§7.4).
 
 Shipped (default on, `?x=0` disables): `m1`, `web`, `m2`, `mat`, `sea`,
-`ridge`, `m3`, `m4`, `m5`, `m7`, `solve`, `sky`, `shadow`, `aerial`, `dither`.
+`ridge`, `m3`, `m4`, `m5`, `m7`, `solve`, `sky`, `shadow`, `aerial`, `dither`,
+and — since RECKONING Act F — **`paint`** (the §9.2 light model), **`greeble`**
+(the vacuum surface law) and **`pilot`** (the governed cruise).
 
-Default-off (`?x=1` enables): `paint` — the §9.2 light model, the last
-unflipped item in RECKONING's ledger — plus `greeble` (the vacuum surface law)
-and `pilot` (the governed cruise), both from the Long Silence port, RECKONING
-Act F; plus debug views `comp`, `fogview`, `windview`, `bladedbg`, `shdebug`,
-`noclip`, and the experiments `airmat`, `aurora`, `built`, `climb`.
+**There are no feature flags left default-off.** What remains behind `?x=1` is
+debug views — `comp`, `fogview`, `windview`, `bladedbg`, `shdebug`, `noclip` —
+and the experiments `airmat`, `aurora`, `built`, `climb`.
+
+That is a change of kind, not of degree, and the sentence RECKONING §0 opens
+with no longer describes the build: a visitor who opens the page now gets the
+light model, the materials, the sea, the ridges, the wind, the grass, the
+composition and the craft. **It does not follow that the frame is good.** §8's
+only run scored 3.00 against a gate of 4.5 and has not been re-run since. The
+thesis is shipped and unscored, which is a better problem than the one before
+it and is still a problem.
 
 Harness/diagnostic params: `bench=1`, `dt=<ms>` (pinned timestep — required for
 `repeat.js`), `quad=1`, `tier=<n>`.

@@ -23,7 +23,7 @@ Here is the sum, as of M5.
 
 | debt | §  | state |
 |---|---|---|
-| The §9.2 light model is off by default | 9.2 | `?paint=1` |
+| ~~The §9.2 light model is off by default~~ | 9.2 | **SHIPPED** — `?paint=0` is the escape hatch. Act F, on the human's instruction |
 | Four-layer materials off | M2 act 4 | `?mat=1` |
 | The Gerstner ocean off | M2 act 5 | `?sea=1` |
 | Far ridges as silhouette off | M2 act 6 | `?ridge=1` |
@@ -36,8 +36,9 @@ Here is the sum, as of M5.
 | ~~**The critic has never run**~~ | 8 | **Act A closed** — scored blind on an RTX 3060, all-flags **3.00** vs default **2.43**. §8's gate still FAILS (needs ≥4/≥4.5) |
 | **The ground has no material** | 8 · 6 M3 | **NEW, and now the blocking axis.** Near-ground gradient 1.07/255; featureless at 5× magnification. Materials scored 1 and 2 |
 | **`planet-orbit` never reaches true black** | 2.8 | **NEW.** rgb(13,7,0), 0.0% of the frame at #000, both flag sets. `star-system` is correct, so it is specific to the planet scale |
-| The vacuum surface law off | 9.2 · 8 axis 5 | **NEW.** `?greeble=1` — see Act F |
-| The piloted craft off | 4 · 6 M5 | **NEW.** `?pilot=1` — see Act F |
+| ~~The vacuum surface law off~~ | 9.2 · 8 axis 5 | **SHIPPED** — `?greeble=0`. Act F |
+| ~~The piloted craft off~~ | 4 · 6 M5 | **SHIPPED** — `?pilot=0`. Act F |
+| **The thesis is shipped and unscored** | 8 | **NEW, and it is now the whole of the debt.** Every feature flag is on. §8's only run is the 3.00 that predates all of it. Nothing here is a claim that the frame passes — it is a claim that there is finally something to score |
 | **Being aboard the station ring is not a URL** | 2.4 | **NEW, and pre-existing.** Found while measuring Act F, not opened by it: `drawcensus.js` navigates by deep link and cannot reach the ring, which is why `tools/ringcensus.js` had to exist. §2.4 says every place is a URL and the ring is a place a visitor stands in |
 
 ### Act F · the Long Silence port — and the part of it that was a waiver
