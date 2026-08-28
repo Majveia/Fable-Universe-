@@ -85,7 +85,7 @@ import {
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
 } from '../src/meadow.js';
-import { tierForRenderer } from '../src/quality.js';
+import { QUALITY, SAT_AMOUNT, tierForRenderer } from '../src/quality.js';
 import { walkable, wonderDestination, wonderScore } from '../src/wonder.js';
 import {
   RHO, TROFFER_GLSL, bounceGain, cavityBounce, ceilingQuad, polygonIrradiance,
