@@ -1,0 +1,66 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/":"/vendor/addons/"}}</script>
+</head><body>
+<script type="module">
+/* A photograph of the station ring, both ways — CLAUDE.md §8 axis 5.
+   Same argument as tools/ringcensus.js: the ring only exists once you board it
+   and boarding has no deep link (§2.4, logged in RECKONING), so no URL-driven
+   capture tool can reach it. Both shipped builders are called on a stub
+   carrying the five things they touch through `this`, so what is photographed
+   is the real function, not a transcription of it. */
+import * as THREE from 'three';
+const mod = await import('/src/planetscale.js');
+const Cls = Object.values(mod).find(
+  (v) => typeof v === 'function' && v.prototype && v.prototype._buildRing);
+
+const W = 900, H = 600;
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(W, H);
+renderer.setClearColor(0x000000, 1);      // §2.8 — vacuum is true black
+document.body.appendChild(renderer.domElement);
+
+const q = new URL(location.href).searchParams;
+const which = q.get('which') || 'plated';
+const close = q.get('close') === '1';
+const dock = { ringR: 0.16 * 0.4, tubeR: 0.03 * 0.4 };
+const stub = {
+  ctx: { system: { temp: 5778 } },
+  uSunDir: { value: new THREE.Vector3(0.42, 0.30, 0.85).normalize() },
+  planetGroup: new THREE.Group(),
+};
+// plated passed explicitly, not left to the flag — see ringcensus.html
+stub._buildRingPlated = Cls.prototype._buildRingPlated;
+Cls.prototype._buildRing.call(stub, dock, which !== 'stock');
+
+const scene = new THREE.Scene();
+scene.add(stub.planetGroup);
+/* The stock path is PBR and needs lights to be anything at all; the plated path
+   is lit by §9.2 from its own uniforms and ignores these entirely. Adding them
+   for both is what makes the comparison fair rather than rigged — without them
+   the stock ring would photograph as a black silhouette and the A/B would be
+   about the lighting rig instead of about the surface. */
+const key = new THREE.DirectionalLight(0xfff0dd, 2.6);
+key.position.copy(stub.uSunDir.value).multiplyScalar(10);
+scene.add(key, new THREE.HemisphereLight(0x223044, 0x0a0d12, 0.65));
+
+// inside the ring, near the deck, looking along it — where a visitor stands
+const rf = dock.ringR + dock.tubeR * 0.55;
+const cam = new THREE.PerspectiveCamera(close ? 26 : 58, W / H, 1e-6, 10);
+const th = 0.0;
+const eye = close ? 0.00025 : 0.0007;   // 0.6 m over the deck, or the standing 1.7
+cam.position.set(dock.tubeR * 0.15, Math.sin(th) * (rf - eye), -Math.cos(th) * (rf - eye));
+cam.up.copy(cam.position).normalize().negate();       // spin gravity: down is out
+const ahead = close ? 0.06 : 0.5;
+cam.lookAt(Math.sin(0.55) * rf * 0.02, Math.sin(th + ahead) * rf, -Math.cos(th + ahead) * rf);
+
+renderer.render(scene, cam);
+renderer.render(scene, cam);
+let meshes = 0, tris = 0;
+stub.planetGroup.traverse((o) => {
+  if (!o.isMesh) return;
+  meshes++;
+  tris += o.geometry.attributes.position.count / 3;
+});
+window.__shot = { which, meshes, tris: Math.round(tris) };
+</script></body></html>

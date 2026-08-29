@@ -1,0 +1,28 @@
+{
+  "gateValid": false,
+  "note": "A glimpse is not a capture. Software rasteriser, wrecked quality knobs. Binary questions only — see the header of tools/glimpse.js.",
+  "url": "/index.html?seed=700181046&g=1&s=2309773419&p=1&dt=0.0166&q=low&grass=0.012,0.010,0.006,0.006&blades=1,1,1,1&wind=64&shres=512&shtaps=1&qd=10&qr=17&vc=0",
+  "preset": "cheap",
+  "viewport": {
+    "w": 480,
+    "h": 300
+  },
+  "frames": 1,
+  "builtMs": 5779,
+  "perFrameMs": 868,
+  "settled": true,
+  "nearGround": {
+    "gradient": 4.888700981503425,
+    "min": 127.73219999999999,
+    "max": 249.8516,
+    "samples": 12288
+  },
+  "colour": {
+    "saturation": 0.41583618839127084
+  },
+  "notes": [
+    "[§9.7] landing solved in 274 ms · score 0.575 · lowHorizon 0.36 offCentre 0.50 hero 0.25 lead 0.87 walls 0.41 band 1.00",
+    "[§M2.6] horizon · 1 band 3736 m → 4297 m · 440 tris · 16408 height samples · 45 ms · saturation 3145 m vs ring2 corner 9899 m → outer ring retired",
+    "[ground] 17375 across 9 kinds · crust, cover, boulder, ripple, bent, broad, reed, bloom, stalk · 457 K"
+  ]
+}

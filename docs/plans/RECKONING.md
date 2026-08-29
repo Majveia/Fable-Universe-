@@ -36,9 +36,54 @@ Here is the sum, as of M5.
 | ~~**The critic has never run**~~ | 8 | **Act A closed** — scored blind on an RTX 3060, all-flags **3.00** vs default **2.43**. §8's gate still FAILS (needs ≥4/≥4.5) |
 | **The ground has no material** | 8 · 6 M3 | **NEW, and now the blocking axis.** Near-ground gradient 1.07/255; featureless at 5× magnification. Materials scored 1 and 2 |
 | **`planet-orbit` never reaches true black** | 2.8 | **NEW.** rgb(13,7,0), 0.0% of the frame at #000, both flag sets. `star-system` is correct, so it is specific to the planet scale |
+| ~~The vacuum surface law off~~ | 9.2 · 8 axis 5 | **SHIPPED** — `?greeble=0`. Act F |
+| ~~The piloted craft off~~ | 4 · 6 M5 | **SHIPPED** — `?pilot=0`. Act F |
+| **The thesis is shipped and unscored** | 8 | **NEW.** `paint`, `greeble` and `pilot` are all on, so the ledger's opening paragraph no longer describes the build. §8's only run is the 3.00 that predates all of it. Not a claim that the frame passes — a claim that there is finally something to score. (`?cab=1` is the one feature still off; see the row below) |
+| **Being aboard the station ring is not a URL** | 2.4 | **NEW, and pre-existing.** Found while measuring Act F, not opened by it: `drawcensus.js` navigates by deep link and cannot reach the ring, which is why `tools/ringcensus.js` had to exist. §2.4 says every place is a URL and the ring is a place a visitor stands in |
 | **§9 names one art reference; the code now has an axis between two** | 9 · 3 | **NEW, and it is a debt in the constitution rather than in the code.** `src/register.js` makes hoshi-no-tani and sakura-realm the two ends of one axis chosen by `visibilityFor()`, and §9 still reads as though there is one north star. `docs/plans/SAKURA.md` §10 states the exact edit. **It needs a human**, per §7.2 — an agent rewriting the clause it is being judged against is the one edit no agent should make |
 | **The register and the aperture have never been captured** | 8 · 16.1 | **NEW.** `registerFor()` and `apertureFor()` are proved arithmetically — 1000/1000 offline, R=1 bit-identical to the shipped print — and **not one frame has been rendered through either**. Twelve of `PHOTOGRAPHIC`'s fourteen knobs are transcriptions of intent that only a blind §8 score can settle |
 | The cabin, the seat and the piloted descent are off | 2.4 · 2.5 | **NEW, and honestly declared.** `?cab=1`. Half of §5 is now measured (`tools/cabincost.js`: **6 draw calls, 3.2 k triangles, no textures** — 0.7% and 0.15% of budget). Flipping it still needs a frame-time number from real silicon and a scored capture; see `docs/plans/LONG-SILENCE.md` §§9–10 |
+
+### Act F · the Long Silence port — and the part of it that was a waiver
+
+Recorded here because §16 requires it: *"Do not begin M6 until every act here
+is closed or explicitly waived in a commit that says so."*
+
+`docs/reference/the-long-silence/` was vendored as a third reference (MIT,
+© 2026 Anshu Chimala) and two things were ported out of it.
+
+**`?greeble=1` is not a new milestone, and does not need a waiver.** It is a
+surface law for the things AEON puts in vacuum, and it goes straight at the
+blocking axis this ledger already names. §8 scored materials 1 and 2; the
+station ring — the largest object at planet scale, and one the visitor walks
+around *inside* — was sixty-eight meshes across three `MeshStandardMaterial`s,
+which is the PBR instinct §11 lists by name and which `painted.js` exists to
+remove everywhere else. `tools/ringcensus.js` measures the result at **68 draws
+to 2**. This is material work on objects that already existed, which is the same
+class as "the ground has no material" and belongs in this file rather than past
+it.
+
+**`?pilot=1` IS a waiver, and this is it.** Giving the system-scale cruise a
+governor, a roll and a `cr=` deep link is M5/M6-adjacent scope, and this ledger
+says not to start new milestones until its acts close. The human was told that
+before the work began, in those terms, and chose it anyway. That is their call
+to make; it is written down here so it is a decision on the record rather than
+a thing that quietly happened.
+
+What it is *not* is a game loop. §4 stands: no scanning, no drive charge, no
+fold objectives, no Resonators, no Aperture. The reference is a game and AEON
+is a place. The verbs are still travel and look, and a craft is travel.
+
+**Neither flag has a capture behind it.** Both were built and gated in a
+container with no GPU: `parse` 131/131, `invariants` 685, `verify` 973/973
+including a pilot suite that *flies* the approach in Node rather than checking
+its algebra, `paintcheck` ten programs with zero failures, and three `boot`
+stations clean. None of that is evidence about a frame, and per §16 rule 1 no
+claim about how either looks has been made anywhere in the commits. Flipping
+either default needs silicon and a blind §8 score first — which is the same
+sentence this whole file was written to make unavoidable.
+
+---
 
 A visitor who opens the page gets the print, aerial perspective, a body, a
 camera and a mobile layer. They do not get the light model, the materials, the

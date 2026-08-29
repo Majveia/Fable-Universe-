@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { cardMask, paintedStandard, stopsFrom } from '/src/painted.js';
 import { shadowGLSL } from '/src/shadow.js';
 import { AERIAL_GLSL } from '/src/aerial.js';
+import { greebleDetail, slab, place, weld, occupancy, bakeSurface, mergeParts } from '/src/greeble.js';
 const fails = [];
 const P = WebGL2RenderingContext.prototype;
 const cs = P.compileShader, lp = P.linkProgram;
@@ -143,6 +144,77 @@ const results = [];
   const g = new THREE.PlaneGeometry(1, 1); g.translate(0, 0.5, 0);
   scene.add(new THREE.Mesh(g, m));
   results.push('card + real sunShadow() chunk');
+}
+{
+  /* The plated path — `src/greeble.js` feeding §9.2, behind ?greeble=1 in the
+     app. Its own case for the same reason the sky-whale has one: it assembles
+     a *different program*. The detail layer injects a second block of GLSL at
+     `<normal_fragment_maps>`, declares an `aHull` attribute and two extra
+     uniforms, and perturbs `normal` before `paint()` reads it. None of that
+     exists until three has spliced the strings together, and §M0's rule is
+     that a shader is only checkable after assembly.
+
+     It also exercises the half of the kit that is plain JS and can fail
+     silently: `place()` de-indexing and stripping attributes, `occupancy()`
+     rasterising the parts into a voxel grid, `bakeSurface()` writing the
+     `aHull` channel, and `mergeParts()` concatenating a heterogeneous list
+     into one buffer. A mismatch there returns null and the object simply is
+     not in the frame, which no compile check would ever notice — so the parts
+     count and the merged vertex count are asserted here rather than eyeballed. */
+  const detail = greebleDetail({ plate: 2.4, frame: true, soot: 0.30, bleach: 0.55, glare: 0.62, pit: 1.0 });
+  const m = paintedStandard({ color: new THREE.Color(0.29, 0.32, 0.36), roughness: 1 },
+    shadowWiring,
+    { ...stopsFrom([0.29, 0.32, 0.36], light, { warm: 0.10, cool: 0.16, range: 0.26 }),
+      soft: 0.09, rim: 1.15, u2m: 1, bumpScale: 1, detail });
+
+  // three parts, three primitive families, exactly as the ring mixes them:
+  // an extruded bevelled slab, a torus and a second slab at an angle.
+  const parts = [
+    place(slab(2.2, 1.6, 0.18, 0.12), { pos: [0, 0.9, 0] }),
+    place(new THREE.TorusGeometry(0.7, 0.09, 8, 24), { pos: [0, 0.9, 0.3], rot: [0, 0, 0] }),
+    place(slab(1.4, 0.9, 0.12, 0.09), { pos: [0.4, 1.7, 0.2], rot: [0, 0.6, 0.2] }),
+  ];
+  const nParts = parts.length;
+  const nVerts = parts.reduce((a, g) => a + g.attributes.position.count, 0);
+
+  // the bake, checked on its own before weld() does it again internally —
+  // aHull absent is the failure that shows up as a flat, unoccluded surface
+  const grid = occupancy(parts, 0.30);
+  if (!grid) fails.push('greeble: occupancy() returned null');
+  bakeSurface(parts, grid);
+  if (!parts.every((g) => g.attributes.aHull)) fails.push('greeble: bakeSurface() wrote no aHull');
+
+  const merged = mergeParts(parts);
+  if (!merged) fails.push('greeble: mergeParts() returned null');
+  else if (merged.attributes.position.count !== nVerts) {
+    fails.push(`greeble: merge lost vertices — ${nVerts} in, ${merged.attributes.position.count} out`);
+  } else if (!merged.attributes.aHull) {
+    fails.push('greeble: merge dropped the aHull channel');
+  }
+
+  const mesh = weld(parts.slice(), m, scene, { bake: false });
+  if (!mesh) fails.push('greeble: weld() built no mesh');
+  else mesh.position.set(-1.2, -0.6, 1.0);
+  results.push(`plated: ${nParts} parts -> 1 draw, ${nVerts} verts, aHull baked`);
+}
+{
+  /* The conjured rocket's path: y-axis barrels, transparent (the conjuring
+     fades every part in from zero, so this is the veil program), un-baked, and
+     un-merged. Four differences from the case above and every one of them
+     assembles a different shader — the swizzle is in the vertex source, the
+     veil changes what §9.3 is allowed to write, and `defaultAttributeValues`
+     is the only thing standing between an un-baked part and a missing
+     attribute. */
+  const detail = greebleDetail({ axis: 'y', plate: 2.6, frame: true, pit: 0, soot: 0.12, bleach: 0.55 });
+  const m = paintedStandard(
+    { color: new THREE.Color(0.72, 0.69, 0.62), roughness: 1, transparent: true, opacity: 0.85 },
+    airWiring,
+    { ...stopsFrom([0.72, 0.69, 0.62], light), soft: 0.10, rim: 0.75,
+      u2m: 1, bumpScale: 1, detail });
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 1.6, 18), m);
+  mesh.position.set(1.4, 0.8, 0.6);
+  scene.add(mesh);
+  results.push('plated rocket tank: y-axis + veil + un-baked (no aHull)');
 }
 renderer.render(scene, cam);
 renderer.render(scene, cam);
