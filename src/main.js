@@ -26,9 +26,12 @@ import { seedAmbient, starName, universeEpigraph } from './rng.js';
 import { advance as advanceClock, resetClock } from './clock.js';
 import { Bench, BENCH_ON, BENCH_SEED } from './bench.js';
 import { Q, pixelRatio } from './quality.js';
-import { paintForScale } from './print.js';
+import { paintForScale, registerForScale } from './print.js';
 import { pinIdleClock, tickInput } from './input.js';
 import { gravityOf } from './avatar.js';
+import { CABIN_ON, CabinScale } from './cabin.js';
+import { craftFor } from './craft.js';
+import { sit, stepCrew } from './pilot.js';
 
 // scratch for THREE.Color#getHSL — the score reads a world's palette hue, and
 // allocating an object per scale change to do it would be silly
@@ -195,6 +198,27 @@ class App {
         sys.exit();
         this.stack.push(new PlanetScale(this, ctx));
         this.active().enter();
+        // §2.4 · and one level further in, if the link named the cabin. It is
+        // pushed *on top of* the planet rather than instead of it, so backing
+        // out of the ship leaves you in orbit rather than nowhere — and so a
+        // `?cab=` link that arrives with the flag off still resolves to the
+        // world it names instead of silently delivering nothing.
+        const cab = url.searchParams.get('cab');
+        if (cab && CABIN_ON) {
+          const cs = new CabinScale(this, {
+            ...ctx, craft: craftFor(globeNode.pp), capture: 1435,
+          });
+          this.active().exit();
+          this.stack.push(cs);
+          this.active().enter();
+          // `?cab=2` is the helm, and it is a *place*, so it has to resolve to
+          // the seated state rather than to a walk toward it.
+          if (cab === '2') {
+            const helm = cs.spec.stations.find((q) => q.id === 'helm');
+            cs.crew = sit(cs.crew, helm);
+            while (cs.crew.mode === 'moving') cs.crew = stepCrew(cs.crew, cs.spec, {}, 1 / 60);
+          }
+        }
         return;
       }
       // streaming off: a ?pl= globe link lands on the classic surface instead
@@ -275,7 +299,7 @@ class App {
   /** roll a universe nobody has ever seen (a cold jump, honestly fresh) */
   freshUniverse() {
     const u = new URL(window.location.href);
-    for (const k of ['seed', 'g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room']) u.searchParams.delete(k);
+    for (const k of ['seed', 'g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room', 'cab', 'cr']) u.searchParams.delete(k);
     window.location.href = u;
   }
 
@@ -283,7 +307,7 @@ class App {
   _reflectUrl() {
     const u = new URL(window.location.href);
     u.searchParams.set('seed', this.seed);
-    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room', 'cr']) u.searchParams.delete(k);
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room', 'cab', 'cr']) u.searchParams.delete(k);
     for (const sc of this.stack) {
       if (sc.kind === 'galaxy') u.searchParams.set('g', sc.ctx.galaxySeed);
       if (sc.kind === 'system') {
@@ -310,6 +334,15 @@ class App {
       if (sc.kind === 'clouds') {
         u.searchParams.set('p', sc.ctx.hostIndex);
         u.searchParams.set('cl', '1');
+      }
+      // §2.4 · `?cab=1` standing in the ship, `?cab=2` seated at the helm.
+      // The cabin rides *under* whichever world it is in orbit of, so the key
+      // is written alongside `pl`/`p` rather than instead of it — a cabin with
+      // no world to be above is an address with nothing to open onto, the same
+      // argument `?room=` settles above.
+      if (sc.kind === 'cabin') {
+        u.searchParams.set('pl', sc.ctx.hostIndex);
+        u.searchParams.set('cab', sc.deepLink);
       }
     }
     history.replaceState(null, '', u);
@@ -600,6 +633,15 @@ class App {
         case 'KeyM': this.hud.setMuted(this.audio.toggleMute()); break;
         // the scale speaks first: on a planet, B is the shuttle, not the log
         case 'KeyB': if (!s.onKey?.('KeyB')) this.hud.toggleLog(); break;
+        /* §2.4/§2.5 · the cabin. `E` takes the seat and `L` commits the
+           descent, and both belong to the scale — but from *orbit* `E` is the
+           way aboard, which is the step that closes the chain. Same scale-first
+           rule as KeyB: the cabin answers if it is the active scale, and the
+           planet below hands you up into one if it is. */
+        case 'KeyE':
+          if (!s.onKey?.('KeyE') && s.kind === 'planet') this.boardCabin(s);
+          break;
+        case 'KeyL': s.onKey?.('KeyL'); break;
         case 'KeyU': this.freshUniverse(); break;
         case 'KeyG': this.hud.toggleAtlas(); break;
         // J for the leap: somewhere wondrous, one press, from anywhere.
@@ -763,7 +805,7 @@ class App {
   markPlace() {
     const u = new URL(window.location.href);
     const params = {};
-    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room']) {
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room', 'cab']) {
       const v = u.searchParams.get(k);
       if (v !== null) params[k] = v;
     }
@@ -786,6 +828,59 @@ class App {
     this.hud.refreshLog();
   }
 
+  /**
+   * Board the ship from orbit — §2.5's missing half.
+   *
+   * Pushed *on top of* the planet rather than replacing it, so stepping back
+   * out of the airlock leaves you where you were rather than nowhere, and so
+   * the cabin never has to reconstruct an orbit it did not build.
+   *
+   * There is no hyperzoom here on purpose. A hyperzoom is how this project
+   * changes *scale*; boarding does not change scale, it changes what you are
+   * standing in, and diving the camera into a hull would be a flourish that
+   * said something false about the geometry.
+   */
+  boardCabin(planetScale) {
+    if (!CABIN_ON || this._warping) return false;
+    const ctx = planetScale.ctx;
+    const cs = new CabinScale(this, {
+      ...ctx, craft: craftFor(planetScale.pp), capture: 1435,
+    });
+    this.active().exit();
+    this.stack.push(cs);
+    this._syncScale();
+    this.active().enter();
+    this.hud.setHint('E · take the seat');
+    return true;
+  }
+
+  /**
+   * The bottom of the descent: `descent.js` crossed the capture line and the
+   * surface takes the vehicle.
+   *
+   * The cabin and the planet under it are both dropped, because you are not in
+   * either any more — but the *system* stays, so `Escape` from the ground still
+   * climbs back out the way it always did. Handing off rather than pushing is
+   * what keeps the stack from growing a level every time somebody lands.
+   */
+  arriveOnSurface(from, ctx) {
+    if (this.active() !== from) return;
+    const surface = new SurfaceScale(this, ctx);
+    // drop the cabin and the orbit beneath it in one step
+    while (this.stack.length && this.active().kind !== 'system') {
+      const top = this.stack.pop();
+      top.exit();
+      top.dispose?.();
+    }
+    this.stack.push(surface);
+    this._syncScale();
+    this.active().enter();
+    // `showDiscovery` is what this HUD has for "you have arrived somewhere" —
+    // it is the same call the shrine and the ruins make, so a touchdown reads
+    // like every other arrival rather than inventing a second notification.
+    this.hud.showDiscovery(ctx.planet?.name ?? 'surface', 'touchdown');
+  }
+
   /** warp to a logged place: tear the stack down, rebuild it there */
   travelTo(i) {
     const e = this.log[i];
@@ -793,7 +888,7 @@ class App {
     if (e.seed !== this.seed) {
       // other universe: cold jump
       const u = new URL(window.location.href);
-      for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room', 'cr']) u.searchParams.delete(k);
+      for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room', 'cab', 'cr']) u.searchParams.delete(k);
       u.searchParams.set('seed', e.seed);
       for (const [k, v] of Object.entries(e.params)) u.searchParams.set(k, v);
       window.location.href = u;
@@ -807,7 +902,7 @@ class App {
   teleport(params) {
     if (this._warping || this.zoom.busy) return;
     const u = new URL(window.location.href);
-    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room', 'cr']) u.searchParams.delete(k);
+    for (const k of ['g', 's', 'bh', 'p', 'moon', 'cl', 'pl', 'room', 'cab', 'cr']) u.searchParams.delete(k);
     u.searchParams.set('seed', this.seed);
     for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
     this._warping = true;
@@ -1016,6 +1111,18 @@ class App {
     s.update(dt);
     s.glide?.(dt);
     this.post.setPaint(paintForScale(s));
+    // Which print, and at what aperture — `docs/plans/SAKURA.md`.
+    //
+    // Both are asked of the *scale*, once a frame, because both are properties
+    // of where you are standing rather than of the app: the register is the
+    // air's (§2, `registerFor`), and the exposure is the star's and the hour's
+    // (`exposure.js`). A scale that has no opinion returns `null`/`undefined`
+    // and gets the fallback, which is exactly what shipped before either
+    // existed — vacuum prints painted at exposure 1, where every knob and every
+    // stop multiplies a term §2.8 has already zeroed.
+    const reg = s.printRegister?.() ?? registerForScale(s) ?? 1;
+    this.post.setRegister(reg);
+    this.post.setExposure(s.printExposure?.(dt) ?? 1);
     this.post.render(dt);
     this.zoom.render();
     this.hud.tick(dt);

@@ -64,8 +64,8 @@ import {
 } from '../src/ocean.js';
 import {
   AERIAL_ALPHA_IS_CLARITY, AERIAL_GLSL, EARTH_AIR, HAZE_FRACTION, REFERENCE_AIR,
-  REFERENCE_PARAMS, aerial, aerialParams, airFor, molarMass, scaleHeight,
-  surfaceTemp,
+  REFERENCE_PARAMS, REFERENCE_VISIBILITY, VISIBILITY, aerial, aerialParams,
+  airFor, molarMass, scaleHeight, surfaceTemp, visibilityFor,
 } from '../src/aerial.js';
 import {
   BASE_DROP, HORIZON_VERT, MAX_BANDS, RIDGE_SEGS, SATURATION, bandPlan,
@@ -84,13 +84,24 @@ import {
   DENS_POW, MEADOW_GLSL, RINGS, chunkCount, chunkGrid, chunkInstances,
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
+  CURVE_PX, NEUTRAL_POW, bladePixels, bladeWidth, bladesPerSteradian, curveReach,
+  groundOverdraw,
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
+import {
+  CLEAR_FLOOR, KNOBS, MIST_TOP, PAINTED, PHOTOGRAPHIC, SHOULDER_D2,
+  registerFor, registerMix, registerName,
+} from '../src/register.js';
+import {
+  ADAPT_BRIGHTEN, ADAPT_DARKEN, ADAPT_MAX_STOPS_PER_SEC, Adaptation,
+  APERTURE_FIXTURE, EXPOSURE_MAX, EXPOSURE_MIN, K_DIURNAL, K_ORBITAL,
+  apertureFor, sceneLuminance,
+} from '../src/exposure.js';
 import { walkable, wonderDestination, wonderScore } from '../src/wonder.js';
 import {
   RHO, TROFFER_GLSL, bounceGain, cavityBounce, ceilingQuad, polygonIrradiance,
 } from '../src/troffer.js';
-import { hash } from '../src/rng.js';
+import { RNG, hash } from '../src/rng.js';
 import {
   BAO_AMPLITUDE, HUBBLE_DIST, SOUND_HORIZON, acoustic, growth, lookbackAt, scaleAt,
   shell, windingAt,
@@ -104,6 +115,16 @@ import {
 } from '../src/conjure.js';
 import { LAUNCH, flyClimb, launchFor, launchState, speedOf, stepLaunch } from '../src/climb.js';
 import {
+  ENTRY, allenEggers, densityAt as airDensityAt, entryFor, entryFraction,
+  entryState, flyEntry, peakDecel, sinkOf as entrySink, speedOf as entrySpeed,
+  stepEntry, terminalVelocity as entryTerminalV,
+} from '../src/descent.js';
+import {
+  CREW, crewState, easeInOut, gait, look, pathHits, seatPath, sit, stand,
+  stationInReach, stepCrew, straightPath, transitionFraction,
+} from '../src/pilot.js';
+import { CABIN, cabinFor } from '../src/deck.js';
+import {
   F2, FLICKER_HZ, MAINS_HZ, MERCURY_LINES, PHOSPHOR, PHOSPHOR_BANDS,
   isThin, lampColour, lampExposure, lampFlicker,
   nearestAddress, parseRoomKey, room, roomAddress, roomDoors, roomKey,
@@ -113,15 +134,19 @@ import { SILHOUETTES, coverageOf, maskData } from '../src/silhouette.js';
 import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
-import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
+import {
+  HABITS, HERO_FAR, HERO_NEAR, HERO_OVER, WOOD, curvature, forkRadii, growTree, heroHeight,
+  heroSite, lengthOf, radiusForHeight, tipsOf,
+} from '../src/tree.js';
 import {
   COVER_EXP, COVER_NEAR, MINERALS, SPECIES, communityOf, coverDensity, densityAt,
   mineralChunk, mineralFit, mineralsOf, scatterChunk, tolerance,
 } from '../src/scatter.js';
 import { phaseOf, precipFor, subpixel, terminalVelocity, wrap } from '../src/precip.js';
 import {
-  EXTINCTION as BLOSSOM_L, PETAL, blossomsFor, floweringAt, opticalDepth,
-  paramNumber, petalFall, petalHue, seasonOpenness, seasonPhaseOf,
+  EXTINCTION as BLOSSOM_L, PETAL, blossomShares, blossomsFor, floweringAt, opticalDepth,
+  SEASONALITY_EARTH, WIDTH_EARTH, WIDTH_MIN, bloomWidth, paramNumber,
+  perpetualBloom, petalFall, petalHue, seasonOpenness, seasonPhaseOf, seasonality,
 } from '../src/blossom.js';
 import {
   CLIMB_MIN, DWELL, HYST, ascentFraction, ascentState, handoff, releaseAltitude,
@@ -4590,6 +4615,12 @@ function suiteMeadow() {
   }
 
   // --- the falloff is slower than d^-2, which is the whole trick ------------
+  //
+  // True as written, and it is a statement about a WALL. `d^-2` is the neutral
+  // exponent for a fronto-parallel surface; the block below this one does the
+  // same arithmetic for a floor, where the neutral exponent is 3 and the law is
+  // one and a half powers under it rather than half a power over. Both checks
+  // are correct; only the second is about the ground.
   {
     // count per steradian goes as density * d^2; at exponent 1.5 that RISES
     const perSr = (d) => density(2, d) * d * d;
@@ -4869,6 +4900,119 @@ function suiteMeadow() {
         for (let i = 0; i < n * 2; i++) if (b.root[i] !== root[i]) return false;
         return true;
       })());
+  }
+
+  // --- what the density law is actually about, evaluated ------------------
+  //
+  // `density()`'s note argues the exponent against `d^-2`, "the falloff that
+  // would keep the count per steradian constant". That is the neutral exponent
+  // for a wall. Ground is a floor: from a fixed eye height the patch subtending
+  // one steradian at distance d has area d^3/e, not d^2, and the extra power is
+  // the grazing incidence. So the claim "the count per steradian rises slightly"
+  // is off by one and a half powers of d, and this is the arithmetic.
+  {
+    ok('the neutral exponent for a FLOOR is 3, not the 2 the law reasons against',
+      NEUTRAL_POW === 3);
+
+    // hold the ratio to the definition rather than to a transcribed number
+    let worst = 0;
+    for (const [r, d] of [[0, 12], [1, 40], [2, 150], [3, 700]]) {
+      const want = density(r, d) * d * d * d / 1.68;
+      worst = Math.max(worst, Math.abs(bladesPerSteradian(r, d) - want) / want);
+    }
+    ok('...and bladesPerSteradian is density · d³ / eye, to the digit',
+      worst < 1e-12, `worst relative error ${worst.toExponential(2)}`);
+
+    const nearSr = bladesPerSteradian(0, RINGS[0].far);
+    const farSr = bladesPerSteradian(3, RINGS[3].far);
+    ok('MEASURED · the count per steradian does not rise "slightly" — it rises 254×',
+      farSr / nearSr > 200,
+      `${(nearSr / 1e6).toFixed(2)} M/sr at ${RINGS[0].far} m → `
+      + `${(farSr / 1e6).toFixed(1)} M/sr at ${RINGS[3].far} m · ${(farSr / nearSr).toFixed(0)}×`);
+
+    // …and the same thing from the fill side
+    const P = 1440 * 1.12 / (52 * Math.PI / 180);
+    const overNear = groundOverdraw(0, 2, P), overFar = groundOverdraw(3, RINGS[3].far, P);
+    ok('MEASURED · and the ground is covered 6× underfoot against 610× at the far edge',
+      overFar / overNear > 80,
+      `${overNear.toFixed(0)}× at 2 m → ${overFar.toFixed(0)}× at ${RINGS[3].far} m`);
+
+    // The consequence, and it is §M3's own gate clause: "grass reads as meadow
+    // at the horizon, not as a green plane." At ring 3's far edge the spacing
+    // cap has grown a blade to 1.69 m and there is no ground visible between
+    // them anywhere — which is a green plane, made of four million billboards.
+    const wFar = bladeWidth(3, RINGS[3].far, P);
+    ok('§M3 gate · a "blade" at the far edge is 1.7 m wide, which is a billboard',
+      wFar > 1.5, `${wFar.toFixed(2)} m wide, ${(0.71 * RINGS[3].hs).toFixed(2)} m tall`);
+
+    // The exponent is NOT the dial — §6 M3 pins it at 1.5 for the inversesqrt,
+    // and §3 says settled rulings are not re-litigated mid-build. The band is.
+    ok('§6 M3 · the exponent stays pinned at 1.5 regardless of the above',
+      DENS_POW === 1.5, 'the band is the dial; changing it needs a scored frame');
+  }
+
+  // --- §9.5's tier rule, in the unit §9.5 states it in ----------------------
+  //
+  // *"Once a blade is two or three pixels wide, everything varying across its
+  // width is sub-pixel and should be dropped by tier."* That is a rule about
+  // PIXELS, and until `bladeWidth()` existed nothing in the repository could
+  // evaluate it — so the `curvedRings` column, which is the knob the rule
+  // governs, was set from an estimate. The estimate was *"at 5 m a blade is
+  // about 9 px"* and it is wrong by a factor of ten in distance.
+  {
+    // the projections the tiers actually render at: DPR 1, times the row's own
+    // supersample factor, over a 52° vertical FOV
+    const pxr = (h, px) => (h * px) / (52 * Math.PI / 180);
+    const P720 = pxr(720, 0.85), P1440 = pxr(1440, 1.12), PULTRA = pxr(1440, 1.32);
+
+    ok('a ring-0 blade is 1.70 px wide at 5 m, not the 9 px the column assumed',
+      Math.abs(bladePixels(0, 5, P720) - 1.70) < 0.02,
+      `${bladePixels(0, 5, P720).toFixed(2)} px at 720p · `
+      + `${bladePixels(0, 5, P1440).toFixed(2)} px at 1440p·1.12`);
+
+    // and it is 1.70 px at every distance in the band past the metric minimum,
+    // because `wpx` is a floor *in pixels* and no natural width is an input
+    const across = [4, 8, 12, 18, 26].map((d) => bladePixels(0, d, P720));
+    ok('...and at 1.70 px across the whole of ring 0’s band, by construction',
+      across.every((v) => Math.abs(v - 1.70) < 0.01),
+      across.map((v) => v.toFixed(2)).join(' / ') + ' px at 4/8/12/18/26 m');
+
+    // the JS law and the GLSL it mirrors must agree about which term binds
+    ok('the metric minimum is the only term that ever exceeds the pixel floor',
+      bladePixels(0, 1, P720) > 3 && bladePixels(0, 6, P720) < 2,
+      `${bladePixels(0, 1, P720).toFixed(2)} px at 1 m · ${bladePixels(0, 6, P720).toFixed(2)} px at 6 m`);
+
+    // How far each ring earns the rolled-leaf cross-section, against its band.
+    // This is the measurement the column should have been set from.
+    for (const [label, P] of [['desktop', P1440], ['ultra', PULTRA]]) {
+      const reach = curveReach(0, P);
+      ok(`${label}: ring 0 earns the curved cross-section over ${((reach / RINGS[0].far) * 100).toFixed(0)}% of its band`,
+        reach < RINGS[0].far * 0.25,
+        `${reach.toFixed(2)} m of ${RINGS[0].far} m, at the ${CURVE_PX} px threshold`);
+    }
+    ok('ring 1 never earns it on any row — it is at its 2.00 px floor throughout',
+      curveReach(1, PULTRA) <= RINGS[1].near,
+      `${curveReach(1, PULTRA).toFixed(2)} m against a band starting at ${RINGS[1].near} m`);
+
+    // …and therefore the column. This is the assertion that stops it drifting
+    // back: a row may only spend the cross-section on a ring where the blade is
+    // actually wider than the threshold somewhere inside the ring's own band.
+    const PX_OF = { low: pxr(720, 0.85), mobile: pxr(844 * 2, 1.00), desktop: P1440, ultra: PULTRA };
+    for (const q of QUALITY) {
+      const P = PX_OF[q.name] ?? P1440;
+      const bad = [];
+      for (let r = 0; r < q.curvedRings; r++) if (curveReach(r, P) <= RINGS[r].near) bad.push(r);
+      ok(`§9.5 · ${q.name}’s curvedRings spends nothing on a ring that is sub-pixel throughout`,
+        bad.length === 0,
+        `curvedRings ${q.curvedRings}` + (bad.length ? ` · ring(s) ${bad.join(',')} never reach ${CURVE_PX} px` : ''));
+    }
+
+    // the refund, stated so it is on the record rather than in a commit message
+    const tri = (seg, curved) => seg * (curved ? 4 : 2);
+    const d = QUALITY[2];
+    ok('retiring ring 0’s cross-section on desktop halves its triangles per blade',
+      tri(d.blades[0], true) === 16 && tri(d.blades[0], false) === 8,
+      '16 → 8, on the largest single line in the surface frame');
   }
 
   // --- the quality table's §M3 columns -------------------------------------
@@ -8949,6 +9093,70 @@ function suiteBlossom() {
     new Set([...Array(60)].map((_, i) => Math.round(seasonOpenness(0.5, i) * 50))).size > 6,
     'the centre is seeded, so a system has a staggered spring');
 
+  // --- law 3b · whose spring, and how long — `docs/plans/SAKURA.md` -------
+  //
+  // A spring is a property of an **orbit**, not of life. Only two things can
+  // modulate the light a world gets around its own year — a tilted axis and a
+  // non-circular orbit — and a world with neither gives its flora no annual cue
+  // to synchronise to, so it does not synchronise, so it is always in flower.
+  {
+    const EARTH = { tilt: (23.44 * Math.PI) / 180, e: 0.0167 };
+    ok("§9.6 · an Earth-like world's window is the constant this file shipped with",
+      Math.abs(bloomWidth(EARTH) - WIDTH_EARTH) < 1e-12,
+      `${bloomWidth(EARTH).toFixed(12)} against ${WIDTH_EARTH}, by construction`);
+
+    ok('and obliquity dominates it, which is the fact most people have backwards',
+      Math.abs(Math.sin(EARTH.tilt) / (2 * EARTH.e) - 11.9) < 0.3,
+      `Earth's axis forces ${(Math.sin(EARTH.tilt) / (2 * EARTH.e)).toFixed(1)}x`
+      + ' what its eccentricity does — its seasons are a tilt, not a distance');
+
+    ok('§2.3 · the two forcings add in quadrature and neither can cancel the other',
+      Math.abs(seasonality({ tilt: 0.3, e: 0 }) - Math.sin(0.3)) < 1e-12
+      && Math.abs(seasonality({ tilt: 0, e: 0.2 }) - 0.4) < 1e-12
+      && seasonality({ tilt: 0.3, e: 0.2 }) > Math.max(Math.sin(0.3), 0.4),
+      'obliquity makes hemispheres take turns; eccentricity makes them agree');
+
+    ok('inverse: twice the forcing is half the window',
+      Math.abs(bloomWidth({ tilt: Math.asin(2 * Math.sin(EARTH.tilt)), e: 2 * EARTH.e })
+        - WIDTH_EARTH / 2) < 1e-9);
+
+    ok('a world with no tilt and a round orbit has no spring at all — it is always in flower',
+      perpetualBloom({ tilt: 0, e: 0 }) && perpetualBloom({ tilt: 0.07, e: 0.01 })
+      && !perpetualBloom(EARTH),
+      `S = 0 gives a half-width of ${bloomWidth({ tilt: 0, e: 0 })}, the whole year`);
+
+    ok('§8 axis 8 · and it is bounded at both ends, so no spring is one afternoon',
+      bloomWidth({ tilt: 1.5, e: 0.42 }) === WIDTH_MIN
+      && bloomWidth({ tilt: NaN, e: NaN }) === 0.5
+      && bloomWidth({}) === 0.5);
+
+    // The measurement the ask turns on, over `system.js`'s own draws for tilt
+    // and e in its own order. This is what changed, and it is stated as a
+    // number so it cannot quietly drift back.
+    let perp = 0, before = 0, after = 0, n = 0;
+    for (let sd = 0; sd < 20000; sd++) {
+      const pr = new RNG((sd * 2654435761) >>> 0);
+      const e = Math.min(Math.abs(pr.gauss()) * 0.055 + 0.004
+        + (pr.chance(0.06) ? pr.float(0.15, 0.3) : 0), 0.42);
+      const M0 = pr.float(0, Math.PI * 2);
+      const tilt = Math.abs(pr.gauss()) * 0.3;
+      const pp = { tilt, e };
+      const ph = (M0 / (Math.PI * 2)) % 1;
+      if (perpetualBloom(pp)) perp++;
+      if (seasonOpenness(ph, sd >>> 0, WIDTH_EARTH) > 0.02) before++;
+      if (seasonOpenness(ph, sd >>> 0, bloomWidth(pp)) > 0.02) after++;
+      n++;
+    }
+    ok('§1 · so about a fifth of worlds are hanami worlds, and it is measured not chosen',
+      perp / n > 0.14 && perp / n < 0.24,
+      `${((perp / n) * 100).toFixed(1)}% never leave flower — a readout of`
+      + " system.js's own tilt and e, drawn in its own order");
+    ok('and arriving to flowers goes from a third of visits to half',
+      after / n > before / n * 1.5 && after / n < 0.62,
+      `${((before / n) * 100).toFixed(1)}% -> ${((after / n) * 100).toFixed(1)}%,`
+      + ' and the other half still has a season to miss');
+  }
+
   // --- law 4 · a tree in bloom carries thousands of flowers ---------------
   const full = blossomsFor(tree, { seed: 3, openness: 1, budget: 40000 });
   const half = blossomsFor(tree, { seed: 3, openness: 0.5, budget: 40000 });
@@ -10062,7 +10270,1717 @@ function suiteGovernor() {
     && decodeCraft('a,b,c,d,e') === null && decodeCraft(null) === null, '');
 }
 
+/* ===========================================================================
+   descent — Allen–Eggers, and the way down
+
+   `climb.js` has a suite because flying a launch to find out whether it works
+   is a bad way to find out. The same argument applies harder here, because a
+   descent has a closed-form solution and so the numeric answer can be checked
+   against something that is not a snapshot of itself.
+
+   The five worlds below are chosen to span the regime: Earth as the case
+   everybody knows, Mars as a thin atmosphere, Venus as a thick one (92 bar),
+   Titan as slow and cold, Luna as no atmosphere at all.
+   ========================================================================= */
+const D_WORLDS = {
+  Earth: { massE: 1, radiusE: 1, atmo: 1 },
+  Mars: { massE: 0.107, radiusE: 0.532, atmo: 0.006 },
+  Venus: { massE: 0.815, radiusE: 0.949, atmo: 92 },
+  Titan: { massE: 0.0225, radiusE: 0.404, atmo: 1.45 },
+  Luna: { massE: 0.0123, radiusE: 0.273, atmo: 0 },
+};
+const D_CAPTURE = releaseAltitude(1400, 52);   // the same 1435 m the climb releases at
+
+function suiteDescent() {
+  console.log('\ndescent — Allen–Eggers, and §2.5 closed in the other direction');
+
+  const craft = {}, params = {};
+  for (const [n, w] of Object.entries(D_WORLDS)) {
+    craft[n] = craftFor(w);
+    params[n] = entryFor(craft[n], w);
+  }
+
+  {
+    // The entry interface is defined in scale heights, so it has to land on
+    // Earth's real one without having been told it.
+    near('the entry interface on Earth is where NASA puts it — 122 km',
+      params.Earth.interface, 122000, 0.02);
+    ok('...and it is a ratio, not a constant, so a thin world gets a low one',
+      params.Mars.interface > params.Earth.interface
+      && params.Venus.interface < params.Mars.interface,
+      `Mars ${(params.Mars.interface / 1000).toFixed(0)} km ·`
+      + ` Earth ${(params.Earth.interface / 1000).toFixed(0)} km ·`
+      + ` Venus ${(params.Venus.interface / 1000).toFixed(0)} km — Mars is higher`
+      + ' because its scale height is longer under lower gravity, which is'
+      + ' H = kT/mg read the right way round');
+  }
+
+  {
+    /* ------------------------------------------------------------------ the
+       headline result, and the reason this file is arithmetic.
+
+       `a_max = v²·sin|γ| / (2·e·H)` contains no β. A vehicle ten times denser
+       pulls the *same* peak deceleration and pulls it lower down. This is the
+       single strongest statement the closed form makes, so it gets tested by
+       varying the thing it claims not to depend on. */
+    const p = params.Earth;
+    const light = { ...p, beta: p.beta / 10 };
+    const heavy = { ...p, beta: p.beta * 10 };
+    const a0 = peakDecel(p).a, aL = peakDecel(light).a, aH = peakDecel(heavy).a;
+    ok('peak deceleration does not depend on the ballistic coefficient at all',
+      Math.abs(aL - a0) < 1e-9 && Math.abs(aH - a0) < 1e-9,
+      `β/10 → ${(aL / 9.80665).toFixed(3)} g · β → ${(a0 / 9.80665).toFixed(3)} g`
+      + ` · β×10 → ${(aH / 9.80665).toFixed(3)} g — identical to 1e-9`);
+    // ...and the altitude very much does, which is the other half of the claim
+    const hL = peakDecel(light).h, hH = peakDecel(heavy).h;
+    near('...but the altitude it happens at moves by exactly H·ln(10) per decade',
+      hL - hH, p.hScale * Math.log(100), 0.001);
+    ok('...so a light vehicle decelerates high and a dense one decelerates low',
+      hL > peakDecel(p).h && peakDecel(p).h > hH,
+      `β/10 at ${(hL / 1000).toFixed(1)} km · β at ${(peakDecel(p).h / 1000).toFixed(1)} km`
+      + ` · β×10 at ${(hH / 1000).toFixed(1)} km — this is why an entry body is`
+      + ' designed blunt: β is chosen low so the pulse lands in thin air');
+  }
+
+  {
+    // The other two signatures of the closed form.
+    const p = params.Earth;
+    near('peak deceleration is linear in sin|γ|',
+      peakDecel({ ...p, sinGamma: p.sinGamma * 2 }).a, peakDecel(p).a * 2, 1e-9);
+    near('...and the speed at the peak is v_e·e^(−½), whatever the world',
+      peakDecel(p).v / p.vEntry, Math.exp(-0.5), 1e-12);
+    near('...on Venus too — it is a property of the solution, not of Earth',
+      peakDecel(params.Venus).v / params.Venus.vEntry, Math.exp(-0.5), 1e-12);
+  }
+
+  {
+    /* ------------------------------------------------------------------ the
+       independent second derivation, which is the point of §14.
+
+       `stepEntry()` integrates the equation of motion frame by frame and knows
+       nothing about Allen–Eggers. `peakDecel()` evaluates the closed form and
+       never integrates anything. Neither is the other's baseline, so agreement
+       between them is evidence.
+
+       They are compared with γ **held**, because that is the assumption the
+       closed form is derived under. Flown free — which is what the game does —
+       gravity steepens the path and Earth's peak rises from 8.4 g to 22.7 g.
+       That difference is the size of a term the closed form drops, not an
+       error in either one, and comparing across it would be comparing two
+       different problems. */
+    for (const n of ['Earth', 'Venus', 'Mars', 'Titan']) {
+      const p = params[n], pk = peakDecel(p);
+      const r = flyEntry(craft[n], D_WORLDS[n], D_CAPTURE, 1 / 240, 14400, undefined, true);
+      const errH = Math.abs(r.peakAt - pk.h) / Math.max(pk.h, 1);
+      near(`${n}: the integrator finds the peak at the altitude the closed form predicts`,
+        r.peakAt, pk.h, 0.03);
+      // a_max is looser on the thin and the slow worlds, and predictably so:
+      // Allen–Eggers drops gravity against drag, and that is exactly the term
+      // that stops being negligible when there is very little drag.
+      const tol = (n === 'Mars' || n === 'Titan') ? 0.25 : 0.06;
+      near(`${n}: ...and the magnitude agrees to ${(tol * 100).toFixed(0)}%`,
+        r.maxDecel, pk.a, tol);
+      if (n === 'Earth') {
+        ok('...with the altitude the tighter of the two, across 92× in pressure',
+          errH < 0.02, `Earth ${(errH * 100).toFixed(2)}% — h_max = H·ln(ρ₀H/(β sin γ))`
+          + ' is reproduced by an integrator that was never given it');
+      }
+    }
+  }
+
+  {
+    /* The closed form as a *curve*, not just at its extremum — and the place it
+       stops being true, which is the more interesting half.
+
+       Above the deceleration peak, drag is the only thing doing anything and
+       Allen–Eggers is very nearly exact. Below it the vehicle has already lost
+       its orbital energy and settles onto **terminal velocity**, where drag
+       balances weight — and weight is the term the closed form dropped, so it
+       keeps predicting an exponential decay to zero. The measured divergence
+       below 40 km is not a disagreement about the answer; it is the closed
+       form being asked a question outside its own derivation. */
+    const p = params.Earth;
+    const pk = peakDecel(p);
+    let above = 0, s = entryState(p);
+    for (let i = 0; i < 400000 && s.phase !== 'down'; i++) {
+      s = stepEntry(s, p, 1 / 240, D_CAPTURE, true);
+      const ae = allenEggers(p, s.h);
+      if (s.h >= pk.h && s.h < p.interface * 0.98 && ae > 1e-6) {
+        above = Math.max(above, Math.abs(entrySpeed(s) - ae) / ae);
+      }
+    }
+    /* ...and terminal velocity is checked at the moment the ballistic phase
+       *ends*, which is the sharpest place to ask.
+
+       A band average is the wrong instrument: at 40 km the vehicle is still
+       doing kilometres a second and has not converged on anything yet, so
+       averaging over a band measures how much of it was spent converging. What
+       the physics actually claims is narrower and stronger — a ballistic
+       descent through enough air arrives at the flare *at* terminal velocity,
+       because that is the fixed point drag has been pulling it toward. */
+    const ratios = {};
+    for (const n of ['Earth', 'Venus', 'Titan']) {
+      const q = params[n];
+      let f = entryState(q), before = null;
+      for (let i = 0; i < 2000000 && f.phase !== 'down'; i++) {
+        const pre = f;
+        f = stepEntry(f, q, 1 / 240, D_CAPTURE);
+        if (f.phase === 'flare' && pre.phase !== 'flare') { before = pre; break; }
+      }
+      ratios[n] = before ? entrySpeed(before) / entryTerminalV(q, before.h) : NaN;
+    }
+    ok('the speed–altitude curve tracks the closed form from the interface to the peak',
+      above < 0.05,
+      `worst relative error ${(above * 100).toFixed(2)}% sampled every frame`
+      + ` between ${(pk.h / 1000).toFixed(0)} km and 120 km — an integrator that`
+      + ' was never given Allen–Eggers reproducing its curve, not just its extremum');
+    // ...and below the peak it is terminal velocity, which the closed form omits
+    ok('...and below the peak it settles onto terminal velocity instead, as it must',
+      Object.values(ratios).every((r) => r > 0.9 && r < 1.2),
+      `speed ÷ √(2βg/ρ) where the ballistic phase ends —`
+      + ` Venus ${ratios.Venus.toFixed(3)} · Titan ${ratios.Titan.toFixed(3)}`
+      + ` · Earth ${ratios.Earth.toFixed(3)}. Allen–Eggers drops weight against`
+      + ' drag so it decays to zero down here; the vehicle does not, and that'
+      + ' gap is the whole reason the comparison above is cut at the peak');
+  }
+
+  {
+    // Terminal velocity, against its own definition.
+    const p = params.Earth;
+    const h = 2000, rho = airDensityAt(p, h);
+    const rOverR = p.R / (p.R + h);
+    near('terminal velocity is √(2βg/ρ) evaluated at the local gravity',
+      entryTerminalV(p, h),
+      Math.sqrt((2 * p.beta * p.g0 * rOverR * rOverR) / rho), 1e-9);
+    ok('...and it is infinite in vacuum rather than a large plausible number',
+      entryTerminalV(params.Luna, 1000) === Infinity,
+      'an airless world returns Infinity, which refuses to be mistaken for a speed');
+  }
+
+  {
+    /* The latch. `stepLaunch` documents this failure and it is the same one:
+       an edge with no latch behind it re-fires every other frame, and a scale
+       handover that runs twice pops two levels of the stack. */
+    const p = params.Earth;
+    let s = entryState(p), edges = 0;
+    for (let i = 0; i < 200000 && i < 200000; i++) {
+      s = stepEntry(s, p, 1 / 240, D_CAPTURE);
+      if (s.captured) edges++;
+      if (s.phase === 'down' && i > 100) { /* keep stepping past it */ }
+      if (edges > 3) break;
+    }
+    ok('the capture edge fires exactly once, however long you keep stepping',
+      edges === 1, `${edges} edge(s) over the whole descent — the `
+      + '`taken` latch is what stops the hand-over running twice');
+  }
+
+  {
+    // Every world arrives, and arrives under control.
+    for (const [n, w] of Object.entries(D_WORLDS)) {
+      const r = flyEntry(craft[n], w, D_CAPTURE, 1 / 120);
+      ok(`${n}: the descent reaches the hand-over`, r.landed,
+        `${(r.time / 60).toFixed(1)} min · peak ${(r.maxDecel / 9.80665).toFixed(1)} g`
+        + ` · max-q ${(r.maxQ / 1000).toFixed(1)} kPa`
+        + ` · arriving at ${r.sink.toFixed(2)} m/s`);
+      ok(`${n}: ...at a sink rate and a ground speed the flare actually trimmed`,
+        r.sink <= ENTRY.touchdownSpeed * 1.5 && Number.isFinite(r.sink)
+        && r.ground < 1 && Number.isFinite(r.ground),
+        `${r.sink.toFixed(3)} m/s down and ${r.ground.toFixed(2)} m/s across,`
+        + ` against a commanded ${ENTRY.touchdownSpeed} — the vehicle arrives`
+        + ' over the site rather than through it');
+    }
+  }
+
+  {
+    /* The flown times, against the four entries anybody has actually flown.
+       This is not a tuned fit — nothing in `descent.js` has ever been shown
+       these numbers. It is the model being asked whether it is embarrassing. */
+    const flown = [['Earth', 9 * 60, 'crewed entry, interface to chutes'],
+      ['Titan', 147 * 60, 'Huygens, 2 h 27 min'],
+      ['Venus', 60 * 60, 'Venera, about an hour']];
+    for (const [n, real, who] of flown) {
+      const r = flyEntry(craft[n], D_WORLDS[n], D_CAPTURE, 1 / 120);
+      const rel = Math.abs(r.time - real) / real;
+      ok(`${n}: the descent takes about as long as the real one (${who})`,
+        rel < 0.45,
+        `model ${(r.time / 60).toFixed(1)} min · flown ${(real / 60).toFixed(0)} min`
+        + ` · ${(rel * 100).toFixed(0)}% out`);
+    }
+
+    /* Mars and Luna are deliberately **not** in that list, and saying why is
+       worth more than a passing check would be.
+
+       Both are worlds where the air cannot do the job: 6 mbar of CO₂ leaves a
+       ballistic vehicle at 695 m/s, and vacuum leaves it at orbital speed. Every
+       real lander at either destination therefore carried hardware this model
+       does not have — a parachute, which is a ballistic coefficient that changes
+       by a factor of ten halfway down. Comparing against MSL's 7 minutes would
+       be comparing against a vehicle with a different β, and it would be the
+       same error as quoting Apollo's 6.5° at an unlifted entry.
+
+       What *is* checkable is the floor. A powered descent cannot beat the time
+       it takes to remove the speed at the acceleration available, `v/a`, and it
+       should not be wildly worse than it either. */
+    for (const n of ['Mars', 'Luna']) {
+      const r = flyEntry(craft[n], D_WORLDS[n], D_CAPTURE, 1 / 120);
+      const p = params[n];
+      const floor = p.vEntry / (p.g0 + ENTRY.flareAccel);
+      ok(`${n}: the powered descent respects its own Δv-limited floor`,
+        r.landed && r.time >= floor && r.time < floor * 12,
+        `${(r.time / 60).toFixed(1)} min against a floor of`
+        + ` ${(floor / 60).toFixed(1)} min — killing ${(p.vEntry / 1000).toFixed(2)} km/s`
+        + ` at ${(p.g0 + ENTRY.flareAccel).toFixed(2)} m/s² cannot be done faster,`
+        + ' and this model has no parachute to shortcut it with');
+    }
+  }
+
+  {
+    // Airless. The flare is the only thing that can stop the vehicle, and the
+    // solver has to notice that early enough to have the altitude to do it in.
+    const r = flyEntry(craft.Luna, D_WORLDS.Luna, D_CAPTURE, 1 / 120);
+    ok('§2 · an airless world is landed on thrust alone, with no NaN anywhere',
+      r.landed && Number.isFinite(r.sink) && Number.isFinite(r.time)
+      && r.maxDecel === 0 && !r.starved,
+      `Luna: ${(r.time / 60).toFixed(1)} min, zero aerodynamic deceleration,`
+      + ` ${(r.down / 1000).toFixed(0)} km downrange, arriving at`
+      + ` ${r.sink.toFixed(2)} m/s — a long shallow braking burn, which is what`
+      + ' an airless landing is and what Apollo flew');
+  }
+
+  {
+    // Monotone, and bounded. A descent that ever gains altitude is a skip, and
+    // this model does not claim to solve one.
+    const p = params.Earth;
+    let s = entryState(p), prev = s.h, rose = 0;
+    for (let i = 0; i < 200000 && s.phase !== 'down'; i++) {
+      s = stepEntry(s, p, 1 / 240, D_CAPTURE);
+      if (s.h > prev + 1e-9) rose++;
+      prev = s.h;
+    }
+    ok('altitude falls monotonically — no skip, no bounce, no tunnelling',
+      rose === 0 && s.h >= 0, `${rose} frames of rising altitude`);
+  }
+
+  {
+    // The progress reading §2.8's grade cross-fade is going to ride on.
+    const p = params.Earth;
+    let s = entryState(p), last = -1, monotone = true, lo = 1, hi = 0;
+    for (let i = 0; i < 200000 && s.phase !== 'down'; i++) {
+      s = stepEntry(s, p, 1 / 240, D_CAPTURE);
+      const f = entryFraction(s, p);
+      if (f < last - 1e-9) monotone = false;
+      last = f; lo = Math.min(lo, f); hi = Math.max(hi, f);
+    }
+    ok('§2.8 · the entry fraction rises monotonically from 0 to 1',
+      monotone && lo >= 0 && Math.abs(hi - 1) < 1e-9,
+      `[${lo.toFixed(3)}, ${hi.toFixed(3)}] — measured in scale heights rather`
+      + ' than metres, because half the altitude is nowhere near half the descent');
+  }
+
+  {
+    // §2.3. The whole path is arithmetic on doubles with no clock in it, so
+    // two runs must be bit-identical rather than merely close.
+    const a = flyEntry(craft.Earth, D_WORLDS.Earth, D_CAPTURE, 1 / 120);
+    const b = flyEntry(craft.Earth, D_WORLDS.Earth, D_CAPTURE, 1 / 120);
+    ok('§2.3 · the same entry twice is bit-identical',
+      a.time === b.time && a.maxDecel === b.maxDecel && a.h === b.h
+      && a.down === b.down,
+      `t ${a.time} · h ${a.h} · downrange ${a.down.toFixed(0)} m — no clock, no`
+      + ' Math.random, no iteration-order dependency in the path');
+  }
+
+  {
+    // The corridor is enforced rather than documented.
+    const w = D_WORLDS.Earth;
+    const shallow = entryFor(craft.Earth, w, -50), steep = entryFor(craft.Earth, w, 900);
+    near('a shallower entry than the corridor allows is clamped to its edge',
+      shallow.gamma * 180 / Math.PI, ENTRY.gammaMinDeg, 1e-9);
+    near('...and a steeper one likewise',
+      steep.gamma * 180 / Math.PI, ENTRY.gammaMaxDeg, 1e-9);
+    ok('...and a steeper entry really does pull more g, monotonically',
+      peakDecel(entryFor(craft.Earth, w, 8)).a
+        > peakDecel(entryFor(craft.Earth, w, 3.5)).a
+        && peakDecel(entryFor(craft.Earth, w, 3.5)).a
+        > peakDecel(entryFor(craft.Earth, w, 1.5)).a,
+      `1.5° → ${(peakDecel(entryFor(craft.Earth, w, 1.5)).a / 9.80665).toFixed(1)} g ·`
+      + ` 3.5° → ${(peakDecel(entryFor(craft.Earth, w, 3.5)).a / 9.80665).toFixed(1)} g ·`
+      + ` 8° → ${(peakDecel(entryFor(craft.Earth, w, 8)).a / 9.80665).toFixed(1)} g`);
+  }
+
+  {
+    // One vehicle, two directions — the claim §1.2 of the plan makes.
+    const up = flyClimb(craft.Earth, D_WORLDS.Earth, D_CAPTURE, 1 / 120);
+    const down = flyEntry(craft.Earth, D_WORLDS.Earth, D_CAPTURE, 1 / 120);
+    ok('the climb and the entry describe the same world and the same air',
+      Math.abs(up.params.hScale - down.params.hScale) < 1e-9
+      && Math.abs(up.params.rho0 - down.params.rho0) < 1e-9
+      && Math.abs(up.params.g0 - down.params.g0) < 1e-9,
+      `scale height ${down.params.hScale.toFixed(0)} m and ρ₀`
+      + ` ${down.params.rho0.toFixed(3)} kg/m³ agree between climb.js and`
+      + ' descent.js to the last bit — a vehicle that changed shape depending'
+      + ' on which way it was pointing would be a leak, not a rounding error');
+  }
+}
+
+
+/* ===========================================================================
+   pilot — walking a deck, and the three metres into the seat
+   ========================================================================= */
+
+/* A pilot's seat, in cabin metres. The eye sits at 1.16 when seated; the
+   backrest therefore tops out around the shoulders at 1.32 and is a hand's
+   width thick just behind the occupant. Nothing in `pilot.js` is told these
+   numbers — they are the obstacle it is asked to miss. */
+const SEAT_EYE = [0, 1.16, -5.28];
+const BACKREST = [-0.28, 0.28, 0.55, 1.32, -5.20, -5.06];
+const P_CABIN = {
+  // [halfWidth, z0, z1] — a cockpit that opens into a corridor
+  volumes: [[1.05, -7.6, -3.4], [0.72, -3.4, 0.6], [1.30, 0.6, 7.2]],
+  blockers: [[-1.05, -0.55, -6.4, -5.9]],   // the console, across the nose
+};
+const P_STATION = {
+  id: 'helm', pos: [0, 0, -4.9], radius: 0.62,
+  seatEye: SEAT_EYE, seatYaw: 0,
+};
+
+function suitePilot() {
+  console.log('\npilot — the deck, and the seat §2.5 says you cannot cut to');
+
+  {
+    /* ------------------------------------------------------------------ the
+       reason this file exists. A straight line from standing to the seat eye
+       runs through the backrest and the camera flies through it — a cut of one
+       or two frames, and §2.5 has no size threshold in it.
+
+       Tested from four approaches, because a path that clears from dead-astern
+       and not from the left is a path that works on the one walk somebody
+       happened to try. */
+    const approaches = [['centred', [0, CREW.eye, -4.35]],
+      ['from the left', [-0.34, CREW.eye, -4.35]],
+      ['from the right', [0.34, CREW.eye, -4.35]],
+      ['from further back', [0.20, CREW.eye, -3.60]]];
+    let worstBow = 0, bestLine = 1;
+    for (const [, from] of approaches) {
+      worstBow = Math.max(worstBow, pathHits(from, SEAT_EYE, BACKREST, seatPath));
+      bestLine = Math.min(bestLine, pathHits(from, SEAT_EYE, BACKREST, straightPath));
+    }
+    ok('§2.5 · the eye never passes through the backrest, from any approach',
+      worstBow === 0,
+      `${(worstBow * 100).toFixed(1)}% of frames inside the seat shell across`
+      + ' four approach directions');
+    ok('...and the straight line it replaced does, which is why the bow is there',
+      bestLine > 0.08,
+      `the lerp spends ${(bestLine * 100).toFixed(1)}% of the move inside the`
+      + ' backrest even on its best approach — this is the defect, measured');
+    // the mechanism, not just the outcome: it goes around and over
+    let maxX = 0, minY = 9;
+    const q = [0, 0, 0];
+    for (let i = 0; i <= 64; i++) {
+      seatPath([0.34, CREW.eye, -4.35], SEAT_EYE, easeInOut(i / 64), q);
+      maxX = Math.max(maxX, Math.abs(q[0]));
+      if (q[2] > BACKREST[4] && q[2] < BACKREST[5]) minY = Math.min(minY, q[1]);
+    }
+    ok('...and it clears by going around and over, not by going faster',
+      maxX > 0.28 && (minY > BACKREST[3] || minY === 9),
+      `swings to |x| = ${maxX.toFixed(2)} m, wider than the ${BACKREST[1]} m`
+      + ' seat half-width, and crosses the backrest depth above its top edge');
+  }
+
+  {
+    // The side is signed by the approach. A fixed side is right half the time.
+    const l = seatPath([-0.34, CREW.eye, -4.35], SEAT_EYE, 0.3, [0, 0, 0]);
+    const r = seatPath([0.34, CREW.eye, -4.35], SEAT_EYE, 0.3, [0, 0, 0]);
+    ok('the bow swings out to whichever side you walked up on',
+      l[0] < 0 && r[0] > 0,
+      `left approach bows to x = ${l[0].toFixed(2)}, right to ${r[0].toFixed(2)}`
+      + ' — a fixed side reads as the camera taking a detour half the time');
+    // and a dead-on approach still picks a side rather than dividing by zero
+    const c = seatPath([0, CREW.eye, -4.35], SEAT_EYE, 0.3, [0, 0, 0]);
+    ok('...and a dead-on approach picks one rather than producing NaN',
+      Number.isFinite(c[0]) && Math.abs(c[0]) > 0.05,
+      `x = ${c[0].toFixed(3)} with no side to prefer`);
+  }
+
+  {
+    // Endpoints. A path that clears the furniture and misses the chair is worse
+    // than the bug it fixed.
+    const from = [0.34, CREW.eye, -4.35];
+    const a = seatPath(from, SEAT_EYE, 0, [0, 0, 0]);
+    const b = seatPath(from, SEAT_EYE, 1, [0, 0, 0]);
+    ok('the path starts at the eye and ends exactly in the seat',
+      Math.hypot(a[0] - from[0], a[1] - from[1], a[2] - from[2]) < 1e-12
+      && Math.hypot(b[0] - SEAT_EYE[0], b[1] - SEAT_EYE[1], b[2] - SEAT_EYE[2]) < 1e-12,
+      'both endpoints exact — a Bézier interpolates its first and last control'
+      + ' points, and this asserts the ones passed are those');
+  }
+
+  {
+    // The sit as a state machine: it completes, it cannot be re-entered, and
+    // it cannot be steered while it runs.
+    let s = crewState([0.3, 0, -4.35], 0.4);
+    s = sit(s, P_STATION);
+    ok('sitting down enters a transition that owns the camera',
+      s.mode === 'moving' && s.target === 'seated', `mode ${s.mode}`);
+    const again = sit(s, P_STATION);
+    ok('...and a held key cannot re-enter it', again.t === s.t && again === s
+      || (again.mode === s.mode && again.t === s.t),
+      'sit() is a no-op unless standing, so the transition cannot restart');
+    // look() refuses input mid-move, so there is no way to end up half-seated
+    const steered = look(s, 400, 0);
+    ok('...and the camera cannot be fought while it moves',
+      steered.yaw === s.yaw, 'look() returns the state unchanged while moving');
+
+    let frames = 0;
+    while (s.mode === 'moving' && frames < 600) { s = stepCrew(s, P_CABIN, {}, 1 / 60); frames++; }
+    ok('...and it completes, in about the time it says it will',
+      s.mode === 'seated' && Math.abs(frames / 60 - CREW.sitTime) < 0.05,
+      `${(frames / 60).toFixed(3)} s against a declared ${CREW.sitTime} s`);
+    ok('...arriving exactly at the seat eye',
+      Math.hypot(s.eye[0] - SEAT_EYE[0], s.eye[1] - SEAT_EYE[1],
+        s.eye[2] - SEAT_EYE[2]) < 1e-9,
+      `eye at [${s.eye.map((v) => v.toFixed(3)).join(', ')}]`);
+  }
+
+  {
+    /* The seated look arc, and the clause that makes it portable.
+       Clamping in world yaw works only for a seat that happens to face zero —
+       the kind of bug that survives every test written on the ship it was
+       written for. So it is tested on a seat installed at 2.4 rad. */
+    const skew = { ...P_STATION, seatYaw: 2.4 };
+    let s = crewState([0, 0, -4.35], 2.4);
+    s = sit(s, skew);
+    for (let i = 0; i < 600 && s.mode === 'moving'; i++) s = stepCrew(s, P_CABIN, {}, 1 / 60);
+    let hard = s;
+    for (let i = 0; i < 50; i++) hard = look(hard, 900, 0);   // wrench it left
+    const off = Math.abs(((hard.yaw - 2.4 + Math.PI) % (Math.PI * 2)) - Math.PI);
+    ok('a seated head cannot turn to look through its own headrest',
+      off <= CREW.seatYaw + 1e-9,
+      `${off.toFixed(3)} rad off the seat heading against a limit of`
+      + ` ${CREW.seatYaw} — and the seat is installed at 2.4 rad, so the clamp`
+      + ' is relative to the chair rather than to world zero');
+    let down = s;
+    for (let i = 0; i < 50; i++) down = look(down, 0, 900);
+    ok('...and the same for pitch', down.pitch >= CREW.seatPitchDown - 1e-9,
+      `${down.pitch.toFixed(3)} rad against ${CREW.seatPitchDown}`);
+  }
+
+  {
+    // Standing up retraces the curve, so it clears the backrest too.
+    let s = crewState([0.3, 0, -4.35]);
+    s = sit(s, P_STATION);
+    for (let i = 0; i < 600 && s.mode === 'moving'; i++) s = stepCrew(s, P_CABIN, {}, 1 / 60);
+    s = stand(s);
+    ok('standing up re-enters the transition rather than teleporting',
+      s.mode === 'moving' && s.target === 'walk', `mode ${s.mode}`);
+    let worst = 0;
+    for (let i = 0; i < 600 && s.mode === 'moving'; i++) {
+      s = stepCrew(s, P_CABIN, {}, 1 / 60);
+      const e = s.eye;
+      if (e[0] > BACKREST[0] && e[0] < BACKREST[1] && e[1] > BACKREST[2]
+        && e[1] < BACKREST[3] && e[2] > BACKREST[4] && e[2] < BACKREST[5]) worst++;
+    }
+    ok('...and gets out of the chair without going through it either',
+      s.mode === 'walk' && worst === 0,
+      `${worst} frames inside the backrest on the way out — the same curve run`
+      + ' backwards, so it cannot be right in one direction and wrong in the other');
+  }
+
+  {
+    // Collision. Not a physics engine — a corridor and some boxes — but it has
+    // to slide rather than stick, and it must never leave the hull.
+    let s = crewState([0, 0, 0]);
+    let escaped = 0;
+    for (let i = 0; i < 1800; i++) {
+      // walk hard into the port bulkhead at 40° for thirty seconds
+      s = stepCrew(s, P_CABIN, { fwd: 0.77, strafe: -0.64, run: true }, 1 / 60);
+      const hw = P_CABIN.volumes.find((v) => s.pos[2] >= v[1] && s.pos[2] <= v[2]);
+      if (hw && Math.abs(s.pos[0]) > hw[0] - CREW.radius + 1e-6) escaped++;
+    }
+    ok('walking into a bulkhead slides along it and never leaves the hull',
+      escaped === 0,
+      `${escaped} frames outside the walkable half-width over 30 s of pushing`
+      + ' into a wall at 40° — the axes resolve separately, which is what makes'
+      + ' a wall slide instead of stick');
+    ok('...and the corridor is narrower than the ends, and holds',
+      Math.abs(s.pos[0]) <= 1.30, `ended at x = ${s.pos[0].toFixed(3)}`);
+  }
+
+  {
+    // The blocker in front of the console.
+    let s = crewState([-0.8, 0, -5.0]);
+    let inside = 0;
+    for (let i = 0; i < 900; i++) {
+      s = stepCrew(s, P_CABIN, { fwd: 1 }, 1 / 60);
+      const b = P_CABIN.blockers[0];
+      if (s.pos[0] > b[0] && s.pos[0] < b[1] && s.pos[2] > b[2] && s.pos[2] < b[3]) inside++;
+    }
+    ok('the console cannot be walked into', inside === 0,
+      `${inside} frames inside the blocker over 15 s of walking at it`);
+  }
+
+  {
+    // Diagonal normalisation. Two keys must not be 1.41× one key.
+    const start = crewState().pos;
+    let a = crewState(), b = crewState();
+    for (let i = 0; i < 300; i++) {
+      a = stepCrew(a, null, { fwd: 1 }, 1 / 60);
+      b = stepCrew(b, null, { fwd: 1, strafe: 1 }, 1 / 60);
+    }
+    const moved = (s) => Math.hypot(s.pos[0] - start[0], s.pos[2] - start[2]);
+    near('holding two keys is not 1.41× walking speed', moved(b), moved(a), 0.01);
+  }
+
+  {
+    // Station reach: near enough, and faced.
+    const st = [{ id: 'helm', pos: [0, 0, -4.9], radius: 0.62 },
+      { id: 'nav', pos: [0, 0, 2.0], radius: 0.62 }];
+    const near_ = crewState([0, 0, -4.4], 0);          // facing −z, toward helm
+    ok('a station you are standing at and facing is in reach',
+      stationInReach(near_, st)?.id === 'helm', 'helm found');
+    const away = crewState([0, 0, -4.4], Math.PI);     // same spot, turned round
+    ok('...and is not, with your back to it',
+      stationInReach(away, st) === null,
+      'turning away drops the prompt — distance alone would keep it lit');
+    const far = crewState([0, 0, -1.0], 0);
+    ok('...and neither is one across the cabin',
+      stationInReach(far, st) === null, 'out of radius + reach');
+    // seated, nothing is in reach, so a second press cannot re-trigger a sit
+    let seated = sit(crewState([0, 0, -4.4]), P_STATION);
+    ok('...and nothing is in reach while seated or moving',
+      stationInReach(seated, st) === null, `mode ${seated.mode}`);
+  }
+
+  {
+    /* §M4's single gait clock. One phase drives the bob and anything that has
+       to land on the same foot; two clocks drift apart over exactly the length
+       of time nobody watches for. Advanced by distance, so slowing down
+       lengthens the stride rather than speeding up the legs. */
+    const from0 = crewState().pos;
+    let slow = crewState(), fast = crewState();
+    for (let i = 0; i < 600; i++) {
+      slow = stepCrew(slow, null, { fwd: 0.5 }, 1 / 60);
+      fast = stepCrew(fast, null, { fwd: 1 }, 1 / 60);
+    }
+    const dSlow = Math.hypot(slow.pos[0] - from0[0], slow.pos[2] - from0[2]);
+    const dFast = Math.hypot(fast.pos[0] - from0[0], fast.pos[2] - from0[2]);
+    near('the gait clock advances with distance, not with time',
+      gait(slow) / dSlow, gait(fast) / dFast, 0.02);
+    ok('...and standing still does not advance it at all',
+      gait(stepCrew(crewState(), null, {}, 1 / 60)) === 0,
+      'a stationary crew member does not take steps');
+  }
+
+  {
+    // §9.8. Reduced motion halves the bob and shortens the move — and never
+    // disables either, because stillness would be a lie about a vehicle.
+    let full = crewState(), red = crewState();
+    for (let i = 0; i < 240; i++) {
+      full = stepCrew(full, null, { fwd: 1 }, 1 / 60, 1);
+      red = stepCrew(red, null, { fwd: 1 }, 1 / 60, 0.35);
+    }
+    const bobFull = Math.abs(full.eye[1] - CREW.eye);
+    const bobRed = Math.abs(red.eye[1] - CREW.eye);
+    ok('§9.8 · reduced motion damps the head bob without stopping it',
+      bobRed < bobFull && bobRed > 0,
+      `${(bobRed * 1000).toFixed(1)} mm against ${(bobFull * 1000).toFixed(1)} mm`
+      + ' — halved, not switched off');
+    // ...and the sit is quicker but still a move
+    let q = sit(crewState([0.3, 0, -4.35]), P_STATION);
+    let n = 0;
+    while (q.mode === 'moving' && n < 600) { q = stepCrew(q, P_CABIN, {}, 1 / 60, 0.35); n++; }
+    ok('...and the sit shortens rather than snapping',
+      q.mode === 'seated' && n > 6 && n / 60 < CREW.sitTime,
+      `${(n / 60).toFixed(3)} s against ${CREW.sitTime} s at full motion`);
+  }
+
+  {
+    // §2.3, and the frame-rate independence that makes a capture reproducible.
+    const runAt = (dt, steps) => {
+      let s = crewState([0.2, 0, -4.35], 0.3);
+      for (let i = 0; i < steps; i++) s = stepCrew(s, P_CABIN, { fwd: 1, strafe: 0.4 }, dt);
+      return s;
+    };
+    const a = runAt(1 / 60, 120), b = runAt(1 / 60, 120);
+    ok('§2.3 · the same walk twice is bit-identical',
+      a.pos[0] === b.pos[0] && a.pos[2] === b.pos[2] && a.bob === b.bob,
+      `x ${a.pos[0]} · z ${a.pos[2]} — no clock and no Math.random in the path`);
+    const c = runAt(1 / 240, 480);
+    ok('...and a quarter timestep lands within a centimetre of the same place',
+      Math.hypot(a.pos[0] - c.pos[0], a.pos[2] - c.pos[2]) < 0.01,
+      `${(Math.hypot(a.pos[0] - c.pos[0], a.pos[2] - c.pos[2]) * 1000).toFixed(1)} mm`
+      + ' apart over two seconds — the velocity smoothing is a rate, so the'
+      + ' walk does not depend on the frame rate it was flown at');
+  }
+
+  {
+    // A silly timestep must not throw the crew through the hull.
+    let s = crewState([0, 0, 0]);
+    s = stepCrew(s, P_CABIN, { fwd: 1, run: true }, 8);
+    ok('a stalled frame does not teleport anybody through a bulkhead',
+      Number.isFinite(s.pos[0]) && Number.isFinite(s.pos[2])
+      && s.pos[2] >= P_CABIN.volumes[0][1],
+      `dt clamped to 0.25 s · z = ${s.pos[2].toFixed(2)}`);
+    ok('...and a zero or negative one changes nothing',
+      stepCrew(s, P_CABIN, { fwd: 1 }, 0).pos[2] === s.pos[2]
+      && stepCrew(s, P_CABIN, { fwd: 1 }, -1).pos[2] === s.pos[2],
+      'a paused tab and a clock that went backwards are the same thing here');
+  }
+
+  {
+    // The transition fraction, for anything that wants to react to the sit.
+    let s = sit(crewState([0.3, 0, -4.35]), P_STATION);
+    let last = -1, monotone = true;
+    while (s.mode === 'moving') {
+      s = stepCrew(s, P_CABIN, {}, 1 / 120);
+      const f = transitionFraction(s);
+      if (s.mode === 'moving' && f < last - 1e-9) monotone = false;
+      last = f;
+    }
+    ok('the sit reports a monotone 0→1 fraction, and 0 when nothing is happening',
+      monotone && transitionFraction(s) === 0 && transitionFraction(crewState()) === 0,
+      'so audio, the HUD and the cabin lights can all ride one number');
+  }
+}
+
+
+/* ===========================================================================
+   deck — the plan `cabin.js` draws and `pilot.js` walks
+
+   The point of this suite is not that the numbers are pretty. It is that there
+   is exactly **one** set of them: the collision, the bulkheads and the
+   furniture all read the same object, so a wall cannot end up drawn somewhere
+   the crew can walk through. That is only checkable because the spec is pure —
+   `cabin.js` imports three and node cannot load it.
+   ========================================================================= */
+const D_CRAFT = {
+  Earth: craftFor({ massE: 1, radiusE: 1, atmo: 1 }),
+  Luna: craftFor({ massE: 0.0123, radiusE: 0.273, atmo: 0 }),
+  Venus: craftFor({ massE: 0.815, radiusE: 0.949, atmo: 92 }),
+  Big: craftFor({ massE: 2.4, radiusE: 1.3, atmo: 1.6 }),
+};
+
+function suiteDeck() {
+  console.log('\ndeck — one plan, read by the collision and by the bulkhead');
+
+  const specs = {};
+  for (const [n, c] of Object.entries(D_CRAFT)) specs[n] = cabinFor(c, 42);
+
+  {
+    // The layout the header diagram draws, on every world rather than on the
+    // one it was written for. This inverted on small vehicles when each section
+    // carried its own minimum width, and the shell tapered the wrong way.
+    let ordered = true, walkable = true, narrowest = 9;
+    for (const s of Object.values(specs)) {
+      const [ck, co, hb] = s.sections.map((x) => x.half);
+      if (!(hb > ck && ck > co)) ordered = false;
+      if (co - CREW.radius < 0.15) walkable = false;
+      narrowest = Math.min(narrowest, co - CREW.radius);
+    }
+    ok('habitat wider than cockpit wider than corridor, on every vehicle',
+      ordered, Object.entries(specs).map(([n, s]) =>
+        `${n} ${s.sections.map((x) => x.half.toFixed(2)).join('/')}`).join(' · '));
+    ok('...and the corridor is always wide enough to walk down',
+      walkable,
+      `narrowest shoulder clearance ${narrowest.toFixed(2)} m — the floor goes`
+      + ' on the base width so the proportions survive it, rather than on each'
+      + ' section, which is what let a cockpit minimum exceed a habitat');
+  }
+
+  {
+    // The contract `pilot.js` reads. Adjacency matters: a gap between two
+    // volumes is a place the crew falls out of the ship.
+    for (const [n, s] of Object.entries(specs)) {
+      let contiguous = true, matches = true;
+      for (let i = 0; i < s.volumes.length; i++) {
+        const v = s.volumes[i], sec = s.sections[i];
+        if (v[0] !== sec.half || v[1] !== sec.z0 || v[2] !== sec.z1) matches = false;
+        if (i > 0 && Math.abs(v[1] - s.volumes[i - 1][2]) > 1e-12) contiguous = false;
+      }
+      ok(`${n}: the walkable volumes are the drawn sections, and they touch`,
+        matches && contiguous,
+        `${s.volumes.length} volumes from ${s.zNose.toFixed(2)} to`
+        + ` ${s.zTail.toFixed(2)} m with no gap — one array, so the collision`
+        + ' and the geometry cannot disagree about where a bulkhead is');
+    }
+  }
+
+  {
+    // Every blocker has to be inside the hull. A blocker sticking out of the
+    // ship is furniture nobody can reach, and reads as an invisible wall.
+    for (const [n, s] of Object.entries(specs)) {
+      let outside = 0;
+      for (const b of s.blockers) {
+        for (const [x, z] of [[b[0], b[2]], [b[1], b[3]], [b[0], b[3]], [b[1], b[2]]]) {
+          const v = s.volumes.find((q) => z >= q[1] - 1e-9 && z <= q[2] + 1e-9);
+          if (!v || Math.abs(x) > v[0] + 1e-9) outside++;
+        }
+      }
+      ok(`${n}: no blocker sticks out through the hull`, outside === 0,
+        `${s.blockers.length} blockers, ${outside} corners outside the section`
+        + ' they sit in');
+    }
+  }
+
+  {
+    /* The join to `pilot.js`. The backrest the bowed seat path exists to miss
+       is declared *here*, because the geometry owns where the furniture is —
+       and the path has to clear the one the ship actually has, not the one the
+       pilot suite made up. This is the check that would catch somebody moving
+       a seat 20 cm and quietly reinstating the bug. */
+    for (const [n, s] of Object.entries(specs)) {
+      const st = s.stations.find((q) => q.id === 'helm');
+      const stood = [0.3, CREW.eye, st.pos[2] + 0.25];
+      const bowed = pathHits(stood, st.seatEye, s.seat.backrest, seatPath);
+      const line = pathHits(stood, st.seatEye, s.seat.backrest, straightPath);
+      ok(`${n}: the seat path clears this ship's actual backrest`,
+        bowed === 0 && line > 0,
+        `bowed ${(bowed * 100).toFixed(1)}% · straight`
+        + ` ${(line * 100).toFixed(1)}% — the straight line still fails, so the`
+        + ' comparison is to the defect rather than to a number somebody picked');
+    }
+  }
+
+  {
+    /* ------------------------------------------------------------------ the
+       check that was missing, and the bug it would have caught.
+
+       Every blocker was tested for sticking out through the hull, and none did.
+       What nothing tested was the space left *behind* one: the nav table was
+       0.46 m of half-width in a 1.04 m hull, leaving 0.58 m for a crew member
+       0.60 m across. The habitat was sealed off from the cockpit and the ship
+       could not be flown from inside itself — with 1058 green checks.
+
+       No pure test of either number would have found it, because each is fine
+       on its own; the defect is the relationship. So this walks the crew from
+       the aft end to the helm with `pilot.js`'s real collision and asserts it
+       arrives, which is the property that was actually wanted all along. */
+    for (const [n, s] of Object.entries(specs)) {
+      const hab = s.sections[2];
+      const helm = s.stations.find((q) => q.id === 'helm');
+      let crew = crewState(s.spawn, 0);
+      const tbl = s.blockers[1] ?? [0, 0, hab.z1 + 9, hab.z1 + 9];
+      let reached = false;
+      for (let i = 0; i < 4000 && !reached; i++) {
+        /* Proportional steering toward the centre line, swinging out only
+           while abreast of the table and only to the side already favoured.
+           The first version went wide and never came back, which walked the
+           crew into the corridor mouth from outside it and failed a cabin that
+           was fine — a test steering badly is not a geometry defect, and
+           telling the two apart is the whole reason this walks rather than
+           doing arithmetic. */
+        const near = crew.pos[2] > tbl[2] - 0.42 && crew.pos[2] < tbl[3] + 0.42;
+        // steer to the side the table is *not* on
+        const side = -(s.tableSide ?? 1);
+        // ...and never aim at a point outside the section you are standing in.
+        // The avoidance band used to reach 0.75 m past the table, which on a
+        // short habitat overlaps the corridor mouth: the crew was held hard
+        // right against a 0.58 m corridor and stalled at the threshold with
+        // the geometry perfectly fine.
+        const sec = s.volumes.find((q) => crew.pos[2] >= q[1] && crew.pos[2] <= q[2])
+          ?? s.volumes[0];
+        const lim = Math.max(sec[0] - CREW.radius - 0.04, 0);
+        const wantX = Math.max(-lim, Math.min(lim,
+          near ? side * (Math.abs(side > 0 ? tbl[0] : tbl[1]) + CREW.radius + 0.08) : 0));
+        crew = stepCrew(crew, s, {
+          fwd: 1,
+          strafe: Math.max(-1, Math.min(1, (wantX - crew.pos[0]) * 3)),
+        }, 1 / 60);
+        if (stationInReach(crew, s.stations)?.id === 'helm') reached = true;
+      }
+      ok(`${n}: the crew can actually walk from the habitat to the helm`,
+        reached,
+        `ended at [${crew.pos[0].toFixed(2)}, ${crew.pos[2].toFixed(2)}]`
+        + ' — walked with the real collision rather than reasoned about, which'
+        + ' is the only thing that would have caught either sealing bug');
+    }
+    // ...and the arithmetic behind it, stated directly
+    for (const [n, s] of Object.entries(specs)) {
+      if (!s.blockers[1]) {
+        ok(`${n}: too short for a nav table, and does without one`, true,
+          'an empty corner is a better answer than a sealed room');
+        continue;
+      }
+      const b = s.blockers[1];
+      // the walkway is whatever the table does not take out of the beam
+      const walk = s.tableSide < 0 ? s.sections[2].half - b[1]
+        : b[0] + s.sections[2].half;
+      ok(`${n}: the walkway past the nav table fits a person`,
+        walk > CREW.radius * 2 + 0.1,
+        `${walk.toFixed(2)} m of clear beam against a ${(CREW.radius * 2).toFixed(2)} m`
+        + ' shoulder width — the table stands against a bulkhead, so this is'
+        + ' most of the ship rather than a two-centimetre window beside it');
+    }
+    // ...and nobody spawns inside the furniture, which is how Luna sealed itself
+    for (const [n, s] of Object.entries(specs)) {
+      const inside = s.blockers.some((b) => s.spawn[0] > b[0] - CREW.radius
+        && s.spawn[0] < b[1] + CREW.radius && s.spawn[2] > b[2] - CREW.radius
+        && s.spawn[2] < b[3] + CREW.radius);
+      const v = s.volumes.find((q) => s.spawn[2] >= q[1] && s.spawn[2] <= q[2]);
+      ok(`${n}: the spawn point is on clear deck`,
+        !inside && !!v && Math.abs(s.spawn[0]) < v[0] - CREW.radius,
+        `[${s.spawn[0].toFixed(2)}, ${s.spawn[2].toFixed(2)}] — the spec owns`
+        + ' where you stand, so it cannot be somewhere the furniture is');
+    }
+  }
+
+  {
+    // Stations must be standable — inside the hull and not inside a blocker,
+    // or the prompt appears somewhere you cannot get to.
+    for (const [n, s] of Object.entries(specs)) {
+      let bad = 0;
+      for (const st of s.stations) {
+        const v = s.volumes.find((q) => st.pos[2] >= q[1] && st.pos[2] <= q[2]);
+        if (!v || Math.abs(st.pos[0]) > v[0] - CREW.radius) bad++;
+        for (const b of s.blockers) {
+          if (st.pos[0] > b[0] && st.pos[0] < b[1]
+            && st.pos[2] > b[2] && st.pos[2] < b[3]) bad++;
+        }
+      }
+      ok(`${n}: you can stand where every station says you can`, bad === 0,
+        `${s.stations.length} stations, ${bad} unreachable`);
+    }
+  }
+
+  {
+    // ...and having stood there, the station is actually in reach — which is
+    // `pilot.js`'s test, run against `deck.js`'s numbers.
+    const s = specs.Earth;
+    const helm = s.stations.find((q) => q.id === 'helm');
+    const crew = crewState([helm.pos[0], 0, helm.pos[2] + 0.35], 0);
+    ok('standing at the helm, the helm is what is in reach',
+      stationInReach(crew, s.stations)?.id === 'helm',
+      'the reach radius and the station spacing agree, so the two consoles do'
+      + ' not fight over the prompt');
+  }
+
+  {
+    // The cabin follows the vehicle rather than a hash.
+    const small = cabinFor(D_CRAFT.Luna, 42), big = cabinFor(D_CRAFT.Big, 42);
+    ok('a bigger vehicle gets a bigger cabin',
+      big.length > small.length && big.sections[2].half > small.sections[2].half,
+      `${small.length.toFixed(2)} m → ${big.length.toFixed(2)} m —`
+      + ' derived from craftFor(), not rolled, for the reason craft.js gives'
+      + ' about the craft itself');
+    // ...and the seed moves the dressing and nothing structural
+    const a = cabinFor(D_CRAFT.Earth, 1), b = cabinFor(D_CRAFT.Earth, 2);
+    ok('...and the seed moves the dressing without moving a bulkhead',
+      a.length === b.length && a.zNose === b.zNose
+      && a.volumes.every((v, i) => v.every((x, j) => x === b.volumes[i][j])),
+      'same ship, different lockers — so two worlds that happen to demand the'
+      + ' same Δv are not the same room inside');
+  }
+
+  {
+    // §2.3.
+    const a = cabinFor(D_CRAFT.Earth, 7), b = cabinFor(D_CRAFT.Earth, 7);
+    ok('§2.3 · the same craft and seed give a bit-identical cabin',
+      JSON.stringify(a) === JSON.stringify(b),
+      'entropy from rng.js only, and none of it reaches a dimension');
+  }
+
+  {
+    // Degenerate input must not produce a room with negative walls.
+    const junk = cabinFor({}, 0);
+    const nan = cabinFor({ height: NaN, diameter: Infinity }, 0);
+    ok('a missing or poisoned craft still yields a standable cabin',
+      junk.length > 0 && junk.sections.every((x) => x.half > CREW.radius)
+      && nan.length > 0 && nan.sections.every((x) => Number.isFinite(x.half)
+        && x.half > CREW.radius),
+      `{} → ${junk.length.toFixed(2)} m · NaN/Infinity →`
+      + ` ${nan.length.toFixed(2)} m — clamped rather than trusted, because a`
+      + ' cabin is the one room you cannot be allowed to fall out of');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// suite: register
+//
+// `docs/plans/SAKURA.md`. The axis between AEON's two vendored art references,
+// and the one property that makes it reviewable: **at R = 1 it must be the
+// print that shipped before it existed.**
+//
+// That check is the whole suite's reason to exist. Everything else here — the
+// law's anchors, the shoulder's root, the monotonicity — is arithmetic that
+// could be read off the file. "The reference case did not move" cannot be read
+// off anything; it has to be computed against the expression it replaced, which
+// is what `gradeRegRef` below is a transcription of.
+
+/**
+ * §9.4 steps 1–4 with the register in, mirroring `print.js`'s `grade()` as
+ * patched. The *other* mirror, `gradeRef`, is deliberately left alone: it is
+ * the pre-register expression, and holding the two against each other at R = 1
+ * is the measurement. Two copies of a grade is normally the fault §2.7 names —
+ * here it is the instrument, and it stops being one the moment they are made to
+ * share code.
+ */
+function gradeRegRef(c0, paint, r, satAmt = SAT_AMOUNT) {
+  const k = registerMix(r);
+  const cl = (x, a, b) => (x < a ? a : x > b ? b : x);
+  const ss = (e0, e1, x) => { const t = cl((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+  const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const mx = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+
+  const tmPrint = (x) => {
+    x = Math.max(x, 0);
+    const a = x * (x * 0.36 + 0.42);
+    const b = x * (x * (0.34 + SHOULDER_D2 * k.shoulder) + 0.66) + 0.11;
+    return cl(a / b, 0, 1);
+  };
+  const tm = (x) => {
+    const v = tonemapVacuum(x), p = tmPrint(x);
+    return v + (p - v) * paint;
+  };
+
+  let c = c0.map((v) => tm(Math.max(v, 0)));
+  let l = lum(c);
+  const shadowPush = mx([0.90, 0.95, 1.16], [1, 1, 1], ss(0, 0.34, l));
+  const highPush = mx([1, 1, 1], [1.055, 1.012, 0.925], ss(0.44, 0.98, l));
+  c = c.map((v, i) => v * mx([1, 1, 1], shadowPush, k.shadowPush * paint)[i]);
+  c = c.map((v, i) => v * mx([1, 1, 1], highPush, k.highPush * paint)[i]);
+  const lift = [0.017 * paint, 0.021 * paint, 0.036 * paint];
+  c = c.map((v, i) => v * (1 - lift[i]) + lift[i]);
+  c = mx(c, c.map((v) => v * v * (3 - 2 * v)), k.sBend * paint);
+  l = lum(c);
+  const e = satAmt * k.satX * paint * ss(0.10, 0.42, l) * (1 - ss(0.62, 0.96, l));
+  const d = c.map((v) => v - l);
+  let lim = 1e9;
+  for (const v of d) {
+    if (v > 1e-6) lim = Math.min(lim, (1 - l) / v);
+    else if (v < -1e-6) lim = Math.min(lim, -l / v);
+  }
+  const h = Math.max(lim - 1, 0);
+  const sc = 1 + (e * h) / Math.max(e + h, 1e-6);
+  return d.map((v) => l + sc * v);
+}
+
+function suiteRegister() {
+  console.log('\nregister — the axis between the two references, and that R=1 does not move');
+
+  // --- the table ----------------------------------------------------------
+  ok('§5 · both rows carry every knob, in one order a caller cannot mis-pack',
+    KNOBS.length === Object.keys(PAINTED).length
+    && KNOBS.length === Object.keys(PHOTOGRAPHIC).length
+    && KNOBS.every((k) => Number.isFinite(PAINTED[k]) && Number.isFinite(PHOTOGRAPHIC[k])),
+    `${KNOBS.length} knobs, both rows complete`);
+
+  ok('and the endpoints are the endpoints — no interpolation at 0 or 1',
+    KNOBS.every((k) => registerMix(1)[k] === PAINTED[k] && registerMix(0)[k] === PHOTOGRAPHIC[k]));
+
+  ok('§2.4 · out of range clamps rather than extrapolating',
+    KNOBS.every((k) => registerMix(4)[k] === PAINTED[k] && registerMix(-2)[k] === PHOTOGRAPHIC[k])
+    && KNOBS.every((k) => registerMix(NaN)[k] === PAINTED[k]),
+    'there is no such thing as more painted than paper, and NaN prints the fixture');
+
+  // --- THE check ----------------------------------------------------------
+  //
+  // A 4096-colour sweep of the whole gamut the print can be handed, at five
+  // points across §2.8's cross-fade. If any of these moves, a capture of the
+  // painted end taken before this axis existed has stopped being comparable
+  // with one taken after, and every A/B in the repo is void.
+  {
+    let worst = 0, n = 0, at = null;
+    for (const paint of [0, 0.25, 0.5, 0.75, 1]) {
+      for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) for (let k = 0; k < 16; k++) {
+        const c = [(i / 15) * 1.4, (j / 15) * 1.4, (k / 15) * 1.4];
+        const a = gradeRef(c, paint), b = gradeRegRef(c, paint, 1);
+        for (let ch = 0; ch < 3; ch++) {
+          const d = Math.abs(a[ch] - b[ch]);
+          if (d > worst) { worst = d; at = [c, paint]; }
+          n++;
+        }
+      }
+    }
+    ok('§7.4 · at R=1 the print is the print that shipped, over the whole gamut',
+      worst < 1e-12,
+      `${n} channels over 4096 colours × 5 uPaint · worst |Δ| ${worst.toExponential(2)}`
+      + (worst >= 1e-12 ? ` at ${JSON.stringify(at)}` : ''));
+  }
+
+  // --- the shoulder, which is the one knob that needed a derivation --------
+  //
+  // The claim in `register.js` is specific and falsifiable: as written the
+  // curve *clips* at x = 12.44, and at full photographic the positive root is
+  // gone entirely. Solve it here rather than trusting the comment.
+  {
+    // a/b = 1  ->  (0.36 - d2)x^2 + (0.42 - 0.66)x - 0.11 = 0
+    const clipAt = (d2) => {
+      const A = 0.36 - d2, B = -0.24, C = -0.11;
+      const disc = B * B - 4 * A * C;
+      if (disc < 0) return Infinity;
+      const roots = [(-B + Math.sqrt(disc)) / (2 * A), (-B - Math.sqrt(disc)) / (2 * A)]
+        .filter((x) => x > 0 && Number.isFinite(x));
+      return roots.length ? Math.min(...roots) : Infinity;
+    };
+    const painted = clipAt(0.34);
+    const photo = clipAt(0.34 + SHOULDER_D2);
+    ok('§9.4 · the print curve as written reaches white, and that is the defect',
+      Math.abs(painted - 12.44) < 0.02, `clips at x = ${painted.toFixed(3)}`);
+    ok('and at full photographic nothing clips at all — a shoulder, not ACES',
+      photo === Infinity,
+      `asymptote ${(0.36 / (0.34 + SHOULDER_D2)).toFixed(4)}`
+      + ` = ${Math.round((0.36 / (0.34 + SHOULDER_D2)) * 255)}/255, below white`);
+
+    // and it has to still be a tonemap: monotone, and 0 -> 0
+    const tm = (x, d2) => (x * (x * 0.36 + 0.42)) / (x * (x * d2 + 0.66) + 0.11);
+    let mono = true;
+    for (let i = 1; i <= 4000; i++) {
+      const x0 = (i - 1) * 0.01, x1 = i * 0.01;
+      if (tm(x1, 0.34 + SHOULDER_D2) < tm(x0, 0.34 + SHOULDER_D2) - 1e-12) mono = false;
+    }
+    ok('and it is still monotone over 40 stops, so no highlight inverts',
+      mono && tm(0, 0.34 + SHOULDER_D2) === 0);
+  }
+
+  // --- the law ------------------------------------------------------------
+  //
+  // The anchors are the WMO's, and the point of checking them is that the two
+  // references land on the two ends *without* either number having been moved
+  // to make it happen.
+  ok("§2 · hoshi-no-tani's own air prints painted",
+    Math.abs(registerFor(REFERENCE_VISIBILITY) - 1) < 1e-9,
+    `V = ${REFERENCE_VISIBILITY} m (WMO mist) · R = ${registerFor(REFERENCE_VISIBILITY).toFixed(4)}`);
+  ok("and sakura-realm's prints photographic",
+    registerFor(VISIBILITY.clear) === 0,
+    `V = ${VISIBILITY.clear} m (WMO clear) · R = ${registerFor(VISIBILITY.clear).toFixed(4)}`);
+
+  {
+    // The row the ask turns on. `visibilityFor()` on a temperate Earth-like
+    // world, run through the law — no constant in either function was chosen
+    // with the other in mind.
+    const V = visibilityFor({ Teq: 255, massE: 1, radiusE: 1, typeId: 1 }, 1);
+    const R = registerFor(V);
+    ok('§1 · a temperate world prints mostly photographic, and nothing was tuned for it',
+      R > 0.15 && R < 0.40,
+      `visibilityFor -> ${Math.round(V)} m · R = ${R.toFixed(4)} (${registerName(R)})`);
+  }
+
+  ok('monotone in the air: thicker air never prints less painted',
+    (() => {
+      let prev = -1;
+      for (let v = 40000; v >= 300; v -= 100) {
+        const r = registerFor(v);
+        if (r < prev - 1e-12) return false;
+        prev = r;
+      }
+      return true;
+    })());
+
+  ok("and the resonance's mood divides the air rather than the register",
+    registerFor(6000, 2) > registerFor(6000, 1)
+    && registerFor(6000, 0.5) < registerFor(6000, 1)
+    && Math.abs(registerFor(6000, 2) - registerFor(3000, 1)) < 1e-12,
+    'hazeX 2 at 6 km is exactly 3 km of air, which is what a haze multiplier means');
+
+  ok('§2.3 · no entropy, no clock: the same air prints the same register',
+    registerFor(6000) === registerFor(6000) && registerMix(0.37).wash === registerMix(0.37).wash);
+
+  // --- the names ----------------------------------------------------------
+  ok('§8 axis 7 · the register has a word, so the HUD can orient without a number',
+    registerName(1) === 'painted' && registerName(0) === 'photographic'
+    && registerName(registerFor(6000)) === 'clear');
+
+  // --- the shader carries the knobs it says it does ------------------------
+  //
+  // §M0: what matters is the string as `gl.shaderSource` receives it, and the
+  // failure mode this catches is specific — a knob wired into `register.js` and
+  // into `setRegister()` but never actually read by the fragment shader renders
+  // a perfectly good frame that silently ignores one axis of the table.
+  {
+    const src = readFileSync(new URL('../src/print.js', import.meta.url), 'utf8');
+    const frag = src.slice(src.indexOf('fragmentShader:'));
+    const wired = [
+      ['shoulder', 'uShoulder'], ['shadowPush', 'uPush.x'], ['highPush', 'uPush.y'],
+      ['sBend', 'uSBend'], ['satX', 'uSatX'],
+      ['wash', 'uWash.x'], ['bleedBase', 'uWash.y'], ['bleedGain', 'uWash.z'],
+      ['tooth', 'uTooth.x'], ['fibre', 'uTooth.y'],
+      ['vignette', 'uVig.x'], ['vigWarm', 'uVig.y'],
+      ['bloomX', 'uBloomReg.x'], ['halation', 'uBloomReg.y'],
+    ];
+    const missing = wired.filter(([, u]) => !frag.includes(u)).map(([k]) => k);
+    ok('§M0 · every knob in the table is read by the shader as assembled',
+      missing.length === 0 && wired.length === KNOBS.length,
+      `${wired.length} knobs, ${wired.length - missing.length} present`
+      + (missing.length ? ` · missing ${missing.join(', ')}` : ''));
+
+    ok('and each is packed exactly once, by the one function allowed to',
+      (src.match(/uniforms\.uShoulder\.value =/g) ?? []).length === 1
+      && /export function setRegister\(/.test(src));
+
+    // §2.8 must hold in the shader rather than in a policy. Every knob's
+    // effect has to vanish at uPaint = 0, or a vacuum frame is invariant to the
+    // register only by the agreement of whoever last wrote `registerForScale`.
+    // The bloom gain was the one that was not, and it would have brightened the
+    // deep field 55% with nothing anywhere saying it could not.
+    {
+      const stmts = frag.split(';');
+      const ungated = [];
+      for (const u of ['uShoulder', 'uPush.x', 'uPush.y', 'uSBend', 'uSatX',
+        'uWash.x', 'uWash.y', 'uWash.z', 'uTooth.x', 'uTooth.y',
+        'uVig.x', 'uVig.y', 'uBloomReg.x', 'uBloomReg.y']) {
+        // the statement that *consumes* the knob, ignoring the declaration
+        const use = stmts.filter((t) => t.includes(u) && !/^\s*uniform\b/.test(t.trim()));
+        // gated directly, or feeding a local that is itself gated
+        const gated = use.some((t) => /\bu?[Pp]aint\b/.test(t))
+          || use.some((t) => /vigCol|float wet\b/.test(t));
+        if (!gated && use.length) ungated.push(u);
+      }
+      ok('§2.8 · every knob vanishes at uPaint = 0, in the shader and not in a policy',
+        ungated.length === 0,
+        ungated.length ? `ungated: ${ungated.join(', ')}`
+          : '14 knobs, all gated — a vacuum frame is invariant to the register by construction');
+    }
+
+    ok('§9.4 · the literals the knobs replaced are gone from the shader',
+      !/0\.42 \* fog/.test(frag) && !/0\.16 \* paint/.test(frag)
+      && !/0\.09 \+ 0\.17 \* wet/.test(frag) && !/0\.85 \* paint/.test(frag),
+      'a knob beside the literal it was supposed to replace is a knob that does nothing');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// suite: exposure
+//
+// `src/exposure.js`. `print.js` has carried a `uExposure` uniform since it was
+// written and nothing has ever driven it, so this suite is checking a system
+// that starts from "1, everywhere, forever."
+//
+// The properties that matter are three: the fixture is exactly 1 (or every
+// capture ever taken becomes incomparable), the 24-hour range is the order the
+// reference measured (or the compensation is wrong again), and the adaptation
+// is asymmetric and slew-bounded (or it is a cut, which §2.5 forbids).
+
+function suiteExposure() {
+  console.log('\nexposure — a photometric aperture, and what it must not move');
+
+  ok('§9.6 · the fixture returns exactly 1, by construction and not by fitting',
+    Math.abs(apertureFor(APERTURE_FIXTURE) - 1) < 1e-12,
+    `${apertureFor(APERTURE_FIXTURE).toFixed(12)} · a G2 star, 1 AU, 45°, albedo 0.18`);
+
+  ok('and both terms are separately zero there, so neither can hide the other',
+    Math.abs(apertureFor({ ...APERTURE_FIXTURE, lum: 1, au: 1 }) - 1) < 1e-12
+    && Math.abs(Math.log2(1 / 1 ** 2)) < 1e-12);
+
+  // --- the range, against the reference's own measured curve ---------------
+  {
+    const noon = apertureFor({ elevDeg: 90 });
+    const night = apertureFor({ elevDeg: -18 });
+    const stops = Math.log2(night / noon);
+    // sakura-realm's eighteen keys run 0.80 at solar noon to 2.75 at midnight.
+    const refStops = Math.log2(2.75 / 0.80);
+    ok("§4 · the 24-hour range is the order the reference's hand-authored curve is",
+      Math.abs(stops - refStops) < 0.25,
+      `${stops.toFixed(2)} stops from irradiance vs ${refStops.toFixed(2)} from its 18 keys`);
+
+    ok('and it never reaches its clamp during an ordinary day',
+      noon > EXPOSURE_MIN * 1.5 && night < EXPOSURE_MAX * 0.95,
+      `noon ${noon.toFixed(3)} · night ${night.toFixed(3)} · clamp [${EXPOSURE_MIN}, ${EXPOSURE_MAX}]`);
+  }
+
+  ok('monotone in the sun: the aperture never closes as the light goes away',
+    (() => {
+      let prev = -1;
+      for (let h = -25; h <= 90; h += 0.5) {
+        const e = apertureFor({ elevDeg: h });
+        if (e > prev + 1e-12 && prev >= 0) return false;
+        prev = e;
+      }
+      return true;
+    })());
+
+  // --- the twist, and it has to be measurable to be worth claiming ---------
+  {
+    const bright = apertureFor({ lum: 3, au: 0.4, elevDeg: 13.5 });
+    const home = apertureFor({ lum: 1, au: 1, elevDeg: 13.5 });
+    const far = apertureFor({ lum: 1, au: 2.2, elevDeg: 13.5 });
+    ok('§4 · the orbit is legible in the aperture — this is the part no keyframe can do',
+      bright < home * 0.5 && far > home * 1.5,
+      `18.8x irradiance stops down to ${bright.toFixed(3)}, 0.21x opens to ${far.toFixed(3)},`
+      + ` against ${home.toFixed(3)} at 1 AU`);
+
+    ok('and it is the inverse square doing it, not a curve',
+      Math.abs(apertureFor({ lum: 4, au: 2, elevDeg: 13.5 }) - home) < 1e-12,
+      'L/au^2 = 1 by two different routes gives one aperture');
+  }
+
+  ok('§5 · K_ORBITAL exceeds K_DIURNAL, because the renderer varies one and not the other',
+    K_ORBITAL > K_DIURNAL && K_DIURNAL > 0 && K_ORBITAL < 1,
+    `diurnal ${K_DIURNAL} (the renderer already dims its own key light),`
+    + ` orbital ${K_ORBITAL} (it carries no L/au^2 at all)`);
+
+  // --- the light itself ----------------------------------------------------
+  ok('§2 · the night has a floor, so no world sends log2 to negative infinity',
+    sceneLuminance({ elevDeg: -60 }) > 0 && Number.isFinite(apertureFor({ elevDeg: -60 })),
+    `midnight luminance ${sceneLuminance({ elevDeg: -60 }).toExponential(2)} W/m^2/sr`);
+
+  ok('and twilight is a real decade, not a softened edge',
+    sceneLuminance({ elevDeg: 0 }) / sceneLuminance({ elevDeg: -6 }) > 30,
+    `sunset is ${(sceneLuminance({ elevDeg: 0 }) / sceneLuminance({ elevDeg: -6 })).toFixed(0)}x`
+    + ' the end of civil twilight');
+
+  ok('§8 axis 8 · a NaN world does not become a NaN frame',
+    Number.isFinite(apertureFor({ lum: NaN, au: 0, elevDeg: NaN, albedo: -3 })));
+
+  // --- the eye -------------------------------------------------------------
+  {
+    const a = new Adaptation();
+    ok('§2.5 · the first frame of a place is exposed for that place',
+      Math.abs(a.prime(2.4) - 2.4) < 1e-12 && a.primed);
+
+    // Asymmetry is the mechanism, so measure it rather than reading the constants.
+    // Half a stop, deliberately. The slew ceiling binds on any gap wider than
+    // ADAPT_MAX_STOPS_PER_SEC/ADAPT_BRIGHTEN = 0.71 stops, and a test that
+    // clamps both directions to the same ceiling measures the ceiling rather
+    // than the asymmetry — which is what the first version of this did, and it
+    // passed a build whose adaptation ran backwards.
+    const brighten = new Adaptation(); brighten.prime(1.0);
+    const darken = new Adaptation(); darken.prime(1.0);
+    const b1 = brighten.step(0.25, 1 / Math.SQRT2);  // scene brighter -> stop down, fast
+    const d1 = darken.step(0.25, Math.SQRT2);        // scene darker  -> open up, slow
+    const bMoved = Math.abs(Math.log2(b1 / 1.0)) / 0.5;
+    const dMoved = Math.abs(Math.log2(d1 / 1.0)) / 0.5;
+    ok('§4 · stopping down is faster than opening up — the eye, and every iris',
+      bMoved > dMoved * 1.5,
+      `${(bMoved * 100).toFixed(0)}% of the way down vs ${(dMoved * 100).toFixed(0)}% up,`
+      + ' over the same quarter second');
+
+    ok('and the ratio is the ported one, so it is a retina and not a taste',
+      Math.abs(ADAPT_BRIGHTEN / ADAPT_DARKEN - 3.06) < 0.05,
+      `${(ADAPT_BRIGHTEN / ADAPT_DARKEN).toFixed(2)}x`);
+
+    // The slew ceiling is not redundant with the lambda, and this is why: a
+    // long dt makes the exponential cover nearly the whole distance in one
+    // step, and `repeat.js` compares two cold runs at a fixed frame index.
+    const jump = new Adaptation(); jump.prime(0.2);
+    const after = jump.step(4.0, 4.0);
+    const stops = Math.abs(Math.log2(after / 0.2));
+    ok('§2.5 · a four-second frame still ramps rather than cutting',
+      stops <= ADAPT_MAX_STOPS_PER_SEC * 4 + 1e-9,
+      `${stops.toFixed(2)} stops in one 4 s step, ceiling ${(ADAPT_MAX_STOPS_PER_SEC * 4).toFixed(2)}`);
+
+    // and it converges, which a slew limit alone does not guarantee.
+    //
+    // Twenty seconds, not ten, and the difference is the point: 3.09 stops at
+    // the slow lambda has a 1.6 s time constant, so ten seconds still leaves
+    // 0.006 stops on the table. That is not a bug — dark adaptation genuinely
+    // takes that long, and a test tight enough to fail it would be a test
+    // asking the eye to be faster than an eye.
+    const conv = new Adaptation(); conv.prime(0.2);
+    for (let i = 0; i < 1200; i++) conv.step(1 / 60, 1.7);
+    ok('and it arrives, rather than orbiting the target',
+      Math.abs(conv.step(1 / 60, 1.7) - 1.7) < 1e-3,
+      'twenty seconds of dark adaptation, which is about what one takes');
+
+    ok('§2.3 · the same dusk at the same dt adapts to the same aperture',
+      (() => {
+        const run = () => {
+          const x = new Adaptation(); x.prime(1);
+          let v = 1;
+          for (let i = 0; i < 400; i++) v = x.step(1 / 120, apertureFor({ elevDeg: 20 - i * 0.1 }));
+          return v;
+        };
+        return run() === run();
+      })());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// suite: hero
+//
+// §9.7's "one hero landmark in the opening frustum, with scale legible against
+// a human-height reference." The clause was never enforced by anything: the
+// composition solver's `hero` term scores TERRAIN prominence over a 200 m
+// collar, and a hill at 600 m satisfies it while leaving the frame without a
+// subject. `heroSite()` is the subject; this is what holds it to the clause.
+//
+// Every assertion below is a sentence of §9.7 turned into a number, and the
+// ones that are art direction rather than geometry say so.
+
+function suiteHero() {
+  console.log('\nhero — §9.7’s subject in the opening frustum');
+
+  const HF = 26 * Math.PI / 180;             // the camera’s vertical fov/2
+  const flat = () => 0;
+
+  // --- Greenhill: hero height is a readout of gravity ----------------------
+  {
+    ok('an Earth-gravity hero stands HERO_OVER above the canopy',
+      Math.abs(heroHeight(9, 9.80665) - 9 * HERO_OVER) < 1e-9,
+      `${heroHeight(9, 9.80665).toFixed(3)} m over a 9 m canopy`);
+
+    // h proportional to g^-1/3 -- Greenhill's buckling limit with the wood held
+    // constant, which is what makes this a law rather than a lookup
+    let worst = 0;
+    for (const g of [0.5, 1.62, 3.7, 9.80665, 24.8, 40]) {
+      const want = 9 * HERO_OVER * Math.cbrt(9.80665 / g);
+      if (want > 90 || want < 9 * 1.25) continue;        // clamped, not scaled
+      worst = Math.max(worst, Math.abs(heroHeight(9, g) - want) / want);
+    }
+    ok('...and scales as g^-1/3 across two decades of gravity',
+      worst < 1e-12, `worst relative error ${worst.toExponential(2)}`);
+
+    ok('a low-gravity moon holds a taller tree than Earth does',
+      heroHeight(9, 1.62) > heroHeight(9, 9.80665) * 1.7,
+      `${heroHeight(9, 1.62).toFixed(1)} m at 0.17 g against ${heroHeight(9, 9.80665).toFixed(1)} m at 1 g`);
+    ok('...and a super-earth holds a shorter one',
+      heroHeight(9, 23.5) < heroHeight(9, 9.80665) * 0.8,
+      `${heroHeight(9, 23.5).toFixed(1)} m at 2.4 g`);
+
+    ok('no hero exceeds growTree’s own 90 m ceiling, at any gravity',
+      [0.01, 0.05, 0.2, 1, 60].every((g) => heroHeight(40, g) <= 90),
+      `tallest ${Math.max(...[0.01, 0.05, 0.2, 1, 60].map((g) => heroHeight(40, g))).toFixed(1)} m`);
+    ok('...and none is shorter than the population it must dominate',
+      [0.01, 1, 9.8, 60].every((g) => heroHeight(9, g) >= 9 * 1.25));
+  }
+
+  // --- §9.7: in the opening frustum, on every world -------------------------
+  {
+    // A thousand (seed, heading) pairs over open ground. The clause is "in the
+    // opening frustum" and the half-angle is the narrow one heroSite() uses, so
+    // passing here means passing with 15 degrees of margin on the real 16:9
+    // frustum -- which is what keeps a 20 m crown off the frame edge.
+    let n = 0, inFrame = 0, centred = 0, worstOff = 0;
+    for (let i = 0; i < 1000; i++) {
+      const heading = (i / 1000) * Math.PI * 2;
+      const h = heroSite({ seed: i + 1, heading, halfFov: HF, groundAt: flat });
+      if (!h) continue;
+      n++;
+      // bearing, measured back into the camera's own frame
+      let d = h.bearing - heading;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      if (Math.abs(d) <= HF) inFrame++;
+      worstOff = Math.max(worstOff, Math.abs(d) / HF);
+      if (Math.abs(d) / (2 * HF) < 0.04) centred++;
+    }
+    ok('a hero is found on open ground, every time', n === 1000, `${n}/1000`);
+    ok('§9.7 · and it is inside the opening frustum, every time',
+      inFrame === n, `${inFrame}/${n}, worst ${(worstOff * 100).toFixed(0)}% of the half-angle`);
+    ok('§9.7 · "nothing is centred" — none lands on the axis',
+      centred === 0, `${centred} within 4% of frame centre`);
+  }
+
+  // --- §9.7: off-centre means the third line, and both sides get used -------
+  {
+    let left = 0, right = 0, sumFrac = 0, n = 0;
+    for (let i = 0; i < 600; i++) {
+      const h = heroSite({ seed: 5000 + i, heading: 0, halfFov: HF, groundAt: flat });
+      if (!h) continue;
+      n++;
+      if (h.offset < 0) left++; else right++;
+      sumFrac += Math.abs(h.offset) / (2 * HF);
+    }
+    const mean = sumFrac / n;
+    ok('the mean offset sits near the third line, not the centre or the edge',
+      mean > 0.10 && mean < 0.26, `mean ${(mean).toFixed(3)} of frame width (THIRD_OFF = 0.167)`);
+    // the sign comes from the seed, so a universe does not put every tree left
+    const bias = Math.abs(left - right) / n;
+    ok('...and the side is the seed’s, so the universe is not one-handed',
+      bias < 0.25, `${left} left / ${right} right`);
+  }
+
+  // --- §9.7: scale legible against a human-height reference ----------------
+  {
+    // The clause is a pixel argument at both ends and this is it, in degrees.
+    // At the far end a 1.68 m figure must still be a figure; at the near end
+    // the crown must be a subject rather than a wall.
+    let n = 0, minSub = 1e9, maxSub = 0, minFig = 1e9, tooNear = 0;
+    for (let i = 0; i < 600; i++) {
+      const h = heroSite({ seed: 900 + i, heading: 1.1, halfFov: HF, groundAt: flat });
+      if (!h) continue;
+      n++;
+      const sub = 2 * Math.atan2(h.height * 0.5, h.dist) * 180 / Math.PI;
+      const fig = 2 * Math.atan2(1.68 * 0.5, h.dist) * 180 / Math.PI;
+      minSub = Math.min(minSub, sub); maxSub = Math.max(maxSub, sub);
+      minFig = Math.min(minFig, fig);
+      if (h.dist < 14) tooNear++;
+    }
+    ok('the crown is a subject — never under an eighth of a 52° frame',
+      minSub > 52 / 8, `smallest ${minSub.toFixed(1)}° of 52°`);
+    ok('...and never a wall — never over three quarters of it',
+      maxSub < 52 * 0.75, `largest ${maxSub.toFixed(1)}°`);
+    ok('§9.7 · a 1.68 m figure at its base is still resolvable',
+      minFig * (720 / 52) > 8, `${(minFig * (720 / 52)).toFixed(1)} px at 720p, ${(minFig * (1440 / 52)).toFixed(1)} px at 1440p`);
+    ok('life.js’ own 14 m doorway rule is never violated',
+      tooNear === 0 && HERO_NEAR >= 14, `nearest band edge ${HERO_NEAR} m`);
+  }
+
+  // --- the ground gets a veto, and it is a real one ------------------------
+  {
+    // A spawn facing open water has no hero, and inventing one puts a tree in
+    // the sea. `null` is the answer, and this is the assertion that it is
+    // actually reachable rather than dead code.
+    const none = heroSite({ seed: 3, heading: 0, halfFov: HF, groundAt: () => null });
+    ok('no plantable ground anywhere ⇒ no hero, rather than a tree in the sea',
+      none === null);
+
+    // half the frame is water: it must find the dry half rather than give up
+    let found = 0;
+    for (let i = 0; i < 200; i++) {
+      const h = heroSite({
+        seed: 40 + i, heading: 0, halfFov: HF,
+        groundAt: (x) => (x > 0 ? 0 : null),
+      });
+      if (h && h.x > 0) found++;
+    }
+    ok('half the frame under water ⇒ it still finds the dry third',
+      found > 190, `${found}/200 placed on land`);
+
+    // The datum for "level" comes from the candidates, not from the spawn.
+    //
+    // `life.js` passes `dryland` as `groundAt`, and `dryland` returns null
+    // above `amp · 0.55` — so on a mountainous world a spawn you can perfectly
+    // well stand on is not *plantable*, and a datum taken from it would be
+    // absent. Taking it from the spawn and defaulting to zero made the level
+    // term read every candidate as hundreds of metres out of place and score
+    // them all identically: not wrong, but silently non-discriminating on
+    // exactly the terrain it exists for. This is that case.
+    {
+      // ground at 600 m everywhere, and the spawn itself refused
+      const g = (x, z) => (x === 0 && z === 0 ? null : 600);
+      const h = heroSite({ seed: 61, heading: 0.3, halfFov: HF, groundAt: g });
+      ok('a spawn its own groundAt refuses still yields a placed hero',
+        h !== null && Math.abs(h.y - 600) < 1e-9, h ? `y = ${h.y}` : 'null');
+
+      // and the term still discriminates: a bluff among level ground loses
+      const bluff = (x, z) => (Math.hypot(x - 40, z - 40) < 12 ? 640 : 600);
+      let onBluff = 0, n = 0;
+      for (let i = 0; i < 200; i++) {
+        const p = heroSite({ seed: 300 + i, heading: 0.785, halfFov: HF, groundAt: bluff });
+        if (!p) continue;
+        n++;
+        if (Math.hypot(p.x - 40, p.z - 40) < 12) onBluff++;
+      }
+      ok('...and 40 m of unexplained rise is still avoided rather than ignored',
+        n > 0 && onBluff / n < 0.2, `${onBluff}/${n} placed on the bluff`);
+    }
+
+    // and a settlement's ground is not available
+    let clear = 0, placed = 0;
+    for (let i = 0; i < 200; i++) {
+      const h = heroSite({
+        seed: 700 + i, heading: 0.4, halfFov: HF, groundAt: flat,
+        blocked: (x, z) => Math.hypot(x - 30, z - 50) < 45,
+      });
+      if (!h) continue;
+      placed++;
+      if (Math.hypot(h.x - 30, h.z - 50) >= 45) clear++;
+    }
+    ok('...and it never stands on ground something else owns',
+      placed > 0 && clear === placed, `${clear}/${placed} clear of the exclusion`);
+  }
+
+  // --- §2.3 -----------------------------------------------------------------
+  {
+    const a = heroSite({ seed: 12345, heading: 2.2, halfFov: HF, groundAt: flat });
+    const b = heroSite({ seed: 12345, heading: 2.2, halfFov: HF, groundAt: flat });
+    ok('§2.3 · same seed and heading give the same tree, in the same place',
+      JSON.stringify(a) === JSON.stringify(b));
+    const c = heroSite({ seed: 12346, heading: 2.2, halfFov: HF, groundAt: flat });
+    ok('...and a different seed moves it',
+      JSON.stringify(a) !== JSON.stringify(c));
+
+    // the heading is the solved one, so the tree follows the camera around
+    const north = heroSite({ seed: 88, heading: 0, halfFov: HF, groundAt: flat });
+    const east = heroSite({ seed: 88, heading: Math.PI / 2, halfFov: HF, groundAt: flat });
+    ok('the site is placed against the SOLVED heading, not against the world',
+      Math.abs((east.bearing - north.bearing) - Math.PI / 2) < 1e-9,
+      'rotating the heading rotates the hero with it');
+  }
+
+  // --- a poisoned world still yields something standable -------------------
+  {
+    const bad = heroSite({
+      seed: NaN, heading: NaN, halfFov: NaN, height: NaN, gravity: NaN,
+      near: NaN, far: NaN, groundAt: flat,
+    });
+    ok('NaN in every argument still returns a finite, plantable site',
+      bad !== null && [bad.x, bad.z, bad.dist, bad.height].every(Number.isFinite),
+      bad ? `${bad.dist.toFixed(1)} m out, ${bad.height.toFixed(1)} m tall` : 'null');
+    ok('...and the tree it asks for actually grows',
+      growTree({ seed: 1, height: bad.height, habit: bad.habit }).segments > 24);
+  }
+
+  // --- the blossom LOD: the one class the distance law never reached -------
+  //
+  // `life.js` thins wood by distance and foliage by distance, and split the
+  // flowers evenly. So a tree at 300 m carried a full share of white petals
+  // over the 16% of its leaves that survived the foliage LOD — which is what
+  // `docs/captures/subject/`'s first frame shows: bare arcing branches with
+  // white specks along the horizon, no canopy mass anywhere.
+  {
+    // a plausible world: one hero, then trees at every distance out to 700 m
+    const dists = [];
+    for (let i = 0; i < 400; i++) dists.push(6 + (i / 399) ** 1.6 * 700);
+    const w = [0, ...dists.map((d) => coverDensity(d, 90))];
+    const cap = 44000, heroCap = 4200;
+    const sh = blossomShares(w, { cap, heroCap, heroIndex: 0 });
+
+    ok('the hero’s share is taken off the top and is not diluted by 400 neighbours',
+      sh[0] === heroCap, `${sh[0]} of ${cap}`);
+
+    const spent = sh.reduce((a, b) => a + b, 0);
+    ok('§5 · the cap is conserved — flowers are moved, not added',
+      spent <= cap * 1.02, `${spent.toLocaleString()} allocated against a cap of ${cap.toLocaleString()}`);
+
+    // the property the whole change is for: near trees get more than far ones
+    const near = sh[1], far = sh[sh.length - 1];
+    ok('a tree at 6 m carries far more blossom than one at 700 m',
+      near > far * 5, `${near} at ${dists[0].toFixed(0)} m against ${far} at ${dists[dists.length - 1].toFixed(0)} m`);
+    ok('...and the far one is still in bloom rather than speckled',
+      far >= 12, `${far} flowers, floor 12`);
+
+    // monotone in distance, which is what stops a mid-ground tree out-blooming
+    // one in front of it
+    let mono = true;
+    for (let i = 2; i < sh.length; i++) if (sh[i] > sh[i - 1] + 1) mono = false;
+    ok('the share falls monotonically with distance', mono);
+
+    // the even split it replaces, for the record
+    const even = Math.floor((cap - heroCap) / dists.length);
+    ok(`MEASURED · the even split gave every tree ${even}; the nearest now gets ${near}`,
+      near > even * 2, `${even} → ${near} at the near end, ${even} → ${far} at the far`);
+  }
+
+  // --- and the degenerate cases, because they are all reachable ------------
+  {
+    // every tree beyond the falloff: coverDensity returns 0 for all of them,
+    // which is a real world (a spawn on a bare plain with a distant wood) and
+    // must not be a division by zero
+    const zero = blossomShares([0, 0, 0, 0], { cap: 1000, heroCap: 0 });
+    ok('all-zero weights fall back to the even split rather than to NaN',
+      zero.every((v) => Number.isFinite(v) && v > 0), zero.join('/'));
+
+    ok('an empty world returns an empty allocation',
+      blossomShares([]).length === 0);
+
+    const noHero = blossomShares([1, 1, 1], { cap: 300, heroCap: 0, heroIndex: -1 });
+    ok('with no hero the whole cap is shared among the trees',
+      noHero.reduce((a, b) => a + b, 0) === 300, noHero.join('/'));
+
+    const bad = blossomShares([NaN, Infinity, -1, 2], { cap: NaN, heroCap: NaN, heroIndex: 0 });
+    ok('poisoned weights and a poisoned cap still return finite shares',
+      bad.every(Number.isFinite), bad.join('/'));
+  }
+
+  // --- and now on real ground, at the real solved heading ------------------
+  //
+  // Every check above uses a synthetic `groundAt`, which proves the geometry
+  // and proves nothing about whether AEON's actual terrain will accept a hero.
+  // `makeGround()` is THREE-free and `solveLandingSite()` is the same solver
+  // `surface.js` runs, so the real question is answerable here: on twelve
+  // worlds, at the heading each one's solver actually chose, does the ground
+  // give the subject somewhere to stand?
+  //
+  // This is the check that would have caught a hero placed into the sea, and it
+  // is the one the offline suite exists for — the capture that would show it
+  // takes forty minutes in this container and covers one world.
+  {
+    const worlds = [];
+    for (let i = 0; i < 12; i++) {
+      worlds.push({
+        noiseSeed: 1000 + i * 7919,
+        oceanLevel: i % 4 === 3 ? -1 : 0.004 + (i % 5) * 0.006,
+        radiusE: 0.7 + (i % 6) * 0.22,
+      });
+    }
+    let placed = 0, drowned = 0, tooSteep = 0, n = 0;
+    const dists = [];
+    for (let i = 0; i < worlds.length; i++) {
+      const w = worlds[i];
+      const sol = solveLandingSite(w, 0x51 + i * 977, { sites: 90 });
+      if (!sol || sol.fallback) continue;
+      const g = makeGround(w, sol.dir);
+      const sea = g.seaLevel ?? -1e9;
+      const amp = g.amp ?? 1e9;
+      // life.js's own dryland(), to the letter
+      const dryland = (x, z) => {
+        const h = g.heightAt(x, z);
+        if (sea !== null && h < sea + 1.5) return null;
+        if (h > amp * 0.55) return null;
+        return h;
+      };
+      n++;
+      const site = heroSite({
+        seed: 0xbeef + i, spawn: { x: 0, z: 0 }, heading: sol.heading,
+        halfFov: 26 * Math.PI / 180, groundAt: dryland,
+      });
+      if (!site) continue;
+      placed++;
+      dists.push(site.dist);
+      if (site.y < sea + 1.5) drowned++;
+      if (site.y > amp * 0.55) tooSteep++;
+    }
+    ok('§9.7 · real terrain accepts a hero at the solved heading on every world',
+      n > 0 && placed === n, `${placed}/${n} worlds placed`);
+    ok('...and not one of them stands in the sea',
+      drowned === 0, `${drowned} below sea level + 1.5 m`);
+    ok('...nor above the altitude life.js refuses to plant on',
+      tooSteep === 0, `${tooSteep} above amp · 0.55`);
+    const lo = Math.min(...dists), hi = Math.max(...dists);
+    ok('...and the distances spread across the band rather than pinning to one',
+      hi - lo > 10, `${lo.toFixed(0)}–${hi.toFixed(0)} m over ${dists.length} worlds`);
+  }
+
+  // --- §16 rule 2: what it costs against §5, before it is proposed ---------
+  //
+  // *"Before proposing a feature, state its cost against §5 measured with the
+  // grass on."* The grass is measured elsewhere in this file and it is measured
+  // as catastrophic; this is the part the hero itself adds, and it is small
+  // enough that the two questions are genuinely separate.
+  //
+  // Triangles per primitive, from the call sites in `life.js`:
+  // a wood segment is `CylinderGeometry(1,1,1,5,1,true)` — five quads, ten
+  // triangles; a leaf clump is `IcosahedronGeometry(1,0)` — twenty; a petal is
+  // a pentagon — five.
+  {
+    const SEG = 10, LEAF = 20;
+    for (const [label, base] of [['low/mobile', 240], ['desktop/ultra', 520]]) {
+      let net = 0, flowers = 0, n = 0;
+      const heroCap = Math.min(Math.round((base > 300 ? 44000 : 13000) * 0.22), 4200);
+      for (let i = 0; i < 40; i++) {
+        const site = heroSite({ seed: 1000 + i, heading: 0.7, groundAt: () => 0 });
+        // what life.js grows for the hero, against what it would have grown anyway
+        const h = growTree({ seed: 2000 + i, height: site.height, habit: site.habit, budget: base * 3 });
+        const o = growTree({ seed: 2000 + i, height: 9, budget: base });
+        net += (h.segments - o.segments) * SEG
+          + (tipsOf(h, 0.018).length - tipsOf(o, 0.018).length) * LEAF;
+        flowers += blossomsFor(h, { seed: 2000 + i, openness: 1, budget: heroCap }).length;
+        n++;
+      }
+      net /= n; flowers /= n;
+      ok(`§5 · ${label}: the hero adds under 1.5% of the 2.2 M triangle budget`,
+        net < 2.2e6 * 0.015,
+        `${Math.round(net).toLocaleString()} triangles net over 40 worlds · ${(net / 2.2e6 * 100).toFixed(2)}%`);
+      // and the thing it was for: a crown that is actually in bloom rather than
+      // a tree with some blossom on it
+      ok(`...and carries ${Math.round(flowers)} flowers against the ~110 an even split gave every tree`,
+        flowers > 400, `${Math.round(flowers)} on average, cap ${heroCap}`);
+    }
+    // the flowers are MOVED, not added — the world's cap is untouched, which is
+    // what lets the §5 figure above be wood and leaves only
+    ok('the flower cap is unchanged: 22% off the top, not 22% more',
+      Math.min(Math.round(44000 * 0.22), 4200) === 4200
+      && Math.min(Math.round(13000 * 0.22), 4200) === 2860,
+      'desktop 4200 of 44000 · low 2860 of 13000');
+  }
+
+  // --- the hero is a tree the wood can actually make ------------------------
+  {
+    // heroHeight() is a claim about a tree; growTree() is the thing that has to
+    // honour it. A height the grower clamps away is a law with no effect.
+    for (const [g, name] of [[1.62, 'a 0.17 g moon'], [9.80665, 'Earth'], [23.5, 'a 2.4 g super-earth']]) {
+      const H = heroHeight(9, g);
+      const t = growTree({ seed: 7, gravity: g, height: H, habit: 'spreading', budget: 900 });
+      const top = Math.max(...t.seg.y1);
+      ok(`${name}: the grown hero reaches the height the law asked for`,
+        top > H * 0.55, `asked ${H.toFixed(1)} m, crown top ${top.toFixed(1)} m`);
+    }
+  }
+}
+
 const suites = {
+  hero: suiteHero,
+  register: suiteRegister, exposure: suiteExposure,
   blossom: suiteBlossom,
   cover: suiteCover,
   precip: suitePrecip,
@@ -10097,7 +12015,11 @@ const suites = {
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
   walk: suiteWalk, material: suiteMaterial, opening: suiteOpening,
   ocean: suiteOcean, horizon: suiteHorizon, wind: suiteWind, meadow: suiteMeadow,
-  vehicle: suiteVehicle, governor: suiteGovernor,
+  vehicle: suiteVehicle,
+  descent: suiteDescent,
+  pilot: suitePilot,
+  deck: suiteDeck,
+  governor: suiteGovernor,
 };
 
 for (const [name, fn] of Object.entries(suites)) {

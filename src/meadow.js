@@ -120,6 +120,127 @@ export function coverage(r, d) {
 export const widthCoverage = (r, d) => density(r, d) * RINGS[r].wpx;
 
 /**
+ * Blades per steradian — the quantity the density law is *about*, and the one
+ * nobody had evaluated.
+ *
+ * `density()`'s own note argues the exponent this way: *"The falloff is slower
+ * than the `d^-2` that would keep the count per steradian constant, which is
+ * the whole trick: at 1.5 the count per steradian rises slightly with distance,
+ * and that is what makes the horizon read as a meadow rather than as a green
+ * plane."*
+ *
+ * **`d^-2` is the neutral exponent for a fronto-parallel surface.** Ground is
+ * not one. Seen from a fixed eye height `e`, the patch of ground subtending a
+ * solid angle `dΩ` at distance `d` has area `d³·dΩ/e` — the extra power is the
+ * grazing incidence, and it is the whole difference between a wall and a floor.
+ * So the exponent that holds blades-per-steradian flat across a *floor* is
+ * **3**, and the law is not slightly under it, it is one and a half powers
+ * under it.
+ *
+ * Measured, across the bands the rings actually occupy: **1.61 M blades per
+ * steradian at 26 m and 407.6 M at 1250 m — 254× more, not "slightly".** That
+ * is where roughly half of every surface frame's grass budget goes, and the
+ * result is the thing the sentence was written to prevent: at that spacing the
+ * width cap has grown the marks to 1.69 m and the ground beneath them is not
+ * visible anywhere, which is a green plane made of four million billboards.
+ *
+ * **The exponent is not the thing to change.** §6 M3 pins it at exactly 1.5 so
+ * the shader can evaluate it as `x·x·inversesqrt(x)`, and that is a settled
+ * ruling (§3). What is not pinned is where the rings *stop*: `RINGS[3].far` is
+ * 1250 m because the reference's valley is 2400 m across, and `horizon.js`
+ * already draws everything past the haze line as silhouette (§M2). The band is
+ * the dial. Changing it needs a scored frame and this container cannot render
+ * one — see `docs/plans/SURFACE-DENSITY.md` §7.
+ */
+export function bladesPerSteradian(r, d, eye = 1.68) {
+  return density(r, d) * d * d * d / Math.max(eye, 1e-3);
+}
+
+/** the exponent that would hold `bladesPerSteradian` flat over a floor */
+export const NEUTRAL_POW = 3;
+
+/**
+ * How many times over the ground is covered by the blades standing on it.
+ *
+ * Frontal area per square metre of ground is `density · width · height`; the
+ * ground's own screen area per square metre is `sin θ ≈ eye/d`. The ratio is
+ * how much of what is drawn can possibly be seen, and it is the fill-rate cost
+ * of the meadow expressed without reference to any particular GPU.
+ *
+ * It runs 6× underfoot and 610× at the far edge of ring 3. Some overdraw is
+ * the point — a sward is layers of blades and you are meant to see into it —
+ * but two orders of magnitude of it, on the marks that are 1 px wide and 42%
+ * of the way to the sward mean before they are drawn, is not depth. It is the
+ * same measurement as `bladesPerSteradian` from the fill side.
+ */
+export function groundOverdraw(r, d, pxPerRadian, eye = 1.68, uWidth = 0.028) {
+  const frontal = density(r, d) * bladeWidth(r, d, pxPerRadian, uWidth) * 0.71 * RINGS[r].hs;
+  return frontal / Math.max(eye / Math.max(d, 1e-6), 1e-9);
+}
+
+/**
+ * The blade's own width, in metres — the JS side of `meadowWidth` and the two
+ * clamps `BLADE_VERT` wraps it in.
+ *
+ * It is here rather than only in GLSL for the reason `density()` is: §9.5's
+ * tier rule is stated in **pixels** — *"once a blade is two or three pixels
+ * wide, everything varying across its width is sub-pixel and should be dropped
+ * by tier"* — and a rule in pixels cannot be checked against a shader nobody
+ * can run in node. `quality.js`'s `curvedRings` column is the knob that rule
+ * governs, and its stated justification was arithmetic that had never been
+ * done: *"at 5 m a blade is about 9 px."* It is 1.70.
+ *
+ * Three terms, and which one binds is the whole answer:
+ *
+ *   · `wpx · d / pxPerRadian` — the **angular floor**. Note what this is: not a
+ *     floor under a natural width, because no natural width is an input. It is
+ *     the width, and it is *constant in pixels by construction* — that is what
+ *     "floor in pixels" means and it is why a blade does not get wider as you
+ *     walk up to it.
+ *   · `uWidth · 0.22` — a metric minimum, 6.2 mm, which is the only term that
+ *     ever makes a blade wider than `wpx`, and it binds only inside about 2 m.
+ *   · `1/√density` — the spacing cap. Past it a blade is wider than the gap to
+ *     its neighbour and further width is pure overdraw.
+ */
+export function bladeWidth(r, d, pxPerRadian, uWidth = 0.028) {
+  const dens = Math.max(density(r, d), 1e-6);
+  const floor = Math.max(RINGS[r].wpx * d / Math.max(pxPerRadian, 1), 0.004);
+  return Math.min(Math.max(floor, uWidth * 0.22), 1 / Math.sqrt(dens));
+}
+
+/** the same, in pixels — the unit §9.5's tier rule is actually written in */
+export const bladePixels = (r, d, pxPerRadian, uWidth = 0.028) =>
+  bladeWidth(r, d, pxPerRadian, uWidth) / Math.max(d, 1e-6) * pxPerRadian;
+
+/**
+ * §9.5's retirement threshold, as one number: the width in pixels below which
+ * across-blade detail is sub-pixel and the curved cross-section buys nothing.
+ *
+ * *"two or three pixels"* — the conservative end of the clause, so a ring is
+ * only retired when it is inside the regime on the reading most favourable to
+ * keeping it.
+ */
+export const CURVE_PX = 3.0;
+
+/**
+ * How far out a ring's blade still earns the rolled-leaf cross-section.
+ *
+ * Returns the distance beyond which it does not, which is what makes this
+ * comparable against the ring's own band: a ring earns `curved` when the answer
+ * covers a meaningful share of `[near, far]`, and every row of the table today
+ * earns it over the first two to four metres of a twenty-six metre band.
+ */
+export function curveReach(r, pxPerRadian, uWidth = 0.028) {
+  let lo = 0.05, hi = RINGS[r].far;
+  if (bladePixels(r, lo, pxPerRadian, uWidth) < CURVE_PX) return 0;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) * 0.5;
+    if (bladePixels(r, mid, pxPerRadian, uWidth) >= CURVE_PX) lo = mid; else hi = mid;
+  }
+  return lo;
+}
+
+/**
  * The chunk grid, derived from the ring's own far distance.
  *
  * §11 records this exact bug from the reference: *"hand-picked chunk grids too

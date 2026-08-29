@@ -23,7 +23,7 @@ Here is the sum, as of M5.
 
 | debt | §  | state |
 |---|---|---|
-| ~~The §9.2 light model is off by default~~ | 9.2 | **SHIPPED** — `?paint=0` is the escape hatch. Act F, on the human's instruction |
+| ~~The §9.2 light model is off by default~~ | 9.2 | **CLOSED** — flipped on. Both withdrawal causes were fixed by later work (act 3b's detail normal; `visibilityFor` making fog a weather) and nobody re-tested. Re-measured: ground luma 0.581 → 0.608, saturation and sky unchanged, 0.6% blown either way. The old "flattens to a pale wash" is gone. A small win, and `SAKURA.md` §13 says why — that frame's lower half is grass, and `paint()` shades terrain |
 | Four-layer materials off | M2 act 4 | `?mat=1` |
 | The Gerstner ocean off | M2 act 5 | `?sea=1` |
 | Far ridges as silhouette off | M2 act 6 | `?ridge=1` |
@@ -38,8 +38,11 @@ Here is the sum, as of M5.
 | **`planet-orbit` never reaches true black** | 2.8 | **NEW.** rgb(13,7,0), 0.0% of the frame at #000, both flag sets. `star-system` is correct, so it is specific to the planet scale |
 | ~~The vacuum surface law off~~ | 9.2 · 8 axis 5 | **SHIPPED** — `?greeble=0`. Act F |
 | ~~The piloted craft off~~ | 4 · 6 M5 | **SHIPPED** — `?pilot=0`. Act F |
-| **The thesis is shipped and unscored** | 8 | **NEW, and it is now the whole of the debt.** Every feature flag is on. §8's only run is the 3.00 that predates all of it. Nothing here is a claim that the frame passes — it is a claim that there is finally something to score |
+| **The thesis is shipped and unscored** | 8 | **NEW.** `paint`, `greeble` and `pilot` are all on, so the ledger's opening paragraph no longer describes the build. §8's only run is the 3.00 that predates all of it. Not a claim that the frame passes — a claim that there is finally something to score. (`?cab=1` is the one feature still off; see the row below) |
 | **Being aboard the station ring is not a URL** | 2.4 | **NEW, and pre-existing.** Found while measuring Act F, not opened by it: `drawcensus.js` navigates by deep link and cannot reach the ring, which is why `tools/ringcensus.js` had to exist. §2.4 says every place is a URL and the ring is a place a visitor stands in |
+| **§9 names one art reference; the code now has an axis between two** | 9 · 3 | **NEW, and it is a debt in the constitution rather than in the code.** `src/register.js` makes hoshi-no-tani and sakura-realm the two ends of one axis chosen by `visibilityFor()`, and §9 still reads as though there is one north star. `docs/plans/SAKURA.md` §10 states the exact edit. **It needs a human**, per §7.2 — an agent rewriting the clause it is being judged against is the one edit no agent should make |
+| **The register and the aperture have never been captured** | 8 · 16.1 | **NEW.** `registerFor()` and `apertureFor()` are proved arithmetically — 1000/1000 offline, R=1 bit-identical to the shipped print — and **not one frame has been rendered through either**. Twelve of `PHOTOGRAPHIC`'s fourteen knobs are transcriptions of intent that only a blind §8 score can settle |
+| The cabin, the seat and the piloted descent are off | 2.4 · 2.5 | **NEW, and honestly declared.** `?cab=1`. Half of §5 is now measured (`tools/cabincost.js`: **6 draw calls, 3.2 k triangles, no textures** — 0.7% and 0.15% of budget). Flipping it still needs a frame-time number from real silicon and a scored capture; see `docs/plans/LONG-SILENCE.md` §§9–10 |
 
 ### Act F · the Long Silence port — and the part of it that was a waiver
 
@@ -84,7 +87,8 @@ sentence this whole file was written to make unavoidable.
 
 A visitor who opens the page gets the print, aerial perspective, a body, a
 camera and a mobile layer. They do not get the light model, the materials, the
-sea, the far ridges, the wind, the grass, the craft, or the composition. **The
+sea, the far ridges, the wind, the grass, the craft, the composition, or —
+as of `descent.js` — the ship they could have flown down in. **The
 project's entire visual thesis is unshipped**, and each flag has a good reason
 that is true individually and indefensible in aggregate.
 

@@ -57,7 +57,33 @@ const scale = String(arg('scale', 'surface'));
 const readyMs = Number(arg('ready', 120)) * 1000;
 /** what the route search is looking for: any rocky world, a living one, or one with an aurora */
 const want = String(arg('want', scale === 'surface' ? 'life' : 'any'));
-const WANT = { any: 'true', life: 'hit.alive', aurora: 'hit.alive && auroral(pl, starSeed, sp)' };
+/**
+ * What the route search is looking for.
+ *
+ * `meadow` exists because of a mistake this tool made easy. `life` takes the
+ * first world with a biosphere, and on the default seed that is a **cool-star
+ * ocean world with ice floes** — a legitimate AEON world and a useless one to
+ * judge the art direction from, because the reference this project is being
+ * compared against is a temperate green field under a sun-like star.
+ *
+ * Two captures were scored against sakura-realm before anyone noticed they were
+ * of a different kind of place. The transfer was not wrong: at 2600 K
+ * `airColours` genuinely returns a teal zenith over a yellow horizon, and the
+ * frame was an honest photograph of an M-dwarf sky. It simply was not the
+ * comparison anybody meant to make.
+ *
+ * So the comparison gets a name and a definition, rather than being whatever
+ * the search happened to land on: a G-type star, a rocky world, liquid-water
+ * temperatures, and something alive on it.
+ */
+const WANT = {
+  any: 'true',
+  life: 'hit.alive',
+  aurora: 'hit.alive && auroral(pl, starSeed, sp)',
+  meadow: "hit.alive && pl.type === 'terrestrial'"
+    + ' && sp.temp > 5200 && sp.temp < 6400'
+    + ' && pl.Teq > 250 && pl.Teq < 305',
+};
 
 /**
  * Find a world worth photographing, in the page, from the same generators the
@@ -118,6 +144,62 @@ const SETTLE = ([n, ms]) => new Promise((done) => {
   requestAnimationFrame(tick);
 });
 
+/**
+ * One frame's draw calls and triangles — **all of them**, which is not what
+ * reading `renderer.info` after a halt gives you.
+ *
+ * The bug this replaces reported `1 calls · 0.00M tris` on a frame with a
+ * continent in it, on every capture this tool has ever taken. three.js resets
+ * `info` at the top of each `render()`, and `EffectComposer` calls `render()`
+ * once per pass — so a read after the loop stops sees only whatever the *last*
+ * pass did, which is the print's fullscreen quad. One call. No triangles.
+ *
+ * §5 makes the frame budget a correctness property and names ≤900 calls and
+ * ≤2.2 M triangles at surface scale. A tool that answers "1" to both cannot
+ * ever say that budget was missed, so the number was not merely wrong — it was
+ * unfalsifiable, which is worse.
+ *
+ * The fix is the documented one: turn `autoReset` off, zero the counters, step
+ * exactly one frame through the app's own `resume`/`haltAt` pair, and read the
+ * accumulated total. One frame, every pass, no double count.
+ */
+const MEASURE = () => new Promise((done) => {
+  const app = window.AEON;
+  const info = app.renderer?.info;
+  if (!info) return done(null);
+  info.autoReset = false;
+  info.reset();
+  const f0 = app.frames;
+  const target = f0 + 1;
+  app.haltAt(target);
+  app.resume();
+  app.haltAt(target);
+  const tick = () => {
+    if (app.halted > 0 || app.frames >= target) {
+      // Divide by the frames that ACTUALLY elapsed, not by the one we asked
+      // for. The tick polls on requestAnimationFrame and the app is free to
+      // render several frames between two polls, so "step exactly one frame"
+      // is a request, not a guarantee — and with autoReset off the counters
+      // just keep adding. Unnoticed, that reported 10.74 M triangles on a
+      // frame that `tools/drawcensus.js` — which counts at the WebGL call and
+      // needs no rendered frame — puts at 2.11 M, i.e. GREEN against §5's
+      // 2.2 M. Five frames' worth, read as one, and it very nearly became a
+      // reported budget violation that did not exist.
+      const n = Math.max(app.frames - f0, 1);
+      const out = { calls: info.render.calls / n, tris: info.render.triangles / n, frames: n };
+      info.autoReset = true;
+      // Stop the loop again before handing back. `resume()` above cleared
+      // `_haltAt`, and a page still rendering is a page `page.screenshot()`
+      // cannot get a stable frame out of — on a software rasteriser that is
+      // not a race you win, it is a 30-second timeout every time.
+      app.haltAt(app.frames);
+      return done(out);
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+});
+
 const pw = await playwright();
 const site = await serve();
 const browser = await launch(pw);
@@ -151,21 +233,32 @@ console.log(`  world: galaxy ${route.galaxySeed} star ${route.starSeed} planet $
 const written = [];
 for (const b of builds) {
   const url = `${site.origin}/index.html?seed=${seed}&${where}${b ? '&' + b : ''}&dt=16.667`;
+  const tGo = Date.now();
   await page.goto(url, { waitUntil: 'load' });
   await page.waitForFunction('window.AEON && window.AEON.active && window.AEON.active()',
     null, { timeout: readyMs });
+  // Where the time actually goes, because on a software rasteriser it is not
+  // where anyone assumes. Building the world — streaming the quadtree, meshing
+  // tiles in float64, instancing the meadow, growing the flora — is CPU work
+  // that does not care how many pixels the frame has. Settling is fill, and
+  // fill is the only half a smaller viewport makes cheaper.
+  const tBuilt = Date.now();
   const how = await page.evaluate(SETTLE, [frames, capMs]);
-  const info = await page.evaluate(() => {
-    const i = window.AEON.renderer?.info;
-    return i ? { calls: i.render.calls, tris: i.render.triangles } : null;
-  });
+  const tSettled = Date.now();
+  const info = await page.evaluate(MEASURE);
   const name = (b || 'default').replace(/[^a-z0-9]+/gi, '-') + (how === 'timeout' ? '-PARTIAL' : '');
   const file = resolve(dir, name + '.png');
-  await writeFile(file, await page.screenshot());
+  // Playwright's default is 30 s, which is a fine number for a GPU and not for
+  // this one: the frame under it is being rasterised on the CPU. Reuse the
+  // per-build cap, which is already the caller's statement about how slow the
+  // machine is.
+  await writeFile(file, await page.screenshot({ timeout: Math.max(capMs, 60000) }));
   written.push(file);
   console.log(`  ${how === 'timeout' ? 'part' : 'ok  '} ${(b || 'default').padEnd(24)}`
-    + ` ${String(info?.calls ?? '?').padStart(5)} calls`
-    + ` ${((info?.tris ?? 0) / 1e6).toFixed(2).padStart(6)}M tris  →  ${name}.png`);
+    + ` ${String(Math.round(info?.calls ?? 0)).padStart(5)} calls`
+    + ` ${((info?.tris ?? 0) / 1e6).toFixed(2).padStart(6)}M tris`
+    + `  build ${((tBuilt - tGo) / 1000).toFixed(0)}s settle ${((tSettled - tBuilt) / 1000).toFixed(0)}s`
+    + `  →  ${name}.png`);
 }
 
 await browser.close();

@@ -144,6 +144,97 @@ export function paramNumber(raw) {
 }
 
 /**
+ * How strongly this world has seasons at all, 0..1 — and it is the twist.
+ *
+ * `docs/plans/SAKURA.md` set out to make AEON's worlds look like sakura-realm,
+ * and ran straight into this file. Sakura-realm's tree is in bloom because it
+ * was built in bloom; here a world has an orbit, `seasonOpenness` opens a
+ * window across 32% of a year, and **two visits in three arrive to bare wood**.
+ * Widening the window for everyone would answer the ask by deleting the best
+ * thing this module does, which is that a season can be missed.
+ *
+ * The better answer was already sitting on the planet record, unread.
+ *
+ * A spring is not a property of life. It is a property of an **orbit**: a
+ * world's year only has seasons if something modulates the light it receives
+ * around that year, and only two things can — the axis being tilted, and the
+ * orbit not being a circle. Both are already generated, because `system.js`
+ * needed `tilt` to lean the rings and `e` to draw the ellipse.
+ *
+ *     S = √( sin²ε + (2e)² )
+ *
+ * Obliquity dominates and the eccentricity term is the annual insolation
+ * swing, `ΔE/E = 2e` to first order — 0.398 and 0.033 on Earth, which is why
+ * Earth's seasons are an axis and not a distance, a thing most people have
+ * backwards. In quadrature because they are orthogonal forcings: obliquity
+ * makes hemispheres take turns, eccentricity makes the whole world do it
+ * together, and one does not cancel the other.
+ *
+ * A world with neither has no annual signal for a plant to synchronise to —
+ * so its flora does not synchronise. It flowers continuously and out of phase
+ * with itself, and it is **always** in bloom.
+ *
+ * That is the whole spice, and it costs nothing: it is a readout of an orbit
+ * that was already drawn, it is deterministic, most worlds keep their spring
+ * intact, and "our worlds look like sakura-realm" becomes something you can
+ * *find* — a class of world you learn to recognise from the system diagram
+ * before you land, because a low tilt and a round orbit are visible there.
+ */
+export function seasonality(pp = {}) {
+  const eps = Math.abs(num(pp.tilt, 0));
+  const ecc = clamp(Math.abs(num(pp.e, 0)), 0, 0.95);
+  return Math.hypot(Math.sin(eps), 2 * ecc);
+}
+
+/** Earth's, and the fixture: 23.44° of tilt against e = 0.0167. */
+export const SEASONALITY_EARTH = Math.hypot(Math.sin(23.44 * Math.PI / 180), 2 * 0.0167);
+
+/** the window an Earth-like forcing opens — the value this file shipped with */
+export const WIDTH_EARTH = 0.16;
+
+/** no window is narrower than this, or a spring becomes a single afternoon */
+export const WIDTH_MIN = 0.055;
+
+/**
+ * The flowering window's half-width for a world, from its seasonal forcing.
+ *
+ * Inverse, and inverse rather than exponential for the reason a phenologist
+ * would give: the window is the interval over which the cue is unambiguous,
+ * and a cue's ambiguity goes as one over its amplitude. Twice the forcing, half
+ * the window.
+ *
+ * `WIDTH_EARTH · S_earth / S`, so **an Earth-like world returns exactly
+ * 0.16** — the constant this file shipped with, unmoved, by construction rather
+ * than by fitting. Same discipline as `starlight.js`'s fixture.
+ *
+ * | tilt | e | S | window | year in flower |
+ * |---|---|---|---|---|
+ * | 23.4° | 0.017 | 0.40 | 0.160 | 32% — Earth, unchanged |
+ * | 41° | 0.05 | 0.66 | 0.097 | 19% — a sharp, short spring |
+ * | 4° | 0.01 | 0.073 | 0.500 | **always**, a hanami world |
+ *
+ * Capped at 0.5, because at a half-width of half a year every phase is inside
+ * the window and there is nothing further to open.
+ */
+export function bloomWidth(pp = {}) {
+  const S = seasonality(pp);
+  if (!(S > 1e-6)) return 0.5;
+  return clamp(WIDTH_EARTH * SEASONALITY_EARTH / S, WIDTH_MIN, 0.5);
+}
+
+/**
+ * Whether this world's flora has any spring at all.
+ *
+ * True when the window has opened to the whole year — no annual cue, so no
+ * synchronisation, so no bare season. §8 axis 8 wants the HUD's claims to match
+ * the pixels, and "always in bloom" is a claim worth being able to print beside
+ * the tilt it follows from.
+ */
+export function perpetualBloom(pp = {}) {
+  return bloomWidth(pp) >= 0.5 - 1e-9;
+}
+
+/**
  * How far into its flowering the world is, 0..1, at a point in its orbit.
  *
  * A window of half-width `width` around a seeded centre, opening and closing
@@ -151,10 +242,16 @@ export function paramNumber(raw) {
  * narrower band in full bloom, which is roughly a real temperate spring
  * measured as a fraction of a year.
  *
+ * `width` defaults to Earth's rather than to the world's, and the default is
+ * load-bearing: a caller that has a planet record should pass
+ * `bloomWidth(pp)`, and a caller that has only a phase — a test, a tool, the
+ * `?season=` override — gets the fixture. Making the default read a global
+ * would be the same defect as a height field with two copies, one scale up.
+ *
  * The distance is taken **around the circle**, not along the line, so a world
  * whose spring straddles its new year gets a spring rather than two half ones.
  */
-export function seasonOpenness(phase, seed = 0, width = 0.16) {
+export function seasonOpenness(phase, seed = 0, width = WIDTH_EARTH) {
   const w = Math.max(num(width, 0.16), 1e-4);
   const centre = new RNG(hash(seed >>> 0, 0x5ea5)).float(0, 1);
   let ph = num(phase, 0) % 1;
@@ -303,6 +400,67 @@ export function blossomsFor(tree, {
     }
   }
   return out;
+}
+
+/**
+ * How a world's flower budget is shared out — §5, and §9.5's distance law
+ * carried to the one object class it was never carried to.
+ *
+ * `life.js` thins wood by distance and thins foliage by distance, with a note
+ * saying that a tree at 700 m spending sub-pixel leaf clumps is *"exactly the
+ * defect the ground cover had."* The blossom was split **evenly**, so a tree at
+ * 300 m carried the same share as one at 30 m — over the 16% of its leaves that
+ * survived the foliage LOD. A capture of a world in full bloom shows what that
+ * is: bare arcing branches with white specks on them, strung along the horizon,
+ * with no canopy mass anywhere.
+ *
+ * Three properties, and each one is a thing the even split got wrong:
+ *
+ *   · **weighted**, so flowers go where they resolve;
+ *   · **conserving** — the freed share is redistributed rather than discarded,
+ *     so the total is exactly the cap and this moves flowers instead of
+ *     removing them;
+ *   · **floored**, because a tree with four flowers on it is not in bloom, it
+ *     is speckled, and a skyline should read as blossom or as leaf.
+ *
+ * `hero` takes its share off the top before any of that (§9.7), and is excluded
+ * from the weighting so it cannot be diluted by four hundred neighbours.
+ *
+ * It lives here rather than at the call site for the reason `meadow.js` gives
+ * about `vegetationHSL`: `life.js` imports THREE and `tools/verify.js` cannot
+ * reach it in node, so an allocation rule written there is a rule nothing
+ * checks.
+ */
+export function blossomShares(weights, { cap = 44000, heroCap = 0, floor = 12, heroIndex = -1 } = {}) {
+  const w = Array.isArray(weights) ? weights : [];
+  const n = w.length;
+  if (!n) return [];
+  const total = Math.max(num(cap, 0) | 0, 0);
+  const hero = clamp(num(heroCap, 0) | 0, 0, total);
+  const rest = total - hero;
+  const fl = Math.max(num(floor, 0) | 0, 0);
+
+  const share = new Array(n).fill(0);
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    if (i === heroIndex) continue;
+    const v = num(w[i], 0);
+    if (v > 0) sum += v;
+  }
+  // Nothing to weight by — every tree beyond the falloff, or a caller that
+  // passed zeros — is a real case and it gets the even split it always had
+  // rather than a division by zero.
+  if (!(sum > 0)) {
+    const others = heroIndex >= 0 && heroIndex < n ? n - 1 : n;
+    const even = others > 0 ? Math.floor(rest / others) : 0;
+    for (let i = 0; i < n; i++) share[i] = i === heroIndex ? hero : Math.max(fl, even);
+    return share;
+  }
+  for (let i = 0; i < n; i++) {
+    if (i === heroIndex) { share[i] = hero; continue; }
+    share[i] = Math.max(fl, Math.floor(rest * (Math.max(num(w[i], 0), 0) / sum)));
+  }
+  return share;
 }
 
 /**

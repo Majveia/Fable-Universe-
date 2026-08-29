@@ -9,10 +9,10 @@
 import * as THREE from 'three';
 import { RNG, arand, hash } from './rng.js';
 import { softDotTexture } from './nebula.js';
-import { growTree, tipsOf } from './tree.js';
+import { growTree, heroSite, tipsOf } from './tree.js';
 import {
-  PETAL_GLSL, blossomsFor, paramNumber, petalFall, petalHue, seasonOpenness,
-  seasonPhaseOf,
+  PETAL_GLSL, blossomShares, blossomsFor, bloomWidth, paramNumber, petalFall, petalHue,
+  seasonOpenness, seasonPhaseOf,
 } from './blossom.js';
 import { airDensity } from './precip.js';
 import { coverDensity } from './scatter.js';
@@ -56,6 +56,18 @@ const PARAM = (k) => {
  * `?storm=`. It is not the same as asking for flowers; see `?bloom=` below.
  */
 export const seasonPhase = (pp) => seasonPhaseOf(pp?.M0, PARAM('season'));
+
+/**
+ * `?subj=1` — §9.7's subject, behind a flag and default-off per §7.4.
+ *
+ * What it turns on is one tree. §9.7 asks for *"one hero landmark in the
+ * opening frustum"* and every tree on a world is drawn from `r.float(5, 13)`,
+ * so nothing is allowed to dominate and nothing does. `tree.js`'s `heroSite()`
+ * decides where it stands and how tall it may be; this file gives it the wood,
+ * the leaves and the flowers, and takes them out of the same budgets everything
+ * else is spending so the frame does not simply get more expensive.
+ */
+const SUBJ = PARAM('subj') === '1';
 
 export function addLife(s) {
   const pp = s.pp;
@@ -285,9 +297,69 @@ export function addLife(s) {
     }
   }
 
+  // ------------------------------------------------------- the subject ---
+  //
+  // §9.7 · *"at least one hero landmark in the opening frustum, with scale
+  // legible against a human-height reference."* Everything above this line is a
+  // population — one uniform height draw, scattered isotropically about the
+  // spawn — and a population has no subject in it by construction. `tree.js`
+  // decides where the one tree stands and how tall the world's gravity lets it
+  // be; here it is simply another site, at the front of the list.
+  //
+  // **Only when the heading was solved.** `?solve=` off, or a `?p=`-style deep
+  // link, and there is no opening frame to compose against: §2.4 makes a
+  // deep-linked arrival a *destination*, and `surface.js` already stands the
+  // solver down for one. Placing a hero against an unknown heading would put a
+  // tree at a bearing nobody chose, which is the thing being fixed.
+  //
+  // It draws from its own stream (`hash(seed, 0x8e40)` inside `heroSite`)
+  // rather than from `r`, so adding it cannot move a single other decision on
+  // this world — §2.3's real content, and the reason a composition change is
+  // allowed to be this late in the file.
+  let hero = null;
+  if (SUBJ && s.landingSolution) {
+    hero = heroSite({
+      seed: hash(pp.seed, 0x5e17),
+      spawn: sp,
+      heading: s.landingSolution.heading,
+      halfFov: (s.camera?.fov ?? 52) * 0.5 * Math.PI / 180,
+      groundAt: dryland,
+      // a settlement owns its own ground, and `centers` above already keeps
+      // groves 160 m off the town's doorstep — the hero keeps the same distance
+      blocked: (x, z) => !!s.settlement
+        && Math.hypot(x - s.settlement.site.x, z - s.settlement.site.z) < 160,
+      // the population's own canopy, so a hero is 2.2x the world it stands in
+      // rather than 2.2x a constant
+      height: conifer ? 12 : 9,
+      gravity: gwork,
+    });
+  }
+  if (hero) {
+    // Three times the wood of an ordinary tree, and it is cheap: a segment is a
+    // five-sided ring, so 3x520 segments is about 15 600 triangles against §5's
+    // 2.2 M. The crown is the expensive half and `coverDensity` already keeps it
+    // whole inside 90 m, which is where the hero stands by construction.
+    sites.unshift({
+      x: hero.x, y: hero.y, z: hero.z, seed: hash(pp.seed, 0x5e18),
+      yaw: hero.yaw, height: hero.height, habit: hero.habit,
+      budget: Math.round(budget * 3), hero: true,
+    });
+    console.info(`[§9.7] hero · ${hero.height.toFixed(1)} m ${hero.habit} at `
+      + `${hero.dist.toFixed(0)} m, ${(hero.offset * 180 / Math.PI).toFixed(1)}° off the heading `
+      + `(${(Math.abs(hero.offset) / (2 * ((s.camera?.fov ?? 52) * 0.5 * Math.PI / 180)) * 100).toFixed(0)}% of frame width) · `
+      + `crown ${(2 * Math.atan2(hero.height * 0.5, hero.dist) * 180 / Math.PI).toFixed(1)}° of `
+      + `${(s.camera?.fov ?? 52).toFixed(0)}°`);
+  }
+
   // grow them all first, so the instance count is known before the buffer is
+  //
+  // `habit` is passed rather than left to the tree's own draw because the hero
+  // has one: §9.7 wants a shape readable at a hundred metres, and `heroSite()`
+  // picks from the two habits that say something at that range. Every other
+  // site passes `undefined` and keeps the roll it always had.
   const grown = sites.map((p) => growTree({
     seed: p.seed, gravity: gwork, height: p.height, budget: p.budget ?? budget,
+    habit: p.habit ?? null,
   }));
   const segTotal = grown.reduce((a, t) => a + t.segments, 0);
   const wood = new THREE.InstancedMesh(segGeo, barkMat, Math.max(segTotal, 1));
@@ -462,6 +534,17 @@ export function addLife(s) {
   // Most worlds are not in bloom when you arrive, and that is the point: a
   // season you can miss is the only kind worth catching.
   //
+  // How many is `bloomWidth(pp)`'s answer rather than a constant, and it is the
+  // one place `docs/plans/SAKURA.md`'s twist reaches the frame. A spring is a
+  // property of an orbit, not of life: a world's year only has seasons if its
+  // axis is tilted or its orbit is not a circle, and a world with neither gives
+  // its flora no annual cue to synchronise to. Such a world does not have a
+  // long spring — it has **no spring**, and is always in flower.
+  //
+  // So the window widens exactly where the physics says the signal is weak, an
+  // Earth-like world keeps the 0.16 this line shipped with to the digit, and
+  // the sentence above stays true for the worlds it was written about.
+  //
   // Two overrides, because they are two different questions and one knob
   // cannot answer both. `?season=` moves the world along its own orbit — the
   // honest one, the same number `M0` carries — but *where* a world's spring
@@ -471,7 +554,7 @@ export function addLife(s) {
   const forcedBloom = paramNumber(PARAM('bloom'));
   const openness = Number.isFinite(forcedBloom)
     ? Math.min(Math.max(forcedBloom, 0), 1)
-    : seasonOpenness(seasonPhase(pp), pp.seed >>> 0);
+    : seasonOpenness(seasonPhase(pp), pp.seed >>> 0, bloomWidth(pp));
   let petalDrift = null;
   if (openness > 0.02 && grown.length) {
     const ph = petalHue(vegH, pp.seed >>> 0);
@@ -501,12 +584,51 @@ export function addLife(s) {
     // The cap is shared out per tree rather than spent first-come, so the near
     // trees do not eat it and leave the skyline bare.
     const cap = budget > 300 ? 44000 : 13000;
-    const per = Math.max(24, Math.floor(cap / grown.length));
+    // The cap is shared out per tree rather than spent first-come, so the near
+    // trees do not eat it and leave the skyline bare — and that even split is
+    // exactly what makes a hero impossible. At ~400 trees it is 110 flowers
+    // each, and 110 flowers is a tree with some blossom on it rather than a
+    // tree in bloom. The reference's frame is carried by one crown holding
+    // thousands.
+    //
+    // So the subject takes a stated share **off the top** and the rest split
+    // what is left. The total is unchanged — this moves flowers, it does not
+    // add them, and §5's 10%-of-budget figure above still stands.
+    const heroCap = sites[0]?.hero ? Math.min(Math.round(cap * 0.22), 4200) : 0;
+    const flat = Math.max(24, Math.floor((cap - heroCap) / Math.max(grown.length - (heroCap ? 1 : 0), 1)));
+
+    // ------------------------------------------------ and the same law again ---
+    //
+    // The wood is thinned by distance. The foliage is thinned by distance, by
+    // `coverDensity`, with a note explaining that a tree at 700 m spending 256
+    // sub-pixel leaf clumps is *"exactly the defect the ground cover had."*
+    // **The blossom was never thinned at all.** Every tree got the same `per`
+    // whatever its distance, so at 300 m a tree showed a full share of white
+    // petals over the 16% of its leaves that survived the foliage LOD — and
+    // that is what a distant tree in bloom actually looked like in the first
+    // capture taken for this plan: a bare arcing wire with white specks on it,
+    // no canopy mass, eight of them strung along the horizon.
+    //
+    // A flower is 5 triangles against a leaf clump's 20 and there are up to
+    // 44 000 of them, so this was never a budget oversight — it is the one
+    // object class the argument was never carried to.
+    //
+    // Weighted rather than clipped: the freed flowers are not discarded, they
+    // are redistributed to the trees near enough to resolve them. The cap is
+    // untouched, so this is the same "moves flowers, does not add them" trade
+    // the hero's own share makes, applied to the other four hundred trees.
+    const heroIndex = sites[0]?.hero ? 0 : -1;
+    const shares = SUBJ
+      ? blossomShares(
+        sites.map((p) => coverDensity(Math.hypot(p.x - sp.x, p.z - sp.z), LEAF_NEAR)),
+        { cap, heroCap, heroIndex })
+      : null;
+    const share = (p, i) => (shares ? shares[i] : (p.hero ? heroCap : flat));
     const fx = [], frec = [];
     for (let ti = 0; ti < grown.length && fx.length / 3 < cap; ti++) {
       const t = grown[ti], p = sites[ti];
       const sy = Math.sin(p.yaw), cy = Math.cos(p.yaw);
-      for (const f of blossomsFor(t, { seed: p.seed, openness, budget: per })) {
+      for (const f of blossomsFor(t, { seed: p.seed, openness, budget: share(p, ti) })) {
         fx.push(p.x + f.x * cy - f.z * sy, p.y + f.y, p.z + f.x * sy + f.z * cy);
         f.crown = t.crown;
         f.worldYaw = p.yaw;
