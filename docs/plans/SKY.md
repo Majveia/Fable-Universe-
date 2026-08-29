@@ -389,3 +389,39 @@ blade facing the light. The one real consequence is at distance, where `N` is
 flattened 66% toward vertical and a low sun gives `wrap ≈ 0.55` — the toe of the
 upper band, which is correct: far grass should not sparkle. There was one bug
 here, not two.
+
+### And the ground under it, which was the other half
+
+Fixing the pole fixed the blades and left the ground teal. `materialPalette()`'s
+sward layer built its shade as a **lerp** toward `shadowTint` — `#5C6E9E`, 224° —
+at 0.20, and measured across the whole hue draw it landed at **148°–163°**.
+The ground is more than half of every surface frame (RECKONING §0 names it as
+the blocking axis), so a green meadow standing on a cyan floor is still a cyan
+frame.
+
+The lerp is right for the three layers that use `stops()`. Rock and soil are
+warm or achromatic, so the shortest path to a violet is a violet-grey; rime is
+*supposed* to go blue, and its own comment says why. **A green base is the one
+case where that path runs through cyan** — green plus violet is cyan, and no
+amount of it being the correct violet changes that.
+
+So the sward's shade rotates instead of lerping, and it is §9.2's two rules
+composed rather than a third set of numbers:
+
+```
+tint = shadowTint / luminance(shadowTint)      // §9.2: "normalise the hemi
+rot  = vegC · 0.62 · tint^0.30                 //  colour to unit luminance so
+shade = rot · 0.80 + shadowTint · 0.040        //  it can rotate hue without
+                                               //  ever bleaching the palette"
+```
+
+104°–143° across the draw, and the last line is §9.2's shadow blend verbatim —
+the one `paint.js:92` already implements. A multiply by a unit-luminance tint
+cannot leave the green band for the same reason `SKY_TINT` cannot: it scales
+channels the leaf already has instead of adding ones it does not.
+
+**One thing fell out that is worth recording as evidence.** §9.1's shadow tint
+was measured off a Ghibli frame by hand. Normalised to unit luminance it is
+`0.673 / 0.980 / 2.157`. `SKY_TINT`, derived from 1/λ⁴ at the sRGB primaries,
+is `0.648 / 1.000 / 1.943`. **The painter and the physics agree to about a
+tenth**, which is a better argument for §9.1 than anything in §9.1.

@@ -9721,6 +9721,94 @@ function suiteGreen() {
       'and at the reference\'s own base it lands on the reference\'s own #b3ad6a');
   }
 
+  // --- 2b · the ground under the blades, which is the other half of it -----
+  //
+  // Fixing `grassPalette()` fixed the blades and left the ground teal, and the
+  // ground is more than half of every surface frame. `materialPalette()`'s
+  // sward layer built its shade as a lerp toward `shadowTint` -- #5C6E9E, 224
+  // degrees -- at 0.20. That is right for the three layers that use `stops()`:
+  // rock and soil are warm or achromatic, so the path to a violet is a
+  // violet-grey, and rime is meant to go blue. A green base is the one case
+  // where the path runs through cyan, and it did, at 148-163 degrees across
+  // the whole draw.
+  //
+  // The sward's shade rotates instead: multiply by the tint normalised to unit
+  // luminance (§9.2's own rule for the hemispheric ambient), then §9.2's
+  // literal shadow blend. A multiply cannot leave the green band because it
+  // scales channels the leaf has rather than adding ones it does not.
+  {
+    const L = lightFor(5800, 13.5);
+    let worst = -1, worstAt = null, blueLayer = null;
+    for (let i = 0; i <= 400; i++) {
+      const u = i / 400;
+      for (const inh of [false, true]) {
+        const v = vegetationHSL(u, inh);
+        const c = hsl2rgb(v.h, v.s, v.l);
+        const pp = {
+          seed: 12345, typeId: 1,
+          vegetation: { r: c[0], g: c[1], b: c[2] },
+          colA: { r: 0.30, g: 0.20, b: 0.14 },
+          colB: { r: 0.52, g: 0.47, b: 0.42 },
+          colC: { r: c[0], g: c[1], b: c[2] },
+        };
+        const sw = materialPalette(pp, L).find((m) => m.name === 'sward');
+        for (const k of ['shade', 'mid', 'lit']) {
+          const h = hueOf(sw[k]);
+          if (h > worst) { worst = h; worstAt = { k, u: u.toFixed(2), inh, c: hex(sw[k]) }; }
+          if (!inBand(sw[k])) blueLayer ||= { k, u, inh, c: hex(sw[k]), hue: h.toFixed(1) };
+        }
+      }
+    }
+    ok('the ground\'s sward layer is inside the band too, in all three stops',
+      blueLayer === null, blueLayer ? JSON.stringify(blueLayer)
+        : `coolest is ${worst.toFixed(1)} deg (${worstAt.k} ${worstAt.c}), against `
+          + 'the 163 deg the lerp reached — and this is more than half the frame');
+
+    // the lerp, kept as the thing the check is against rather than as a memory
+    ok('and the lerp it replaced really did leave it, on the same worlds',
+      (() => {
+        for (let i = 0; i <= 200; i++) {
+          const v = vegetationHSL(i / 200, true);
+          const c = hsl2rgb(v.h, v.s, v.l);
+          const old = [0, 1, 2].map((j) => c[j] * 0.62 + (L.shadowTint[j] - c[j] * 0.62) * 0.20);
+          if (hueOf(old) > 150) return true;
+        }
+        return false;
+      })(),
+      'mix(vegC * 0.62, #5C6E9E, 0.20) — a green plus a violet is a cyan, and '
+      + 'no amount of it being the right violet changes that');
+
+    // Nothing else moved, and that is the claim worth pinning: three of the
+    // four layers still take the lerp, because for them it is correct.
+    ok('§9.2 · and the other three layers keep the lerp, because it suits them',
+      (() => {
+        const src = readFileSync(new URL('../src/material.js', import.meta.url), 'utf8');
+        return /shade: mix3\(scale\(base, 1 - range\), light\.shadowTint, cool\)/.test(src)
+          && /shade: mix3\(scale\(rimeC, 0\.80\), light\.shadowTint, 0\.34\)/.test(src)
+          && !/shade: mix3\(scale\(vegC/.test(src);
+      })(),
+      'snow is lit almost entirely by the sky and the sky is blue — that one '
+      + 'is not a defect and must not be "fixed" with it');
+
+    // and it is §9.2's constants doing the work, not a third set of numbers
+    ok('§9.2 · the rotation ends on the constitution\'s own shadow blend',
+      (() => {
+        const src = readFileSync(new URL('../src/material.js', import.meta.url), 'utf8');
+        return /v \* 0\.80 \+ light\.shadowTint\[i\] \* 0\.040/.test(src);
+      })(),
+      'col * 0.80 + shadowTint * 0.040, written in §9.2 and already in paint.js');
+
+    // The agreement worth recording, because it is evidence about the palette.
+    ok('and §9.1\'s hand-picked violet, normalised, is Rayleigh to a tenth',
+      (() => {
+        const t = 0.2126 * L.shadowTint[0] + 0.7152 * L.shadowTint[1] + 0.0722 * L.shadowTint[2];
+        const n = L.shadowTint.map((v) => v / t);
+        return [0, 1, 2].every((j) => Math.abs(n[j] - SKY_TINT[j]) < 0.25);
+      })(),
+      '0.673 / 0.980 / 2.157 against 1/lambda^4\'s 0.648 / 1.000 / 1.943 — the '
+      + 'palette was measured off a Ghibli frame and agrees with the physics');
+  }
+
   // --- 3 · the band, and that it is the reference's ------------------------
   {
     ok('the chlorophyll band is 85° to 117°, and it is the base of a ramp',

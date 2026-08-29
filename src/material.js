@@ -180,9 +180,35 @@ export function materialPalette(pp, light) {
     // Vegetation transmits, so its lit end runs toward yellow-green rather than
     // toward the base colour brightened — §9.5's root-to-tip hue path, one
     // material down.
+    //
+    // **Its shade rotates rather than lerps, and that is the whole difference
+    // between a shaded meadow and a lagoon.** `stops()` above blends toward
+    // `shadowTint` (#5C6E9E, 224°) as a lerp, which is right for the three
+    // materials that use it — rock and soil are warm or achromatic, so the
+    // shortest path to a violet is a violet-grey, and rime is *supposed* to go
+    // blue. A green base is the one case where that path runs through cyan,
+    // and it did: 148° to 163° across the hue draw, on more than half of every
+    // surface frame, under grass that had just been fixed.
+    //
+    // So the sward's shade is §9.2's two rules composed instead of a lerp:
+    // *"normalise the hemi colour to unit luminance so it can rotate hue
+    // without ever bleaching the palette"*, then its literal shadow blend,
+    // `col·0.80 + shadowTint·0.040`. A multiply by a unit-luminance tint cannot
+    // leave the green band, for the same reason `SKY_TINT` cannot — it scales
+    // the channels the leaf already has rather than adding ones it does not.
+    //
+    // Worth recording: the constitution's hand-picked violet, normalised, comes
+    // out 0.673 / 0.980 / 2.157. `meadow.js`'s `SKY_TINT`, derived from 1/λ⁴,
+    // is 0.648 / 1.000 / 1.943. §9.1's palette was measured off a Ghibli frame
+    // and it agrees with Rayleigh to about a tenth.
     {
       name: 'sward',
-      shade: mix3(scale(vegC, 0.62), light.shadowTint, 0.20),
+      shade: (() => {
+        const t = Math.max(lum(light.shadowTint), 1e-4);
+        const tint = light.shadowTint.map((v) => v / t);
+        const rot = vegC.map((v, i) => v * 0.62 * Math.pow(tint[i], 0.30));
+        return rot.map((v, i) => v * 0.80 + light.shadowTint[i] * 0.040);
+      })(),
       mid: vegC,
       lit: mix3(scale(vegC, 1.18), [lum(vegC) * 1.9, lum(vegC) * 2.1, lum(vegC) * 0.75], 0.42),
       rough: 0.55, grain: 0.55,
