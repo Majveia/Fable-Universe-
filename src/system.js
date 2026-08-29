@@ -236,11 +236,17 @@ export function systemParams(starSeed) {
         // The range was `0.32 + hue·0.1` — HSL 115° to 151°, so green at the
         // bottom and spring-green/teal at the top. That alone is only the cool
         // edge of plausible; what made it turquoise on screen is that it
-        // compounds with `grassPalette()`, which rotates a blade's root 62%
-        // toward a pole with blue at 4.5× because a sward's base is lit by
-        // skylight. From a 151° base that lands the root, the hollow and half
-        // the mosaic past cyan — which is most of the mass of a distant field.
-        // `src/meadow.js` carries the full argument and the arithmetic.
+        // compounded with `grassPalette()`, whose cool pole carried blue at
+        // 4.5× against red at 0.40 — an 11.3× spread ported from a reference
+        // whose grass is teal on purpose — and rotated a blade's root 62% onto
+        // it. From a 151° base that landed the root, the hollow and half the
+        // mosaic past cyan, which is most of the mass of a distant field.
+        //
+        // Both halves are fixed and they were separate bugs. This band is
+        // chlorophyll now, and the pole is the sky's own 1/λ⁴ spectrum applied
+        // as a reflectance (`SKY_TINT`, a 3.0× spread) rather than a set of
+        // coefficients. `src/meadow.js` carries the argument and the arithmetic;
+        // `RAMP.legacy` still reaches the old pole, behind `?veg=0`.
         //
         // §3's weirdness budget is enforced here, which is where the
         // constitution says to enforce it: "in the seed→biome function." The top
