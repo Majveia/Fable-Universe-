@@ -232,6 +232,23 @@ const scale3 = (c, k) => [c[0] * k, c[1] * k, c[2] * k];
  * only light down there is the sky's.
  */
 /**
+ * The sky's spectrum, as a reflectance modulation, green-normalised.
+ *
+ * Rayleigh scatters as 1/lambda^4, so at the sRGB primaries' dominant
+ * wavelengths (612 / 549 / 465 nm) skylight carries these relative
+ * intensities. This is the *whole* justification for the cool pole in
+ * `grassPalette()`: a root sees sky and almost nothing else, and what the eye
+ * gets back is that light times the leaf's own reflectance. Multiplying a
+ * green base by this cannot leave the green band -- the spread is 3x, and
+ * chlorophyll's green:blue reflectance is wider than that.
+ */
+export const SKY_TINT = [
+  Math.pow(549 / 612, 4),   // 0.6476
+  1,
+  Math.pow(549 / 465, 4),   // 1.9430
+];
+
+/**
  * The vertical ramp, as luminance multipliers and hue rotations.
  *
  * Measured off `docs/reference/sakura-realm/src/world/grass.js`, whose shipped
@@ -263,6 +280,7 @@ export const RAMP = {
     patchA: [1.30, 0.22], patchB: [0.84, -0.18],
     patchC: [1.60, 0.10], patchD: [0.70, -0.34],
     hollow: [0.22, -0.48],
+    pole: SKY_TINT,
   },
   legacy: {
     root: [0.30, -0.62], low: [0.52, -0.30], mid: [1.00, 0.00],
@@ -271,6 +289,16 @@ export const RAMP = {
     patchA: [1.18, 0.22], patchB: [0.86, -0.18],
     patchC: [1.34, 0.10], patchD: [0.74, -0.34],
     hollow: [0.22, -0.48],
+    // The pole belongs to the ramp, not to the function.
+    //
+    // `?veg=0`'s stated job is to restore the frame every capture before the
+    // flag was shot with, so the A/B can be taken on one machine (§7.4). If the
+    // cool pole moved under both ramps then the flag would no longer isolate
+    // anything -- it would compare the old stops under a new pole against the
+    // new stops under the same one, which is a different experiment. So the
+    // teal pole stays here, attached to the frame it actually produced, and is
+    // reachable only behind the flag that says "show me what it used to be".
+    pole: [0.40, 0.95, 4.5],
   },
 };
 
@@ -287,8 +315,20 @@ export function grassPalette(base, ramp = RAMP.legacy) {
   // any world's vegetation. `suiteMeadow` holds them to that.
   const L = Math.max(lum3(base), 1e-4);
   const norm = (c) => scale3(c, L / Math.max(lum3(c), 1e-4));
-  // skylight is blue and it is nearly all the light a root gets
-  const cool = norm([base[0] * 0.40, base[1] * 0.95, base[2] * 4.5]);
+  // skylight is blue and it is nearly all the light a root gets — but it
+  // reaches the eye having been *reflected off chlorophyll*, so the pole is
+  // the base modulated by the sky's spectrum, at the ratio Rayleigh actually
+  // gives (SKY_TINT). The coefficients here used to be 0.40 / 0.95 / 4.5, an
+  // 11× spread inherited from hoshi-no-tani, whose grass really is teal —
+  // its own root stop is #2B564F, 170°. Against 1/λ⁴'s 3× spread that was
+  // manufacturing blue no leaf ever reflected, and it took the root to 175°
+  // and the hollow to 164°: cyan, on every world, in the two stops that
+  // `bladeColour()` builds both of its shade bands out of. Chosen reference
+  // (`sakura-realm`) has no cool stop at all — its darkest grass colour is
+  // `#3a5630` at 104° and its blue enters only as `albedo * skyColour`,
+  // which cannot leave the green band because the albedo does not.
+  const pole = ramp.pole ?? SKY_TINT;
+  const cool = norm([base[0] * pole[0], base[1] * pole[1], base[2] * pole[2]]);
   // a tip is thin enough to be lit through, so it runs warm
   const warm = norm([base[0] * 1.9, base[1] * 0.7, base[2] * 0.8]);
 

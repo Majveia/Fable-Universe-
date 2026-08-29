@@ -308,3 +308,84 @@ in proportion to its height.
 2. `_buildSky` reads `this.pp`; the atmosphere block used a bare `pp`.
 3. An over-broad regex in my own edit ate `QUALITY` and `SAT_AMOUNT` from
    `verify.js`'s imports, and I reported 1019/1019 for a run that threw.
+
+## The teal, found afterwards
+
+`?veg=1` shipped and the meadow still read teal in the shade. It was not the
+atmosphere and not the density: an isolation render with the painted sky,
+`?paint=0` and desktop density held it. It was one line.
+
+`grassPalette()` mixes each stop toward one of two poles, and the cool pole was
+
+```
+[base.r * 0.40, base.g * 0.95, base.b * 4.5]
+```
+
+with `root` rotating 62% of the way onto it. That is an **11.3× spread** between
+the red and blue coefficients, and it was ported from `hoshi-no-tani`, whose
+grass is teal on purpose — its own root stop is `#2B564F`, **170°**. Against a
+green base it manufactures blue no leaf reflected, and it took AEON's root to
+**175°** and its hollow to **164°**, on every world. `bladeColour()` builds
+*both* of its shade bands out of those two stops, so every blade not facing the
+sun was shaded cyan.
+
+`sakura-realm`, the reference this was pointed at, has no cool stop at all —
+`#3a5630` / `#82a552` / `#b3ad6a`, all green-to-straw — and its skylight enters
+as `albedo * skyColour`, which cannot leave the green band because the albedo
+does not.
+
+**The fix is the physics the old coefficients were standing in for.** Skylight
+*is* blue and it *is* nearly all a root gets, but it reaches the eye having been
+reflected off chlorophyll. So the pole is the base modulated by the sky's own
+spectrum at the ratio Rayleigh gives — `1/λ⁴` at the sRGB primaries' dominant
+wavelengths, 612 / 549 / 465 nm:
+
+```
+SKY_TINT = [0.648, 1.000, 1.943]      a 3.0× spread, against 11.3×
+```
+
+Derived in `meadow.js` from the wavelengths rather than written down. The root
+goes `#1b312f` → `#1e3222`, **175° → 133°**, and the coolest stop anywhere in
+the whole hue draw is **136.4°**. The warm pole is untouched, so the tip and dry
+stops still land on the reference's own `#82a552` and `#b3ad6a`.
+
+### The gate was the other half of the bug
+
+`?veg=1` shipped with a check that read *"no stop, on any world, comes out
+blue"*, and it passed — 104,026 stops across 4,001 draws. It was testing
+**channel dominance**: `g > r && g > b`. `#223f36` is R34 G63 B54, so green wins
+by nine in both directions and it passes — and it is 161°, and it is the colour
+that was on the screen. **The entire cyan quadrant, 150°–180°, is green-dominant
+by construction.** Dominance cannot separate a leaf from a lagoon.
+
+The guarantee is now stated in the space the eye judges it in: every stop but
+the straw inside **60°–150°**, chartreuse to emerald, measured as hue. Dominance
+is kept alongside it — it was insufficient, not wrong.
+
+Three other clauses moved, and each was pinning the defect as a requirement:
+
+- `§9.2 · the root is blue-shifted` was one-sided, `> mid × 1.8`. A one-sided
+  bound on a blue shift rewards more blue without limit, which is exactly what
+  happened. The direction is right and is kept; a **ceiling** was added at 1.8×,
+  and the shipped ramp runs 1.59×.
+- `the transfer reproduces the reference's own blade ramp` held all five stops
+  to `hoshi-no-tani` within 12/255. Its two darkest stops are 170° and 146°, so
+  the clause and the ask are in direct conflict. It now holds the warm half —
+  mid, upper, tip, where both references agree and the transfer lands within
+  9/255 — and **asserts the two cool stops diverge toward green**: root 114°
+  against its 170, low 102° against 137.
+- The pole moved into the `RAMP` table rather than into the function, so
+  `?veg=0` restores the frame the old captures were shot with, pole included.
+  Otherwise the A/B compares two halves of one frame instead of two frames.
+
+### One thing I got wrong along the way
+
+I read `BLADE_FRAG` and claimed `b.lit` was unreachable — that `wrap` sat near
+0.46 and `smoothstep(0.52, 0.86, wrap)` never fired. That is wrong. A blade is a
+ribbon whose face normal is roughly horizontal, the sun at 8–18° is also roughly
+horizontal, and `if (!gl_FrontFacing) N = -N;` two-sides it, so a blade turned
+toward the sun reaches `ndl ≈ 0.9` and `wrap ≈ 1.0`. `b.lit` is reached by every
+blade facing the light. The one real consequence is at distance, where `N` is
+flattened 66% toward vertical and a low sun gives `wrap ≈ 0.55` — the toe of the
+upper band, which is correct: far grass should not sparkle. There was one bug
+here, not two.

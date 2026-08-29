@@ -117,7 +117,7 @@ import { SILHOUETTES, coverageOf, maskData } from '../src/silhouette.js';
 import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import {
-  CHLOROPHYLL, MULT_MAX, RAMP, SWARD_MODES, VEG_WEIRD, exoticHSL, swardAt,
+  CHLOROPHYLL, MULT_MAX, RAMP, SKY_TINT, SWARD_MODES, VEG_WEIRD, exoticHSL, swardAt,
   vegetationHSL,
 } from '../src/meadow.js';
 import { HABITS, WOOD, curvature, forkRadii, growTree, lengthOf, radiusForHeight, tipsOf } from '../src/tree.js';
@@ -4983,8 +4983,55 @@ function suiteMeadow() {
     // constant read out of an accumulating loop is not the constant that was
     // measured, and a tolerance set to the reported optimum fails by one code
     // value for reasons that have nothing to do with colour.
-    ok('§9.5 · the transfer reproduces the reference\'s own blade ramp',
-      worst <= 12, `worst channel error ${worst} of 255 at "${worstK}"`);
+    // **Where the two references disagree, and which one wins.**
+    //
+    // `REF` above is hoshi-no-tani's ramp, and its two darkest stops are not
+    // green: `#2B564F` is 170 degrees and `#436E4F` is 146. That is deliberate
+    // in *that* file — its whole grade is cool — and it was ported here as the
+    // cool pole's 0.40/0.95/4.5, which is how AEON's root arrived at 175
+    // degrees on every world.
+    //
+    // sakura-realm, which is the reference this project was pointed at, has no
+    // cool stop at all: three colours, `#3a5630` / `#82a552` / `#b3ad6a`, all
+    // green-to-straw, and its skylight enters as `albedo * skyColour` where a
+    // green albedo keeps it green. So the disagreement is real and it is not
+    // splittable. The warm half of the ramp is held to hoshi-no-tani, because
+    // both references agree there and the transfer does reproduce it. The two
+    // cool stops diverge on purpose, and the divergence is asserted rather than
+    // tolerated -- it has to go toward green, not merely differ.
+    const warm = ['mid', 'upper', 'tip'];
+    let worstWarm = 0, worstWarmK = '';
+    for (const k of warm) {
+      const e = Math.max(...[0, 1, 2].map(
+        (i) => Math.abs(enc(p[k][i]) - enc(hexToLinear(REF[k])[i]))));
+      if (e > worstWarm) { worstWarm = e; worstWarmK = k; }
+    }
+    ok('§9.5 · the transfer reproduces the reference\'s blade ramp where the two agree',
+      worstWarm <= 12, `worst channel error ${worstWarm} of 255 at "${worstWarmK}" `
+      + 'across mid, upper and tip');
+
+    const hueDeg = (c) => {
+      const [r, g, b] = c.map((v) => Math.min(Math.max(
+        v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055, 0), 1));
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+      if (d < 1e-9) return NaN;
+      const h = 60 * (mx === r ? (((g - b) / d) % 6) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4);
+      return h < 0 ? h + 360 : h;
+    };
+    // `p` above is the LEGACY ramp -- `grassPalette`'s own default -- and that
+    // is the right thing for it to be: legacy is the hoshi-calibrated ramp, so
+    // it is the one whose warm half should land on hoshi's own hexes, and it is
+    // *supposed* to stay cool at the root. What ships is `RAMP.reference`, and
+    // the greenness claims belong to it by name rather than to whichever ramp a
+    // default parameter happens to point at.
+    const ps = grassPalette(hexToLinear(REF.mid), RAMP.reference);
+    ok('and the shipped ramp\'s two cool stops diverge from it toward green',
+      hueDeg(ps.root) < hueDeg(hexToLinear(REF.root)) - 20
+      && hueDeg(ps.low) < hueDeg(hexToLinear(REF.low)) - 5
+      && hueDeg(ps.root) <= 150 && hueDeg(ps.low) <= 150,
+      `root ${hueDeg(ps.root).toFixed(0)} deg against its ${hueDeg(hexToLinear(REF.root)).toFixed(0)}, `
+      + `low ${hueDeg(ps.low).toFixed(0)} against ${hueDeg(hexToLinear(REF.low)).toFixed(0)} `
+      + '— the whole reason the meadow read teal');
 
     // the shape, which is what actually has to hold on any world
     const lum = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
@@ -4995,9 +5042,23 @@ function suiteMeadow() {
     // "shadows change hue, they do not go black" (§9.2) — the root is the
     // darkest thing on a blade and it must still be a colour
     const bl = (c) => c[2] / Math.max(c[1], 1e-6);
+    // Two-sided on purpose, and the upper bound is the clause that was missing.
+    //
+    // The old form was `> mid * 1.8` and nothing above. A one-sided bound on a
+    // blue shift is a gate that rewards more blue without limit, and that is
+    // exactly what it did: the pole it was passing at was taking the root to
+    // 175 degrees. The *direction* was never wrong -- skylight really is all a
+    // root gets, and it really is blue -- so the direction is kept and a
+    // ceiling is put on it, at the point where the shift stops being a hue and
+    // starts being a different colour.
     ok('§9.2 · the root is blue-shifted, because skylight is all that reaches it',
-      bl(p.root) > bl(p.mid) * 1.8,
+      bl(p.root) > bl(p.mid) * 1.25,
       `blue/green ${bl(p.root).toFixed(3)} at the root vs ${bl(p.mid).toFixed(3)} at mid`);
+    ok('and bounded on the shipped ramp, because it reflects off chlorophyll first',
+      bl(ps.root) < bl(ps.mid) * 1.8 && hueDeg(ps.root) <= 150,
+      `${(bl(ps.root) / bl(ps.mid)).toFixed(2)}x, against the ${(bl(p.root) / bl(p.mid)).toFixed(2)}x `
+      + 'the legacy pole runs — which is why ?veg=0 keeps its own pole rather '
+      + 'than borrowing this one');
     ok('and the tip is warm-shifted, because it is thin enough to be lit through',
       p.tip[0] / p.tip[1] > p.mid[0] / p.mid[1] * 1.3);
 
@@ -9509,6 +9570,33 @@ function suiteGreen() {
   const green = (c) => c[1] > c[0] && c[1] > c[2];
   const notBlue = (c) => c[2] < c[0] || c[2] < c[1];
 
+  // The gate that let the teal through, and what replaced it.
+  //
+  // `green()` above is channel dominance, and it is too weak to mean what it
+  // was written to mean. `#223f36` is R34 G63 B54: green wins by nine over red
+  // and by nine over blue, so it passes -- and it sits at 161 degrees, which is
+  // cyan, and it was the root stop on every world. Dominance cannot separate a
+  // leaf from a lagoon because the whole cyan quadrant from 150 to 180 degrees
+  // is green-dominant by construction.
+  //
+  // So the guarantee is stated in the space the eye actually judges it in.
+  // GREEN_BAND is 60 to 150 degrees: chartreuse at one end, emerald at the
+  // other, and nothing past the point where a green starts reading as water.
+  // The base band is 85-117 (CHLOROPHYLL); the ramp's rotations spend the rest.
+  // Dominance is kept as well, because it is not wrong, only insufficient.
+  const GREEN_BAND = [60, 150];
+  const hueOf = (c) => {
+    const [r, g, b] = c.map((v) => Math.min(Math.max(Math.pow(Math.max(v, 0), 1 / 2.2), 0), 1));
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+    if (d < 1e-9) return NaN;                     // achromatic: no hue to judge
+    const h = 60 * (mx === r ? (((g - b) / d) % 6) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4);
+    return h < 0 ? h + 360 : h;
+  };
+  const inBand = (c) => {
+    const h = hueOf(c);
+    return Number.isNaN(h) || (h >= GREEN_BAND[0] && h <= GREEN_BAND[1]);
+  };
+
   // --- 1 · the defect, by name --------------------------------------------
   {
     // `system.js`'s ocean branch, verbatim, as it still is — this is the water
@@ -9541,7 +9629,7 @@ function suiteGreen() {
   // --- 2 · the guarantee, over the whole draw -----------------------------
   {
     const N = 4001;
-    let blue = null, notGreen = null, checked = 0;
+    let blue = null, notGreen = null, outOfBand = null, checked = 0, maxHue = -1, maxAt = null;
     for (let i = 0; i < N; i++) {
       const u = i / (N - 1);
       for (const inhabited of [false, true]) {
@@ -9551,6 +9639,10 @@ function suiteGreen() {
           checked++;
           if (!notBlue(c)) blue ||= { u, inhabited, name, c: hex(c) };
           if (name !== 'dry' && !green(c)) notGreen ||= { u, inhabited, name, c: hex(c) };
+          if (name === 'dry') continue;
+          if (!inBand(c)) outOfBand ||= { u, inhabited, name, c: hex(c), hue: hueOf(c).toFixed(1) };
+          const h = hueOf(c);
+          if (h > maxHue) { maxHue = h; maxAt = { name, u, inhabited, c: hex(c) }; }
         }
       }
     }
@@ -9559,6 +9651,51 @@ function suiteGreen() {
     ok('and every stop but the straw is green-dominant',
       notGreen === null, notGreen ? JSON.stringify(notGreen)
         : 'root, hollow and the two cool mosaic patches included');
+    // The clause the old gate could not state. This is the one that fails if
+    // the cool pole ever goes back to manufacturing blue.
+    ok(`and every stop but the straw is inside ${GREEN_BAND[0]}-${GREEN_BAND[1]} degrees, `
+      + 'which is what "green" means to an eye',
+      outOfBand === null, outOfBand ? JSON.stringify(outOfBand)
+        : `coolest stop over the whole draw is ${maxHue.toFixed(1)} deg `
+          + `(${maxAt.name} ${maxAt.c}), against 150 deg where green becomes water`);
+
+    // The defect, pinned as a regression rather than as a memory: the pole this
+    // replaced, run through the same draw, is caught by the new gate and passes
+    // the old one. That asymmetry IS the finding, so it is asserted.
+    ok('the pole this replaced is cyan, and the dominance test could not see it',
+      (() => {
+        const L = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        const base = hsl2rgb(0.2361 + 0.5 * (0.326 - 0.2361), 0.34, 0.32);
+        const l = Math.max(L(base), 1e-4);
+        const old = [base[0] * 0.40, base[1] * 0.95, base[2] * 4.5];
+        const k = l / Math.max(L(old), 1e-4);
+        const cool = [old[0] * k, old[1] * k, old[2] * k];
+        // the root stop: 62% of the way to that pole, scaled by 0.30
+        const root = cool.map((v, j) => (base[j] + (v - base[j]) * 0.62) * 0.30);
+        return green(root) && notBlue(root) && !inBand(root) && hueOf(root) > 155;
+      })(),
+      'hoshi-no-tani\'s own root is #2B564F at 170 deg — the pole was ported from '
+      + 'a reference whose grass is teal on purpose, into one whose grass is not');
+
+    // and the flag really does still reach it, which is the point of keeping it
+    ok('§7.4 · ?veg=0 restores the pole as well as the stops',
+      (() => {
+        const base = hsl2rgb(0.2361 + 0.5 * (0.326 - 0.2361), 0.34, 0.32);
+        const legacy = grassPalette(base, RAMP.legacy);
+        const shipped = grassPalette(base, RAMP.reference);
+        return !inBand(legacy.root) && hueOf(legacy.root) > 155 && inBand(shipped.root);
+      })(),
+      `legacy root ${hex(grassPalette(hsl2rgb(0.2811, 0.34, 0.32), RAMP.legacy).root)} at `
+      + `${hueOf(grassPalette(hsl2rgb(0.2811, 0.34, 0.32), RAMP.legacy).root).toFixed(0)} deg, `
+      + `shipped ${hex(grassPalette(hsl2rgb(0.2811, 0.34, 0.32), RAMP.reference).root)} at `
+      + `${hueOf(grassPalette(hsl2rgb(0.2811, 0.34, 0.32), RAMP.reference).root).toFixed(0)} `
+      + '— the A/B compares two frames, not two halves of one');
+
+    ok('and the pole that replaced it is 1/lambda^4 rather than a coefficient',
+      Math.abs(SKY_TINT[0] - Math.pow(549 / 612, 4)) < 1e-12
+      && SKY_TINT[1] === 1 && Math.abs(SKY_TINT[2] - Math.pow(549 / 465, 4)) < 1e-12,
+      `${SKY_TINT.map((v) => v.toFixed(3)).join(' / ')} — a 3.0x spread against the `
+      + 'old 11.3x, and chlorophyll\'s own green:blue reflectance is wider than 3');
     // The straw, stated the way it is actually true.
     //
     // "Red-dominant on every world" was the first form and no ramp satisfies
