@@ -1,4 +1,14 @@
-// Flying it yourself, at system scale — CLAUDE.md §4's "travel", §6 M5, §3.
+// The stopping bound — CLAUDE.md §4's "travel", §6 M5, §3.
+//
+// Named `governor.js` and not `pilot.js`, which is what it was called first.
+// `src/pilot.js` already exists on the trunk and is a different thing entirely
+// — the crew and the seat, §2.5 and §M4, walking a deck and sitting down in it.
+// Two unrelated modules reached for the same word and the trunk's had it first.
+//
+// The rename is an improvement rather than a concession. Nothing in this file
+// is about a pilot: it is one bound, `sqrt(2·a·d)`, and everything else here
+// exists to apply it. The `?pilot=` URL flag keeps its name — that one does not
+// collide, because the seat ships behind `?cab=`.
 //
 // `system.js` has had a cruise since long before this file: press J, pick a
 // heading, and a relativistic beta ramps from 0.02 to 0.985 while the sky

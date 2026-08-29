@@ -137,7 +137,7 @@ import { FACES, surfaceRadius, uvToDir } from '../src/tilebuild.js';
 import {
   LINK_GRID, PILOT, Pilot, decodeCraft, encodeCraft, governedSpeed,
   speedLimit, stoppingDistance,
-} from '../src/pilot.js';
+} from '../src/governor.js';
 
 let failures = 0;
 let checks = 0;
@@ -9850,7 +9850,7 @@ function suiteTroffer() {
 
 
 // ---------------------------------------------------------------------------
-// suite: pilot — §4's "travel", §2.4, §11
+// suite: governor — §4's "travel", §2.4, §11
 //
 // The governor is one line of algebra, so checking the algebra against itself
 // would prove nothing. §7.3 asks for an independent second derivation, and the
@@ -9863,8 +9863,8 @@ function suiteTroffer() {
 // count what happens — and it is the one that would have caught the arbitrary
 // falloff this file exists instead of.
 
-function suitePilot() {
-  console.log('\npilot — the stopping bound, flown rather than asserted');
+function suiteGovernor() {
+  console.log('\ngovernor — the stopping bound, flown rather than asserted');
 
   const R = 40;                       // a world, in system units
   const stop = R * PILOT.standoff;
@@ -9980,7 +9980,7 @@ function suitePilot() {
   // wrongness was invisible: system.js asked `rel.beta < 0.09`, the pilot
   // overwrote rel.beta after the check had run, and so an interstellar arrival
   // under ?pilot=1 handed the helm back within a frame or two of engaging.
-  // Nothing caught it — pilot.js was correct, boot.js proved construction did
+  // Nothing caught it — governor.js was correct, boot.js proved construction did
   // not throw, and the defect lived in the wiring between them. These are the
   // checks that would have.
   {
@@ -10097,7 +10097,7 @@ const suites = {
   paint: suitePaint, landing: suiteLanding, ground: suiteGround,
   walk: suiteWalk, material: suiteMaterial, opening: suiteOpening,
   ocean: suiteOcean, horizon: suiteHorizon, wind: suiteWind, meadow: suiteMeadow,
-  vehicle: suiteVehicle, pilot: suitePilot,
+  vehicle: suiteVehicle, governor: suiteGovernor,
 };
 
 for (const [name, fn] of Object.entries(suites)) {

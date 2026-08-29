@@ -295,7 +295,7 @@ class App {
 
            `craftLink()` returns null unless `?pilot=1` is on and the helm is
            actually taken, so a shared URL from the default build is byte-for-
-           byte what it always was. The value is quantised in `pilot.js` — §11,
+           byte what it always was. The value is quantised in `governor.js` — §11,
            because this reaches a *place* and a place must not ride a last
            bit. */
         const cr = sc.craftLink?.();

@@ -25,7 +25,7 @@ import {
   makeRingMaterial, blackbodyRGB, NOISE_GLSL,
 } from './planet.js';
 import { vegetationHSL } from './meadow.js';
-import { Pilot, decodeCraft, encodeCraft } from './pilot.js';
+import { Pilot, decodeCraft, encodeCraft } from './governor.js';
 import { planck, spectrumToXYZ, xyzToLinearSRGB, toGamut } from './starlight.js';
 
 const AU_DRAW = 46;      // display units at 1 AU
@@ -1492,7 +1492,7 @@ export class SystemScale {
   update(dt) {
     // relativistic cruise: your second is γ of everyone else's
     if (this.rel.on) {
-      /* Under `?pilot=1` the throttle belongs to `pilot.js` and this
+      /* Under `?pilot=1` the throttle belongs to `governor.js` and this
          integration must not run at all.
          Both models were live at once for one commit, and the way that failed
          is worth keeping: this block drove `rel.beta` from `rel.target`, and
@@ -1535,7 +1535,7 @@ export class SystemScale {
     }
     if (PILOT_ON && this.rel.on) {
       /* The governed cruise — §7.4, `?pilot=1`.
-         `pilot.js` owns every number; this is the wiring. The throttle keys are
+         `governor.js` owns every number; this is the wiring. The throttle keys are
          the same W/S the old cruise used and the beta they drive is the same
          beta the sky aberrates on, so the relativistic view is unchanged: what
          changes is that the speed is now bounded by what the craft can still
