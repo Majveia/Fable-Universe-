@@ -397,9 +397,29 @@ anywhere in this plan; triangles and draw calls are.
 
 ## 8 · Notes for the sessions this one is not
 
-- **`docs/plans/SAKURA.md` has no §12 or §13** on any branch in the repository —
-  checked across all 18 remote heads. The brief cites §13 as its source; its
-  content is in the brief itself and this plan works from that.
+- **`SAKURA.md` §§12–13 have since arrived** with #88's merge into the base, and
+  they are now read. §13 is this plan's brief, near-verbatim, and it reaches the
+  same diagnosis independently — the far cutoff, and *"the reference solves the
+  same problem by making distant grass a ground colour rather than blades."*
+  (When this plan was written they existed on no branch; that note is superseded
+  rather than wrong.)
+
+  **Two places this plan departs from §13, both deliberate.**
+
+  §13 says ring 0 *"gets 413 k"* while rings 2–3 take 2.24 M, and calls the near
+  field *"starved relative to what it could afford."* That is true of the split
+  between rings and it is **not** true of ring 0 in absolute terms: at its own
+  quoted distance ring 0 sits at **17.2× ground overdraw** against the
+  reference's ~2.4×, so the cap takes blades *away* from it too — 62% kept at
+  720p. What the near field gains is legibility, not count, and the number it
+  lands on (205.7 blades/m²) is the reference's own.
+
+  §13 also says a ring-0 blade is *"nine pixels wide."* It is **1.70 px**, and
+  1.70 at 4, 8, 12, 18 and 26 m alike, because `meadowWidth()` returns a width
+  *defined in pixels*. That is the same estimate `quality.js`'s `curvedRings`
+  note made, and #85 — now merged into this branch's base — disproved it and put
+  `bladePixels()` in the repository so it cannot be made a third time. The 9 px
+  figure is what you get at half a metre.
 - **`tools/shot.js` has no `--want meadow`** (`WANT` is `{any, life, aurora}`,
   and an unknown key falls through to `any`) and **`tools/lib.js` has no `thumb`
   tier** (`TIERS` is `{desktop, mobile, low}`). Both are hands-off; this plan
