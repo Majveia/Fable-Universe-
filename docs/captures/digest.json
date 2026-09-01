@@ -1,5 +1,5 @@
 {
-  "sha256": "d33f6d933f1642d35a2921df814e9d194ad45a9a8eb8e5428dc65e7cf0bb73bf",
+  "sha256": "17664949bc75f5df2d555c39dab1f331f1253e4f950055ae6abe8c262f6fef6d",
   "suites": {
     "hash · §2.3": {
       "sha256": "d73bffb66bc3581a598cf18b2b87fda88854faea110db476c1d2c69fbd26af20",
@@ -34,11 +34,11 @@
       "samples": 1340
     },
     "tree · §M2": {
-      "sha256": "85feb37d354b3549504a6970a5b62de65c3cf9124287aa9b01d9b772c3b18435",
-      "samples": 288
+      "sha256": "422065b00d6cf39a06ddab15abe6ef8e20468bc1f0f8105d343e40b735978bcb",
+      "samples": 289
     }
   },
-  "samples": 7521,
+  "samples": 7522,
   "machine": {
     "node": "v22.22.2",
     "v8": "12.4.254.21-node.39",

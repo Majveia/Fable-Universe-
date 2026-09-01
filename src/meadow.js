@@ -119,6 +119,226 @@ export function coverage(r, d) {
 /** the same trade without the height scale, which is what nearly balances */
 export const widthCoverage = (r, d) => density(r, d) * RINGS[r].wpx;
 
+// ---------------------------------------------------------------------------
+// Coverage — the quantity the law does not bound, and the one the eye reads
+//
+// `drawcensus.js` has carried this contradiction in its header since it was
+// written:
+//
+//   > In the frame, there is no grass. Visually confirmed at magnification.
+//   > In the CPU's bookkeeping, there are 3.5 M blades across 162 chunks.
+//   > Both are facts and they do not agree.
+//
+// They agree through **ground overdraw**. Frontal area per square metre of
+// ground is `density · width · height`; the ground's own screen area per square
+// metre is `sin θ ≈ eye/d`. The ratio is how many blades deep you are looking,
+// and it is simultaneously the fill cost and the reason a sward reads as a
+// sward instead of as a wash.
+//
+// Measured on the shipped low row at each ring's own quoted distance: **17.2×,
+// 36.1×, 108.1×, 201.8×.** The reference states its own target in words —
+// 26,000 blades over an 11.25 m chunk, 205/m², *"the density at which the
+// ground stops being visible between blades"*, against a previous 53/m² that
+// *"left the soil showing through everywhere"* — and at its blade dimensions
+// that is about **2×**.
+//
+// So the frame is looking through seventeen to two hundred layers of blade
+// where the reference looks through two, and that single number is both the
+// wash and the 8.4 M triangles. They were never two problems.
+//
+// **Why the density law does not already prevent this.** Coverage is not
+// density, and three of its four factors grow with distance where density
+// falls: inside `dn` the density is deliberately *flat*, so coverage climbs as
+// `d²` on one ring from one constant; `wpx` and `hs` both step up outward
+// (1.70 → 4.00 px, 1.00 → 1.95); and `sin θ` falls as `1/d`, which is the
+// grazing incidence a floor has and a wall does not. Nothing multiplies them
+// together and checks the result. This does.
+
+/** eye height, metres — §6 M4's, and the datum grazing incidence is measured from */
+export const EYE_H = 1.68;
+
+/** a blade's mean height as a fraction of its ring's height scale */
+const BLADE_H = 0.71;
+
+/**
+ * The blade's own width in metres — the JS side of `meadowWidth` and the two
+ * clamps `BLADE_VERT` wraps it in.
+ *
+ * It has to exist in JS because coverage needs it and §9.5's rule is stated in
+ * pixels, which no shader nobody can run in node will ever tell you.
+ *
+ * Three terms, and which binds is most of the answer:
+ *
+ *   · `wpx · d / pxPerRadian` — the angular floor. Note what this is: not a
+ *     floor under a natural width, because no natural width is an input. It is
+ *     the width, and it is constant *in pixels* by construction.
+ *   · `uWidth · 0.22` — a 6.2 mm metric minimum, the only term that ever
+ *     exceeds the pixel floor, and only inside about two metres.
+ *   · `1/√density` — the spacing cap, and the one that needs bounding: it grows
+ *     without limit as density falls, and at ring 3's far edge it already makes
+ *     a "blade" **3.45 m wide**. Thinning the far field without bounding it
+ *     would make that worse rather than better — the marks would grow to fill
+ *     exactly what they had stopped covering.
+ */
+export function bladeWidth(r, d, pxPerRadian, dens, uWidth = 0.028, maxW = Infinity) {
+  const n = Math.max(dens, 1e-9);
+  const floor = Math.max(RINGS[r].wpx * d / Math.max(pxPerRadian, 1), 0.004);
+  return Math.min(Math.max(floor, uWidth * 0.22), 1 / Math.sqrt(n), maxW);
+}
+
+/**
+ * How many times over the ground is hidden, at distance `d`, at density `dens`.
+ *
+ * `1` means the blades exactly cover the ground once. Below that the soil shows
+ * through; far above it you are looking at a mat and no individual blade
+ * resolves, which is the wash.
+ */
+export function groundOverdraw(r, d, dens, pxPerRadian, uWidth = 0.028, maxW = Infinity) {
+  const w = bladeWidth(r, d, pxPerRadian, dens, uWidth, maxW);
+  return dens * w * BLADE_H * RINGS[r].hs / (EYE_H / Math.max(d, 1e-6));
+}
+
+/**
+ * The target, and it is the reference's own criterion rather than a preference.
+ *
+ * At 1 the ground is exactly covered and the soil is on the edge of showing.
+ * The reference sits near 2 — covered twice, with enough depth that a sward
+ * reads as having an inside. Above about 6 individual blades stop separating.
+ * The shipped rows are at 17 to 202.
+ */
+export const COVER_TARGET = 2.6;
+
+/**
+ * The density multiplier that holds `groundOverdraw` at `target` for ring `r`
+ * at distance `d`.
+ *
+ * Solved rather than tuned, and solved by bisection rather than algebra because
+ * the width depends on the density through the spacing cap — halving the
+ * density widens every blade by √2, which gives back some of what was saved.
+ * That feedback is the reason a closed form would be wrong, and the reason the
+ * far rings do not thin as fast as a naive division would predict.
+ *
+ * Monotone in `target` by construction, which `suiteMeadow` checks: coverage is
+ * increasing in density, so the bisection cannot invert.
+ */
+export function coverMul(r, d, target = COVER_TARGET, pxPerRadian = 793, uWidth = 0.028, maxW = Infinity) {
+  const base = density(r, d);
+  if (!(base > 0)) return 0;
+  const t = Math.max(target, 1e-6);
+  let lo = 0, hi = 8;
+  // the shipped rows already exceed any sane target, so hi = 8 is generous;
+  // grow it anyway rather than returning a silently clamped answer
+  while (groundOverdraw(r, d, base * hi, pxPerRadian, uWidth, maxW) < t && hi < 1e6) hi *= 4;
+  for (let i = 0; i < 90; i++) {
+    const m = (lo + hi) / 2;
+    if (groundOverdraw(r, d, base * m, pxPerRadian, uWidth, maxW) < t) lo = m; else hi = m;
+  }
+  return lo;
+}
+
+/**
+ * All four multipliers, from one number.
+ *
+ * This is what replaces `grass[]`'s four hand-picked values. §5 asks for a
+ * table where *"one row change reconfigures the entire renderer"*, and a row
+ * carrying one physical target is more of that than a row carrying four
+ * numbers whose relationship to each other nothing states.
+ *
+ * It is evaluated at each ring's own `dn` — the distance the ring's density is
+ * quoted at, and the nearest point in its band where the flat-inside-`dn`
+ * region ends. Nearer than `dn` coverage is *lower*, which is the right
+ * direction: underfoot the ground should show between blades.
+ */
+export function coverMuls(target = COVER_TARGET, pxPerRadian = 793, uWidth = 0.028, maxW = Infinity, fovDeg = 52) {
+  const at = coverAt(fovDeg);
+  return RINGS.map((ring, r) => coverMul(r, at(r), target, pxPerRadian, uWidth, maxW));
+}
+
+/**
+ * Where to evaluate a ring's coverage — and it is not the ring's `dn`.
+ *
+ * `dn` is where the ring's density is *quoted*, which is a different question
+ * from where the ring is *seen*. Evaluating there set ring 0's cap by its
+ * behaviour at 7 m, and because coverage falls toward the camera — `sin θ` is
+ * `eye/d`, so looking down at ground near your feet you see a lot of it per
+ * blade — the near end went bare: **0.06× at half a metre, 0.26× at two
+ * metres.** The shipped build is thin there too (0.4× at half a metre), so the
+ * cap was deepening a hole rather than digging one, but deepening it is still
+ * the wrong direction.
+ *
+ * The right evaluation point is where the meadow first fills the frame, and
+ * that is derivable rather than chosen. The bottom third of a `fov` frame spans
+ * from `fov/6` to `fov/2` below the centre line, so the ground it lands on runs
+ * from `eye/tan(fov/2)` to `eye/tan(fov/6)` — **3.44 m to 11.0 m** at a 52°
+ * frame and a 1.68 m eye. The near edge of that is where a meadow starts being
+ * the picture, and it is the distance the cap should be set by.
+ *
+ * A ring whose band starts beyond it is evaluated at its own near edge, because
+ * the frame's lower third is not where that ring lives.
+ */
+export const lowerThirdNear = (fovDeg = 52, eye = EYE_H) =>
+  eye / Math.tan((fovDeg / 2) * Math.PI / 180);
+
+export const coverAt = (fovDeg = 52) => (r) =>
+  Math.max(RINGS[r].near, Math.min(lowerThirdNear(fovDeg), RINGS[r].far));
+
+/**
+ * The physical bound on a blade's width, in metres.
+ *
+ * The reference's own line, from its source: *"Real meadow grass is 4–10 mm
+ * across."* This is the upper end of that, doubled, because a blade here is
+ * allowed to stand in for its thinned-away neighbours up to a point — but only
+ * up to a point, and 2 cm is where a blade stops being a blade.
+ *
+ * Without it the spacing cap turns the far field into billboards as it thins,
+ * which is the failure mode that made the far rings expensive *and* wrong at
+ * the same time.
+ */
+export const BLADE_MAX_W = 0.020;
+
+/**
+ * How far the blade field reaches, in metres. Past it the ground's own colour
+ * is the grass.
+ *
+ * This is the half of the reference's design that a coverage cap alone does not
+ * supply, and the reason it does not is worth writing down because the first
+ * attempt here got it wrong.
+ *
+ * Capping coverage *and* bounding width interact badly at distance. A blade
+ * that may not exceed 2 cm can no longer widen to stand in for the neighbours
+ * that were thinned away — so solving for a fixed coverage at 1250 m asks for
+ * **more** blades, not fewer, and the far rings come back denser than they
+ * started. The suite caught that: the cap alone took 8.4 M triangles to 3.0 M
+ * and stopped, with ring 3's multiplier at 0.16 against a shipped 0.24.
+ *
+ * The error was in the goal, not the arithmetic. **Blades are not what covers
+ * the ground at a kilometre and no amount of them should be.** A real meadow at
+ * that range is a colour, and the reference says so in its own terms: the field
+ * ends at 72 m and *"terrain's meadow blend carries the distance."*
+ *
+ * So coverage governs density *inside* the reach, and outside it there are no
+ * blades at all. 84 m is AEON's own ring-1 far edge, which lands within a few
+ * metres of the reference's 90 m — the two arrived at the same number from
+ * different directions, which is the best evidence either of them is right.
+ */
+export const COVER_REACH = 84;
+
+/**
+ * Where the field begins to lie down, as a fraction of the reach.
+ *
+ * *"the fade is deliberately long so it dissolves into the terrain colour
+ * instead of ending on a visible edge"* — and long is the load-bearing word. A
+ * short fade is a line with a gradient painted on it. At 0.55 the last two
+ * fifths of the field are lying down: from 46 m to 84 m.
+ */
+export const FADE_START = 0.55;
+
+/** the band, as the shader wants it: where blades begin to lie down, and where they have gone */
+export const fadeBand = (reach = COVER_REACH) => [reach * FADE_START, reach];
+
+/** does this ring have any blades left to draw, given the reach? */
+export const ringLives = (r, reach = COVER_REACH) => RINGS[r].near < reach;
+
 /**
  * Blades per steradian — the quantity the density law is *about*, and the one
  * nobody had evaluated.
@@ -160,25 +380,6 @@ export function bladesPerSteradian(r, d, eye = 1.68) {
 export const NEUTRAL_POW = 3;
 
 /**
- * How many times over the ground is covered by the blades standing on it.
- *
- * Frontal area per square metre of ground is `density · width · height`; the
- * ground's own screen area per square metre is `sin θ ≈ eye/d`. The ratio is
- * how much of what is drawn can possibly be seen, and it is the fill-rate cost
- * of the meadow expressed without reference to any particular GPU.
- *
- * It runs 6× underfoot and 610× at the far edge of ring 3. Some overdraw is
- * the point — a sward is layers of blades and you are meant to see into it —
- * but two orders of magnitude of it, on the marks that are 1 px wide and 42%
- * of the way to the sward mean before they are drawn, is not depth. It is the
- * same measurement as `bladesPerSteradian` from the fill side.
- */
-export function groundOverdraw(r, d, pxPerRadian, eye = 1.68, uWidth = 0.028) {
-  const frontal = density(r, d) * bladeWidth(r, d, pxPerRadian, uWidth) * 0.71 * RINGS[r].hs;
-  return frontal / Math.max(eye / Math.max(d, 1e-6), 1e-9);
-}
-
-/**
  * The blade's own width, in metres — the JS side of `meadowWidth` and the two
  * clamps `BLADE_VERT` wraps it in.
  *
@@ -202,15 +403,17 @@ export function groundOverdraw(r, d, pxPerRadian, eye = 1.68, uWidth = 0.028) {
  *   · `1/√density` — the spacing cap. Past it a blade is wider than the gap to
  *     its neighbour and further width is pure overdraw.
  */
-export function bladeWidth(r, d, pxPerRadian, uWidth = 0.028) {
-  const dens = Math.max(density(r, d), 1e-6);
-  const floor = Math.max(RINGS[r].wpx * d / Math.max(pxPerRadian, 1), 0.004);
-  return Math.min(Math.max(floor, uWidth * 0.22), 1 / Math.sqrt(dens));
-}
-
-/** the same, in pixels — the unit §9.5's tier rule is actually written in */
+/**
+ * A blade's width in pixels — the unit §9.5's tier rule is actually written in.
+ *
+ * At the ring's own shipped density and with no physical bound, which is what
+ * the `curvedRings` question is about: whether a blade is wide enough on screen
+ * for a rolled cross-section to resolve, given how many of them the law puts
+ * there. `bladeWidth` is the one definition; this is that call with the ring's
+ * own density substituted.
+ */
 export const bladePixels = (r, d, pxPerRadian, uWidth = 0.028) =>
-  bladeWidth(r, d, pxPerRadian, uWidth) / Math.max(d, 1e-6) * pxPerRadian;
+  bladeWidth(r, d, pxPerRadian, density(r, d), uWidth) / Math.max(d, 1e-6) * pxPerRadian;
 
 /**
  * §9.5's retirement threshold, as one number: the width in pixels below which
@@ -623,6 +826,13 @@ export const MEADOW_GLSL = /* glsl */`
   float meadowWidth(float d, float wpx, float pxPerRadian) {
     return max(wpx * d / max(pxPerRadian, 1.0), 0.004);
   }
+
+  // The physical bound, as a uniform so a build without ?cover=1 can send +inf
+  // and reproduce the previous frame exactly. See BLADE_MAX_W: without it the
+  // spacing cap grows a "blade" to 3.45 m at ring 3's far edge, and thinning
+  // the far field without it would widen the survivors to fill precisely what
+  // they had stopped covering.
+  uniform float uMaxW;
 `;
 
 /**

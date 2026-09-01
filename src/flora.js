@@ -47,7 +47,8 @@ import {
 } from './wind.js';
 import {
   MEADOW_COLOUR_GLSL, MEADOW_GLSL, MEADOW_PART_GLSL, PALETTE_KEYS, PART_RADIUS,
-  RINGS, bladeRoots, chunkGrid, chunkInstances, chunkNearDist, grassPalette, ringB,
+  BLADE_MAX_W, COVER_REACH, COVER_TARGET, RINGS, bladeRoots, chunkGrid,
+  chunkInstances, chunkNearDist, coverAt, coverMul, fadeBand, grassPalette, ringB,
 } from './meadow.js';
 
 /**
@@ -76,6 +77,33 @@ const BLADE_DBG = (() => {
     const v = parseInt(new URL(window.location.href).searchParams.get('bladedbg'));
     return Number.isFinite(v) ? v : 0;
   } catch { return 0; }
+})();
+
+/**
+ * `?cover=1` — §7.4's flag for the coverage cap. Default-off.
+ *
+ * What it turns on is `meadow.js`'s `BLADE_MAX_W` and the far dissolve. At
+ * `?cover=0` the width bound is sent as `+Infinity` and the fade band is sent
+ * past the ring's own far edge, so both clamps collapse to the expressions that
+ * shipped and the frame is the previous build to the bit.
+ */
+/**
+ * The fade is on the FIELD, not on each ring.
+ *
+ * `meadow.js` owns both numbers (`COVER_REACH`, `FADE_START`) and the argument
+ * for them. What matters here is that the band is one band in world distance,
+ * shared by every ring, so a blade at 60 m is lying down by the same amount
+ * whichever ring happens to own it — a per-ring fade would put a visible step
+ * at each boundary, which is the defect it exists to prevent.
+ *
+ * It fades HEIGHT rather than alpha, which is the reference's choice and not a
+ * detail: everything here is opaque, and three million overlapping transparent
+ * quads would need a depth sort that cannot be afforded at this count. A blade
+ * of zero height is a degenerate triangle the rasteriser discards for free.
+ */
+const COVER = (() => {
+  try { return new URL(window.location.href).searchParams.get('cover') === '1'; }
+  catch { return false; }
 })();
 
 // A RawShaderMaterial gets no preamble from three — not the attributes, not the
@@ -303,6 +331,10 @@ const BLADE_VERT = /* glsl */`
   uniform float uWidth;
   uniform float uForce;      // what the air can actually push with (rho U^2)
   uniform float uCurl;       // 0 for a ribbon, ~0.55 for a rolled leaf
+  // x where the blades begin to lie down, y where they have gone. Sent past the
+  // ring's own far edge unless ?cover=1, so the term is exactly 1.0 and the
+  // shipped frame is reproduced rather than approximated.
+  uniform vec2 uFade;
 
   out float vT;
   out float vSide;
@@ -373,6 +405,17 @@ const BLADE_VERT = /* glsl */`
     // in src/flora.js on why that matters at this vertex count.
     float live = max(meadowKeep(d, aRand, chunkNear) ? 1.0 : 0.0, uDbg);
 
+    // The far dissolve. The field has to stop somewhere, and stopping at a
+    // radius draws a circle on the ground that the eye finds immediately —
+    // §11's un-grassed annuli, approached from the other side. Fading the
+    // height instead lays the last blades down over two fifths of the band, and
+    // what they lie down into is the terrain's own meadow colour.
+    //
+    // It rides on live rather than beside it because they are the same
+    // operation: a thinned blade and a faded one both collapse to a point, and
+    // one multiply does both.
+    live *= 1.0 - smoothstep(uFade.x, uFade.y, d);
+
     vT = position.y;
     vSide = aSide;
     vVar = aRand;
@@ -410,8 +453,13 @@ const BLADE_VERT = /* glsl */`
     // 3.15 m blade at ring 3's far edge, which is a billboard rather than a
     // trade. Spacing is 1/sqrt(density), and density is this ring's own law.
     float dens = max(uRingB * meadowFalloff(d) * uDensityMul, 1e-6);
+    // ...and never wider than a blade of grass actually is. inversesqrt(dens)
+    // is the spacing cap and it grows without limit as the field thins — at
+    // ring 3's far edge it already asks for 3.45 m. uMaxW is the physical
+    // bound (src/meadow.js, BLADE_MAX_W); without ?cover=1 it is sent as
+    // +infinity, so the clamp collapses to exactly the expression that shipped.
     float wBlade = clamp(meadowWidth(d, uWpx, uPxPerRadian),
-                         uWidth * 0.22, inversesqrt(dens));
+                         uWidth * 0.22, min(inversesqrt(dens), uMaxW));
 
     // the logarithmic boundary layer: roots barely move, tips whip
     float lean = windProfile(vT * max(h, 0.05)) * uForce;
@@ -716,6 +764,19 @@ export class GrassRing {
         uDbgFat: { value: BLADE_DBG >= 2 ? 1 : 0 },
         uDbgGround: { value: 0 },
         uWidth: { value: 0.028 },
+        // The physical bound on a blade's width, and the fade band that lets
+        // the field end in the terrain colour rather than at a line. Both are
+        // sent as their own no-ops when `?cover=1` is absent — +infinity and a
+        // band starting past the ring's far edge — so the shipped frame is
+        // reproduced exactly rather than approximately.
+        // 1e9 rather than Infinity: `min(inversesqrt(dens), uMaxW)` needs a
+        // value that cannot bind, and the largest width the spacing cap can
+        // ever ask for is 1000 m (density is floored at 1e-6). A finite
+        // sentinel is the same no-op without asking every driver and every
+        // ANGLE backend to agree about what a non-finite uniform means.
+        uMaxW: { value: COVER ? BLADE_MAX_W : 1e9 },
+        uFade: { value: new THREE.Vector2(
+          ...(COVER ? fadeBand() : [1e9, 1e9 + 1])) },
         // §9.5's angular width floor, finally wired.
         //
         // `uWidth` alone is a flat 2.8 cm at every distance, and a 2.8 cm blade
@@ -826,7 +887,20 @@ export class GrassRing {
     geo.instanceCount = 0;
     this.geometry = geo;
 
-    for (let cx = -this.grid; cx <= this.grid; cx++) {
+    // A ring whose whole band lies beyond the reach has nothing to draw, ever.
+    //
+    // The fade already collapses its blades and `update()` already refuses its
+    // chunks, so this costs no triangles either way — but the grid is derived
+    // from the ring's own `far`, so ring 3 was still minting **169 meshes** and
+    // ring 2 another 81, all of them permanently invisible. Objects three has
+    // to walk on every `updateMatrixWorld` and hold until teardown, for a ring
+    // that is switched off.
+    //
+    // The rings are still *constructed*, because `surface.js` builds all four
+    // and adding a branch there is not this session's to make; an empty group
+    // is a perfectly good no-op and `dispose()` still works on it.
+    const dead = COVER && this.spec.near >= COVER_REACH;
+    for (let cx = -this.grid; !dead && cx <= this.grid; cx++) {
       for (let cz = -this.grid; cz <= this.grid; cz++) {
         const mesh = new THREE.Mesh(geo, mat);
         mesh.userData.near = this.spec.dn;
@@ -861,6 +935,15 @@ export class GrassRing {
     }
     this.shared = shared;
     this.blades = 0;
+    // How far this ring actually draws. Without `?cover=1` it is the ring's own
+    // far edge and nothing has changed; with it, the field's reach.
+    //
+    // It has to bind on the CPU as well as in the shader. The fade collapses a
+    // blade past the reach to zero height, but a collapsed blade is still an
+    // instance the driver was asked to transform — so a chunk that is entirely
+    // beyond the reach must not be submitted at all, or the whole saving is
+    // spent on degenerate triangles.
+    this.far = COVER ? Math.min(this.spec.far, COVER_REACH) : this.spec.far;
   }
 
   /**
@@ -880,6 +963,37 @@ export class GrassRing {
    */
   setPixelScale(pxPerRadian) {
     this.material.uniforms.uPxPerRadian.value = pxPerRadian;
+    // ------------------------------------------------ the coverage cap ---
+    //
+    // §7.4's `?cover=1`. `meadow.js` has the law and the argument; this is the
+    // only place it can be applied, because the multiplier arrives from
+    // `surface.js` as a quality-row value and the pixel scale — which the law
+    // needs, since coverage is measured in screen area — is not known until the
+    // projection exists.
+    //
+    // **Once.** §11 is unambiguous that quality is set at init and never
+    // revisited: *"Live changes pump visibly."* A window resize moves
+    // `pxPerRadian`, and a density that tracked it would rebuild the sward
+    // every time someone dragged a corner. So the first call decides and every
+    // later one only updates the uniform.
+    //
+    // **A cap, not a replacement.** `min()` rather than `=`, and that is the
+    // whole semantics: a row or a URL asking for *less* than the coverage
+    // target still gets less. §2.4 makes a saved `?grass=0.5` a permanent
+    // address, and a cap keeps it meaning what it meant.
+    if (COVER && !this._capped) {
+      this._capped = true;
+      // Evaluated where the ring is SEEN, not where its density is quoted —
+      // see `coverAt`. Setting ring 0's cap by its behaviour at dn = 7 m left
+      // the ground bare underfoot, because coverage falls toward the camera.
+      const cap = coverMul(this.ring, coverAt()(this.ring), COVER_TARGET,
+        pxPerRadian, this.material.uniforms.uWidth.value, BLADE_MAX_W);
+      const was = this.densityMul;
+      this.densityMul = Math.min(was, cap);
+      this.material.uniforms.uDensityMul.value = this.densityMul;
+      this.coverCap = cap;
+      this.coverWas = was;
+    }
   }
 
   update(camX, camZ, camY, t, frustum = null, dusk = 1, walker = null) {
@@ -889,7 +1003,7 @@ export class GrassRing {
     for (const c of this.chunks) {
       const gx = ox + c.cx, gz = oz + c.cz;
       const dNear = chunkNearDist(gx, gz, chunk, camX, camZ);
-      if (dNear > this.spec.far) { c.mesh.visible = false; continue; }
+      if (dNear > this.far) { c.mesh.visible = false; continue; }
       if (frustum && !chunkInFrustum(frustum, gx, gz, chunk, this.spec.hs)) {
         c.mesh.visible = false; continue;
       }

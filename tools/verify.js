@@ -84,8 +84,9 @@ import {
   DENS_POW, MEADOW_GLSL, RINGS, chunkCount, chunkGrid, chunkInstances,
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
-  CURVE_PX, NEUTRAL_POW, bladePixels, bladeWidth, bladesPerSteradian, curveReach,
-  groundOverdraw,
+  BLADE_MAX_W, COVER_REACH, COVER_TARGET, CURVE_PX, EYE_H, FADE_START, NEUTRAL_POW,
+  bladePixels, bladeWidth, bladesPerSteradian, coverAt, coverMul, coverMuls,
+  curveReach, fadeBand, groundOverdraw, lowerThirdNear, ringLives,
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import {
@@ -135,8 +136,9 @@ import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
 import {
-  HABITS, HERO_FAR, HERO_NEAR, HERO_OVER, WOOD, curvature, forkRadii, growTree, heroHeight,
-  heroSite, lengthOf, radiusForHeight, tipsOf,
+  HABITS, HERO_FAR, HERO_NEAR, HERO_OVER, TURN_GRID, WOOD, breakCurvature, curvature,
+  forkRadii, growTree, heroHeight, heroSite, lengthOf, radiusForHeight, tipsOf,
+  turnLimit,
 } from '../src/tree.js';
 import {
   COVER_EXP, COVER_NEAR, MINERALS, SPECIES, communityOf, coverDensity, densityAt,
@@ -4902,6 +4904,247 @@ function suiteMeadow() {
       })());
   }
 
+  // --- coverage: the quantity nothing bounded --------------------------------
+  //
+  // `drawcensus.js` has carried a contradiction in its header since it was
+  // written — no grass in the frame, 3.5 M blades in the bookkeeping — and this
+  // is the arithmetic that reconciles them. Ground overdraw: density x width x
+  // height over sin(theta). How many blades deep you are looking.
+  {
+    // the low row, as shipped, at the projection it actually renders at
+    const PXR = 720 * 0.85 / (52 * Math.PI / 180);
+    const MUL = [0.30, 0.28, 0.26, 0.24];
+    const over = (r, d, m) => groundOverdraw(r, d, density(r, d) * m, PXR, 0.028);
+
+    // MEASURED, and quoted in docs/plans/MEADOW-BUDGET.md §1
+    const shipped = [0, 1, 2, 3].map((r) => over(r, RINGS[r].dn, MUL[r]));
+    ok('MEASURED · the shipped rings hide the ground 17x to 202x over',
+      shipped[0] > 15 && shipped[3] > 180,
+      shipped.map((v, i) => `ring ${i} ${v.toFixed(1)}x`).join(' · '));
+    ok('...and it gets monotonically worse outward, which is backwards',
+      shipped.every((v, i) => i === 0 || v > shipped[i - 1]),
+      'the far rings are the ones that cannot resolve a blade at all');
+
+    // the definition, held to itself rather than to a transcribed number
+    {
+      const d = 12, n = 40;
+      const w = bladeWidth(1, d, PXR, n, 0.028);
+      const want = n * w * 0.71 * RINGS[1].hs / (EYE_H / d);
+      ok('groundOverdraw is density x width x height over sin(theta), to the digit',
+        Math.abs(groundOverdraw(1, d, n, PXR, 0.028) - want) < 1e-12);
+    }
+
+    // the reference's own criterion, ported as a number: 205 blades/m2 over its
+    // chunk, ~10 mm wide, ~0.40 m tall, called "the density at which the ground
+    // stops being visible between blades"
+    const ref = 205 * 0.010 * 0.40 / (EYE_H / 5);
+    ok('the reference sits near 2x, which is what COVER_TARGET is calibrated against',
+      ref > 1.5 && ref < 3.5 && COVER_TARGET > 1.5 && COVER_TARGET < 4,
+      `reference ${ref.toFixed(2)}x · COVER_TARGET ${COVER_TARGET}`);
+  }
+
+  // --- the solve --------------------------------------------------------------
+  {
+    const PXR = 720 * 0.85 / (52 * Math.PI / 180);
+    // it hits its target, on every ring, at the distance the ring is SEEN
+    const at = coverAt();
+    let worst = 0;
+    for (let r = 0; r < RINGS.length; r++) {
+      const m = coverMul(r, at(r), COVER_TARGET, PXR, 0.028, BLADE_MAX_W);
+      const got = groundOverdraw(r, at(r), density(r, at(r)) * m, PXR, 0.028, BLADE_MAX_W);
+      worst = Math.max(worst, Math.abs(got - COVER_TARGET) / COVER_TARGET);
+    }
+    ok('coverMul hits its target on every ring',
+      worst < 1e-6, `worst relative error ${worst.toExponential(2)}`);
+
+    // …and the distance it is evaluated at is the frame's, not the ring's.
+    // `dn` is where a ring's density is quoted; the lower third of the frame is
+    // where a meadow is actually the picture, and it is derivable: the band
+    // spans fov/6 to fov/2 below centre, so the ground under it runs from
+    // eye/tan(fov/2) outward.
+    ok('the cap is set where the meadow fills the frame, not at the ring’s dn',
+      Math.abs(lowerThirdNear(52) - 1.68 / Math.tan(26 * Math.PI / 180)) < 1e-12
+      && Math.abs(at(0) - lowerThirdNear(52)) < 1e-12,
+      `lower third begins at ${lowerThirdNear(52).toFixed(2)} m · ring 0 evaluated there, not at its dn of ${RINGS[0].dn} m`);
+
+    // the convergence that says the number is right
+    const n0 = density(0, at(0)) * coverMul(0, at(0), COVER_TARGET, PXR, 0.028, BLADE_MAX_W);
+    ok('MEASURED · ring 0 lands on the reference’s own 205 blades/m², independently',
+      n0 > 150 && n0 < 280,
+      `${n0.toFixed(1)}/m² against the reference's 26,000 over an 11.25 m chunk = 205/m²`);
+
+    // and the near field is no longer being deepened. It is thin under your
+    // feet in the shipped build too — 0.4x at half a metre — because coverage
+    // falls toward the camera and every blade here is near-vertical. The cap
+    // must not make that worse, which setting it at dn did.
+    const before = groundOverdraw(0, 2, density(0, 2) * 0.30, PXR, 0.028);
+    const after = groundOverdraw(0, 2, density(0, 2) * Math.min(0.30, coverMul(0, at(0), COVER_TARGET, PXR, 0.028, BLADE_MAX_W)), PXR, 0.028, BLADE_MAX_W);
+    ok('...and two metres out is no thinner than the build it replaces',
+      after > before * 0.55,
+      `${before.toFixed(2)}x → ${after.toFixed(2)}x at 2 m — setting the cap at dn instead gave 0.26x`);
+
+    // monotone in the target — coverage is increasing in density, so the
+    // bisection cannot invert. If it ever did, a tier row asking for more
+    // coverage would get fewer blades.
+    let mono = true;
+    for (let r = 0; r < RINGS.length; r++) {
+      let prev = -1;
+      for (const t of [1, 1.5, 2, 2.6, 4, 6, 10]) {
+        const m = coverMul(r, RINGS[r].dn, t, PXR, 0.028, BLADE_MAX_W);
+        if (m < prev - 1e-12) mono = false;
+        prev = m;
+      }
+    }
+    ok('...and is monotone in the target, so more coverage never means fewer blades', mono);
+
+    // and what it costs, which is the milestone.
+    //
+    // Both halves, because neither works alone. The cap on its own left the
+    // meadow at 3.0 M — bounding the width means a thinned far blade can no
+    // longer widen to stand in for its neighbours, so solving for coverage at a
+    // kilometre asks for MORE blades. The reach is what says blades are not the
+    // thing that covers ground at a kilometre in the first place.
+    const muls = coverMuls(COVER_TARGET, PXR, 0.028, BLADE_MAX_W);
+    const B = [413654, 741896, 1277569, 958743], TPB = [6, 2, 2, 2];
+    const MUL = [0.30, 0.28, 0.26, 0.24];
+    const cost = (useReach) => {
+      let bl = 0, tr = 0;
+      for (let r = 0; r < 4; r++) {
+        if (useReach && !ringLives(r)) continue;
+        // a surviving ring is clipped to the reach as well as capped
+        const span = Math.min(RINGS[r].far, useReach ? COVER_REACH : RINGS[r].far) - RINGS[r].near;
+        const frac = Math.max(0, span) / (RINGS[r].far - RINGS[r].near);
+        const b = B[r] * (Math.min(MUL[r], muls[r]) / MUL[r]) * (useReach ? frac : 1);
+        bl += b; tr += b * TPB[r];
+      }
+      return { bl, tr };
+    };
+    const capOnly = cost(false), both = cost(true);
+    ok('the cap alone is not enough — the width bound fights it at distance',
+      capOnly.tr > 8438340 / 5,
+      `cap alone ${Math.round(capOnly.tr).toLocaleString()} triangles, only ${(8438340 / capOnly.tr).toFixed(1)}x cheaper`);
+    ok(`MEASURED · cap + reach takes the meadow from 8,438,340 triangles to ${Math.round(both.tr).toLocaleString()}`,
+      both.tr < 8438340 / 4,
+      `${Math.round(both.bl).toLocaleString()} blades · ${(8438340 / both.tr).toFixed(1)}x cheaper`
+      + ` · frame ${Math.round(both.tr + 2302191).toLocaleString()} against §5's 2,200,000`
+      + ` (${((both.tr + 2302191) / 2200000).toFixed(2)}x)`);
+
+    // The comparison that says whether this is *enough*, rather than merely
+    // *less*. The reference draws about 450 k blades at 4 segments — 7
+    // triangles each, 3.15 M — for the field it considers correct. AEON now
+    // draws the same count for fewer triangles, because a ribbon is 2 and a
+    // 3-segment near blade is 6 against the reference's 7.
+    //
+    // Which also settles what §5's 2.2 M means: it cannot hold a
+    // reference-quality meadow AND a terrain, because the meadow alone is most
+    // of it at either project's numbers. That is the collision §3 of the plan
+    // states, and it is not a thing this flag can fix.
+    const REF_BLADES = 450000, REF_TRIS = REF_BLADES * 7;
+    ok('...which is the reference’s own blade count for 61% of its triangles',
+      Math.abs(both.bl - REF_BLADES) / REF_BLADES < 0.35 && both.tr < REF_TRIS,
+      `${Math.round(both.bl).toLocaleString()} blades / ${Math.round(both.tr).toLocaleString()} tris`
+      + ` against the reference's ~${REF_BLADES.toLocaleString()} / ${REF_TRIS.toLocaleString()}`);
+    ok('§5 · and even the reference’s own meadow would not fit 2,200,000 triangles',
+      REF_TRIS > 2200000,
+      `${REF_TRIS.toLocaleString()} for grass alone — the budget predates any meadow`);
+
+    // the reach, and the two independent numbers that agree on it
+    ok('the reach lands where the reference put its own field',
+      COVER_REACH >= 70 && COVER_REACH <= 100,
+      `${COVER_REACH} m against the reference's 90 m — AEON's ring-1 far edge, arrived at separately`);
+    // `(r) => ringLives(r)` and not `ringLives`: the second parameter is the
+    // reach, and Array#filter passes the INDEX there. Written bare, ring 0 asks
+    // whether its band starts inside a reach of zero and retires itself. The
+    // check caught it on its first run, which is the argument for the check.
+    const live = [0, 1, 2, 3].filter((r) => ringLives(r));
+    ok('every ring whose band starts beyond the reach draws nothing at all',
+      live.join(',') === '0,1,2',
+      `rings ${live.join(',')} live · ring 3 retired entirely`
+      + ` · ring 2 keeps only ${(COVER_REACH - RINGS[2].near).toFixed(0)} m of its ${RINGS[2].far - RINGS[2].near} m band`);
+
+    // the fade is long, which is the whole point of it
+    const [f0, f1] = fadeBand();
+    ok('...and the field lies down over two fifths of its reach rather than ending at a line',
+      (f1 - f0) / f1 > 0.35 && f1 === COVER_REACH,
+      `${f0.toFixed(0)}–${f1.toFixed(0)} m · ${((f1 - f0) / f1 * 100).toFixed(0)}% of the field`);
+
+    // it is a CAP: a row or a URL asking for less still gets less (§2.4)
+    ok('the cap never raises a density above what the caller asked for',
+      muls.every((m, r) => Math.min(MUL[r], m) <= MUL[r] + 1e-12),
+      muls.map((m, r) => `r${r} ${Math.min(MUL[r], m).toFixed(4)}`).join(' '));
+
+    // a finer screen earns more blades, because they resolve there
+    const fine = coverMul(0, RINGS[0].dn, COVER_TARGET, PXR * 2, 0.028, BLADE_MAX_W);
+    const coarse = coverMul(0, RINGS[0].dn, COVER_TARGET, PXR, 0.028, BLADE_MAX_W);
+    ok('a screen with twice the pixels earns more blades, not the same number',
+      fine > coarse * 1.5, `${coarse.toFixed(4)} → ${fine.toFixed(4)} at 2x pxPerRadian`);
+  }
+
+  // --- ?cover=0 must be the previous build, to the bit ----------------------
+  //
+  // §7.4 builds behind a flag, and a flag is only reviewable if the off state
+  // is *exactly* what shipped. Every term added here is written so that its
+  // no-op value collapses the expression back to the one that was there.
+  {
+    const src = readFileSync(new URL('../src/flora.js', import.meta.url), 'utf8');
+
+    // the width bound: min(inversesqrt(dens), uMaxW) with uMaxW = 1e9
+    ok('the width bound’s off value cannot bind — density is floored at 1e-6, so the cap tops out at 1000 m',
+      /uMaxW: \{ value: COVER \? BLADE_MAX_W : 1e9 \}/.test(src)
+      && 1 / Math.sqrt(1e-6) < 1e9,
+      `spacing cap maxes at ${(1 / Math.sqrt(1e-6)).toFixed(0)} m against a sentinel of 1e9`);
+    ok('...and it is a finite sentinel rather than Infinity',
+      !/uMaxW[^\n]*Infinity/.test(src),
+      'a non-finite uniform is a thing every driver and ANGLE backend has to agree about');
+
+    // the fade: 1 - smoothstep(1e9, 1e9+1, d) is 1.0 for every distance a
+    // surface scale can produce
+    ok('the fade’s off band starts past any distance the scale can reach',
+      /fadeBand\(\) : \[1e9, 1e9 \+ 1\]/.test(src) && RINGS[3].far < 1e9,
+      `the furthest ring reaches ${RINGS[3].far} m`);
+
+    // the reach: `this.far` is the ring's own far edge when the flag is off
+    ok('the reach falls back to each ring’s own far edge',
+      /this\.far = COVER \? Math\.min\(this\.spec\.far, COVER_REACH\) : this\.spec\.far;/.test(src));
+
+    // and the density cap is behind the guard, so densityMul is untouched
+    ok('the density cap is inside the flag’s guard, so the multiplier is untouched',
+      /if \(COVER && !this\._capped\)/.test(src));
+
+    // a ring switched off entirely should not mint meshes for it. Ring 3's grid
+    // is derived from its own 1250 m far edge, so it was allocating 169 of them
+    // — permanently invisible, walked on every updateMatrixWorld, held until
+    // teardown.
+    ok('a ring whose whole band is beyond the reach allocates no chunks',
+      /const dead = COVER && this\.spec\.near >= COVER_REACH;/.test(src)
+      && /for \(let cx = -this\.grid; !dead && cx <= this\.grid; cx\+\+\)/.test(src),
+      `ring 3 would otherwise mint ${chunkCount(3)} meshes it can never draw`);
+  }
+
+  // --- the physical bound on width ------------------------------------------
+  {
+    const PXR = 720 * 0.85 / (52 * Math.PI / 180);
+    // Unbounded, the spacing cap turns the far field into billboards as it
+    // thins — the marks grow to fill exactly what they stopped covering.
+    const unbounded = bladeWidth(3, RINGS[3].far, PXR, density(3, RINGS[3].far) * 0.24, 0.028);
+    ok('MEASURED · unbounded, a "blade" at the far edge is 3.4 m wide',
+      unbounded > 3, `${unbounded.toFixed(2)} m — a billboard, not a blade`);
+
+    let worst = 0;
+    for (let r = 0; r < RINGS.length; r++) {
+      for (const d of [1, 5, 20, 60, 150, 400, 900, 1250]) {
+        for (const m of [0.001, 0.01, 0.1, 1]) {
+          worst = Math.max(worst, bladeWidth(r, d, PXR, density(r, d) * m, 0.028, BLADE_MAX_W));
+        }
+      }
+    }
+    ok('bounded, no blade anywhere exceeds BLADE_MAX_W at any density',
+      worst <= BLADE_MAX_W + 1e-12, `widest ${(worst * 1000).toFixed(1)} mm, bound ${BLADE_MAX_W * 1000} mm`);
+    ok('...and the bound is a real blade of grass, per the reference’s own note',
+      BLADE_MAX_W >= 0.010 && BLADE_MAX_W <= 0.030,
+      `${BLADE_MAX_W * 1000} mm against "real meadow grass is 4–10 mm across"`);
+  }
+
   // --- what the density law is actually about, evaluated ------------------
   //
   // `density()`'s note argues the exponent against `d^-2`, "the falloff that
@@ -4932,7 +5175,10 @@ function suiteMeadow() {
 
     // …and the same thing from the fill side
     const P = 1440 * 1.12 / (52 * Math.PI / 180);
-    const overNear = groundOverdraw(0, 2, P), overFar = groundOverdraw(3, RINGS[3].far, P);
+    // `groundOverdraw` takes the density explicitly since the coverage cap
+    // needs to bisect over it; these two want the ring's own shipped law.
+    const overNear = groundOverdraw(0, 2, density(0, 2), P);
+    const overFar = groundOverdraw(3, RINGS[3].far, density(3, RINGS[3].far), P);
     ok('MEASURED · and the ground is covered 6× underfoot against 610× at the far edge',
       overFar / overNear > 80,
       `${overNear.toFixed(0)}× at 2 m → ${overFar.toFixed(0)}× at ${RINGS[3].far} m`);
@@ -4941,7 +5187,7 @@ function suiteMeadow() {
     // at the horizon, not as a green plane." At ring 3's far edge the spacing
     // cap has grown a blade to 1.69 m and there is no ground visible between
     // them anywhere — which is a green plane, made of four million billboards.
-    const wFar = bladeWidth(3, RINGS[3].far, P);
+    const wFar = bladeWidth(3, RINGS[3].far, P, density(3, RINGS[3].far));
     ok('§M3 gate · a "blade" at the far edge is 1.7 m wide, which is a billboard',
       wFar > 1.5, `${wFar.toFixed(2)} m wide, ${(0.71 * RINGS[3].hs).toFixed(2)} m tall`);
 
@@ -8666,6 +8912,144 @@ function suiteTree() {
     === JSON.stringify(growTree({ seed: 42, gravity: 9.8, height: 10 })));
   ok('and a different seed grows a different one',
     JSON.stringify(growTree({ seed: 42 })) !== JSON.stringify(growTree({ seed: 43 })));
+  // --- law 3b: eventually the limb breaks -----------------------------------
+  //
+  // `turnBudget` was 3.4 radians — 195°, past vertical — while the comment
+  // beside it read "a branch deflects; it does not orbit". A limb could curve
+  // up, over and back down into the ground, where the no-underground clamp
+  // pinned it and closed the arc. Trees on a 1.23 g world rendered as croquet
+  // hoops. This is the bound that replaces it, and it is the wood's own.
+  {
+    // κ_break = MOR/(E·r): the I in κ = M/(E·I) cancels against the I in
+    // σ = M·r/I, so neither E nor I survives into the answer
+    let worst = 0;
+    for (const r of [0.004, 0.01, 0.05, 0.2, 0.6]) {
+      worst = Math.max(worst, Math.abs(breakCurvature(r) - WOOD.rupture / r) / breakCurvature(r));
+    }
+    ok('breakCurvature is rupture/r — neither E nor I survives the algebra',
+      worst < 1e-12, `worst relative error ${worst.toExponential(2)}`);
+
+    ok('the rupture strain is green wood’s, not a number picked for a look',
+      WOOD.rupture >= 0.005 && WOOD.rupture <= 0.012,
+      `${WOOD.rupture} — MOR/E, 60–100 MPa over ~10 GPa`);
+
+    // a thick limb may barely bend; a twig may curl right up
+    ok('a 4 mm twig may turn far more than a 20 cm limb',
+      turnLimit(0.004) > turnLimit(0.2) * 4,
+      `${(turnLimit(0.004) * 180 / Math.PI).toFixed(0)}° at 4 mm against `
+      + `${(turnLimit(0.2) * 180 / Math.PI).toFixed(0)}° at 20 cm`);
+
+    // and every one of them is under the constant it replaces
+    const radii = [0.004, 0.01, 0.03, 0.08, 0.2, 0.4];
+    ok('MEASURED · the old flat budget was 2.5x to 14x what any wood allows',
+      radii.every((r) => turnLimit(r) < WOOD.turnBudget),
+      radii.map((r) => `${(WOOD.turnBudget / turnLimit(r)).toFixed(1)}x`).join(' / ')
+      + ` at ${radii.map((r) => r * 1000).join('/')} mm`);
+    ok('...and no limb may now turn past a right angle',
+      radii.every((r) => turnLimit(r) < Math.PI / 2),
+      `widest turn ${(Math.max(...radii.map(turnLimit)) * 180 / Math.PI).toFixed(0)}°`);
+
+    // --- §11: this one reaches a BRANCH ---------------------------------------
+    //
+    // "A quantity that reaches the frame through sin, cos, exp or pow may land
+    // a last bit apart on arm64 and after a V8 upgrade; one that reaches a
+    // count, an index, or a branch must not." `turnLimit` is `k·r^p` times a
+    // reciprocal, and the growth loop branches on it to decide whether a shoot
+    // has another segment. Unquantised, one bit of disagreement in `pow` is not
+    // a tree a fraction of a degree different — it is a tree with a different
+    // number of branches.
+    {
+      const ulp = (x) => {
+        const b = new DataView(new ArrayBuffer(8));
+        b.setFloat64(0, x);
+        b.setBigUint64(0, b.getBigUint64(0) + 1n);
+        return b.getFloat64(0);
+      };
+      let moved = 0, n = 0;
+      for (let r = 0.002; r < 0.9; r *= 1.07) {
+        const base = turnLimit(r);
+        // nudge the radius by one and two ULPs in both directions — the size of
+        // disagreement a differently-compiled `pow` actually produces
+        for (const rr of [ulp(r), ulp(ulp(r)), -ulp(-r), -ulp(ulp(-r))]) {
+          n++;
+          if (turnLimit(rr) !== base) moved++;
+        }
+      }
+      ok('§11 · a last-bit difference in the radius cannot change the turn limit',
+        moved === 0, `${n} perturbations of ${TURN_GRID} rad grid, ${moved} moved the threshold`);
+      ok('...and the grid is far finer than anything a segment can add',
+        TURN_GRID < 1e-4 && TURN_GRID > 1e-9,
+        `${TURN_GRID} rad — invisible, and unreachable by a last bit`);
+      ok('the limit is on the grid, exactly',
+        [0.004, 0.02, 0.1, 0.5].every((r) => Math.abs(turnLimit(r) / TURN_GRID - Math.round(turnLimit(r) / TURN_GRID)) < 1e-6));
+    }
+
+    // --- the defect itself, counted -----------------------------------------
+    // An arch is a limb end back on the ground, away from the trunk. Nothing
+    // else in the model produces one, so counting them counts arches.
+    const arches = (g) => {
+      let n = 0;
+      for (let i = 0; i < 24; i++) {
+        for (const h of HABITS) {
+          const t = growTree({ seed: 900 + i, gravity: g, height: 11, habit: h.id, budget: 520 });
+          for (let k = 0; k < t.seg.y1.length; k++) {
+            if (t.seg.y1[k] <= 0.03 && Math.hypot(t.seg.x1[k], t.seg.z1[k]) > 1.5) n++;
+          }
+        }
+      }
+      return n;
+    };
+    const counts = [1.62, 9.80665, 12.06, 23.5].map(arches);
+    ok('MEASURED · no limb comes back to the ground, on any gravity (was 3,989 at 1.23 g)',
+      counts.every((c) => c === 0),
+      `96 trees per gravity · ${counts.join('/')} arches at 0.17/1.00/1.23/2.40 g`);
+
+    // --- and the tree is still a tree ---------------------------------------
+    const shape = (g) => {
+      let top = 0, rad = 0, n = 0;
+      for (let i = 0; i < 24; i++) {
+        for (const h of HABITS) {
+          const t = growTree({ seed: 900 + i, gravity: g, height: 11, habit: h.id, budget: 520 });
+          top += Math.max(...t.seg.y1);
+          rad += Math.max(...t.seg.y1.map((_, k) => Math.hypot(t.seg.x1[k], t.seg.z1[k])));
+          n++;
+        }
+      }
+      return { top: top / n, rad: rad / n };
+    };
+    const moon = shape(1.62), earth = shape(9.80665), heavy = shape(23.5);
+    ok('the gravity signature survives the bound — it is stronger, not weaker',
+      moon.top > earth.top * 1.3 && heavy.top < earth.top * 0.85,
+      `${moon.top.toFixed(1)} m at 0.17 g · ${earth.top.toFixed(1)} m at 1 g · ${heavy.top.toFixed(1)} m at 2.4 g`);
+    ok('...which is the header’s own promise, finally kept: squat and thick, not arched',
+      heavy.rad < earth.rad && heavy.top / earth.top > heavy.rad / earth.rad - 0.15,
+      `crown radius ${earth.rad.toFixed(1)} m → ${heavy.rad.toFixed(1)} m`);
+
+    // §8 axis 1: four habits still distinguishable in silhouette
+    const hw = HABITS.map((h) => {
+      const sh = (() => {
+        let top = 0, rad = 0, n = 0;
+        for (let i = 0; i < 24; i++) {
+          const t = growTree({ seed: 900 + i, gravity: 9.80665, height: 11, habit: h.id, budget: 520 });
+          top += Math.max(...t.seg.y1);
+          rad += Math.max(...t.seg.y1.map((_, k) => Math.hypot(t.seg.x1[k], t.seg.z1[k])));
+          n++;
+        }
+        return top / (2 * rad);
+      })();
+      return { id: h.id, hw: sh };
+    });
+    ok('§8 axis 1 · the four habits are still distinguishable in silhouette',
+      Math.max(...hw.map((x) => x.hw)) / Math.min(...hw.map((x) => x.hw)) > 2.5,
+      hw.map((x) => `${x.id} ${x.hw.toFixed(2)}`).join(' · '));
+
+    // the budget is still spent — a bound that stunted the tree would be a
+    // different bug wearing this one's clothes
+    const segs = HABITS.map((h) => growTree({ seed: 7, gravity: 12.06, height: 11, habit: h.id, budget: 520 }).segments);
+    ok('...and a heavy world still spends its whole segment budget',
+      segs.every((v) => v > 500), `${segs.join('/')} of 520`);
+  }
+
   ok('§11 · no world produces a NaN, an underground branch or a runaway',
     [{}, { gravity: 0 }, { gravity: 1e6 }, { height: NaN }, { height: 1e9 },
       { seed: -1 }, { budget: NaN }].every((o) => {
