@@ -142,6 +142,26 @@ export const PAINTED = {
  * the film base and came back — and it is why it is warm rather than white: the
  * red layer sits deepest and is what survives the return trip.
  *
+ * **These two were 1.55 and 0.42, and the first frame ever rendered through
+ * them said no.** Measured on a surface capture against a `?reg=1&ae=0`
+ * control: **31.1% of the frame blown past 0.92 luma against the control's
+ * 0.1%**, and mean saturation *down* 36% — 0.255 against 0.397 — because a
+ * blown pixel has no colour left to have.
+ *
+ * The mistake was a category error, and it is worth naming because it is easy
+ * to make again. **A register is a claim about character, not about level.**
+ * Paper versus film is a question of how highlights roll, how colour runs, what
+ * the grain is — none of which is "more light". `bloomX` is level. It was
+ * multiplying a bloom strength that `surface.js` had already tuned to 0.58 at a
+ * 0.34 threshold, so two independently-made decisions compounded, and the
+ * bloom composites *before* the tonemap where there is no headroom left to
+ * absorb it.
+ *
+ * 1.10 keeps a touch more bloom than paper gets, which is real and is
+ * characteristic. The photographic look is carried by the shoulder, the
+ * halation's *hue*, and the saturation — the three knobs that change character
+ * without changing exposure.
+ *
  * The rest follow. A photographic print keeps its violet shadows (sakura-realm
  * gets them from sky ambient rather than from a grade, but they are there), so
  * `shadowPush` softens rather than vanishing. Saturation rises because there is
@@ -162,8 +182,8 @@ export const PHOTOGRAPHIC = {
   fibre: 0.0,
   vignette: 0.30,
   vigWarm: 0.25,
-  bloomX: 1.55,
-  halation: 0.42,
+  bloomX: 1.10,
+  halation: 0.16,
 };
 
 /**

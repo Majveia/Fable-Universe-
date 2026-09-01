@@ -50,6 +50,8 @@ import {
 import { GAIT, Walker, gravityOf } from './avatar.js';
 import { ascentFraction, ascentState, handoff, releaseAltitude, stepAscent } from './ascent.js';
 import { PROP, craftFor } from './craft.js';
+import { GREEBLE, greebleDetail } from './greeble.js';
+import { paintedStandard, stopsFrom } from './painted.js';
 import { isThin, roomAddress, thinPoint } from './liminal.js';
 import { CameraRig } from './camera.js';
 import { attachKeyboard, input, jumpHeld, keys } from './input.js';
@@ -197,7 +199,46 @@ const M2 = PARAM('m2') !== '0';
  * for. The solver supplies relief at valley scale. It cannot supply it at arm's
  * length, and arm's length is where the frame is being scored.
  */
-const PAINT = PARAM('paint') === '1';
+/**
+ * **Flipped on.** §7.4's separate commit, and the evidence is a capture rather
+ * than an argument.
+ *
+ * The withdrawal note in `docs/plans/DEFAULTS.md` §2 named two causes and both
+ * have since been fixed by work that never came back to re-test this flag:
+ *
+ *   · "a lighting model over a flat normal can only average what was already
+ *     there" — `material.js` act 3b gave the ground a detail normal at 4.1 and
+ *     11.0 cycles/m, per-layer roughness, and an AO that was the constant 1.0;
+ *   · "the frame is fog-dominated before the ramp gets a say" — `aerial.js`
+ *     made visibility a weather, and the near field went from carrying the
+ *     lower half to fog 0.012 at 200 m.
+ *
+ * Re-measured on a G-star temperate land world with a biosphere
+ * (seed 1337146641, g=2248432278 s=51574389 p=1), 640x360, dt pinned:
+ *
+ *   | | paint=0 | paint=1 |
+ *   |---|---|---|
+ *   | ground luma | 0.581 | **0.608** |
+ *   | ground saturation | 0.443 | 0.443 |
+ *   | blown > 0.92 | 0.6% | 0.6% |
+ *   | sky | identical | identical |
+ *
+ * The old failure — "flattens the terrain to a single pale wash" — is gone.
+ * Nothing regresses.
+ *
+ * **And it is a small win, which is worth saying plainly rather than selling.**
+ * +4.6% of ground luminance and no change in colour. The reason is structural
+ * and it is the useful part of this measurement: that frame's lower half is
+ * *grass*, and `paint()` shades *terrain*. §8's "the ground has no material"
+ * was scored on a frame with no grass in it. So the light model was never the
+ * lever anyone thought it was on a vegetated world — see `SAKURA.md` §13 for
+ * where the frame's triangles actually go.
+ *
+ * It ships anyway. §9.2 is the art bible's central mechanism, it is the thing
+ * every future material has to be tuned against, and a flag that is never
+ * flipped is a feature that was never shipped.
+ */
+const PAINT = PARAM('paint') !== '0';
 
 /**
  * The sun's shadow map — and it is **not** the grade.
@@ -3096,12 +3137,73 @@ export class SurfaceScale {
    * clever here would be a second opinion about the shape, and the shape has an
    * owner.
    */
+  /**
+   * The conjured rocket's five materials, plated — §7.4, behind `?greeble=1`.
+   *
+   * This is the largest object at surface scale and the only one whose entire
+   * premise is that it is a real vehicle: `craft.js` solves Tsiolkovsky for the
+   * world you are standing on and hands back what leaving it actually costs.
+   * A 110 m answer to that question, lit by PBR and surfaced with nothing, is
+   * §8 axis 5's failure in the one place the physics is most on show.
+   *
+   * Three things differ from the station ring, and each is a fact about the
+   * object rather than a preference.
+   *
+   * **No merge, so no draw saving.** The parts assemble — `partAt()` moves each
+   * one independently through the conjuring — so they cannot be welded into one
+   * geometry. That costs the plate law nothing here, and is arguably right: a
+   * real stack is plated per stage, in a different shop, and a seam that ran
+   * continuously across an interstage would be the lie.
+   *
+   * **Barrels run up.** These are `CylinderGeometry`, which is y-axis, against
+   * the reference's z-forward hulls — hence `axis: 'y'`.
+   *
+   * **And it has just been conjured.** No micrometeoroid pitting: it has not
+   * been anywhere yet. Little soot, because nothing has burned. What it does
+   * carry is plating, fasteners, weld beads and the anti-glare coat, which is
+   * what a vehicle on a pad looks like the day it rolls out.
+   */
+  _platedCraftMats() {
+    const wiring = this.paintWiring();
+    const light = this._paintLight
+      ? { sun: [...this._paintLight.uniforms.sun.value], shadowTint: [...this._paintLight.uniforms.sh.value] }
+      : { sun: [1, 0.84, 0.61], shadowTint: [0.36, 0.43, 0.62] };
+    const plated = (hex, look, det) => {
+      const c = new THREE.Color(hex);
+      return paintedStandard(
+        // Transparent because the conjuring fades every part in from zero, which
+        // `paintedStandard` already handles as its veil path: coverage is kept
+        // and only the colour goes through §9.3.
+        { color: c, roughness: 1, transparent: true, opacity: 0 },
+        wiring,
+        {
+          ...stopsFrom([c.r, c.g, c.b], light, { warm: 0.12, cool: 0.18, range: 0.28 }),
+          soft: 0.10, rim: 0.75, ambient: 1.0,
+          u2m: 1,            // conjure.js emits metres, and this scale is metres
+          bumpScale: 1,
+          ...look,
+          detail: greebleDetail({ axis: 'y', pit: 0, soot: 0.12, ...det }),
+        });
+    };
+    return {
+      // A tank is the one true pressure vessel here: big rolled plate, frames.
+      tank: plated(0xd8d2c2, {}, { plate: 2.6, frame: true, bleach: 0.55, glare: 0.50 }),
+      // An interstage is structure, not skin — a tighter grid and no bleach.
+      interstage: plated(0x6d6a63, {}, { plate: 1.5, frame: true, bleach: 0.15, glare: 0.30 }),
+      capsule: plated(0xe8e2d2, { rim: 0.95 }, { plate: 1.1, frame: true, bleach: 0.62, glare: 0.62 }),
+      // The one part that has burned, and the only one allowed to be filthy.
+      engine: plated(0x4a4640, { rim: 0.55 }, { plate: 0.8, frame: false, soot: 0.85, bleach: 0.0, glare: 0.15 }),
+      // Painted sheet, thin, and the plate law has almost nothing to say on it.
+      fin: plated(0xb9432f, {}, { plate: 1.8, frame: false, bleach: 0.70, glare: 0.20, rivet: 0.6 }),
+    };
+  }
+
   _buildCraft(conj) {
     const g = new THREE.Group();
     const mk = (c, rough, metal) => new THREE.MeshStandardMaterial({
       color: c, roughness: rough, metalness: metal, transparent: true, opacity: 0,
     });
-    const mats = {
+    const mats = GREEBLE ? this._platedCraftMats() : {
       tank: mk(0xd8d2c2, 0.45, 0.25),
       interstage: mk(0x6d6a63, 0.70, 0.30),
       capsule: mk(0xe8e2d2, 0.35, 0.40),

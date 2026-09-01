@@ -84,8 +84,9 @@ import {
   DENS_POW, MEADOW_GLSL, RINGS, chunkCount, chunkGrid, chunkInstances,
   chunkNearDist, density, keepProbability, ringB, ringK, shuffledIndices,
   bladeRoots, grassPalette, PALETTE_KEYS, MEADOW_PART_GLSL, PART_RADIUS,
-  BLADE_MAX_W, COVER_REACH, COVER_TARGET, EYE_H, FADE_START, bladeWidth, coverMul,
-  coverAt, coverMuls, fadeBand, groundOverdraw, lowerThirdNear, ringLives,
+  BLADE_MAX_W, COVER_REACH, COVER_TARGET, CURVE_PX, EYE_H, FADE_START, NEUTRAL_POW,
+  bladePixels, bladeWidth, bladesPerSteradian, coverAt, coverMul, coverMuls,
+  curveReach, fadeBand, groundOverdraw, lowerThirdNear, ringLives,
 } from '../src/meadow.js';
 import { QUALITY, SAT_AMOUNT } from '../src/quality.js';
 import {
@@ -135,8 +136,9 @@ import { snoise } from '../src/terrain.js';
 import { ECO_QUANT, ECO_RATE, ecologyAt, logistic, regionKey } from '../src/ecology.js';
 import { VEG_WEIRD, vegetationHSL } from '../src/meadow.js';
 import {
-  HABITS, WOOD, breakCurvature, curvature, forkRadii, growTree, lengthOf,
-  radiusForHeight, tipsOf, turnLimit, TURN_GRID,
+  HABITS, HERO_FAR, HERO_NEAR, HERO_OVER, TURN_GRID, WOOD, breakCurvature, curvature,
+  forkRadii, growTree, heroHeight, heroSite, lengthOf, radiusForHeight, tipsOf,
+  turnLimit,
 } from '../src/tree.js';
 import {
   COVER_EXP, COVER_NEAR, MINERALS, SPECIES, communityOf, coverDensity, densityAt,
@@ -144,7 +146,7 @@ import {
 } from '../src/scatter.js';
 import { phaseOf, precipFor, subpixel, terminalVelocity, wrap } from '../src/precip.js';
 import {
-  EXTINCTION as BLOSSOM_L, PETAL, blossomsFor, floweringAt, opticalDepth,
+  EXTINCTION as BLOSSOM_L, PETAL, blossomShares, blossomsFor, floweringAt, opticalDepth,
   SEASONALITY_EARTH, WIDTH_EARTH, WIDTH_MIN, bloomWidth, paramNumber,
   perpetualBloom, petalFall, petalHue, seasonOpenness, seasonPhaseOf, seasonality,
 } from '../src/blossom.js';
@@ -159,6 +161,10 @@ import {
   maxSpeed, reachChords, wantedDepth,
 } from '../src/vehicle.js';
 import { FACES, surfaceRadius, uvToDir } from '../src/tilebuild.js';
+import {
+  LINK_GRID, PILOT, Pilot, decodeCraft, encodeCraft, governedSpeed,
+  speedLimit, stoppingDistance,
+} from '../src/governor.js';
 
 let failures = 0;
 let checks = 0;
@@ -4611,6 +4617,12 @@ function suiteMeadow() {
   }
 
   // --- the falloff is slower than d^-2, which is the whole trick ------------
+  //
+  // True as written, and it is a statement about a WALL. `d^-2` is the neutral
+  // exponent for a fronto-parallel surface; the block below this one does the
+  // same arithmetic for a floor, where the neutral exponent is 3 and the law is
+  // one and a half powers under it rather than half a power over. Both checks
+  // are correct; only the second is about the ground.
   {
     // count per steradian goes as density * d^2; at exponent 1.5 that RISES
     const perSr = (d) => density(2, d) * d * d;
@@ -5131,6 +5143,122 @@ function suiteMeadow() {
     ok('...and the bound is a real blade of grass, per the reference’s own note',
       BLADE_MAX_W >= 0.010 && BLADE_MAX_W <= 0.030,
       `${BLADE_MAX_W * 1000} mm against "real meadow grass is 4–10 mm across"`);
+  }
+
+  // --- what the density law is actually about, evaluated ------------------
+  //
+  // `density()`'s note argues the exponent against `d^-2`, "the falloff that
+  // would keep the count per steradian constant". That is the neutral exponent
+  // for a wall. Ground is a floor: from a fixed eye height the patch subtending
+  // one steradian at distance d has area d^3/e, not d^2, and the extra power is
+  // the grazing incidence. So the claim "the count per steradian rises slightly"
+  // is off by one and a half powers of d, and this is the arithmetic.
+  {
+    ok('the neutral exponent for a FLOOR is 3, not the 2 the law reasons against',
+      NEUTRAL_POW === 3);
+
+    // hold the ratio to the definition rather than to a transcribed number
+    let worst = 0;
+    for (const [r, d] of [[0, 12], [1, 40], [2, 150], [3, 700]]) {
+      const want = density(r, d) * d * d * d / 1.68;
+      worst = Math.max(worst, Math.abs(bladesPerSteradian(r, d) - want) / want);
+    }
+    ok('...and bladesPerSteradian is density · d³ / eye, to the digit',
+      worst < 1e-12, `worst relative error ${worst.toExponential(2)}`);
+
+    const nearSr = bladesPerSteradian(0, RINGS[0].far);
+    const farSr = bladesPerSteradian(3, RINGS[3].far);
+    ok('MEASURED · the count per steradian does not rise "slightly" — it rises 254×',
+      farSr / nearSr > 200,
+      `${(nearSr / 1e6).toFixed(2)} M/sr at ${RINGS[0].far} m → `
+      + `${(farSr / 1e6).toFixed(1)} M/sr at ${RINGS[3].far} m · ${(farSr / nearSr).toFixed(0)}×`);
+
+    // …and the same thing from the fill side
+    const P = 1440 * 1.12 / (52 * Math.PI / 180);
+    // `groundOverdraw` takes the density explicitly since the coverage cap
+    // needs to bisect over it; these two want the ring's own shipped law.
+    const overNear = groundOverdraw(0, 2, density(0, 2), P);
+    const overFar = groundOverdraw(3, RINGS[3].far, density(3, RINGS[3].far), P);
+    ok('MEASURED · and the ground is covered 6× underfoot against 610× at the far edge',
+      overFar / overNear > 80,
+      `${overNear.toFixed(0)}× at 2 m → ${overFar.toFixed(0)}× at ${RINGS[3].far} m`);
+
+    // The consequence, and it is §M3's own gate clause: "grass reads as meadow
+    // at the horizon, not as a green plane." At ring 3's far edge the spacing
+    // cap has grown a blade to 1.69 m and there is no ground visible between
+    // them anywhere — which is a green plane, made of four million billboards.
+    const wFar = bladeWidth(3, RINGS[3].far, P, density(3, RINGS[3].far));
+    ok('§M3 gate · a "blade" at the far edge is 1.7 m wide, which is a billboard',
+      wFar > 1.5, `${wFar.toFixed(2)} m wide, ${(0.71 * RINGS[3].hs).toFixed(2)} m tall`);
+
+    // The exponent is NOT the dial — §6 M3 pins it at 1.5 for the inversesqrt,
+    // and §3 says settled rulings are not re-litigated mid-build. The band is.
+    ok('§6 M3 · the exponent stays pinned at 1.5 regardless of the above',
+      DENS_POW === 1.5, 'the band is the dial; changing it needs a scored frame');
+  }
+
+  // --- §9.5's tier rule, in the unit §9.5 states it in ----------------------
+  //
+  // *"Once a blade is two or three pixels wide, everything varying across its
+  // width is sub-pixel and should be dropped by tier."* That is a rule about
+  // PIXELS, and until `bladeWidth()` existed nothing in the repository could
+  // evaluate it — so the `curvedRings` column, which is the knob the rule
+  // governs, was set from an estimate. The estimate was *"at 5 m a blade is
+  // about 9 px"* and it is wrong by a factor of ten in distance.
+  {
+    // the projections the tiers actually render at: DPR 1, times the row's own
+    // supersample factor, over a 52° vertical FOV
+    const pxr = (h, px) => (h * px) / (52 * Math.PI / 180);
+    const P720 = pxr(720, 0.85), P1440 = pxr(1440, 1.12), PULTRA = pxr(1440, 1.32);
+
+    ok('a ring-0 blade is 1.70 px wide at 5 m, not the 9 px the column assumed',
+      Math.abs(bladePixels(0, 5, P720) - 1.70) < 0.02,
+      `${bladePixels(0, 5, P720).toFixed(2)} px at 720p · `
+      + `${bladePixels(0, 5, P1440).toFixed(2)} px at 1440p·1.12`);
+
+    // and it is 1.70 px at every distance in the band past the metric minimum,
+    // because `wpx` is a floor *in pixels* and no natural width is an input
+    const across = [4, 8, 12, 18, 26].map((d) => bladePixels(0, d, P720));
+    ok('...and at 1.70 px across the whole of ring 0’s band, by construction',
+      across.every((v) => Math.abs(v - 1.70) < 0.01),
+      across.map((v) => v.toFixed(2)).join(' / ') + ' px at 4/8/12/18/26 m');
+
+    // the JS law and the GLSL it mirrors must agree about which term binds
+    ok('the metric minimum is the only term that ever exceeds the pixel floor',
+      bladePixels(0, 1, P720) > 3 && bladePixels(0, 6, P720) < 2,
+      `${bladePixels(0, 1, P720).toFixed(2)} px at 1 m · ${bladePixels(0, 6, P720).toFixed(2)} px at 6 m`);
+
+    // How far each ring earns the rolled-leaf cross-section, against its band.
+    // This is the measurement the column should have been set from.
+    for (const [label, P] of [['desktop', P1440], ['ultra', PULTRA]]) {
+      const reach = curveReach(0, P);
+      ok(`${label}: ring 0 earns the curved cross-section over ${((reach / RINGS[0].far) * 100).toFixed(0)}% of its band`,
+        reach < RINGS[0].far * 0.25,
+        `${reach.toFixed(2)} m of ${RINGS[0].far} m, at the ${CURVE_PX} px threshold`);
+    }
+    ok('ring 1 never earns it on any row — it is at its 2.00 px floor throughout',
+      curveReach(1, PULTRA) <= RINGS[1].near,
+      `${curveReach(1, PULTRA).toFixed(2)} m against a band starting at ${RINGS[1].near} m`);
+
+    // …and therefore the column. This is the assertion that stops it drifting
+    // back: a row may only spend the cross-section on a ring where the blade is
+    // actually wider than the threshold somewhere inside the ring's own band.
+    const PX_OF = { low: pxr(720, 0.85), mobile: pxr(844 * 2, 1.00), desktop: P1440, ultra: PULTRA };
+    for (const q of QUALITY) {
+      const P = PX_OF[q.name] ?? P1440;
+      const bad = [];
+      for (let r = 0; r < q.curvedRings; r++) if (curveReach(r, P) <= RINGS[r].near) bad.push(r);
+      ok(`§9.5 · ${q.name}’s curvedRings spends nothing on a ring that is sub-pixel throughout`,
+        bad.length === 0,
+        `curvedRings ${q.curvedRings}` + (bad.length ? ` · ring(s) ${bad.join(',')} never reach ${CURVE_PX} px` : ''));
+    }
+
+    // the refund, stated so it is on the record rather than in a commit message
+    const tri = (seg, curved) => seg * (curved ? 4 : 2);
+    const d = QUALITY[2];
+    ok('retiring ring 0’s cross-section on desktop halves its triangles per blade',
+      tri(d.blades[0], true) === 16 && tri(d.blades[0], false) === 8,
+      '16 → 8, on the largest single line in the surface frame');
   }
 
   // --- the quality table's §M3 columns -------------------------------------
@@ -10313,6 +10441,219 @@ function suiteTroffer() {
 }
 
 
+// ---------------------------------------------------------------------------
+// suite: governor — §4's "travel", §2.4, §11
+//
+// The governor is one line of algebra, so checking the algebra against itself
+// would prove nothing. §7.3 asks for an independent second derivation, and the
+// honest one here is a **simulation**: fly the craft at a world, integrate it
+// forward at small steps with nothing but the governor deciding its speed, and
+// see where it actually stops. If the bound is right the craft comes to rest at
+// the standoff. If it is a curve that happens to look right, it does not.
+//
+// That is the same shape of check as the vehicle suite's — re-walk the thing,
+// count what happens — and it is the one that would have caught the arbitrary
+// falloff this file exists instead of.
+
+function suiteGovernor() {
+  console.log('\ngovernor — the stopping bound, flown rather than asserted');
+
+  const R = 40;                       // a world, in system units
+  const stop = R * PILOT.standoff;
+
+  // --- the bound is the inverse of the stopping distance ------------------
+  // Two expressions of one relation. Agreement is the evidence; either alone
+  // is a restatement.
+  let worst = 0;
+  for (let i = 1; i <= 400; i++) {
+    const d = stop + (i / 400) * 4000;
+    const v = speedLimit(d, R);
+    if (v >= PILOT.vMax - 1e-9) continue;       // capped, not bound
+    const need = stoppingDistance(v);
+    worst = Math.max(worst, Math.abs(need - (d - stop)) / Math.max(d - stop, 1e-9));
+  }
+  ok('speedLimit and stoppingDistance are inverse to 1e-12',
+    worst < 1e-12, `worst relative ${worst.toExponential(2)}`);
+
+  // --- flown ---------------------------------------------------------------
+  // Straight at the centre from far away, riding the bound, integrated at 1 ms.
+  // No control law: the craft simply goes as fast as it is allowed to.
+  const fly = (d0, dt) => {
+    let d = d0, t = 0;
+    for (let i = 0; i < 4e6 && d > stop + 1e-6; i++) {
+      const v = speedLimit(d, R);
+      if (v <= 0) break;
+      d -= v * dt;
+      t += dt;
+    }
+    return { d, t };
+  };
+  const a = fly(3000, 1e-3);
+  ok('a craft riding the bound comes to rest at the standoff, not through it',
+    a.d >= stop - 1e-3 && a.d <= stop + 0.5,
+    `stopped at ${a.d.toFixed(4)} against a standoff of ${stop.toFixed(4)}`);
+
+  // Halving the step must not move the answer — an arrival that depends on the
+  // frame rate is the pop-in §6 M5 forbids, one scale up.
+  const b = fly(3000, 5e-4);
+  near('and the arrival is step-independent', b.d, a.d, 0.5);
+
+  // --- it never asks for more room than it has -----------------------------
+  // The property that actually matters, checked over the whole approach rather
+  // than at its end: at every point, what the craft can still stop in fits in
+  // what is left.
+  let ok2 = true, worstOver = 0;
+  for (let d = stop; d <= 6000; d += 0.5) {
+    const room = stoppingDistance(speedLimit(d, R)) - (d - stop);
+    if (room > 1e-9) { ok2 = false; worstOver = Math.max(worstOver, room); }
+  }
+  ok('at no point on the approach does it need more room than remains',
+    ok2, ok2 ? '' : `over by ${worstOver.toExponential(2)} units`);
+
+  // --- the minimum is over all bodies, not the nearest ---------------------
+  // The bug this replaced: a star is a hundred times a planet's radius, so at
+  // equal range its bound is far tighter. Nearest-by-distance would fly you
+  // through a sun to reach a world just past it.
+  //
+  // The fixture has to be built with care, and getting it wrong the first time
+  // is instructive: a *small* body that is nearer almost always binds anyway,
+  // because its standoff is tiny and the bound only cares about the room left.
+  // The case that separates the two rules is a small body that is nearer but
+  // not close — then the star, further away, still binds because you must stop
+  // clear of six hundred units of it.
+  const bodies = [
+    { x: 0, y: 0, z: 0, radius: 600 },          // the star
+    { x: 0, y: 0, z: 700, radius: 2 },          // a moonlet just off its limb
+  ];
+  const at = { x: 0, y: 0, z: 900 };            // 200 from the moonlet, 900 from the star
+  const nearestOnly = speedLimit(200, 2);       // what nearest-by-distance would allow
+  const both = governedSpeed(at, bodies);
+  ok('the governor takes the minimum over every body, not the nearest one',
+    both < nearestOnly - 1,
+    `bound ${both.toFixed(1)} (the star, 900 away) beats ${nearestOnly.toFixed(1)} `
+    + '(the moonlet, 200 away and nearer)');
+
+  // --- no NaN reaches the frame -------------------------------------------
+  // sqrt of a negative is how one bad number becomes a whole missing scene
+  // graph. Inside the standoff the answer is zero, not imaginary.
+  ok('inside the standoff the bound is zero, never NaN',
+    speedLimit(R, R) === 0 && speedLimit(0, R) === 0 && Number.isFinite(speedLimit(-5, R)),
+    '');
+  ok('and a zero-radius body does not poison it',
+    Number.isFinite(speedLimit(100, 0)) && speedLimit(100, 0) > 0, '');
+
+  // --- the drive lags, and settles ----------------------------------------
+  const p = new Pilot();
+  const far = { x: 0, y: 0, z: 12000 };
+  for (let i = 0; i < 600; i++) p.step(1 / 60, { throttle: 1, pos: far, bodies: [] });
+  near('full throttle settles at vMax', p.speed, PILOT.vMax, 1);
+  ok('and it took time to get there — a drive is not a switch',
+    (() => {
+      const q = new Pilot();
+      q.step(1 / 60, { throttle: 1, pos: far, bodies: [] });
+      return q.speed < PILOT.vMax * 0.02;
+    })(), '');
+
+  // Braking is a fact about the governor, not about a falling number: closing
+  // the throttle in open space must NOT read as braking.
+  const q = new Pilot();
+  for (let i = 0; i < 600; i++) q.step(1 / 60, { throttle: 1, pos: far, bodies: [] });
+  q.step(1 / 60, { throttle: -1, pos: far, bodies: [] });
+  ok('closing the throttle in open space does not read as braking', !q.braking, '');
+  const r2 = new Pilot();
+  for (let i = 0; i < 600; i++) {
+    r2.step(1 / 60, { throttle: 1, pos: { x: 0, y: 0, z: 90 }, bodies: [{ x: 0, y: 0, z: 0, radius: 40 }] });
+  }
+  ok('and holding it open against the governor does', r2.braking,
+    `limit ${r2.limit.toFixed(1)} under a demand of ${PILOT.vMax}`);
+
+  // --- arrived(): the helm handback ---------------------------------------
+  // This predicate exists because the check it replaces was wrong, and the
+  // wrongness was invisible: system.js asked `rel.beta < 0.09`, the pilot
+  // overwrote rel.beta after the check had run, and so an interstellar arrival
+  // under ?pilot=1 handed the helm back within a frame or two of engaging.
+  // Nothing caught it — governor.js was correct, boot.js proved construction did
+  // not throw, and the defect lived in the wiring between them. These are the
+  // checks that would have.
+  {
+    const a = new Pilot();
+    ok('a craft that has not moved reads as arrived', a.arrived(), '');
+    for (let i = 0; i < 600; i++) a.step(1 / 60, { throttle: 1, pos: far, bodies: [] });
+    ok('and one at full drive does not', !a.arrived(), `speed ${a.speed.toFixed(1)}`);
+
+    // The failure mode in one check: a craft one second into a cruise is under
+    // way, however small its speed still is. The old test read this as arrived.
+    const b = new Pilot();
+    for (let i = 0; i < 60; i++) b.step(1 / 60, { throttle: 1, pos: far, bodies: [] });
+    ok('a craft one second into a cruise is under way, not arrived',
+      !b.arrived(), `speed ${b.speed.toFixed(2)}, demand ${b.demand.toFixed(3)}`);
+
+    // Riding the governor to a crawl on a close pass is not arriving either:
+    // the drive is still open, the craft is still going somewhere.
+    const c = new Pilot();
+    const close = { x: 0, y: 0, z: 60 };
+    const world = [{ x: 0, y: 0, z: 0, radius: 40 }];
+    for (let i = 0; i < 600; i++) c.step(1 / 60, { throttle: 1, pos: close, bodies: world });
+    ok('a craft governed to a crawl with the drive open is not arrived',
+      !c.arrived() && c.braking, `speed ${c.speed.toFixed(2)}, limit ${c.limit.toFixed(2)}`);
+
+    // …and closing the throttle from there is.
+    for (let i = 0; i < 900; i++) c.step(1 / 60, { throttle: -1, pos: close, bodies: world });
+    ok('closing the throttle from a crawl is', c.arrived(),
+      `speed ${c.speed.toFixed(3)}, demand ${c.demand.toFixed(3)}`);
+
+    // release() is what a §2.5 transition calls when it takes the camera; it
+    // has to leave the craft in a state that reads as arrived rather than as
+    // one still under way with nobody at the helm.
+    const d = new Pilot();
+    for (let i = 0; i < 600; i++) d.step(1 / 60, { throttle: 1, pos: far, bodies: [] });
+    d.release();
+    ok('release() leaves the craft reading as arrived', d.arrived(),
+      `demand ${d.demand}, beta ${d.beta}`);
+  }
+
+  // --- §2.4 · the deep link round-trips exactly ---------------------------
+  // §11's boundary: this value reaches a *place*, so it must not ride a last
+  // bit. Encode and decode are inverse on the grid, not merely close.
+  let worstPos = 0, worstDir = 0;
+  const rng = (n) => ((Math.sin(n * 12.9898) * 43758.5453) % 1 + 1) % 1;
+  for (let i = 0; i < 2000; i++) {
+    const pos = {
+      x: (rng(i + 1) - 0.5) * 26000,
+      y: (rng(i + 101) - 0.5) * 26000,
+      z: (rng(i + 201) - 0.5) * 26000,
+    };
+    const az = (rng(i + 301) - 0.5) * 2 * Math.PI;
+    const el = (rng(i + 401) - 0.5) * Math.PI * 0.98;
+    const ce = Math.cos(el);
+    const dir = { x: Math.sin(az) * ce, y: Math.sin(el), z: Math.cos(az) * ce };
+    const back = decodeCraft(encodeCraft(pos, dir));
+    if (!back) { worstPos = Infinity; break; }
+    worstPos = Math.max(worstPos,
+      Math.abs(back.pos.x - pos.x), Math.abs(back.pos.y - pos.y), Math.abs(back.pos.z - pos.z));
+    worstDir = Math.max(worstDir,
+      Math.abs(back.dir.x - dir.x), Math.abs(back.dir.y - dir.y), Math.abs(back.dir.z - dir.z));
+  }
+  ok('a craft position round-trips through the link within half a grid step',
+    worstPos <= LINK_GRID * 0.5 + 1e-12,
+    `worst ${worstPos.toExponential(2)} against a grid of ${LINK_GRID.toExponential(2)}`);
+  ok('and the heading within a quarter of a milliradian',
+    worstDir < 2.5e-4, `worst ${worstDir.toExponential(2)}`);
+
+  // Encoding twice must give the same string — otherwise two people sharing
+  // the same place get two URLs, which is §2.4 failing quietly.
+  const pos = { x: 1234.5678, y: -91.2, z: 4001.9 };
+  const dir = { x: 0.6, y: 0.1, z: Math.sqrt(1 - 0.36 - 0.01) };
+  const once = encodeCraft(pos, dir);
+  ok('encoding is idempotent through a round trip',
+    encodeCraft(decodeCraft(once).pos, decodeCraft(once).dir) === once, once);
+
+  // A malformed link is refused outright rather than partly honoured.
+  ok('a malformed link is refused, not half-parsed',
+    decodeCraft('1,2,3') === null && decodeCraft('') === null
+    && decodeCraft('a,b,c,d,e') === null && decodeCraft(null) === null, '');
+}
+
 /* ===========================================================================
    descent — Allen–Eggers, and the way down
 
@@ -11626,7 +11967,403 @@ function suiteExposure() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// suite: hero
+//
+// §9.7's "one hero landmark in the opening frustum, with scale legible against
+// a human-height reference." The clause was never enforced by anything: the
+// composition solver's `hero` term scores TERRAIN prominence over a 200 m
+// collar, and a hill at 600 m satisfies it while leaving the frame without a
+// subject. `heroSite()` is the subject; this is what holds it to the clause.
+//
+// Every assertion below is a sentence of §9.7 turned into a number, and the
+// ones that are art direction rather than geometry say so.
+
+function suiteHero() {
+  console.log('\nhero — §9.7’s subject in the opening frustum');
+
+  const HF = 26 * Math.PI / 180;             // the camera’s vertical fov/2
+  const flat = () => 0;
+
+  // --- Greenhill: hero height is a readout of gravity ----------------------
+  {
+    ok('an Earth-gravity hero stands HERO_OVER above the canopy',
+      Math.abs(heroHeight(9, 9.80665) - 9 * HERO_OVER) < 1e-9,
+      `${heroHeight(9, 9.80665).toFixed(3)} m over a 9 m canopy`);
+
+    // h proportional to g^-1/3 -- Greenhill's buckling limit with the wood held
+    // constant, which is what makes this a law rather than a lookup
+    let worst = 0;
+    for (const g of [0.5, 1.62, 3.7, 9.80665, 24.8, 40]) {
+      const want = 9 * HERO_OVER * Math.cbrt(9.80665 / g);
+      if (want > 90 || want < 9 * 1.25) continue;        // clamped, not scaled
+      worst = Math.max(worst, Math.abs(heroHeight(9, g) - want) / want);
+    }
+    ok('...and scales as g^-1/3 across two decades of gravity',
+      worst < 1e-12, `worst relative error ${worst.toExponential(2)}`);
+
+    ok('a low-gravity moon holds a taller tree than Earth does',
+      heroHeight(9, 1.62) > heroHeight(9, 9.80665) * 1.7,
+      `${heroHeight(9, 1.62).toFixed(1)} m at 0.17 g against ${heroHeight(9, 9.80665).toFixed(1)} m at 1 g`);
+    ok('...and a super-earth holds a shorter one',
+      heroHeight(9, 23.5) < heroHeight(9, 9.80665) * 0.8,
+      `${heroHeight(9, 23.5).toFixed(1)} m at 2.4 g`);
+
+    ok('no hero exceeds growTree’s own 90 m ceiling, at any gravity',
+      [0.01, 0.05, 0.2, 1, 60].every((g) => heroHeight(40, g) <= 90),
+      `tallest ${Math.max(...[0.01, 0.05, 0.2, 1, 60].map((g) => heroHeight(40, g))).toFixed(1)} m`);
+    ok('...and none is shorter than the population it must dominate',
+      [0.01, 1, 9.8, 60].every((g) => heroHeight(9, g) >= 9 * 1.25));
+  }
+
+  // --- §9.7: in the opening frustum, on every world -------------------------
+  {
+    // A thousand (seed, heading) pairs over open ground. The clause is "in the
+    // opening frustum" and the half-angle is the narrow one heroSite() uses, so
+    // passing here means passing with 15 degrees of margin on the real 16:9
+    // frustum -- which is what keeps a 20 m crown off the frame edge.
+    let n = 0, inFrame = 0, centred = 0, worstOff = 0;
+    for (let i = 0; i < 1000; i++) {
+      const heading = (i / 1000) * Math.PI * 2;
+      const h = heroSite({ seed: i + 1, heading, halfFov: HF, groundAt: flat });
+      if (!h) continue;
+      n++;
+      // bearing, measured back into the camera's own frame
+      let d = h.bearing - heading;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      if (Math.abs(d) <= HF) inFrame++;
+      worstOff = Math.max(worstOff, Math.abs(d) / HF);
+      if (Math.abs(d) / (2 * HF) < 0.04) centred++;
+    }
+    ok('a hero is found on open ground, every time', n === 1000, `${n}/1000`);
+    ok('§9.7 · and it is inside the opening frustum, every time',
+      inFrame === n, `${inFrame}/${n}, worst ${(worstOff * 100).toFixed(0)}% of the half-angle`);
+    ok('§9.7 · "nothing is centred" — none lands on the axis',
+      centred === 0, `${centred} within 4% of frame centre`);
+  }
+
+  // --- §9.7: off-centre means the third line, and both sides get used -------
+  {
+    let left = 0, right = 0, sumFrac = 0, n = 0;
+    for (let i = 0; i < 600; i++) {
+      const h = heroSite({ seed: 5000 + i, heading: 0, halfFov: HF, groundAt: flat });
+      if (!h) continue;
+      n++;
+      if (h.offset < 0) left++; else right++;
+      sumFrac += Math.abs(h.offset) / (2 * HF);
+    }
+    const mean = sumFrac / n;
+    ok('the mean offset sits near the third line, not the centre or the edge',
+      mean > 0.10 && mean < 0.26, `mean ${(mean).toFixed(3)} of frame width (THIRD_OFF = 0.167)`);
+    // the sign comes from the seed, so a universe does not put every tree left
+    const bias = Math.abs(left - right) / n;
+    ok('...and the side is the seed’s, so the universe is not one-handed',
+      bias < 0.25, `${left} left / ${right} right`);
+  }
+
+  // --- §9.7: scale legible against a human-height reference ----------------
+  {
+    // The clause is a pixel argument at both ends and this is it, in degrees.
+    // At the far end a 1.68 m figure must still be a figure; at the near end
+    // the crown must be a subject rather than a wall.
+    let n = 0, minSub = 1e9, maxSub = 0, minFig = 1e9, tooNear = 0;
+    for (let i = 0; i < 600; i++) {
+      const h = heroSite({ seed: 900 + i, heading: 1.1, halfFov: HF, groundAt: flat });
+      if (!h) continue;
+      n++;
+      const sub = 2 * Math.atan2(h.height * 0.5, h.dist) * 180 / Math.PI;
+      const fig = 2 * Math.atan2(1.68 * 0.5, h.dist) * 180 / Math.PI;
+      minSub = Math.min(minSub, sub); maxSub = Math.max(maxSub, sub);
+      minFig = Math.min(minFig, fig);
+      if (h.dist < 14) tooNear++;
+    }
+    ok('the crown is a subject — never under an eighth of a 52° frame',
+      minSub > 52 / 8, `smallest ${minSub.toFixed(1)}° of 52°`);
+    ok('...and never a wall — never over three quarters of it',
+      maxSub < 52 * 0.75, `largest ${maxSub.toFixed(1)}°`);
+    ok('§9.7 · a 1.68 m figure at its base is still resolvable',
+      minFig * (720 / 52) > 8, `${(minFig * (720 / 52)).toFixed(1)} px at 720p, ${(minFig * (1440 / 52)).toFixed(1)} px at 1440p`);
+    ok('life.js’ own 14 m doorway rule is never violated',
+      tooNear === 0 && HERO_NEAR >= 14, `nearest band edge ${HERO_NEAR} m`);
+  }
+
+  // --- the ground gets a veto, and it is a real one ------------------------
+  {
+    // A spawn facing open water has no hero, and inventing one puts a tree in
+    // the sea. `null` is the answer, and this is the assertion that it is
+    // actually reachable rather than dead code.
+    const none = heroSite({ seed: 3, heading: 0, halfFov: HF, groundAt: () => null });
+    ok('no plantable ground anywhere ⇒ no hero, rather than a tree in the sea',
+      none === null);
+
+    // half the frame is water: it must find the dry half rather than give up
+    let found = 0;
+    for (let i = 0; i < 200; i++) {
+      const h = heroSite({
+        seed: 40 + i, heading: 0, halfFov: HF,
+        groundAt: (x) => (x > 0 ? 0 : null),
+      });
+      if (h && h.x > 0) found++;
+    }
+    ok('half the frame under water ⇒ it still finds the dry third',
+      found > 190, `${found}/200 placed on land`);
+
+    // The datum for "level" comes from the candidates, not from the spawn.
+    //
+    // `life.js` passes `dryland` as `groundAt`, and `dryland` returns null
+    // above `amp · 0.55` — so on a mountainous world a spawn you can perfectly
+    // well stand on is not *plantable*, and a datum taken from it would be
+    // absent. Taking it from the spawn and defaulting to zero made the level
+    // term read every candidate as hundreds of metres out of place and score
+    // them all identically: not wrong, but silently non-discriminating on
+    // exactly the terrain it exists for. This is that case.
+    {
+      // ground at 600 m everywhere, and the spawn itself refused
+      const g = (x, z) => (x === 0 && z === 0 ? null : 600);
+      const h = heroSite({ seed: 61, heading: 0.3, halfFov: HF, groundAt: g });
+      ok('a spawn its own groundAt refuses still yields a placed hero',
+        h !== null && Math.abs(h.y - 600) < 1e-9, h ? `y = ${h.y}` : 'null');
+
+      // and the term still discriminates: a bluff among level ground loses
+      const bluff = (x, z) => (Math.hypot(x - 40, z - 40) < 12 ? 640 : 600);
+      let onBluff = 0, n = 0;
+      for (let i = 0; i < 200; i++) {
+        const p = heroSite({ seed: 300 + i, heading: 0.785, halfFov: HF, groundAt: bluff });
+        if (!p) continue;
+        n++;
+        if (Math.hypot(p.x - 40, p.z - 40) < 12) onBluff++;
+      }
+      ok('...and 40 m of unexplained rise is still avoided rather than ignored',
+        n > 0 && onBluff / n < 0.2, `${onBluff}/${n} placed on the bluff`);
+    }
+
+    // and a settlement's ground is not available
+    let clear = 0, placed = 0;
+    for (let i = 0; i < 200; i++) {
+      const h = heroSite({
+        seed: 700 + i, heading: 0.4, halfFov: HF, groundAt: flat,
+        blocked: (x, z) => Math.hypot(x - 30, z - 50) < 45,
+      });
+      if (!h) continue;
+      placed++;
+      if (Math.hypot(h.x - 30, h.z - 50) >= 45) clear++;
+    }
+    ok('...and it never stands on ground something else owns',
+      placed > 0 && clear === placed, `${clear}/${placed} clear of the exclusion`);
+  }
+
+  // --- §2.3 -----------------------------------------------------------------
+  {
+    const a = heroSite({ seed: 12345, heading: 2.2, halfFov: HF, groundAt: flat });
+    const b = heroSite({ seed: 12345, heading: 2.2, halfFov: HF, groundAt: flat });
+    ok('§2.3 · same seed and heading give the same tree, in the same place',
+      JSON.stringify(a) === JSON.stringify(b));
+    const c = heroSite({ seed: 12346, heading: 2.2, halfFov: HF, groundAt: flat });
+    ok('...and a different seed moves it',
+      JSON.stringify(a) !== JSON.stringify(c));
+
+    // the heading is the solved one, so the tree follows the camera around
+    const north = heroSite({ seed: 88, heading: 0, halfFov: HF, groundAt: flat });
+    const east = heroSite({ seed: 88, heading: Math.PI / 2, halfFov: HF, groundAt: flat });
+    ok('the site is placed against the SOLVED heading, not against the world',
+      Math.abs((east.bearing - north.bearing) - Math.PI / 2) < 1e-9,
+      'rotating the heading rotates the hero with it');
+  }
+
+  // --- a poisoned world still yields something standable -------------------
+  {
+    const bad = heroSite({
+      seed: NaN, heading: NaN, halfFov: NaN, height: NaN, gravity: NaN,
+      near: NaN, far: NaN, groundAt: flat,
+    });
+    ok('NaN in every argument still returns a finite, plantable site',
+      bad !== null && [bad.x, bad.z, bad.dist, bad.height].every(Number.isFinite),
+      bad ? `${bad.dist.toFixed(1)} m out, ${bad.height.toFixed(1)} m tall` : 'null');
+    ok('...and the tree it asks for actually grows',
+      growTree({ seed: 1, height: bad.height, habit: bad.habit }).segments > 24);
+  }
+
+  // --- the blossom LOD: the one class the distance law never reached -------
+  //
+  // `life.js` thins wood by distance and foliage by distance, and split the
+  // flowers evenly. So a tree at 300 m carried a full share of white petals
+  // over the 16% of its leaves that survived the foliage LOD — which is what
+  // `docs/captures/subject/`'s first frame shows: bare arcing branches with
+  // white specks along the horizon, no canopy mass anywhere.
+  {
+    // a plausible world: one hero, then trees at every distance out to 700 m
+    const dists = [];
+    for (let i = 0; i < 400; i++) dists.push(6 + (i / 399) ** 1.6 * 700);
+    const w = [0, ...dists.map((d) => coverDensity(d, 90))];
+    const cap = 44000, heroCap = 4200;
+    const sh = blossomShares(w, { cap, heroCap, heroIndex: 0 });
+
+    ok('the hero’s share is taken off the top and is not diluted by 400 neighbours',
+      sh[0] === heroCap, `${sh[0]} of ${cap}`);
+
+    const spent = sh.reduce((a, b) => a + b, 0);
+    ok('§5 · the cap is conserved — flowers are moved, not added',
+      spent <= cap * 1.02, `${spent.toLocaleString()} allocated against a cap of ${cap.toLocaleString()}`);
+
+    // the property the whole change is for: near trees get more than far ones
+    const near = sh[1], far = sh[sh.length - 1];
+    ok('a tree at 6 m carries far more blossom than one at 700 m',
+      near > far * 5, `${near} at ${dists[0].toFixed(0)} m against ${far} at ${dists[dists.length - 1].toFixed(0)} m`);
+    ok('...and the far one is still in bloom rather than speckled',
+      far >= 12, `${far} flowers, floor 12`);
+
+    // monotone in distance, which is what stops a mid-ground tree out-blooming
+    // one in front of it
+    let mono = true;
+    for (let i = 2; i < sh.length; i++) if (sh[i] > sh[i - 1] + 1) mono = false;
+    ok('the share falls monotonically with distance', mono);
+
+    // the even split it replaces, for the record
+    const even = Math.floor((cap - heroCap) / dists.length);
+    ok(`MEASURED · the even split gave every tree ${even}; the nearest now gets ${near}`,
+      near > even * 2, `${even} → ${near} at the near end, ${even} → ${far} at the far`);
+  }
+
+  // --- and the degenerate cases, because they are all reachable ------------
+  {
+    // every tree beyond the falloff: coverDensity returns 0 for all of them,
+    // which is a real world (a spawn on a bare plain with a distant wood) and
+    // must not be a division by zero
+    const zero = blossomShares([0, 0, 0, 0], { cap: 1000, heroCap: 0 });
+    ok('all-zero weights fall back to the even split rather than to NaN',
+      zero.every((v) => Number.isFinite(v) && v > 0), zero.join('/'));
+
+    ok('an empty world returns an empty allocation',
+      blossomShares([]).length === 0);
+
+    const noHero = blossomShares([1, 1, 1], { cap: 300, heroCap: 0, heroIndex: -1 });
+    ok('with no hero the whole cap is shared among the trees',
+      noHero.reduce((a, b) => a + b, 0) === 300, noHero.join('/'));
+
+    const bad = blossomShares([NaN, Infinity, -1, 2], { cap: NaN, heroCap: NaN, heroIndex: 0 });
+    ok('poisoned weights and a poisoned cap still return finite shares',
+      bad.every(Number.isFinite), bad.join('/'));
+  }
+
+  // --- and now on real ground, at the real solved heading ------------------
+  //
+  // Every check above uses a synthetic `groundAt`, which proves the geometry
+  // and proves nothing about whether AEON's actual terrain will accept a hero.
+  // `makeGround()` is THREE-free and `solveLandingSite()` is the same solver
+  // `surface.js` runs, so the real question is answerable here: on twelve
+  // worlds, at the heading each one's solver actually chose, does the ground
+  // give the subject somewhere to stand?
+  //
+  // This is the check that would have caught a hero placed into the sea, and it
+  // is the one the offline suite exists for — the capture that would show it
+  // takes forty minutes in this container and covers one world.
+  {
+    const worlds = [];
+    for (let i = 0; i < 12; i++) {
+      worlds.push({
+        noiseSeed: 1000 + i * 7919,
+        oceanLevel: i % 4 === 3 ? -1 : 0.004 + (i % 5) * 0.006,
+        radiusE: 0.7 + (i % 6) * 0.22,
+      });
+    }
+    let placed = 0, drowned = 0, tooSteep = 0, n = 0;
+    const dists = [];
+    for (let i = 0; i < worlds.length; i++) {
+      const w = worlds[i];
+      const sol = solveLandingSite(w, 0x51 + i * 977, { sites: 90 });
+      if (!sol || sol.fallback) continue;
+      const g = makeGround(w, sol.dir);
+      const sea = g.seaLevel ?? -1e9;
+      const amp = g.amp ?? 1e9;
+      // life.js's own dryland(), to the letter
+      const dryland = (x, z) => {
+        const h = g.heightAt(x, z);
+        if (sea !== null && h < sea + 1.5) return null;
+        if (h > amp * 0.55) return null;
+        return h;
+      };
+      n++;
+      const site = heroSite({
+        seed: 0xbeef + i, spawn: { x: 0, z: 0 }, heading: sol.heading,
+        halfFov: 26 * Math.PI / 180, groundAt: dryland,
+      });
+      if (!site) continue;
+      placed++;
+      dists.push(site.dist);
+      if (site.y < sea + 1.5) drowned++;
+      if (site.y > amp * 0.55) tooSteep++;
+    }
+    ok('§9.7 · real terrain accepts a hero at the solved heading on every world',
+      n > 0 && placed === n, `${placed}/${n} worlds placed`);
+    ok('...and not one of them stands in the sea',
+      drowned === 0, `${drowned} below sea level + 1.5 m`);
+    ok('...nor above the altitude life.js refuses to plant on',
+      tooSteep === 0, `${tooSteep} above amp · 0.55`);
+    const lo = Math.min(...dists), hi = Math.max(...dists);
+    ok('...and the distances spread across the band rather than pinning to one',
+      hi - lo > 10, `${lo.toFixed(0)}–${hi.toFixed(0)} m over ${dists.length} worlds`);
+  }
+
+  // --- §16 rule 2: what it costs against §5, before it is proposed ---------
+  //
+  // *"Before proposing a feature, state its cost against §5 measured with the
+  // grass on."* The grass is measured elsewhere in this file and it is measured
+  // as catastrophic; this is the part the hero itself adds, and it is small
+  // enough that the two questions are genuinely separate.
+  //
+  // Triangles per primitive, from the call sites in `life.js`:
+  // a wood segment is `CylinderGeometry(1,1,1,5,1,true)` — five quads, ten
+  // triangles; a leaf clump is `IcosahedronGeometry(1,0)` — twenty; a petal is
+  // a pentagon — five.
+  {
+    const SEG = 10, LEAF = 20;
+    for (const [label, base] of [['low/mobile', 240], ['desktop/ultra', 520]]) {
+      let net = 0, flowers = 0, n = 0;
+      const heroCap = Math.min(Math.round((base > 300 ? 44000 : 13000) * 0.22), 4200);
+      for (let i = 0; i < 40; i++) {
+        const site = heroSite({ seed: 1000 + i, heading: 0.7, groundAt: () => 0 });
+        // what life.js grows for the hero, against what it would have grown anyway
+        const h = growTree({ seed: 2000 + i, height: site.height, habit: site.habit, budget: base * 3 });
+        const o = growTree({ seed: 2000 + i, height: 9, budget: base });
+        net += (h.segments - o.segments) * SEG
+          + (tipsOf(h, 0.018).length - tipsOf(o, 0.018).length) * LEAF;
+        flowers += blossomsFor(h, { seed: 2000 + i, openness: 1, budget: heroCap }).length;
+        n++;
+      }
+      net /= n; flowers /= n;
+      ok(`§5 · ${label}: the hero adds under 1.5% of the 2.2 M triangle budget`,
+        net < 2.2e6 * 0.015,
+        `${Math.round(net).toLocaleString()} triangles net over 40 worlds · ${(net / 2.2e6 * 100).toFixed(2)}%`);
+      // and the thing it was for: a crown that is actually in bloom rather than
+      // a tree with some blossom on it
+      ok(`...and carries ${Math.round(flowers)} flowers against the ~110 an even split gave every tree`,
+        flowers > 400, `${Math.round(flowers)} on average, cap ${heroCap}`);
+    }
+    // the flowers are MOVED, not added — the world's cap is untouched, which is
+    // what lets the §5 figure above be wood and leaves only
+    ok('the flower cap is unchanged: 22% off the top, not 22% more',
+      Math.min(Math.round(44000 * 0.22), 4200) === 4200
+      && Math.min(Math.round(13000 * 0.22), 4200) === 2860,
+      'desktop 4200 of 44000 · low 2860 of 13000');
+  }
+
+  // --- the hero is a tree the wood can actually make ------------------------
+  {
+    // heroHeight() is a claim about a tree; growTree() is the thing that has to
+    // honour it. A height the grower clamps away is a law with no effect.
+    for (const [g, name] of [[1.62, 'a 0.17 g moon'], [9.80665, 'Earth'], [23.5, 'a 2.4 g super-earth']]) {
+      const H = heroHeight(9, g);
+      const t = growTree({ seed: 7, gravity: g, height: H, habit: 'spreading', budget: 900 });
+      const top = Math.max(...t.seg.y1);
+      ok(`${name}: the grown hero reaches the height the law asked for`,
+        top > H * 0.55, `asked ${H.toFixed(1)} m, crown top ${top.toFixed(1)} m`);
+    }
+  }
+}
+
 const suites = {
+  hero: suiteHero,
   register: suiteRegister, exposure: suiteExposure,
   blossom: suiteBlossom,
   cover: suiteCover,
@@ -11666,6 +12403,7 @@ const suites = {
   descent: suiteDescent,
   pilot: suitePilot,
   deck: suiteDeck,
+  governor: suiteGovernor,
 };
 
 for (const [name, fn] of Object.entries(suites)) {

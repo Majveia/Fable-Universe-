@@ -89,6 +89,15 @@ const STATIONS = [
   ['ice 26K', 'g=1&s=31337&p=5', 'SurfaceScale', 'core'],
   ['biosphere in bloom', 'g=1&s=2309773419&p=2&bloom=1', 'SurfaceScale', 'core'],
 
+  // --- the Long Silence port, §7.4 · both flags default-off ---------------
+  // `cr=` is the one that earns its place: it makes the constructor take the
+  // helm, so `applyCraftLink`, `toggleRel`, `_pilotBodies`, the governor and
+  // the roll frame all run before the first frame rather than on a keypress no
+  // headless tool sends.
+  ['piloted cruise', 'g=1&s=2309773419&pilot=1&cr=98304,16384,262144,2100,-260', 'SystemScale', 'core'],
+  ['plated orbit', 'seed=20250601&g=1&s=2309773419&pl=2&quad=1&ap=0&greeble=1', 'PlanetScale', 'core'],
+  ['plated rocket', 'g=1&s=2309773419&p=1&greeble=1', 'SurfaceScale', 'core'],
+
   // --- the rest of the world kinds, and the awkward states ----------------
   ['terrestrial 357K', 'g=1&s=2309773419&p=1', 'SurfaceScale', 'full'],
   ['terrestrial 210K', 'g=1&s=2309773419&p=3', 'SurfaceScale', 'full'],

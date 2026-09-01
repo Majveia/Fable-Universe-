@@ -131,9 +131,34 @@ export function paintedStandard(params, wiring, look = {}) {
     shade, mid, lit,
     soft = 0.11, jit = 0.0, rim = 0.55, ao = 1.0, ambient = 1.0,
     trans = 0.0, transCol = [0.55, 0.72, 0.32],
+    /**
+     * An optional surface law — §9.2 said "one function", not "one surface".
+     *
+     * `paint()` decides how a fragment is lit and has never had any way to be
+     * told what the fragment is *made of*: every prop arrives as three flat
+     * stops, so a station deck and the handrail bolted to it travel the same
+     * hue path at the same value with nothing between them. §8's blind run
+     * scored materials 1 and 2 and named this.
+     *
+     * A detail layer is `{ pars, vertex, fragment, key }` — see
+     * `greebleDetail()` in `src/greeble.js`, which is the only producer today.
+     * Its fragment block runs after three's normals are final and before
+     * `paint()` reads them, and it speaks to `paint()` through exactly four
+     * globals plus the normal. It cannot reach the light model any other way,
+     * which is the point: the stops, the bands, the rim and the ambient
+     * rotation stay §9.2's, and the surface only gets to say how much of each.
+     */
+    detail = null,
   } = look;
 
   const mat = new THREE.MeshStandardMaterial({ roughness: 1, ...params });
+
+  // A part set that never went through `bakeSurface()` has no `aHull`, and
+  // (0,0) is exactly "no occlusion, no exposed edge" — so an object built from
+  // the same kit without the bake is plain, not fully shadowed.
+  if (detail) {
+    mat.defaultAttributeValues = Object.assign({}, mat.defaultAttributeValues, { aHull: [0, 0] });
+  }
 
   /**
    * §9.3, and why it has to be *here* rather than in `applyAerial()`.
@@ -185,6 +210,22 @@ export function paintedStandard(params, wiring, look = {}) {
     uPaintAmb: { value: ambient }, uPaintTrans: { value: trans },
     uPaintSunW: wiring.sun,
   };
+  /**
+   * The two numbers only the call site can know, and §11's unit trap is why
+   * they are uniforms rather than constants.
+   *
+   * `uGreebleU2M` is object units to metres — `planetscale.js` and `craft.js`
+   * disagree about what a unit is and are both right for their own scale, so
+   * the detail law is written in metres and converted once in the vertex
+   * shader. `uGreebleBump` is how many view-space units one metre of surface
+   * relief is: a groove authored at twenty millimetres and handed to a
+   * derivative taken in kilometres perturbs the normal by a factor of a
+   * thousand, and the surface dissolves into crawling static.
+   */
+  if (detail) {
+    own.uGreebleU2M = { value: look.u2m ?? 1 };
+    own.uGreebleBump = { value: look.bumpScale ?? 1 };
+  }
   mat.userData.paint = own;
 
   mat.onBeforeCompile = (shader) => {
@@ -211,6 +252,18 @@ export function paintedStandard(params, wiring, look = {}) {
     // way a boulder's shadow and the ground's can agree. Computed here rather
     // than taken from three's `worldpos_vertex`, which is only emitted when an
     // envmap or a spot light happens to be in the scene.
+    if (detail) {
+      // `place()` de-indexes and strips every attribute but position, normal
+      // and uv, so `aHull` is the one channel the bake adds back and the only
+      // one declared here.
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+          attribute vec2 aHull;
+          uniform float uGreebleU2M;
+          ${detail.pars.match(/varying[^;]*;/g).join('\n')}`)
+        .replace('#include <begin_vertex>', detail.vertex);
+    }
+
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', 'varying vec3 vPaintW;\nvoid main() {')
       .replace('#include <project_vertex>', `
@@ -242,6 +295,7 @@ export function paintedStandard(params, wiring, look = {}) {
 
     shader.fragmentShader = shader.fragmentShader
       .replace('void main() {', `
+        ${detail ? detail.pars + '\nuniform float uGreebleBump;' : ''}
         ${PAINT_GLSL}
         ${wiring.shadowGLSL || 'float sunShadow(vec3 wp, float ndl) { return 1.0; }'}
         varying vec3 vPaintW;
@@ -251,7 +305,40 @@ export function paintedStandard(params, wiring, look = {}) {
         uniform float uPaintAO; uniform float uPaintAmb; uniform float uPaintTrans;
         ${air ? `uniform vec3 uCam;\n${air.glsl}` : ''}
         void main() {
-      `)
+          // Neutral by construction: with no detail layer these are exactly
+          // what paint() was handed before this hook existed, so the block
+          // below is dead code rather than a different answer.
+          vec3 gDetailTint = vec3(1.0);
+          float gDetailFade = 0.0;
+          float gDetailAO = 1.0;
+          float gDetailJit = 0.0;
+      `);
+
+    if (detail) {
+      /* `<normal_fragment_maps>` and not `<map_fragment>`, which is where the
+         reference puts it. Two reasons, and the second is the load-bearing one.
+
+         `normal` is not final until this chunk has run, and the surface law
+         perturbs it — a seam that does not catch the key is a printed pattern,
+         which is the whole failure being fixed. Injecting earlier would
+         perturb a normal three then overwrites.
+
+         And `paint()` never reads `diffuseColor`. It builds its colour from
+         three stops, so the reference's approach — compose an albedo and let
+         the lighting chain multiply it — would have every one of these terms
+         silently thrown away at `<dithering_fragment>`. That is the exact
+         shape of the bug the guard at the top of this function exists to
+         catch, so it gets a guard too. */
+      if (!shader.fragmentShader.includes('#include <normal_fragment_maps>')) {
+        console.error('[painted] fragment shader has no #include <normal_fragment_maps> — '
+          + 'the surface law is NOT being applied and every plated object is flat.');
+      }
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <normal_fragment_maps>',
+          '#include <normal_fragment_maps>\n' + detail.fragment);
+    }
+
+    shader.fragmentShader = shader.fragmentShader
       // Last chunk in the chain, so everything three wanted to do — alpha test,
       // alpha map, fog — has already happened and only the colour is replaced.
       .replace('#include <dithering_fragment>', `
@@ -263,20 +350,37 @@ export function paintedStandard(params, wiring, look = {}) {
           sf.N = normalize(normal);
           sf.V = normalize(vViewPosition);
           sf.L = normalize((viewMatrix * vec4(uPaintSunW, 0.0)).xyz);
-          sf.shade = uPaintShade; sf.mid = uPaintMid; sf.lit = uPaintLit;
+          /* The stops, as the surface leaves them.
+             gDetailTint multiplies all three, so a groove, a grimy plate and
+             a panel rolled in a different year are the same colour travelling
+             the same hue path, darker — §9.1's one palette, not a second one.
+             gDetailFade desaturates them toward their own luminance, because
+             paint that has chalked in vacuum has lost chroma and not value,
+             and no multiply can express that. Both are 1.0 and 0.0 with no
+             detail layer. */
+          vec3 dShade = uPaintShade * gDetailTint;
+          vec3 dMid = uPaintMid * gDetailTint;
+          vec3 dLit = uPaintLit * gDetailTint;
+          const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+          sf.shade = mix(dShade, vec3(dot(dShade, LUMA)), gDetailFade);
+          sf.mid = mix(dMid, vec3(dot(dMid, LUMA)), gDetailFade);
+          sf.lit = mix(dLit, vec3(dot(dLit, LUMA)), gDetailFade);
           sf.soft = uPaintSoft;
           // The painterly wobble is per *fragment*, not per material: a band
           // edge that is identical on every instance reads as a contour line
           // drawn across the whole field, which is the one way this effect
           // looks like the quantisation bug it resembles (§11).
-          sf.jit = uPaintJit * (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5);
+          // A detail layer adds to the amplitude, so the ragged paint boundary
+          // lands on the corners the bake found chipped rather than being
+          // uniform over the whole surface.
+          sf.jit = (uPaintJit + gDetailJit) * (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5);
           // Not getShadowMask(): that lives in three's lambert/phong chunk set
           // and does not exist in a standard material, which is a compile error
           // rather than a fallback. This is the terrain's map, so the ground and
           // the things on it are shadowed by one pass.
           sf.shadow = sunShadow(vPaintW, dot(sf.N, sf.L));
           sf.trans = uPaintTrans; sf.transCol = uPaintTransCol;
-          sf.rim = uPaintRim; sf.ao = uPaintAO; sf.ambient = uPaintAmb;
+          sf.rim = uPaintRim; sf.ao = uPaintAO * gDetailAO; sf.ambient = uPaintAmb;
           gl_FragColor.rgb = paint(sf);
           ${air ? `
           // World space, because that is what the air is measured in — and the
@@ -299,7 +403,7 @@ export function paintedStandard(params, wiring, look = {}) {
   // that: two props identical in every material property, one fogged and one
   // not, would otherwise be handed the same program and which one won would
   // depend on render order.
-  const key = `painted-v1${air ? (veil ? '+air-veil' : '+air') : ''}`;
+  const key = `painted-v1${air ? (veil ? '+air-veil' : '+air') : ''}${detail ? '+' + detail.key : ''}`;
   mat.customProgramCacheKey = () => key;
   return mat;
 }

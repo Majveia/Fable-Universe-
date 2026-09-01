@@ -114,16 +114,53 @@ Port techniques and constants. Never files.
 
 ---
 
-## The Long Silence — a second reference, not vendored
+# The other references
+
+`hoshi-no-tani.html` is the north star and §9 defers to it outright. Two others
+sit beside it, each answering a domain it does not cover. Neither has §9's last
+word; both are evidence.
+
+| | covers | provenance |
+|---|---|---|
+| `sakura-realm/` | weather, trees, plants, terrain — the nature systems | `sakura-realm/README.md` |
+| `the-long-silence/` | **vacuum** — hulls, stations, baked worlds from orbit, the surfacing of built things | `the-long-silence/README.md` |
+
+`the-long-silence/` is the newest and the least like AEON: it is a game, with a
+game loop §4 forbids, built on a bundler §2.2 forbids, and — despite its own
+README's claim — it ships assets §2.1 forbids. Its provenance record says
+exactly which two modules load them and why the tree keeps them anyway.
+
+What it is *for* is the half of the frame §9 never had to describe. Four of §9's
+eight subsections assume air. Everything AEON has ever put in vacuum was
+surfaced by three's stock `MeshStandardMaterial` — which `painted.js` was
+written to get rid of everywhere else, and which §11 lists as a trap by name.
+
+## The Long Silence — licence, and two ports of it
 
 `https://github.com/achimala/TheLongSilence` — Anshu Chimala, MIT licence.
 
-Unlike `hoshi-no-tani.html`, **no file from this project is in the tree.** It
-was read from a shallow clone and what came across is technique, re-derived
-against AEON's own physics and RNG — see `docs/plans/LONG-SILENCE.md` for the
-clause-by-clause audit of what was taken and, at greater length, what was
-refused. Its MIT notice is reproduced here because the port is a derivative of
-its ideas even where it shares none of its bytes:
+**This was ported twice, independently, and the two halves are complementary
+rather than duplicate.** Worth stating plainly, because each port wrote its own
+provenance and neither knew about the other:
+
+| port | took | record |
+|---|---|---|
+| the cabin | the seat, the deck, the descent (Allen–Eggers, re-derived), the sqrt-mean auto-exposure | `docs/plans/LONG-SILENCE.md` |
+| the vacuum surface | the plate-seam law and geometry kit (`greeble.js`), the stopping bound (`governor.js`) | `the-long-silence/README.md`, RECKONING Act F |
+
+They also disagreed about vendoring, and the disagreement has been resolved in
+favour of vendoring — so **`LONG-SILENCE.md`'s statement that "nothing from this
+project is copied into the tree" is no longer true**, and is left standing there
+as the record of what that port intended rather than silently edited.
+
+`docs/reference/the-long-silence/` now carries its `src/` at pinned commit
+`4845c1d`, on the `sakura-realm` precedent: §8's rubric is executable only
+against a reference you can actually read, and `LONG-SILENCE.md`'s own
+clause-by-clause audit is far easier to check against a tree than against a
+shallow clone somebody has to re-fetch. `public/` is deliberately not vendored —
+that is where its §2.1 violations live.
+
+Its MIT notice, required either way:
 
 ```
 MIT License
